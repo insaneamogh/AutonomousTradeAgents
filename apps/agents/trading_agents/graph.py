@@ -18,10 +18,17 @@ graph — Drafter is skipped and final_action="HOLD".
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Awaitable, Callable
 
 from trading_agents.llm import LLM
+from trading_agents.progress import (
+    NodeName,
+    ProgressCallback,
+    ProgressEvent,
+    summarize_node,
+)
 from trading_agents.nodes import (
     drafter_node,
     fundamental_analyst_node,
@@ -54,28 +61,72 @@ async def _run_linear(
     state: CouncilState,
     llm: LLM,
     risk_caps: RiskCaps,
+    progress_cb: ProgressCallback | None = None,
+    pacing_seconds: float = 0.0,
 ) -> CouncilState:
-    """Execute the linear council pipeline without LangGraph."""
+    """Execute the linear council pipeline without LangGraph.
+
+    ``progress_cb`` (theater feed) gets started/completed/skipped events per
+    node. ``pacing_seconds`` inserts an artificial pause after each node —
+    used only in MOCK mode so the theater doesn't finish in one frame.
+    """
+    seq = 0
+
+    async def _emit(node: NodeName, status: str, with_summary: bool = False) -> None:
+        nonlocal seq
+        if progress_cb is None:
+            return
+        seq += 1
+        summary = summarize_node(node, dict(state)) if with_summary else None
+        await progress_cb(
+            ProgressEvent(seq=seq, node=node, status=status, summary=summary)  # type: ignore[arg-type]
+        )
+
+    async def _pace() -> None:
+        if progress_cb is not None and pacing_seconds > 0:
+            await asyncio.sleep(pacing_seconds)
+
+    await _emit("router", "started")
     state = await router_node(state, llm)
+    await _pace()
+    await _emit("router", "completed", with_summary=True)
 
     subset = state.get("analyst_subset", ["technical"])
-    if "technical" in subset:
-        state = await technical_analyst_node(state, llm)
-    if "fundamental" in subset:
-        state = await fundamental_analyst_node(state, llm)
-    if "macro" in subset:
-        state = await macro_analyst_node(state, llm)
+    for analyst, node_fn in (
+        ("technical", technical_analyst_node),
+        ("fundamental", fundamental_analyst_node),
+        ("macro", macro_analyst_node),
+    ):
+        if analyst in subset:
+            await _emit(analyst, "started")  # type: ignore[arg-type]
+            state = await node_fn(state, llm)
+            await _pace()
+            await _emit(analyst, "completed", with_summary=True)  # type: ignore[arg-type]
+        else:
+            await _emit(analyst, "skipped")  # type: ignore[arg-type]
 
+    await _emit("selector", "started")
     state = await selector_node(state, llm)
+    await _pace()
+    await _emit("selector", "completed", with_summary=True)
     # Selector HOLD short-circuits the council — final_action is already set
     # and there is no proposal to draft or risk-check.
     if state.get("selected_strategy") is None:
+        await _emit("drafter", "skipped")
+        await _emit("risk_officer", "skipped")
         return state
 
+    await _emit("drafter", "started")
     state = await drafter_node(state, llm)
+    await _pace()
+    await _emit("drafter", "completed", with_summary=True)
+
+    await _emit("risk_officer", "started")
     state = await risk_officer_node(state, risk_caps)
     if state.get("risk_approved"):
         state["final_action"] = state.get("proposal", {}).get("side", "HOLD")  # type: ignore[union-attr]
+    await _pace()
+    await _emit("risk_officer", "completed", with_summary=True)
     return state
 
 
@@ -197,9 +248,21 @@ async def run_graph(
     llm: LLM,
     risk_caps: RiskCaps | None = None,
     force_fallback: bool = False,
+    progress_cb: ProgressCallback | None = None,
+    pacing_seconds: float = 0.0,
 ) -> CouncilState:
-    """Run the council. Uses LangGraph if available + not forced off."""
+    """Run the council. Uses LangGraph if available + not forced off.
+
+    When ``progress_cb`` is set (theater mode) we always take the linear
+    path — it executes the exact same node coroutines in the same order
+    (module docstring guarantee), and instrumenting one path beats
+    surgically wrapping LangGraph internals.
+    """
     caps = risk_caps or RiskCaps()
+    if progress_cb is not None:
+        return await _run_linear(
+            state, llm, caps, progress_cb=progress_cb, pacing_seconds=pacing_seconds
+        )
     if _HAS_LANGGRAPH and not force_fallback:
         runner = _build_langgraph(llm, caps)
         return await runner(state)

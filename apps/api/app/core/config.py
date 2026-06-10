@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO")
     jwt_secret: str = Field(default="change-me-locally-32-bytes-min")
 
+    # Council theater: artificial per-node pause applied ONLY in MOCK LLM
+    # mode (runtime gates on llm.mock) so the progress feed is visible
+    # instead of completing in one frame. Real LLM latency needs no pacing.
+    theater_mock_pacing_seconds: float = Field(default=0.6)
+
     # NoDecode: stop pydantic-settings from JSON-decoding the env value
     # before our CSV validator runs — bare ``a,b`` is not valid JSON.
     cors_origins: Annotated[list[str], NoDecode] = Field(

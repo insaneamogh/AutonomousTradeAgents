@@ -29,6 +29,7 @@ from trading_agents.memory import (
     DecisionLog,
     StrategyConfidenceStore,
 )
+from trading_agents.progress import ProgressCallback
 from engine.risk import RiskCaps
 from trading_agents.state import CouncilState
 
@@ -49,6 +50,8 @@ async def run_council(
     feature_provider=synthetic_features,
     decision_log: DecisionLog | None = None,
     confidence_store: StrategyConfidenceStore | None = None,
+    progress_cb: ProgressCallback | None = None,
+    pacing_seconds: float = 0.0,
 ) -> dict[str, Any]:
     """Run the full council. Returns a result dict:
 
@@ -80,7 +83,14 @@ async def run_council(
             row.strategy_id: row.confidence for row in await confidence_store.all()
         }
 
-    final = await run_graph(state, llm=llm, risk_caps=risk_caps)
+    final = await run_graph(
+        state,
+        llm=llm,
+        risk_caps=risk_caps,
+        progress_cb=progress_cb,
+        # Pace only in MOCK mode — real LLM calls are their own pacing.
+        pacing_seconds=pacing_seconds if llm.mock else 0.0,
+    )
 
     proposal_dto = _to_proposal_dto(final) if final.get("risk_approved") else None
 

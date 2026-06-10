@@ -128,3 +128,40 @@ export interface AgentRunResponse {
   /** True if the LLM ran in mock mode (no ANTHROPIC_API_KEY set). */
   llmMock: boolean;
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// /api/v1/agent/run/start + /run/{id}/progress — council theater
+// ─────────────────────────────────────────────────────────────────────
+
+export type CouncilNode =
+  | 'router'
+  | 'technical'
+  | 'fundamental'
+  | 'macro'
+  | 'selector'
+  | 'drafter'
+  | 'risk_officer';
+
+export interface AgentRunStartResponse {
+  runId: string;
+  symbol: string;
+}
+
+export interface CouncilProgressEvent {
+  seq: number;
+  node: CouncilNode;
+  status: 'started' | 'completed' | 'skipped';
+  /** ISO 8601 string. */
+  at: string;
+  /** Deterministic per-node summary. Shape varies by node — analysts carry
+   * {score, confidence, thesis}; risk_officer carries {approved, vetoRule, thesis}. */
+  summary: Record<string, unknown> | null;
+}
+
+export interface CouncilProgressResponse {
+  runId: string;
+  status: 'running' | 'completed' | 'failed';
+  events: CouncilProgressEvent[];
+  result: AgentRunResponse | null;
+  error?: string | null;
+}
