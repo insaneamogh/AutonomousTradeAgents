@@ -5,7 +5,7 @@
 // Health + calibration strips stay — they collapse to nothing when
 // there's no signal.
 
-import { ScrollView, Text, View } from 'react-native';
+import { Pressable, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 
@@ -159,14 +159,23 @@ function ActivityTile() {
 }
 
 function ActivityLine({ entry }: { entry: ActivityEntryDto }) {
+  const router = useRouter();
   const tone =
     entry.kind === 'filled'
       ? 'text-mint dark:text-mint-dark'
       : entry.kind === 'vetoed'
         ? 'text-rose dark:text-rose-dark'
         : 'text-text-secondary dark:text-text-secondary-dark';
+  // Activity ids are `act-{decision_uuid}` — strip the prefix to deep-link
+  // into the trade biography.
+  const decisionId = entry.id.startsWith('act-') ? entry.id.slice(4) : null;
   return (
-    <View className="flex-row items-baseline gap-2">
+    <Pressable
+      onPress={decisionId ? () => router.push(`/decision/${decisionId}`) : undefined}
+      disabled={!decisionId}
+      accessibilityRole="button"
+      accessibilityLabel={`Open ${entry.symbol} trade biography`}
+      className="min-h-[32px] flex-row items-baseline gap-2 active:opacity-70">
       <Text className="w-14 text-[11px] text-text-tertiary dark:text-text-tertiary-dark">
         {formatRelative(entry.timestamp)}
       </Text>
@@ -179,7 +188,7 @@ function ActivityLine({ entry }: { entry: ActivityEntryDto }) {
       <Text className={cn('flex-1 text-[12px]', tone)} numberOfLines={1}>
         {KIND_LABEL[entry.kind]} · {entry.headline}
       </Text>
-    </View>
+    </Pressable>
   );
 }
 
