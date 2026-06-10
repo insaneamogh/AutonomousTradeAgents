@@ -6,13 +6,35 @@
     "moduleResolution": "Bundler",
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"],
-      "@app/ui": ["../../packages/ui/src"],
-      "@app/ui/*": ["../../packages/ui/src/*"],
-      "@app/shared-types": ["../../packages/shared-types/src"],
-      "@app/shared-types/*": ["../../packages/shared-types/src/*"]
+      "@/*": [
+        "src/*"
+      ],
+      "@app/ui": [
+        "../../packages/ui/src"
+      ],
+      "@app/ui/*": [
+        "../../packages/ui/src/*"
+      ],
+      "@app/shared-types": [
+        "../../packages/shared-types/src"
+      ],
+      "@app/shared-types/*": [
+        "../../packages/shared-types/src/*"
+      ]
     }
   },
-  "include": ["app/**/*", "src/**/*", "*.ts", "*.tsx"],
-  "exclude": ["node_modules", ".expo", "dist"]
+  "include": [
+    "app/**/*",
+    "src/**/*",
+    "*.ts",
+    "*.tsx",
+    "nativewind-env.d.ts",
+    ".expo/types/**/*.ts",
+    "expo-env.d.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    ".expo",
+    "dist"
+  ]
 }

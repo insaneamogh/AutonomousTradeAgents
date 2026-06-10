@@ -50,6 +50,30 @@ module.exports = {
         'accent-primary-hover':        '#1E3A8A',
         'accent-primary-hover-dark':   '#2563EB',
 
+        // ── Bento (Design D) ──────────────────────────────────────
+        // Editorial-bento skin: canvas behind everything, tiles for
+        // every content block, one platinum/ink CTA per screen.
+        'bg-canvas':             '#FAFAF9',
+        'bg-canvas-dark':        '#131314',
+        'bg-tile':               '#FFFFFF',
+        'bg-tile-dark':          '#1C1B1C',
+        'bg-tile-inset':         '#F4F4F3',
+        'bg-tile-inset-dark':    '#201F20',
+        'cta':                   '#1B1B1F',
+        'cta-dark':              '#F1F0F4',
+        'cta-label':             '#FAFAF9',
+        'cta-label-dark':        '#131314',
+        'mint':                  '#0E8A5F',
+        'mint-dark':             '#00E383',
+        'mint-subtle':           '#DFF5EB',
+        'mint-subtle-dark':      '#0E2A1D',
+        'rose':                  '#B3424A',
+        'rose-dark':             '#FFB2B8',
+        'rose-subtle':           '#FBE7E9',
+        'rose-subtle-dark':      '#2A1416',
+        'hairline':              '#E7E5E4',
+        'hairline-dark':         '#353436',
+
         // ── Trading semantics ─────────────────────────────────────
         'gain':                  '#15803D',
         'gain-dark':             '#22C55E',

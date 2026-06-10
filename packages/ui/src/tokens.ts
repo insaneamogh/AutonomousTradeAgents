@@ -41,6 +41,17 @@ export const palette = {
     warningSubtle:      '#FEF3C7',
     danger:             '#991B1B',
     info:               '#1E40AF',
+    // Bento (Design D)
+    bgCanvas:           '#FAFAF9',
+    bgTile:             '#FFFFFF',
+    bgTileInset:        '#F4F4F3',
+    cta:                '#1B1B1F',
+    ctaLabel:           '#FAFAF9',
+    mint:               '#0E8A5F',
+    mintSubtle:         '#DFF5EB',
+    rose:               '#B3424A',
+    roseSubtle:         '#FBE7E9',
+    hairline:           '#E7E5E4',
   },
   dark: {
     bgBase:             '#0A0A0B',
@@ -63,6 +74,17 @@ export const palette = {
     warningSubtle:      '#78350F',
     danger:             '#DC2626',
     info:               '#60A5FA',
+    // Bento (Design D)
+    bgCanvas:           '#131314',
+    bgTile:             '#1C1B1C',
+    bgTileInset:        '#201F20',
+    cta:                '#F1F0F4',
+    ctaLabel:           '#131314',
+    mint:               '#00E383',
+    mintSubtle:         '#0E2A1D',
+    rose:               '#FFB2B8',
+    roseSubtle:         '#2A1416',
+    hairline:           '#353436',
   },
 } as const;
 

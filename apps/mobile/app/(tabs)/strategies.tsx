@@ -1,27 +1,23 @@
-// Strategies — per-strategy performance card list.
+// Strategies — Design D bento.
 //
-// Each row shows the current confidence (post-Reflection nudges), the
-// per-strategy 30-day stats, and a small status chip indicating how
-// active the strategy has been.
-//
-// Cold-start UX (Phase 4 day 1, fresh DB): every row sits at confidence
-// 0.5 with 0 decisions. The card surfaces this with a muted chip + a
-// short hint so the operator knows the screen is alive, just empty.
+// Each strategy = one tile: name + activity chip, confidence bar,
+// 3-up mini stat tiles (win rate / realized P&L / decisions).
+// Dashed "Backtest new strategy" placeholder points at the Phase 1
+// backtester — intentionally inert until that ships.
 
 import { ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import {
-  Card,
-  ConfidenceBar,
-  ErrorState,
-  PriceDisplay,
-  Skeleton,
-  StatusPill,
-  cn,
-  formatRelative,
-} from '@app/ui';
+import { ConfidenceBar, ErrorState, Skeleton, formatRelative } from '@app/ui';
 
+import {
+  DirectionPill,
+  HeroHeadline,
+  HeroSub,
+  Tile,
+  TileLabel,
+  TileValue,
+} from '@/components/bento';
 import {
   StrategyPerformance,
   useStrategiesPerformance,
@@ -31,226 +27,138 @@ export default function StrategiesScreen() {
   const { data, isLoading, isError, refetch } = useStrategiesPerformance(30);
 
   return (
-    <SafeAreaView edges={['top']} className="flex-1 bg-bg-base dark:bg-bg-base-dark">
-      <ScrollView contentContainerClassName="px-4 pb-32 pt-4 gap-4">
-        <Header windowDays={data?.windowDays} />
+    <SafeAreaView edges={['top']} className="flex-1 bg-bg-canvas dark:bg-bg-canvas-dark">
+      <ScrollView contentContainerClassName="px-4 pb-32 pt-4 gap-3">
+        <View>
+          <HeroHeadline>Strategies</HeroHeadline>
+          <HeroSub>
+            {data?.windowDays ?? 30}-day track record. Confidence shifts as Reflection grades
+            closed trades.
+          </HeroSub>
+        </View>
 
         {isLoading ? (
           <>
-            <StrategyCardSkeleton />
-            <StrategyCardSkeleton />
-            <StrategyCardSkeleton />
+            <TileSkeleton />
+            <TileSkeleton />
           </>
         ) : isError ? (
-          <Card variant="default">
+          <Tile>
             <ErrorState
               title="Couldn't load strategies"
               description="The agent server isn't reachable. Try again in a moment."
               onRetry={() => refetch()}
             />
-          </Card>
+          </Tile>
         ) : (
-          (data?.strategies ?? []).map((s) => <StrategyCard key={s.strategyId} s={s} />)
+          (data?.strategies ?? []).map((s) => <StrategyTile key={s.strategyId} s={s} />)
         )}
 
-        <Footnote />
+        <View className="items-center justify-center rounded-lg border border-dashed border-hairline px-4 py-5 dark:border-hairline-dark">
+          <Text className="text-[12px] text-text-tertiary dark:text-text-tertiary-dark">
+            + Backtest new strategy — ships with the Phase 1 backtester
+          </Text>
+        </View>
+
+        <Text className="mt-1 text-center text-[10px] leading-[14px] text-text-tertiary dark:text-text-tertiary-dark">
+          Confidence drifts ±0.10 per Reflection cycle. Cold-start prior is 0.50.
+        </Text>
       </ScrollView>
     </SafeAreaView>
   );
 }
 
-function Header({ windowDays }: { windowDays?: number }) {
-  return (
-    <View className="gap-1">
-      <Text className="text-[24px] font-bold text-text-primary dark:text-text-primary-dark">
-        Strategies
-      </Text>
-      <Text className="text-[13px] leading-[19px] text-text-secondary dark:text-text-secondary-dark">
-        Per-strategy track record over the last {windowDays ?? 30} days. Confidence shifts as the
-        Reflection Agent grades completed trades.
-      </Text>
-    </View>
-  );
-}
-
-function StrategyCard({ s }: { s: StrategyPerformance }) {
+function StrategyTile({ s }: { s: StrategyPerformance }) {
   const completed = s.wins + s.losses;
   const winRate = completed > 0 ? (s.wins / completed) * 100 : null;
-  const positive = s.realizedPnl >= 0;
+  const pnlPositive = s.realizedPnl >= 0;
 
-  // Status chip based on activity in window.
-  const chipTone =
+  const chip =
     s.decisionsInWindow === 0
-      ? 'muted'
+      ? { label: 'IDLE', tone: 'muted' as const }
       : completed === 0
-        ? 'warning'
+        ? { label: `${s.decisionsInWindow} OPEN`, tone: 'muted' as const }
         : winRate !== null && winRate >= 50
-          ? 'ok'
-          : 'warning';
-  const chipLabel =
-    s.decisionsInWindow === 0
-      ? 'NO DECISIONS YET'
-      : completed === 0
-        ? `${s.decisionsInWindow} OPEN`
-        : `${s.wins}W ${s.losses}L`;
+          ? { label: 'ACTIVE', tone: 'mint' as const }
+          : { label: 'ACTIVE', tone: 'rose' as const };
 
   return (
-    <Card variant="default" className="gap-4">
-      {/* Top row: display name + status chip */}
+    <Tile className="gap-3">
       <View className="flex-row items-center justify-between gap-3">
         <Text
-          className="flex-1 text-[16px] font-semibold text-text-primary dark:text-text-primary-dark"
+          className="flex-1 text-[15px] font-medium text-text-primary dark:text-text-primary-dark"
           numberOfLines={1}
         >
           {s.displayName}
         </Text>
-        <StatusPill tone={chipTone} label={chipLabel} layout="chip" />
+        <DirectionPill label={chip.label} tone={chip.tone} />
       </View>
 
-      {/* Confidence bar */}
       <ConfidenceBar value={s.confidence} />
 
-      {/* Stats row */}
-      <View className="flex-row gap-3">
-        <Stat
-          label="Realized P&L"
-          render={
-            <PriceDisplay
-              value={s.realizedPnl}
-              size="md"
-              signed
-              tone={positive ? 'gain' : 'loss'}
-            />
-          }
-        />
-        <Stat
-          label="Win rate"
-          render={
-            <Text
-              className={cn(
-                'text-[18px] font-semibold',
-                winRate === null
-                  ? 'text-text-tertiary dark:text-text-tertiary-dark'
-                  : winRate >= 50
-                    ? 'text-gain dark:text-gain-dark'
-                    : 'text-loss dark:text-loss-dark',
-              )}
-              style={{ fontVariant: ['tabular-nums'] }}
-            >
-              {winRate === null ? '—' : `${winRate.toFixed(0)}%`}
-            </Text>
-          }
-        />
-        <Stat
-          label="Decisions"
-          render={
-            <Text
-              className="text-[18px] font-semibold text-text-primary dark:text-text-primary-dark"
-              style={{ fontVariant: ['tabular-nums'] }}
-            >
-              {s.decisionsInWindow}
-            </Text>
-          }
-        />
+      <View className="flex-row gap-2">
+        <Tile inset className="flex-1 gap-0.5 p-2.5">
+          <TileLabel>Win rate</TileLabel>
+          <TileValue tone={winRate === null ? 'default' : winRate >= 50 ? 'mint' : 'rose'}>
+            {winRate === null ? '—' : `${winRate.toFixed(0)}%`}
+          </TileValue>
+        </Tile>
+        <Tile inset className="flex-1 gap-0.5 p-2.5">
+          <TileLabel>Realized</TileLabel>
+          <TileValue tone={pnlPositive ? 'mint' : 'rose'}>
+            {pnlPositive ? '+' : '−'}$
+            {Math.abs(s.realizedPnl).toLocaleString('en-US', { maximumFractionDigits: 0 })}
+          </TileValue>
+        </Tile>
+        <Tile inset className="flex-1 gap-0.5 p-2.5">
+          <TileLabel>Decisions</TileLabel>
+          <TileValue>{s.decisionsInWindow}</TileValue>
+        </Tile>
       </View>
 
-      {/* Averages — only when there's something to show */}
-      {s.avgWinnerPct !== null || s.avgLoserPct !== null ? (
-        <View className="flex-row gap-4">
-          {s.avgWinnerPct !== null ? (
-            <PctRow label="Avg winner" value={s.avgWinnerPct} positive />
-          ) : null}
-          {s.avgLoserPct !== null ? (
-            <PctRow label="Avg loser" value={s.avgLoserPct} positive={false} />
-          ) : null}
-        </View>
-      ) : null}
-
-      {/* Last events */}
-      <View className="flex-row gap-4 pt-1">
-        <FootRow
+      <View className="flex-row gap-4">
+        <Foot
           label="Last decision"
-          value={
-            s.lastDecisionAt ? formatRelative(s.lastDecisionAt) : 'never'
-          }
+          value={s.lastDecisionAt ? formatRelative(s.lastDecisionAt) : 'never'}
         />
-        <FootRow
+        <Foot
           label="Last reflection"
-          value={
-            s.lastReflectionAt ? formatRelative(s.lastReflectionAt) : 'never'
-          }
+          value={s.lastReflectionAt ? formatRelative(s.lastReflectionAt) : 'never'}
         />
-      </View>
-    </Card>
-  );
-}
-
-function Stat({ label, render }: { label: string; render: React.ReactNode }) {
-  return (
-    <View className="flex-1 gap-1">
-      <Text className="text-[10px] font-semibold uppercase tracking-[1.1px] text-text-secondary dark:text-text-secondary-dark">
-        {label}
-      </Text>
-      {render}
-    </View>
-  );
-}
-
-function PctRow({ label, value, positive }: { label: string; value: number; positive: boolean }) {
-  return (
-    <View className="flex-1 flex-row items-center justify-between rounded-md bg-bg-surface-muted px-3 py-2 dark:bg-bg-surface-muted-dark">
-      <Text className="text-[12px] text-text-secondary dark:text-text-secondary-dark">
-        {label}
-      </Text>
-      <Text
-        className={cn(
-          'text-[13px] font-semibold',
-          positive ? 'text-gain dark:text-gain-dark' : 'text-loss dark:text-loss-dark',
+        {s.avgWinnerPct !== null && (
+          <Foot label="Avg winner" value={`+${s.avgWinnerPct.toFixed(1)}%`} />
         )}
-        style={{ fontVariant: ['tabular-nums'] }}
-      >
-        {positive && value >= 0 ? '+' : ''}
-        {value.toFixed(2)}%
-      </Text>
-    </View>
+      </View>
+    </Tile>
   );
 }
 
-function FootRow({ label, value }: { label: string; value: string }) {
+function Foot({ label, value }: { label: string; value: string }) {
   return (
-    <View className="flex-1 gap-0.5">
-      <Text className="text-[10px] font-semibold uppercase tracking-[1.1px] text-text-tertiary dark:text-text-tertiary-dark">
+    <View className="gap-0.5">
+      <Text className="text-[9px] font-semibold uppercase tracking-[1px] text-text-tertiary dark:text-text-tertiary-dark">
         {label}
       </Text>
-      <Text className="text-[12px] text-text-secondary dark:text-text-secondary-dark">
+      <Text className="text-[11px] text-text-secondary dark:text-text-secondary-dark">
         {value}
       </Text>
     </View>
   );
 }
 
-function StrategyCardSkeleton() {
+function TileSkeleton() {
   return (
-    <Card variant="default" className="gap-4">
+    <Tile className="gap-3">
       <View className="flex-row items-center justify-between">
         <Skeleton className="h-4 w-32" />
-        <Skeleton className="h-4 w-16" />
+        <Skeleton className="h-4 w-14" />
       </View>
       <Skeleton className="h-2 w-full" />
-      <View className="flex-row gap-3">
-        <Skeleton className="h-10 flex-1" />
-        <Skeleton className="h-10 flex-1" />
-        <Skeleton className="h-10 flex-1" />
+      <View className="flex-row gap-2">
+        <Skeleton className="h-12 flex-1" />
+        <Skeleton className="h-12 flex-1" />
+        <Skeleton className="h-12 flex-1" />
       </View>
-    </Card>
-  );
-}
-
-function Footnote() {
-  return (
-    <Text className="mt-2 text-center text-[11px] leading-[15px] text-text-tertiary dark:text-text-tertiary-dark">
-      Confidence drifts ±0.10 per Reflection cycle.{'\n'}
-      Cold-start prior is 0.50 (the hairline marker).
-    </Text>
+    </Tile>
   );
 }

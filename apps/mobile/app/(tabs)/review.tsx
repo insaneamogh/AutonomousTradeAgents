@@ -23,6 +23,7 @@ import {
   formatRelative,
 } from '@app/ui';
 
+import { HeroHeadline, HeroSub, Tile, TileLabel, TileValue } from '@/components/bento';
 import {
   Grade,
   ReviewQueueItem,
@@ -34,8 +35,8 @@ const WINDOW_DAYS = 30;
 
 export default function ReviewScreen() {
   return (
-    <SafeAreaView edges={['top']} className="flex-1 bg-bg-base dark:bg-bg-base-dark">
-      <View className="flex-1 px-4 pb-4 pt-4 gap-4">
+    <SafeAreaView edges={['top']} className="flex-1 bg-bg-canvas dark:bg-bg-canvas-dark">
+      <View className="flex-1 px-4 pb-4 pt-4 gap-3">
         <Header />
         <Body />
       </View>
@@ -44,7 +45,7 @@ export default function ReviewScreen() {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Header
+// Header — bento stat tiles over the swipe deck.
 // ─────────────────────────────────────────────────────────────────────
 
 function Header() {
@@ -56,33 +57,25 @@ function Header() {
   const pct = total > 0 ? Math.round((graded / total) * 100) : 0;
 
   return (
-    <View className="gap-2">
-      <Text className="text-[24px] font-bold text-text-primary dark:text-text-primary-dark">
-        Review
-      </Text>
-      <Text className="text-[13px] leading-[19px] text-text-secondary dark:text-text-secondary-dark">
-        Hand-grade the agent's completed trades. The agreement stat on the Home strip tracks how
-        often you and the Reflection Agent see eye to eye.
-      </Text>
+    <View className="gap-3">
+      <View>
+        <HeroHeadline>Review</HeroHeadline>
+        <HeroSub>Closed trades · grade why it won or lost</HeroSub>
+      </View>
       {total > 0 ? (
-        <View className="gap-1.5 pt-1">
-          <View className="flex-row items-baseline justify-between">
-            <Text className="text-[11px] font-semibold uppercase tracking-[1.1px] text-text-secondary dark:text-text-secondary-dark">
-              {graded} of {total} graded · {remaining} left
-            </Text>
-            <Text
-              className="text-[12px] font-semibold text-text-secondary dark:text-text-secondary-dark"
-              style={{ fontVariant: ['tabular-nums'] }}
-            >
-              {pct}%
-            </Text>
-          </View>
-          <View className="h-1.5 overflow-hidden rounded-full bg-bg-surface-muted dark:bg-bg-surface-muted-dark">
-            <View
-              className="h-full rounded-full bg-accent-primary dark:bg-accent-primary-dark"
-              style={{ width: `${pct}%` }}
-            />
-          </View>
+        <View className="flex-row gap-2">
+          <Tile inset className="flex-1 gap-0.5 p-2.5">
+            <TileLabel>Graded</TileLabel>
+            <TileValue>{graded}</TileValue>
+          </Tile>
+          <Tile inset className="flex-1 gap-0.5 p-2.5">
+            <TileLabel>Left</TileLabel>
+            <TileValue>{remaining}</TileValue>
+          </Tile>
+          <Tile inset className="flex-1 gap-0.5 p-2.5">
+            <TileLabel>Progress</TileLabel>
+            <TileValue tone={pct >= 100 ? 'mint' : 'default'}>{pct}%</TileValue>
+          </Tile>
         </View>
       ) : null}
     </View>

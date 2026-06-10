@@ -1,242 +1,292 @@
-// Approval inbox — wired to the API.
+// Picks — Design D bento feed.
 //
-// usePendingApprovals = useQuery
-// useDecideApproval   = useMutation (optimistic; invalidates account + activity on settle)
-// useRunAgent         = useMutation (triggers a server-side council run; invalidates pending + activity)
+// Pending proposals + decided/vetoed history in one list with
+// All / Pending / Vetoed filter chips. Vetoed rows stay visible
+// (dimmed, named risk rule) — the audit trail is part of the UI.
+// Tapping a pending pick opens /pick/[id] for the full bull/bear/risk
+// breakdown + approve sheet.
 
-import { useState } from 'react';
-import { ScrollView, Text, View } from 'react-native';
+import { useMemo, useState } from 'react';
+import { Pressable, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
 
-import type { ApprovalProposalDto } from '@app/shared-types';
+import type { ActivityEntryDto, ApprovalProposalDto } from '@app/shared-types';
+import { EmptyState, ErrorState, Skeleton, cn, formatRelative } from '@app/ui';
+
 import {
-  ApprovalCard,
-  Button,
-  Card,
-  EmptyState,
-  ErrorState,
-  SkeletonCardStack,
-  cn,
-  secondsUntil,
-} from '@app/ui';
-import type { ApprovalProposal } from '@app/ui';
-
-import { useDecideApproval, usePendingApprovals } from '@/hooks/useApprovals';
+  BentoCTA,
+  DirectionPill,
+  HeroHeadline,
+  HeroSub,
+  Tile,
+  TileLabel,
+  levelLabel,
+} from '@/components/bento';
+import { usePendingApprovals } from '@/hooks/useApprovals';
+import { useActivity } from '@/hooks/useActivity';
 import { useRunAgent } from '@/hooks/useRunAgent';
 
-// Rotated through on each "Run council" tap — gives variety in mock mode.
 const TICKERS = ['NVDA', 'AAPL', 'MSFT', 'TSLA', 'AMD', 'AMZN', 'GOOGL'] as const;
 
-interface RunResultBanner {
-  symbol: string;
-  finalAction: string;
-  riskReason: string;
-  vetoRule?: string | null;
-  llmMock: boolean;
-  ok: boolean;
-}
+type Filter = 'all' | 'pending' | 'vetoed';
 
-export default function ApprovalsScreen() {
-  const { data, isLoading, isError, refetch } = usePendingApprovals();
-  const decide = useDecideApproval();
+export default function PicksScreen() {
+  const router = useRouter();
+  const { data: pending, isLoading, isError, refetch } = usePendingApprovals();
+  const { data: activity } = useActivity(30);
   const runAgent = useRunAgent();
 
+  const [filter, setFilter] = useState<Filter>('all');
   const [tickerIndex, setTickerIndex] = useState(0);
-  const [lastRun, setLastRun] = useState<RunResultBanner | null>(null);
+  const [lastRunNote, setLastRunNote] = useState<string | null>(null);
 
-  const pending = data ?? [];
+  const vetoed = useMemo(
+    () => (activity ?? []).filter((e) => e.kind === 'vetoed'),
+    [activity],
+  );
+  const decided = useMemo(
+    () => (activity ?? []).filter((e) => e.kind === 'approved' || e.kind === 'declined' || e.kind === 'filled'),
+    [activity],
+  );
 
-  const handleDecide = (proposalId: string, outcome: 'approved' | 'declined') => {
-    decide.mutate({ proposalId, outcome });
-  };
-
+  const nextSymbol = TICKERS[tickerIndex % TICKERS.length];
   const handleRunCouncil = () => {
-    const symbol = TICKERS[tickerIndex % TICKERS.length];
     setTickerIndex((i) => i + 1);
-    setLastRun(null);
+    setLastRunNote(null);
     runAgent.mutate(
-      { symbol, horizon: 'short' },
+      { symbol: nextSymbol, horizon: 'short' },
       {
         onSuccess: (res) =>
-          setLastRun({
-            symbol,
-            finalAction: res.finalAction,
-            riskReason: res.riskReason,
-            vetoRule: res.riskVetoRule,
-            llmMock: res.llmMock,
-            ok: res.riskApproved,
-          }),
-        onError: () =>
-          setLastRun({
-            symbol,
-            finalAction: 'ERROR',
-            riskReason: "Couldn't reach the agent server.",
-            llmMock: false,
-            ok: false,
-          }),
+          setLastRunNote(
+            res.riskApproved
+              ? `${nextSymbol}: ${res.finalAction} — proposal queued${res.llmMock ? ' (mock LLM)' : ''}`
+              : `${nextSymbol}: vetoed — ${res.riskVetoRule ?? res.riskReason}`,
+          ),
+        onError: () => setLastRunNote(`${nextSymbol}: couldn't reach the agent server.`),
       },
     );
   };
 
-  return (
-    <SafeAreaView edges={['top']} className="flex-1 bg-bg-base dark:bg-bg-base-dark">
-      <ScrollView contentContainerClassName="px-4 pb-32 pt-4 gap-4">
-        <Header />
+  const pendingList = pending ?? [];
+  const showPending = filter !== 'vetoed';
+  const showVetoed = filter !== 'pending';
+  const showDecided = filter === 'all';
 
-        <CouncilTrigger
-          symbol={TICKERS[tickerIndex % TICKERS.length]}
-          pending={runAgent.isPending}
-          onPress={handleRunCouncil}
-          lastRun={lastRun}
-        />
+  return (
+    <SafeAreaView edges={['top']} className="flex-1 bg-bg-canvas dark:bg-bg-canvas-dark">
+      <ScrollView contentContainerClassName="px-4 pb-32 pt-4 gap-3">
+        <View>
+          <HeroHeadline>
+            {pendingList.length > 0
+              ? `${pendingList.length} pick${pendingList.length === 1 ? '' : 's'}`
+              : 'Picks'}
+          </HeroHeadline>
+          <HeroSub>
+            {pendingList.length > 0
+              ? 'waiting for your approval'
+              : 'Every council run lands here — including vetoes.'}
+          </HeroSub>
+        </View>
+
+        <View className="flex-row gap-2">
+          <FilterChip label="All" active={filter === 'all'} onPress={() => setFilter('all')} />
+          <FilterChip
+            label="Pending"
+            active={filter === 'pending'}
+            onPress={() => setFilter('pending')}
+          />
+          <FilterChip
+            label="Vetoed"
+            active={filter === 'vetoed'}
+            onPress={() => setFilter('vetoed')}
+          />
+        </View>
 
         {isLoading ? (
-          <Card variant="default">
-            <SkeletonCardStack rows={4} />
-          </Card>
+          <Tile className="gap-3">
+            <Skeleton className="h-5 w-full" />
+            <Skeleton className="h-5 w-2/3" />
+          </Tile>
         ) : isError ? (
-          <Card variant="default">
+          <Tile>
             <ErrorState
-              title="Couldn't load approvals"
+              title="Couldn't load picks"
               description="The agent server isn't reachable. Try again in a moment."
               onRetry={() => refetch()}
             />
-          </Card>
-        ) : pending.length === 0 ? (
-          <View className="mt-4">
-            <EmptyState
-              title="No pending approvals"
-              description="Tap 'Run council' above to have the agent generate a proposal."
-            />
-          </View>
+          </Tile>
         ) : (
-          pending.map((p) => (
-            <ApprovalCard
-              key={p.id}
-              proposal={toUiProposal(p)}
-              onApprove={(x) => handleDecide(x.id, 'approved')}
-              onDecline={(x) => handleDecide(x.id, 'declined')}
-              onExpire={() => refetch()}
-              busy={decide.isPending}
-            />
-          ))
+          <>
+            {showPending &&
+              pendingList.map((p) => (
+                <PendingTile key={p.id} p={p} onPress={() => router.push(`/pick/${p.id}`)} />
+              ))}
+            {showPending && pendingList.length === 0 && filter === 'pending' && (
+              <Tile>
+                <EmptyState
+                  title="No pending picks"
+                  description="Run the council below to generate one."
+                />
+              </Tile>
+            )}
+            {showVetoed && vetoed.map((e) => <VetoTile key={e.id} e={e} />)}
+            {showVetoed && vetoed.length === 0 && filter === 'vetoed' && (
+              <Tile>
+                <EmptyState
+                  title="No vetoes"
+                  description="When a risk rule blocks a proposal it shows up here with the rule name."
+                />
+              </Tile>
+            )}
+            {showDecided && decided.slice(0, 10).map((e) => <DecidedTile key={e.id} e={e} />)}
+          </>
         )}
+
+        <Tile inset className="gap-2">
+          <View className="flex-row items-center justify-between">
+            <View>
+              <TileLabel>Run council</TileLabel>
+              <Text
+                className="mt-0.5 text-[14px] font-medium text-text-primary dark:text-text-primary-dark"
+                style={{ fontVariant: ['tabular-nums'] }}
+              >
+                Next: {nextSymbol}
+              </Text>
+            </View>
+          </View>
+          {lastRunNote && (
+            <Text className="text-[12px] text-text-secondary dark:text-text-secondary-dark">
+              {lastRunNote}
+            </Text>
+          )}
+          <BentoCTA
+            label={runAgent.isPending ? 'Running…' : `Run on ${nextSymbol}`}
+            onPress={handleRunCouncil}
+            disabled={runAgent.isPending}
+            accessibilityLabel={`Run the agent council on ${nextSymbol}`}
+          />
+        </Tile>
       </ScrollView>
     </SafeAreaView>
   );
 }
 
-function Header() {
-  return (
-    <View>
-      <Text className="text-[11px] font-semibold uppercase tracking-[1.2px] text-text-secondary dark:text-text-secondary-dark">
-        Pending
-      </Text>
-      <Text className="mt-1 text-[24px] font-semibold leading-[30px] text-text-primary dark:text-text-primary-dark">
-        Trade approvals
-      </Text>
-      <Text className="mt-1 text-[13px] text-text-secondary dark:text-text-secondary-dark">
-        Every proposal shows the bull case, the bear case, and the risk rule that
-        fired. Approve consciously — paper trading is free, your time is not.
-      </Text>
-    </View>
-  );
-}
-
-interface CouncilTriggerProps {
-  symbol: string;
-  pending: boolean;
+function FilterChip({
+  label,
+  active,
+  onPress,
+}: {
+  label: string;
+  active: boolean;
   onPress: () => void;
-  lastRun: RunResultBanner | null;
-}
-
-function CouncilTrigger({ symbol, pending, onPress, lastRun }: CouncilTriggerProps) {
+}) {
   return (
-    <Card variant="inset" className="gap-3">
-      <View className="flex-row items-center justify-between">
-        <View className="flex-1">
-          <Text className="text-[11px] font-semibold uppercase tracking-[1.1px] text-text-secondary dark:text-text-secondary-dark">
-            Run council
-          </Text>
-          <Text className="mt-1 text-[15px] text-text-primary dark:text-text-primary-dark">
-            Next ticker:{' '}
-            <Text
-              className="font-semibold"
-              style={{ fontVariant: ['tabular-nums'] }}
-            >
-              {symbol}
-            </Text>
-          </Text>
-        </View>
-        <Button
-          label={pending ? 'Running…' : 'Run'}
-          variant="primary"
-          size="md"
-          loading={pending}
-          onPress={onPress}
-          accessibilityLabel={`Run the agent council on ${symbol}`}
-        />
-      </View>
-      {lastRun && <CouncilResultLine result={lastRun} />}
-    </Card>
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={`Filter: ${label}`}
+      accessibilityState={{ selected: active }}
+      className={cn(
+        'min-h-[32px] items-center justify-center rounded-full px-4 py-1.5',
+        active
+          ? 'bg-cta dark:bg-cta-dark'
+          : 'border border-hairline dark:border-hairline-dark',
+      )}
+    >
+      <Text
+        className={cn(
+          'text-[12px] font-medium',
+          active
+            ? 'text-cta-label dark:text-cta-label-dark'
+            : 'text-text-secondary dark:text-text-secondary-dark',
+        )}
+      >
+        {label}
+      </Text>
+    </Pressable>
   );
 }
 
-function CouncilResultLine({ result }: { result: RunResultBanner }) {
-  const tone = result.ok
-    ? 'text-accent-primary dark:text-accent-primary-dark'
-    : result.finalAction === 'ERROR'
-      ? 'text-loss dark:text-loss-dark'
-      : 'text-warning dark:text-warning-dark';
+function PendingTile({ p, onPress }: { p: ApprovalProposalDto; onPress: () => void }) {
+  const isBuy = p.side === 'BUY';
   return (
-    <View className="gap-1 border-t border-border-subtle pt-2 dark:border-border-subtle-dark">
-      <View className="flex-row items-center gap-2">
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={`Open ${p.symbol} pick detail`}
+    >
+      <Tile className="gap-2 active:opacity-80">
+        <View className="flex-row items-center justify-between">
+          <Text
+            className="text-[16px] font-medium text-text-primary dark:text-text-primary-dark"
+            style={{ fontVariant: ['tabular-nums'] }}
+          >
+            {p.symbol}
+          </Text>
+          <DirectionPill
+            label={`${isBuy ? 'LONG' : 'SELL'} · ${levelLabel(p.convictionLevel)}`}
+            tone={isBuy ? 'mint' : 'rose'}
+          />
+        </View>
         <Text
-          className={cn('text-[11px] font-bold uppercase tracking-[1.2px]', tone)}
+          className="text-[12px] leading-[17px] text-text-secondary dark:text-text-secondary-dark"
+          numberOfLines={2}
         >
-          {result.finalAction}
+          {p.rationale}
         </Text>
+        <Text className="text-[11px] text-text-tertiary dark:text-text-tertiary-dark">
+          {p.qty} sh · ~${Math.round(p.estimatedNotional).toLocaleString('en-US')} ·{' '}
+          {formatRelative(p.proposedAt)} · tap for detail
+        </Text>
+      </Tile>
+    </Pressable>
+  );
+}
+
+function VetoTile({ e }: { e: ActivityEntryDto }) {
+  return (
+    <Tile className="gap-1.5 opacity-60">
+      <View className="flex-row items-center justify-between">
         <Text
-          className="text-[13px] font-semibold text-text-primary dark:text-text-primary-dark"
+          className="text-[15px] font-medium text-text-primary dark:text-text-primary-dark"
           style={{ fontVariant: ['tabular-nums'] }}
         >
-          {result.symbol}
+          {e.symbol}
         </Text>
-        {result.llmMock && (
-          <Text className="text-[11px] font-medium text-text-tertiary dark:text-text-tertiary-dark">
-            · mock LLM
+        <View className="rounded-full border border-rose px-2.5 py-1 dark:border-rose-dark">
+          <Text className="text-[10px] font-semibold text-rose dark:text-rose-dark">
+            VETOED
           </Text>
-        )}
+        </View>
       </View>
-      <Text className="text-[12px] text-text-secondary dark:text-text-secondary-dark">
-        {result.riskReason}
-        {result.vetoRule ? ` (${result.vetoRule})` : ''}
+      <Text className="text-[11px] text-text-secondary dark:text-text-secondary-dark">
+        {e.headline} · {formatRelative(e.timestamp)}
       </Text>
-    </View>
+    </Tile>
   );
 }
 
-/**
- * Convert the wire DTO (ISO date strings) into the ApprovalCard's view-model
- * (Date object + seconds-until). Cheap function — happens on each render
- * but the math is trivial.
- */
-function toUiProposal(p: ApprovalProposalDto): ApprovalProposal {
-  return {
-    id: p.id,
-    symbol: p.symbol,
-    side: p.side,
-    qty: p.qty,
-    orderType: p.orderType,
-    limitPrice: p.limitPrice,
-    estimatedNotional: p.estimatedNotional,
-    rationale: p.rationale,
-    bullCase: p.bullCase,
-    bearCase: p.bearCase,
-    riskLevel: p.riskLevel,
-    convictionLevel: p.convictionLevel,
-    proposedAt: new Date(p.proposedAt),
-    expiresInSeconds: secondsUntil(p.expiresAt) || undefined,
-    informationalFlags: p.informationalFlags,
-  };
+function DecidedTile({ e }: { e: ActivityEntryDto }) {
+  const tone =
+    e.kind === 'filled' ? 'mint' : e.kind === 'approved' ? 'mint' : ('muted' as const);
+  return (
+    <Tile inset className="gap-1">
+      <View className="flex-row items-center justify-between">
+        <Text
+          className="text-[14px] font-medium text-text-primary dark:text-text-primary-dark"
+          style={{ fontVariant: ['tabular-nums'] }}
+        >
+          {e.symbol}
+        </Text>
+        <DirectionPill label={e.kind.toUpperCase()} tone={tone} />
+      </View>
+      <Text
+        className="text-[11px] text-text-tertiary dark:text-text-tertiary-dark"
+        numberOfLines={1}
+      >
+        {e.headline} · {formatRelative(e.timestamp)}
+      </Text>
+    </Tile>
+  );
 }

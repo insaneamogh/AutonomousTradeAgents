@@ -19,11 +19,14 @@ export default function TabsLayout() {
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: pal.accentPrimary,
+        // Bento (Design D): tab bar sits on the canvas, active = primary text
+        // color (platinum in dark, ink in light) — accent blue is retired
+        // from chrome.
+        tabBarActiveTintColor: pal.textPrimary,
         tabBarInactiveTintColor: pal.textTertiary,
         tabBarStyle: {
-          backgroundColor: pal.bgSurface,
-          borderTopColor: pal.borderSubtle,
+          backgroundColor: pal.bgCanvas,
+          borderTopColor: pal.hairline,
           borderTopWidth: 1,
           elevation: 0,
         },
@@ -33,10 +36,10 @@ export default function TabsLayout() {
           letterSpacing: 1.1,
           textTransform: 'uppercase',
         },
-        headerStyle: { backgroundColor: pal.bgBase },
+        headerStyle: { backgroundColor: pal.bgCanvas },
         headerTitleStyle: { color: pal.textPrimary, fontWeight: '600' },
         headerShadowVisible: false,
-        sceneStyle: { backgroundColor: pal.bgBase },
+        sceneStyle: { backgroundColor: pal.bgCanvas },
       }}
     >
       <Tabs.Screen
