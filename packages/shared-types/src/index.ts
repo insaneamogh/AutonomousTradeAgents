@@ -195,3 +195,40 @@ export interface DecisionTimelineResponse {
   status: 'pending' | 'approved' | 'declined' | 'expired' | 'vetoed' | 'closed';
   events: TimelineEventDto[];
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// /api/v1/ghost/summary + /api/v1/risk/vetoes — regret analytics
+// ─────────────────────────────────────────────────────────────────────
+
+export interface GhostBucketDto {
+  count: number;
+  ghostPnl: number;
+  pendingCount: number;
+}
+
+export interface GhostSummaryResponse {
+  windowDays: number;
+  asOf: string;
+  vetoed: GhostBucketDto;
+  declined: GhostBucketDto;
+  /** What finalized vetoed picks would have LOST (>=0). */
+  savedUsd: number;
+  /** What finalized declined/expired picks would have MADE (>=0). */
+  missedUsd: number;
+}
+
+export interface VetoRuleDto {
+  rule: string;
+  count: number;
+  blockedNotional: number;
+  ghostPnl?: number | null;
+  preventedLossUsd?: number | null;
+  lastAt?: string | null;
+}
+
+export interface VetoLedgerResponse {
+  windowDays: number;
+  totalVetoes: number;
+  totalBlockedNotional: number;
+  rules: VetoRuleDto[];
+}
