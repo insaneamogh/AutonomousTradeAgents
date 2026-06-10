@@ -46,6 +46,23 @@ class DecisionEntry:
     macro_score: float | None = None
     raw_state: dict[str, Any] = field(default_factory=dict)
 
+    # Full council audit surface (WP0). The Postgres impl writes these to
+    # dedicated columns so the trade-biography and theater features can
+    # read per-analyst outputs without unpacking raw_state.
+    technical: dict[str, Any] | None = None
+    fundamental: dict[str, Any] | None = None
+    macro: dict[str, Any] | None = None
+    analyst_subset: list[str] | None = None
+    bull_case: str | None = None
+    bear_case: str | None = None
+    risk_reason: str | None = None
+    token_usage: dict[str, Any] | None = None
+    completed_at: datetime | None = None
+    # The camelCase ApprovalProposalDto dict — present only when the risk
+    # officer approved. Stored in the ``proposal`` JSONB column so the API's
+    # ``list_pending`` can parse the row directly (single write path).
+    proposal_dto: dict[str, Any] | None = None
+
     # Filled later — by executor + Reflection Agent.
     fill_qty: int | None = None
     fill_avg_price: float | None = None

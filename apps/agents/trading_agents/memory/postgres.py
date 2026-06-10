@@ -69,6 +69,15 @@ def _row_to_entry(r: AgentDecision) -> DecisionEntry:
         fill_avg_price=float(r.fill_avg_price) if r.fill_avg_price is not None else None,
         realized_pnl=float(r.realized_pnl) if r.realized_pnl is not None else None,
         reviewed_at=r.reviewed_at,
+        technical=r.technical,
+        fundamental=r.fundamental,
+        macro=r.macro,
+        analyst_subset=list(r.analyst_subset) if r.analyst_subset else None,
+        bull_case=r.bull_case,
+        bear_case=r.bear_case,
+        risk_reason=r.risk_reason,
+        token_usage=r.token_usage,
+        completed_at=r.completed_at,
     )
 
 
@@ -88,11 +97,26 @@ class PostgresDecisionLog:
                 symbol=entry.symbol,
                 horizon=entry.horizon,
                 regime=entry.regime,
-                proposal=entry.raw_state if isinstance(entry.raw_state, dict) else None,
+                # When the risk officer approved, ``proposal`` holds the
+                # camelCase DTO so the API's list_pending() can parse this
+                # row directly (single write path). Otherwise we keep the
+                # raw_state snapshot for audit.
+                proposal=entry.proposal_dto
+                or (entry.raw_state if isinstance(entry.raw_state, dict) else None),
                 risk_approved=entry.risk_approved,
                 risk_veto_rule=entry.risk_veto_rule,
+                risk_reason=entry.risk_reason,
                 final_action=entry.final_action,
                 triggered_at=entry.triggered_at,
+                # Full council audit surface (WP0)
+                analyst_subset=entry.analyst_subset,
+                technical=entry.technical,
+                fundamental=entry.fundamental,
+                macro=entry.macro,
+                bull_case=entry.bull_case,
+                bear_case=entry.bear_case,
+                token_usage=entry.token_usage,
+                completed_at=entry.completed_at,
                 # Reflection-loop columns from migration 0003
                 selected_strategy=entry.selected_strategy,
                 selector_confidence=entry.selector_confidence,

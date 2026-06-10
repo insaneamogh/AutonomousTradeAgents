@@ -157,6 +157,7 @@ def _to_decision_entry(
     tech = final.get("technical") or {}
     fund = final.get("fundamental") or {}
     macro = final.get("macro") or {}
+    internal_proposal = final.get("proposal") or {}
 
     return DecisionEntry(
         user_id=user_id,
@@ -179,4 +180,15 @@ def _to_decision_entry(
             "regime": final.get("regime"),
             "analyst_subset": final.get("analyst_subset"),
         },
+        # Full audit surface (WP0) — dedicated columns in Postgres.
+        technical=tech or None,
+        fundamental=fund or None,
+        macro=macro or None,
+        analyst_subset=list(final.get("analyst_subset") or []) or None,
+        bull_case=internal_proposal.get("bull_case") or (proposal_dto or {}).get("bullCase"),
+        bear_case=internal_proposal.get("bear_case") or (proposal_dto or {}).get("bearCase"),
+        risk_reason=str(final.get("risk_reason") or "") or None,
+        token_usage=final.get("token_usage"),
+        completed_at=datetime.now(timezone.utc),
+        proposal_dto=proposal_dto,
     )
