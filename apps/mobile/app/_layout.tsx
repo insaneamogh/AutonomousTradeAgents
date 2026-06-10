@@ -21,6 +21,7 @@ import { useEffect } from 'react';
 import { QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { Slot, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import { Platform } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as Linking from 'expo-linking';
 import * as Notifications from 'expo-notifications';
@@ -36,16 +37,19 @@ import '../src/global.css';
 
 // Foreground notification policy — show heads-up banner + play sound. We
 // configure once at module-eval time so the policy is in place before the
-// first push arrives. Per Expo Notifications API.
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: false,
-    shouldShowBanner: true,
-    shouldShowList: true,
-  }),
-});
+// first push arrives. Per Expo Notifications API. No-op on web — the
+// module has no web implementation.
+if (Platform.OS !== 'web') {
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowAlert: true,
+      shouldPlaySound: true,
+      shouldSetBadge: false,
+      shouldShowBanner: true,
+      shouldShowList: true,
+    }),
+  });
+}
 
 // Wire the auth store into the API client ONCE at module-eval time. Subsequent
 // calls into ``request()`` will read the current access token via the
@@ -212,6 +216,10 @@ function PushTapHandler() {
   const queryClientInstance = useQueryClient();
 
   useEffect(() => {
+    // expo-notifications has no web implementation — push taps are a
+    // native-only entry point.
+    if (Platform.OS === 'web') return;
+
     function routeForKind(kind: unknown) {
       if (kind === 'proposal_pending') {
         // Invalidate so the Approvals tab fetches the new pending row.

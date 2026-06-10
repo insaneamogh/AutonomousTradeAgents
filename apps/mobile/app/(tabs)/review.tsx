@@ -8,7 +8,6 @@
 // the caller yet). Day-1-of-Phase-4 reality is the operator opens this
 // tab and sees the empty state until trades start closing.
 
-import { useState } from 'react';
 import { Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
