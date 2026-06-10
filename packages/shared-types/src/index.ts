@@ -165,3 +165,33 @@ export interface CouncilProgressResponse {
   result: AgentRunResponse | null;
   error?: string | null;
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// /api/v1/decisions/{id}/timeline — trade biography
+// ─────────────────────────────────────────────────────────────────────
+
+export interface TimelineEventDto {
+  kind:
+    | 'proposed'
+    | 'risk_verdict'
+    | 'user_decision'
+    | 'order_submitted'
+    | 'filled'
+    | 'closed'
+    | 'review_grade'
+    | 'reflection'
+    | 'ghost';
+  /** ISO 8601 string, null when the source row had no timestamp. */
+  at: string | null;
+  title: string;
+  detail: string;
+  data: Record<string, unknown>;
+}
+
+export interface DecisionTimelineResponse {
+  decisionId: string;
+  symbol: string;
+  side: string | null;
+  status: 'pending' | 'approved' | 'declined' | 'expired' | 'vetoed' | 'closed';
+  events: TimelineEventDto[];
+}

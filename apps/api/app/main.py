@@ -34,6 +34,7 @@ from app.routers import (
     approvals,
     auth,
     broker,
+    decisions,
     health as health_router,
     notifications,
     orders,
@@ -185,3 +186,4 @@ app.include_router(portfolio.router, prefix="/api/v1")
 app.include_router(health_router.router, prefix="/api/v1")
 app.include_router(strategies_router.router, prefix="/api/v1")
 app.include_router(review.router, prefix="/api/v1")
+app.include_router(decisions.router, prefix="/api/v1")
