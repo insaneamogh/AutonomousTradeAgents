@@ -19,7 +19,7 @@
 
 import { useEffect } from 'react';
 import { QueryClientProvider, useQueryClient } from '@tanstack/react-query';
-import { Slot, useRouter, useSegments } from 'expo-router';
+import { Slot, useRootNavigationState, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { Platform } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -126,8 +126,12 @@ function AuthRouteGuard({ children }: { children: React.ReactNode }) {
   const status = useAuthStore((s) => s.status);
   const segments = useSegments();
   const router = useRouter();
+  // Navigating before the root navigator mounts throws on web (native
+  // happens to mount earlier). Gate on the navigation state's key.
+  const rootNavigationState = useRootNavigationState();
 
   useEffect(() => {
+    if (!rootNavigationState?.key) return;
     const inAuthGroup = segments[0] === 'auth';
 
     if (status === 'unauthenticated' && !inAuthGroup) {
@@ -135,7 +139,7 @@ function AuthRouteGuard({ children }: { children: React.ReactNode }) {
     } else if (status === 'authenticated' && inAuthGroup) {
       router.replace('/');
     }
-  }, [status, segments, router]);
+  }, [status, segments, router, rootNavigationState?.key]);
 
   return <>{children}</>;
 }
