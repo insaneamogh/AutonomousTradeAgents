@@ -623,3 +623,49 @@ class LlmCall(Base):
         server_default=func.now(),
         nullable=False,
     )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Ghost outcomes (migration 0008) — what non-executed picks would have done
+# ─────────────────────────────────────────────────────────────────────
+
+
+class GhostOutcome(Base):
+    """Hypothetical outcome of a vetoed / declined / expired decision.
+
+    Separate from ``agent_decisions`` so the audit anchor stays immutable;
+    the daily evaluator (``apps/agents/scripts/ghost_eval.py``) appends a
+    close-price mark per trading day until ``horizon_days`` elapse, then
+    finalizes ``ghost_pnl``. Deterministic Python only.
+    """
+
+    __tablename__ = "ghost_outcomes"
+    __table_args__ = (
+        Index("ix_ghost_outcomes_status", "status"),
+        Index("ix_ghost_outcomes_reason", "reason"),
+        UniqueConstraint("decision_id", name="uq_ghost_outcomes_decision_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    decision_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("agent_decisions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    reason: Mapped[str] = mapped_column(String(16), nullable=False)  # vetoed/declined/expired
+    side: Mapped[str] = mapped_column(String(4), nullable=False)
+    qty: Mapped[int] = mapped_column(Integer, nullable=False)
+    entry_price: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False)
+    entry_source: Mapped[str] = mapped_column(String(20), nullable=False)
+    horizon_days: Mapped[int] = mapped_column(Integer, nullable=False, default=5, server_default="5")
+    marks: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+    last_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 4), nullable=True)
+    ghost_pnl: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="pending", server_default="pending"
+    )
+    price_source: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="synthetic", server_default="synthetic"
+    )
+    first_evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

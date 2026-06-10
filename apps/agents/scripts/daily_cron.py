@@ -124,7 +124,13 @@ async def _run_one(user_id: str, symbol: str, llm: LLM, *, force: bool) -> dict:
     }
 
 
-async def main(user_id: str, watchlist: list[str], *, force: bool) -> int:
+async def main(
+    user_id: str,
+    watchlist: list[str],
+    *,
+    force: bool,
+    skip_ghost_eval: bool = False,
+) -> int:
     log.info(
         "daily cron start — user=%s symbols=%s use_postgres=%s",
         user_id,
@@ -151,6 +157,17 @@ async def main(user_id: str, watchlist: list[str], *, force: bool) -> int:
         "daily cron done — processed=%d skipped=%d failed=%d",
         processed, skipped, failed,
     )
+
+    # Ghost P&L pass — marks vetoed/declined picks against daily closes.
+    # Postgres only (the ghost_outcomes table); failure never fails cron.
+    if not skip_ghost_eval and _is_truthy(os.environ.get("USE_POSTGRES")):
+        try:
+            from scripts.ghost_eval import evaluate_ghosts
+
+            await evaluate_ghosts()
+        except Exception:  # noqa: BLE001
+            log.exception("ghost_eval pass failed — continuing")
+
     return 1 if failed else 0
 
 
@@ -174,12 +191,19 @@ def cli() -> int:
         action="store_true",
         help="Re-run even when a decision already exists for (user, symbol) today.",
     )
+    parser.add_argument(
+        "--skip-ghost-eval",
+        action="store_true",
+        help="Skip the ghost-P&L marking pass after the council loop.",
+    )
     args = parser.parse_args()
     symbols = [s.strip().upper() for s in args.watchlist.split(",") if s.strip()]
     if not symbols:
         log.error("empty watchlist — pass --watchlist or set AGENT_CRON_WATCHLIST")
         return 2
-    return asyncio.run(main(args.user_id, symbols, force=args.force))
+    return asyncio.run(
+        main(args.user_id, symbols, force=args.force, skip_ghost_eval=args.skip_ghost_eval)
+    )
 
 
 if __name__ == "__main__":
