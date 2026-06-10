@@ -21,6 +21,7 @@ import {
   ComponentStatus,
   useHealthFull,
 } from '@/hooks/useHealthFull';
+import { useGhostSummary, useVetoLedger } from '@/hooks/useInsights';
 import { useReviewAgreement } from '@/hooks/useReview';
 
 export default function HomeScreen() {
@@ -31,6 +32,7 @@ export default function HomeScreen() {
         <StatTiles />
         <ActivityTile />
         <ReviewCTA />
+        <RegretTiles />
         <AgreementTile />
         <HealthTile />
       </ScrollView>
@@ -208,6 +210,57 @@ function ReviewCTA() {
       onPress={() => router.push('/approvals')}
       accessibilityLabel={`Review ${n} pending picks`}
     />
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Regret analytics — ghost P&L headline + veto ledger entry point.
+// Hide until the evaluator has produced anything.
+// ─────────────────────────────────────────────────────────────────────
+
+function RegretTiles() {
+  const router = useRouter();
+  const { data: ghost } = useGhostSummary(30);
+  const { data: vetoes } = useVetoLedger(30);
+
+  const hasGhost = ghost != null && (ghost.vetoed.count > 0 || ghost.declined.count > 0);
+  const hasVetoes = vetoes != null && vetoes.totalVetoes > 0;
+  if (!hasGhost && !hasVetoes) return null;
+
+  return (
+    <View className="flex-row gap-3">
+      {hasGhost && (
+        <Tile className="flex-1 gap-1">
+          <TileLabel>Risk saved · 30d</TileLabel>
+          <TileValue tone={ghost.savedUsd > 0 ? 'mint' : 'default'}>
+            {ghost.vetoed.pendingCount === ghost.vetoed.count && ghost.savedUsd === 0
+              ? 'evaluating…'
+              : `$${Math.round(ghost.savedUsd).toLocaleString('en-US')}`}
+          </TileValue>
+          {ghost.missedUsd > 0 && (
+            <Text className="text-[10px] text-text-tertiary dark:text-text-tertiary-dark">
+              Passes cost ${Math.round(ghost.missedUsd).toLocaleString('en-US')}
+            </Text>
+          )}
+        </Tile>
+      )}
+      {hasVetoes && (
+        <Pressable
+          className="flex-1"
+          onPress={() => router.push('/vetoes')}
+          accessibilityRole="button"
+          accessibilityLabel="Open the veto ledger"
+        >
+          <Tile className="gap-1 active:opacity-80">
+            <TileLabel>Vetoes · 30d</TileLabel>
+            <TileValue>{vetoes.totalVetoes}</TileValue>
+            <Text className="text-[10px] text-text-tertiary dark:text-text-tertiary-dark">
+              tap for the ledger →
+            </Text>
+          </Tile>
+        </Pressable>
+      )}
+    </View>
   );
 }
 
