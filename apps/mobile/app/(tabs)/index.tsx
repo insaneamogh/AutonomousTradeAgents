@@ -269,6 +269,7 @@ function RegretTiles() {
 // ─────────────────────────────────────────────────────────────────────
 
 function AgreementTile() {
+  const router = useRouter();
   const { data, isLoading } = useReviewAgreement(30);
   if (isLoading || !data || data.totalReviewed === 0) return null;
 
@@ -276,6 +277,12 @@ function AgreementTile() {
   const tone: 'mint' | 'rose' | 'default' = pct >= 65 ? 'mint' : pct >= 45 ? 'default' : 'rose';
 
   return (
+    <Pressable
+      onPress={() => router.push('/calibration')}
+      accessibilityRole="button"
+      accessibilityLabel="Open the calibration scorecard"
+      className="active:opacity-80"
+    >
     <Tile className="flex-row items-center justify-between">
       <View className="flex-1 gap-0.5 pr-3">
         <TileLabel>Calibration · 30d</TileLabel>
@@ -288,6 +295,7 @@ function AgreementTile() {
         {pct}%
       </TileValue>
     </Tile>
+    </Pressable>
   );
 }
 
