@@ -25,7 +25,7 @@ import {
 } from '@/components/bento';
 import { usePendingApprovals } from '@/hooks/useApprovals';
 import { useActivity } from '@/hooks/useActivity';
-import { useRunAgent } from '@/hooks/useRunAgent';
+import { useStartCouncilRun } from '@/hooks/useCouncilRun';
 
 const TICKERS = ['NVDA', 'AAPL', 'MSFT', 'TSLA', 'AMD', 'AMZN', 'GOOGL'] as const;
 
@@ -35,11 +35,10 @@ export default function PicksScreen() {
   const router = useRouter();
   const { data: pending, isLoading, isError, refetch } = usePendingApprovals();
   const { data: activity } = useActivity(30);
-  const runAgent = useRunAgent();
+  const startRun = useStartCouncilRun();
 
   const [filter, setFilter] = useState<Filter>('all');
   const [tickerIndex, setTickerIndex] = useState(0);
-  const [lastRunNote, setLastRunNote] = useState<string | null>(null);
 
   const vetoed = useMemo(
     () => (activity ?? []).filter((e) => e.kind === 'vetoed'),
@@ -53,17 +52,12 @@ export default function PicksScreen() {
   const nextSymbol = TICKERS[tickerIndex % TICKERS.length];
   const handleRunCouncil = () => {
     setTickerIndex((i) => i + 1);
-    setLastRunNote(null);
-    runAgent.mutate(
+    startRun.mutate(
       { symbol: nextSymbol, horizon: 'short' },
       {
+        // Theater: jump straight into the live council view.
         onSuccess: (res) =>
-          setLastRunNote(
-            res.riskApproved
-              ? `${nextSymbol}: ${res.finalAction} — proposal queued${res.llmMock ? ' (mock LLM)' : ''}`
-              : `${nextSymbol}: vetoed — ${res.riskVetoRule ?? res.riskReason}`,
-          ),
-        onError: () => setLastRunNote(`${nextSymbol}: couldn't reach the agent server.`),
+          router.push({ pathname: `/council/${res.runId}`, params: { symbol: res.symbol } }),
       },
     );
   };
@@ -155,15 +149,15 @@ export default function PicksScreen() {
               </Text>
             </View>
           </View>
-          {lastRunNote && (
-            <Text className="text-[12px] text-text-secondary dark:text-text-secondary-dark">
-              {lastRunNote}
+          {startRun.isError && (
+            <Text className="text-[12px] text-rose dark:text-rose-dark">
+              Couldn't start the run — is the server reachable?
             </Text>
           )}
           <BentoCTA
-            label={runAgent.isPending ? 'Running…' : `Run on ${nextSymbol}`}
+            label={startRun.isPending ? 'Starting…' : `Run on ${nextSymbol}`}
             onPress={handleRunCouncil}
-            disabled={runAgent.isPending}
+            disabled={startRun.isPending}
             accessibilityLabel={`Run the agent council on ${nextSymbol}`}
           />
         </Tile>
