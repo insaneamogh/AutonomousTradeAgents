@@ -15,9 +15,10 @@ here so the deploy command stays standard ``uvicorn --port $PORT``.
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Annotated
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 _PRODUCTION_ENVS: set[str] = {"prod", "production", "live"}
@@ -37,7 +38,9 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO")
     jwt_secret: str = Field(default="change-me-locally-32-bytes-min")
 
-    cors_origins: list[str] = Field(
+    # NoDecode: stop pydantic-settings from JSON-decoding the env value
+    # before our CSV validator runs — bare ``a,b`` is not valid JSON.
+    cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["*"],
         description=(
             "Comma-separated allow-list. '*' allowed only in non-production. "
