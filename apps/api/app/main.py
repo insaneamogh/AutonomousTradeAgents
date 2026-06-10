@@ -74,9 +74,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         interval = float(os.environ.get("RECONCILER_INTERVAL_SECONDS", "30"))
         threshold = float(os.environ.get("DRAWDOWN_HALT_THRESHOLD_PCT", "-3.0"))
 
+        session_factory = async_session_factory()
+
+        # Seed the fixture user before the first reconciler tick — the
+        # store's lazy ensure_seed() only fires on an API request, and a
+        # cold-boot reconciler tick would otherwise hit the FK on
+        # positions_snapshot.user_id.
+        from engine.db.models import User
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        async with session_factory() as session:
+            await session.execute(
+                pg_insert(User)
+                .values(
+                    id=_DEFAULT_USER_ID,
+                    email="demo@local.dev",
+                    display_name="Demo (Phase 0)",
+                )
+                .on_conflict_do_nothing(index_elements=["id"])
+            )
+            await session.commit()
+
         reconciler = Reconciler(
             poller=MockBrokerPoller(),  # Phase 0/1 default; Phase 2 swaps to AlpacaBrokerPoller
-            session_factory=async_session_factory(),
+            session_factory=session_factory,
             user_id=_DEFAULT_USER_ID,
             config=ReconcilerConfig(
                 interval_seconds=interval,
