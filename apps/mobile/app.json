@@ -1,0 +1,44 @@
+{
+  "expo": {
+    "name": "Autonomous Trader",
+    "slug": "autonomous-trader",
+    "version": "0.0.1",
+    "orientation": "portrait",
+    "scheme": "autotrader",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": false,
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.autotrader.app",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSFaceIDUsageDescription": "Used to unlock the app and authorize agent actions."
+      }
+    },
+    "android": {
+      "package": "com.autotrader.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#0A0A0B"
+      }
+    },
+    "web": {
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "expo-local-authentication",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/notification-icon.png",
+          "color": "#0A0A0B",
+          "defaultChannel": "default"
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

@@ -1,0 +1,17 @@
+[project]
+name = "broker"
+version = "0.0.1"
+description = "Broker abstraction. v1: Alpaca only. v2+: Zerodha, IBKR."
+requires-python = ">=3.12"
+dependencies = [
+  "pydantic>=2.9.0",
+  "httpx>=0.27.0",
+  "alpaca-py>=0.26.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["broker"]

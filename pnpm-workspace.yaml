@@ -1,0 +1,4 @@
+packages:
+  - 'apps/mobile'
+  - 'packages/shared-types'
+  - 'packages/ui'

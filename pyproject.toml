@@ -1,0 +1,47 @@
+[project]
+name = "autonomous-trading-agent"
+version = "0.0.1"
+description = "US-first autonomous trading agent — workspace root"
+requires-python = ">=3.12"
+
+[tool.uv.workspace]
+members = ["apps/api", "apps/agents", "packages/broker", "packages/engine"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["**/migrations/versions/*.py"]
+
+[tool.ruff.lint]
+select = [
+  "E",   # pycodestyle errors
+  "F",   # pyflakes
+  "I",   # isort
+  "B",   # bugbear
+  "UP",  # pyupgrade
+  "ASYNC",
+  "SIM",
+  "RUF",
+]
+ignore = ["E501"]  # line length handled by formatter
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["apps/api/tests", "apps/agents/tests", "packages/broker/tests", "packages/engine/tests"]
+filterwarnings = ["error"]

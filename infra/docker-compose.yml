@@ -1,0 +1,39 @@
+# Local dev infrastructure. Production runs on Fly.io with managed addons.
+# Usage: `make infra-up` / `make infra-down`.
+
+services:
+  postgres:
+    # TimescaleDB is a Postgres extension shipped via this image.
+    image: timescale/timescaledb:latest-pg16
+    container_name: trading-agent-postgres
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: trading_agent
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U app -d trading_agent']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: trading-agent-redis
+    command: ['redis-server', '--appendonly', 'yes']
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:

@@ -1,0 +1,25 @@
+# Railway deploy config.
+#
+# Railway reads this at deploy time:
+#   - Build via Docker (apps/api/Dockerfile, repo-root build context).
+#   - Healthcheck against /health (returns 200 once the FastAPI app boots).
+#   - Restart with backoff on failures — 3 strikes before Railway pauses.
+#
+# Env vars are set in the Railway dashboard. See ``RAILWAY.md`` for the
+# required set.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "apps/api/Dockerfile"
+
+[deploy]
+healthcheckPath = "/health"
+# Generous — a cold Railway deploy runs Alembic migrations (with a DB-ready
+# retry loop) before uvicorn binds. 60s was too tight; 300s covers a slow
+# first migrate + boot without prematurely failing the deploy.
+healthcheckTimeout = 300
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
+# Railway picks the start command from the Dockerfile's CMD. We
+# deliberately don't override here so the same image runs locally + on
+# Railway with no surprises.

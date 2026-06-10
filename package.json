@@ -1,0 +1,32 @@
+{
+  "name": "autonomous-trading-agent",
+  "version": "0.0.1",
+  "private": true,
+  "description": "US-first autonomous trading agent app. Monorepo root.",
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "scripts": {
+    "dev": "turbo run dev",
+    "dev:mobile": "turbo run dev --filter=@app/mobile",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "clean": "turbo run clean && rm -rf node_modules"
+  },
+  "devDependencies": {
+    "turbo": "^2.1.0",
+    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0",
+    "prettier": "^3.3.0",
+    "eslint": "^9.0.0"
+  },
+  "workspaces": [
+    "apps/mobile",
+    "packages/shared-types",
+    "packages/ui"
+  ]
+}
