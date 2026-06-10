@@ -20,16 +20,23 @@ Three operations the router orchestrates:
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Literal, cast
+
+from trading_agents.memory import get_confidence_store, get_decision_log
 
 from app.schemas.review import (
     AgreementBucket,
     AgreementResponse,
     GradeResponse,
-    Grade as GradeLiteral,
+    OverrideStats,
     ReviewQueueItem,
     ReviewQueueResponse,
+    ScorecardMonth,
+    ScorecardResponse,
+)
+from app.schemas.review import (
+    Grade as GradeLiteral,
 )
 from app.services.review_store import (
     DecisionReviewRecord,
@@ -37,11 +44,10 @@ from app.services.review_store import (
     ReviewStore,
     get_review_store,
 )
-from trading_agents.memory import get_confidence_store, get_decision_log
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -201,9 +207,7 @@ async def build_agreement(
         if r.grade == "skip":
             continue
         counted += 1
-        if r.grade == "good" and direction == "positive":
-            agreeing += 1
-        elif r.grade == "bad" and direction == "negative":
+        if (r.grade == "good" and direction == "positive") or (r.grade == "bad" and direction == "negative"):
             agreeing += 1
 
     buckets = [
@@ -235,4 +239,98 @@ def _to_grade_response(rec: DecisionReviewRecord) -> GradeResponse:
         grade=cast(GradeLiteral, rec.grade),
         notes=rec.notes,
         reviewed_at=rec.reviewed_at,
+    )
+
+# ─────────────────────────────────────────────────────────────────────
+# Calibration scorecard (WP5)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _direction_of(prior: float) -> Literal["positive", "negative", "neutral"]:
+    if prior > 0.52:
+        return "positive"
+    if prior < 0.48:
+        return "negative"
+    return "neutral"
+
+
+async def build_scorecard(
+    *,
+    operator_user_id: str,
+    window_days: int = 180,
+    review_store: ReviewStore | None = None,
+) -> ScorecardResponse:
+    """Monthly agreement buckets + override outcomes.
+
+    Override = a graded decision where the operator's grade disagreed
+    with the Reflection direction. When that decision has a realized
+    P&L we can score who was right: the operator wins on (good ∧ pnl>0)
+    or (bad ∧ pnl<=0); the reflection wins otherwise.
+
+    Known compromise (documented in the plan): we use the strategy's
+    CURRENT prior sign as the reflection-direction proxy — exact
+    per-decision deltas need a reflection-events table (future).
+    """
+    rs = review_store or get_review_store()
+    cutoff = _now() - timedelta(days=window_days)
+
+    reviews = [
+        r for r in await rs.list_reviews_for_operator(operator_user_id)
+        if r.reviewed_at >= cutoff
+    ]
+
+    log = get_decision_log()
+    decisions_by_id = {d.id: d for d in await log.all_decisions()}
+    confidence_store = get_confidence_store()
+    priors_by_strategy = {row.strategy_id: row.confidence for row in await confidence_store.all()}
+
+    months: dict[str, dict[str, int]] = defaultdict(lambda: {"total": 0, "counted": 0, "agree": 0})
+    operator_wins = reflection_wins = 0
+
+    for r in reviews:
+        decision = decisions_by_id.get(r.decision_id)
+        if decision is None or decision.selected_strategy is None:
+            continue
+        direction = _direction_of(priors_by_strategy.get(decision.selected_strategy, 0.5))
+        mkey = r.reviewed_at.strftime("%Y-%m")
+        months[mkey]["total"] += 1
+        if r.grade == "skip":
+            continue
+        months[mkey]["counted"] += 1
+        agrees = (r.grade == "good" and direction == "positive") or (
+            r.grade == "bad" and direction == "negative"
+        )
+        if agrees:
+            months[mkey]["agree"] += 1
+        elif decision.realized_pnl is not None:
+            # Disagreement with a known outcome — score the override.
+            pnl = float(decision.realized_pnl)
+            operator_right = (r.grade == "good" and pnl > 0) or (r.grade == "bad" and pnl <= 0)
+            if operator_right:
+                operator_wins += 1
+            else:
+                reflection_wins += 1
+
+    month_buckets = [
+        ScorecardMonth(
+            month=mkey,
+            total_reviewed=v["total"],
+            agreement_pct=(v["agree"] / v["counted"] * 100) if v["counted"] else 0.0,
+        )
+        for mkey, v in sorted(months.items())
+    ]
+    counted_total = sum(v["counted"] for v in months.values())
+    agree_total = sum(v["agree"] for v in months.values())
+    override_count = operator_wins + reflection_wins
+
+    return ScorecardResponse(
+        window_days=window_days,
+        agreement_pct=(agree_total / counted_total * 100) if counted_total else 0.0,
+        months=month_buckets,
+        overrides=OverrideStats(
+            count=override_count,
+            operator_wins=operator_wins,
+            reflection_wins=reflection_wins,
+            operator_win_rate_pct=(operator_wins / override_count * 100) if override_count else 0.0,
+        ),
     )

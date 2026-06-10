@@ -102,3 +102,27 @@ class AgreementResponse(_Base):
     ``good ↔ positive`` and ``bad ↔ negative`` count as agreement;
     ``skip`` is excluded from the denominator."""
     buckets: list[AgreementBucket]
+
+
+class ScorecardMonth(_Base):
+    """One month's agreement bucket (keyed YYYY-MM of reviewed_at)."""
+
+    month: str
+    total_reviewed: int
+    agreement_pct: float
+
+
+class OverrideStats(_Base):
+    """When you disagreed with Reflection and the trade closed — who won?"""
+
+    count: int
+    operator_wins: int
+    reflection_wins: int
+    operator_win_rate_pct: float
+
+
+class ScorecardResponse(_Base):
+    window_days: int
+    agreement_pct: float
+    months: list[ScorecardMonth]
+    overrides: OverrideStats

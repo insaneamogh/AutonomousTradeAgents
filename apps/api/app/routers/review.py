@@ -25,12 +25,14 @@ from app.schemas.review import (
     GradeRequest,
     GradeResponse,
     ReviewQueueResponse,
+    ScorecardResponse,
 )
 from app.services.review_service import (
     DecisionNotReviewable,
     apply_grade,
     build_agreement,
     build_queue,
+    build_scorecard,
 )
 
 logger = logging.getLogger("api.router.review")
@@ -86,3 +88,16 @@ async def agreement(
     user: AuthedUser = Depends(get_current_user),
 ) -> AgreementResponse:
     return await build_agreement(operator_user_id=user.id, window_days=window_days)
+
+
+@router.get(
+    "/scorecard",
+    response_model=ScorecardResponse,
+    response_model_by_alias=True,
+)
+async def scorecard(
+    window_days: int = Query(default=180, ge=1, le=730, alias="windowDays"),
+    user: AuthedUser = Depends(get_current_user),
+) -> ScorecardResponse:
+    """Calibration scorecard: per-month agreement + override outcomes."""
+    return await build_scorecard(operator_user_id=user.id, window_days=window_days)

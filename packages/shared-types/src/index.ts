@@ -232,3 +232,28 @@ export interface VetoLedgerResponse {
   totalBlockedNotional: number;
   rules: VetoRuleDto[];
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// /api/v1/review/scorecard — calibration scorecard
+// ─────────────────────────────────────────────────────────────────────
+
+export interface ScorecardMonth {
+  /** YYYY-MM of reviewed_at. */
+  month: string;
+  totalReviewed: number;
+  agreementPct: number;
+}
+
+export interface OverrideStats {
+  count: number;
+  operatorWins: number;
+  reflectionWins: number;
+  operatorWinRatePct: number;
+}
+
+export interface ScorecardResponse {
+  windowDays: number;
+  agreementPct: number;
+  months: ScorecardMonth[];
+  overrides: OverrideStats;
+}
