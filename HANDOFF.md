@@ -10,6 +10,82 @@ limiting + Redis OAuth state).
 
 ---
 
+## 0. What changed since this handoff was written (auto-mode + real data + Langfuse)
+
+The `main` line now closes the auto-trade loop, runs on **real market
+data**, and traces every agent in **Langfuse**. That adds a few manual
+steps on top of the Railway recipe below. Full running history is in the
+**Build log** at the bottom of [`fable5findings.md`](fable5findings.md) —
+read that first to see what's done vs open.
+
+### 0a. New env vars (set in Railway → Variables, alongside §1e)
+
+```
+# Real market data — features + ghost marks (DATA keys, NOT the OAuth client pair)
+ALPACA_API_KEY=PK...
+ALPACA_SECRET_KEY=...
+FRED_API_KEY=...                 # free: https://fredaccount.stlouisfed.org/apikeys (VIX/10y/dollar)
+
+# Hard guards — make prod FAIL instead of silently running mock/synthetic
+AGENTS_REQUIRE_REAL_LLM=1
+AGENTS_REQUIRE_REAL_DATA=1
+
+# Langfuse — per-agent council tracing (both keys required; absent => no-op)
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_HOST=https://cloud.langfuse.com    # or https://us.cloud.langfuse.com / self-hosted
+```
+
+`.env.example` ([apps/api/.env.example](apps/api/.env.example)) has the full list with notes.
+
+### 0b. Langfuse project (5 min)
+
+1. <https://cloud.langfuse.com> → create a project.
+2. Settings → API Keys → copy the public + secret keys into 0a.
+3. After the next council run, the Langfuse **Traces** view shows one
+   `council:<SYMBOL>` trace with a row per agent (router → … → drafter),
+   each labelled DEFAULT (ok) / WARNING (parse-retry) / ERROR (unusable).
+   That's the "where do agents fail or succeed" view. No keys → no-op, the
+   council runs identically.
+
+### 0c. Migration 0009 runs automatically
+
+`start.sh` applies Alembic to head, so `0009_position_lifecycle`
+(`agent_decisions.exit_mode/closed_at/close_reason` + `user_watchlist`)
+lands on deploy. Nothing manual — just don't be surprised by the new
+columns/table.
+
+### 0d. The reconciler is now a per-user fleet — keep it running
+
+Agent-managed exits depend on it. The reconciler fleet (replaces the old
+fixture-user mock loop) does, per connected user, every tick: real-equity
+snapshot + drawdown breaker, order/fill sync (+ detects closes you made
+directly in the Alpaca app), and the **position manager** (time-stops +
+council-SELL early exits for `exit_mode=agent` positions). It only acts
+for users with a live Alpaca connection; the mock fallback is OFF in
+production. So: time-stops and agent closes only happen while the API
+process (with `USE_POSTGRES=1`) is up. If you run the API on Railway
+24/5, you're covered; don't expect agent exits if the service is asleep.
+
+### 0e. Auto-mode is per-position, entries stay manual
+
+On each approval the user picks **who closes it**: `agent` (bracket
+stop/target at the broker + time-stop/early-exit via the worker) or
+`manual` (we only watch). Entries are always human-approved — there is no
+auto-entry. A cron proposal now pushes a notification and expires at
+end of market day (not 15 min).
+
+### 0f. Still open (added to §7 of the handoff)
+
+- **Sentry** — declared but unwired; needs a DSN. Langfuse covers LLM
+  observability; Sentry is for API exceptions.
+- **CLAUDE.md / PLAN.md drift** — they still say Zerodha is out-of-v1
+  (it's built) and that LLM goes via a LiteLLM proxy (it's the Anthropic
+  SDK directly). Reconcile when you get to it.
+- **wash-sale on the Postgres path** — still informational-only / silent.
+
+---
+
 ## Audit summary — broker / plugin / scheme alignment (already verified)
 
 I checked the chain end-to-end before writing this. Findings:

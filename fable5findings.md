@@ -264,3 +264,58 @@ Recommendation: don't reach for Temporal yet. A single worker process owning all
 ---
 
 *Audit fidelity note: §3 and §4 claims were verified line-by-line in source during this audit ([executor.py](apps/api/app/services/executor.py), [daily_cron.py](apps/agents/scripts/daily_cron.py), [llm.py](apps/agents/trading_agents/llm.py), [main.py](apps/api/app/main.py), [agent.py](apps/api/app/routers/agent.py), [approvals.py](apps/api/app/routers/approvals.py), [store.py](apps/api/app/services/store.py)). Inventory-style claims (rule list, schema, screens, endpoints) come from exhaustive exploration passes over `packages/engine`, `packages/broker`, `apps/api`, `apps/agents`, `apps/mobile`, and `infra/migrations`.*
+
+---
+
+# Build log
+
+> Everything below the audit (§1–§8) is the running history of what's been built on top of it. **Per CLAUDE.md: every commit appends an entry here** so the next agent can resume without re-deriving context. Newest first. Don't edit the audit above; append here.
+
+## Roadmap status (from §7)
+
+| Item | Status | Where |
+|---|---|---|
+| P0.1 Real `RiskContext` at execution (fail closed) | ✅ Done | `executor._build_risk_context` + `engine.risk.load_db_risk_state` |
+| P0.2 Persist orders + fills, populate `pdt_ledger` | ✅ Done | `order_store.py`, `order_sync.py` |
+| P0.3 `AlpacaBrokerPoller` + per-user reconciler | ✅ Done | `reconciler_fleet.py` (UserBrokerPoller) |
+| P0.4 Cron → push + EOD TTL + market-calendar gate | ✅ Done | `daily_cron.py`, `runtime` (TTL), `engine.features.market_calendar` |
+| P0.5 Real technical features + REQUIRE guards | ✅ Done | `engine.features`, `AGENTS_REQUIRE_REAL_DATA/LLM` |
+| P1.6 temperature/timeout/retry/degraded | ✅ Done | `llm.py` (`complete_json`) |
+| P1.7 Unify the two risk gates | ✅ Done | proposal carries risk fields through the DTO |
+| P1.8 Inject `now` into wash_sale; Postgres `recent_losing_closes` | 🟡 Partial | `now` plumbing in place; Postgres losing-closes still `()` (informational-only) |
+| P1.9 Schedule reflection | ✅ Done | `daily_cron` runs it inline after ghost eval |
+| P1.10 Conversation logging + prompt provenance | ✅ Done (via Langfuse) | `tracing.py` — per-agent trace replaces the S3 idea |
+| P2.11 `exit_mode=agent` + server-side executor worker | ✅ Done | approvals execute server-side; `position_manager.py` |
+| P2.12 Paper realism (real Alpaca paper account) | ✅ Done | paper routes through the user's Alpaca paper connection |
+| P2.13 Sentry / structured logs / rate limiting | ❌ Open | needs a Sentry DSN; not wired |
+| P2.14 Docs truth-up + delete legacy dirs | 🟡 Partial | legacy dirs untracked + RUNBOOK updated; CLAUDE.md/PLAN.md Zerodha/LiteLLM drift still to reconcile by the user |
+
+**Scope decisions locked this build:** instruments = US stocks/ETFs only (options/futures out); exits = Alpaca **bracket** (broker-enforced stop/target) **+** agent early-exit/time-stop for `exit_mode=agent`; entries always human-approved; Zerodha stays dark for v1.
+
+## Entries
+
+### 2026-06-13 — `<docs>` chore(docs): build log + main workflow + handoff
+- Established this build log + the "log every commit here" rule in [CLAUDE.md](CLAUDE.md); switched the documented git workflow to land on `main` directly (user preference).
+- Updated [HANDOFF.md](HANDOFF.md) §0 with the extra steps the auto-mode/real-data/Langfuse work introduced (new env, per-user reconciler, agent-managed exits).
+- Merged the whole `agent-v1/auto-mode-real-data` line into `main`.
+
+### 2026-06-12 — `b4eaded4` feat(agents): Langfuse per-agent tracing + scheduled reflection
+- Env-gated Langfuse ([tracing.py](apps/agents/trading_agents/tracing.py)): one trace per council run, one generation per agent (router/technical/fundamental/macro/selector/drafter/reflection) with OK/WARNING(degraded)/ERROR + tokens + cost. Hard no-op without keys; never raises into a decision. Built against langfuse 4.x.
+- Reflection now runs inline in `daily_cron` after ghost eval (it existed but was never scheduled). `--no-reflect` to skip. Langfuse flush before the short-lived process exits.
+- Tests: `apps/agents/tests/test_tracing.py` (no-op + degraded/fail outcomes). Follow-up still open: live-Langfuse emission unverified without keys; Sentry still unwired.
+
+### 2026-06-12 — `94c5dc69` / `78af32ba` docs + chore
+- RUNBOOK: auto-mode operating model, mock-vs-real run recipes, new env, Langfuse view. Untracked ~30k accidentally-committed files (node_modules/build caches/old India log) — kept on disk, already gitignored.
+
+### 2026-06-12 — `cf7b01f4` feat(api): close the auto-trade loop end to end
+- The five audit breaks (§3) fixed: real `RiskContext` at execution + fail-closed; orders persisted (pending→result) linked to the decision; paper routes through the real Alpaca paper account; approving executes server-side with the chosen `exit_mode`; per-user reconciler fleet; `order_sync` (fills, PDT ledger, external-close detection); `position_manager` (time-stops + council-SELL early exits, all through the risk gate); per-user watchlist.
+- Verified end-to-end over HTTP in mock mode (council → proposal → approve → filled paper order). 244 Python tests green.
+
+### 2026-06-12 — `520a0446` / `b2090088` / `dee3711e` / `6607c960` feat(engine|broker|agents|mobile)
+- engine: real feature providers (Alpaca IEX bars → ATR/RSI/DMA, FRED macro), market-calendar gate, `load_db_risk_state`/`DbRiskState`, migration 0009 (`exit_mode`/`closed_at`/`close_reason` + `user_watchlist`).
+- broker: bracket orders + `cancel_open_orders` (Alpaca; Zerodha rejects brackets explicitly).
+- agents: real-data provider resolution, LLM hardening (temp/timeout/retry/degraded), EOD TTL, swing-aware cron with push + calendar gate.
+- mobile: watchlist screen, exit-plan + exit-mode on the approval card.
+
+### 2026-06-12 — `76bf5c76` docs: fable5 audit findings + pin uv.lock
+- The audit above (§1–§8) + committed the previously-missing `uv.lock`.

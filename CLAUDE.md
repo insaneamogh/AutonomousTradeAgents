@@ -99,10 +99,23 @@ Per `PLAN.md` §11:
 
 ## Git hygiene
 
-- Branch: work happens on `agent-v1`. Feature branches: `agent-v1/<scope>` (e.g., `agent-v1/broker-alpaca-stub`).
+- Branch: **land work on `main`.** The user wants changes committed and pushed to `main` directly — do not open a separate feature branch unless the user explicitly asks for one. (`main` is the working + default branch.)
 - Commits: small, focused, one logical change. Conventional Commits prefix (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`).
-- Never `--no-verify`, never `--force` on a shared branch, never `reset --hard` without explicit user instruction.
+- Never `--no-verify`, never `--force`, never `reset --hard` without explicit user instruction.
 - Don't commit secrets. `.env` is gitignored — use `.env.example` for templates.
+
+### Build log — keep `fable5findings.md` current (REQUIRED)
+
+**After every commit, append an entry to the "Build log" section at the bottom of [`fable5findings.md`](fable5findings.md)** so future agents can pick up where the last one left off without re-deriving context. One entry per commit (or per coherent group of commits in a single turn):
+
+```
+### <date> — <commit short-sha> <conventional-commit subject>
+- What changed and why (1–4 bullets).
+- Files/areas touched.
+- Anything left open / follow-ups.
+```
+
+This is the running history of what's been built on top of the original audit. Treat it as part of the commit: the commit isn't "done" until the log entry is written. The audit sections above the build log are the original findings — don't rewrite them; append below.
 
 ---
 
