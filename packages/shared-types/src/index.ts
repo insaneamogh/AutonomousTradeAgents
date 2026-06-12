@@ -79,6 +79,11 @@ export interface ApprovalProposalDto {
   stopLoss?: number;
   /** Take-profit price (entry + stop_distance × R-multiple). */
   targetPrice?: number;
+  /** Exit plan: the agent closes after this many days if neither stop nor
+   * target hit first. Mirrors the ghost evaluator's horizon window. */
+  timeStopDays?: number;
+  /** Reward:risk of the plan — (target − entry) / (entry − stop). */
+  rMultiple?: number | null;
   /** Non-blocking signals from the risk engine. Known values:
    *    "wash_sale_warning"  IRS wash-sale risk on this name
    *    "sector_unknown"     sector classification missing
@@ -95,10 +100,37 @@ export interface ApprovalProposalDto {
   expiresAt?: string;
 }
 
+/** Per-position close delegation, chosen on the approval card.
+ * 'agent': bracket stop/target at the broker + time-stop + signal exits.
+ * 'manual': the user owns the close entirely — the agent never touches it. */
+export type ExitMode = 'agent' | 'manual';
+
 export interface DecisionRequest {
   outcome: 'approved' | 'declined';
+  /** Defaults to 'agent' server-side when omitted. */
+  exitMode?: ExitMode;
   /** Free-form note from the user. Stored on the AgentDecision row (Phase 1+). */
   note?: string;
+}
+
+/** Order summary returned when an approval executes server-side. */
+export interface ExecutedOrderDto {
+  id: string;
+  proposalId: string;
+  brokerOrderId?: string | null;
+  clientOrderId: string;
+  symbol: string;
+  side: Side;
+  qty: number;
+  requestedQty: number;
+  orderType: string;
+  limitPrice?: number | null;
+  status: string;
+  filledQty: number;
+  avgFillPrice?: number | null;
+  isPaper: boolean;
+  /** ISO 8601 string. */
+  submittedAt: string;
 }
 
 export interface DecisionResponse {
@@ -106,6 +138,32 @@ export interface DecisionResponse {
   outcome: DecisionOutcome;
   /** ISO 8601 string. */
   decidedAt: string;
+  /** True when the approval executed server-side (order placed / filled). */
+  executed?: boolean;
+  order?: ExecutedOrderDto | null;
+  /** True when the last-line risk re-check refused — the proposal STAYS
+   * pending so the user can retry once the condition clears. */
+  riskBlocked?: boolean;
+  riskVetoRule?: string | null;
+  riskReason?: string | null;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// /api/v1/watchlist
+// ─────────────────────────────────────────────────────────────────────
+
+export interface WatchlistItemDto {
+  id: string;
+  symbol: string;
+  /** v1 is stocks + ETFs only — the field exists for later asset classes. */
+  assetClass: 'equity';
+  active: boolean;
+  /** ISO 8601 string. */
+  createdAt: string;
+}
+
+export interface AddWatchlistRequest {
+  symbol: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────

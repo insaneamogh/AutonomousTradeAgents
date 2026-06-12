@@ -11,6 +11,7 @@ import type {
   ApprovalProposalDto,
   DecisionRequest,
   DecisionResponse,
+  ExitMode,
 } from '@app/shared-types';
 
 import { request } from '@/lib/api';
@@ -28,16 +29,18 @@ export function usePendingApprovals() {
 interface DecideArgs {
   proposalId: string;
   outcome: DecisionRequest['outcome'];
+  /** Close delegation. Only meaningful on approvals; defaults to 'agent'. */
+  exitMode?: ExitMode;
   note?: string;
 }
 
 export function useDecideApproval() {
   const qc = useQueryClient();
   return useMutation<DecisionResponse, Error, DecideArgs>({
-    mutationFn: ({ proposalId, outcome, note }) =>
+    mutationFn: ({ proposalId, outcome, exitMode, note }) =>
       request<DecisionResponse>(`/api/v1/approvals/${proposalId}/decision`, {
         method: 'POST',
-        body: { outcome, note } satisfies DecisionRequest,
+        body: { outcome, exitMode, note } satisfies DecisionRequest,
       }),
     onMutate: async ({ proposalId }) => {
       await qc.cancelQueries({ queryKey: QK.pendingApprovals });

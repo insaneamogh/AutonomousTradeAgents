@@ -12,6 +12,7 @@
 import { useState } from 'react';
 import { Linking, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
 
 import { Button, Card, ErrorState, Skeleton, Toggle, cn } from '@app/ui';
 
@@ -32,6 +33,9 @@ export default function SettingsScreen() {
   return (
     <SafeAreaView edges={['top']} className="flex-1 bg-bg-base dark:bg-bg-base-dark">
       <ScrollView contentContainerClassName="px-4 pb-32 pt-4 gap-4">
+        <SectionLabel>Agent</SectionLabel>
+        <WatchlistCard />
+
         <SectionLabel>Notifications</SectionLabel>
         <NotificationsCard />
 
@@ -53,6 +57,36 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
     <Text className="mt-2 text-[11px] font-semibold uppercase tracking-[1.2px] text-text-secondary dark:text-text-secondary-dark">
       {children}
     </Text>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Agent — watchlist entry point
+// ─────────────────────────────────────────────────────────────────────
+
+function WatchlistCard() {
+  const router = useRouter();
+  return (
+    <Card>
+      <View className="flex-row items-center justify-between">
+        <View className="flex-1 pr-3">
+          <Text className="text-[15px] font-medium text-text-primary dark:text-text-primary-dark">
+            Watchlist
+          </Text>
+          <Text className="mt-0.5 text-[12px] leading-[17px] text-text-secondary dark:text-text-secondary-dark">
+            The symbols the agent evaluates every trading day. Stocks &amp; ETFs
+            only in v1.
+          </Text>
+        </View>
+        <Button
+          label="Manage"
+          variant="secondary"
+          onPress={() => router.push('/watchlist')}
+          accessibilityLabel="Manage the agent watchlist"
+          testID="manage-watchlist"
+        />
+      </View>
+    </Card>
   );
 }
 

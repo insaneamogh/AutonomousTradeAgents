@@ -10,11 +10,12 @@
 // show a quiet fallback and a way back.
 
 import { useState } from 'react';
-import { Modal, Pressable, ScrollView, Text, View } from 'react-native';
+import { Alert, Modal, Pressable, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 
-import { EmptyState } from '@app/ui';
+import type { ExitMode } from '@app/shared-types';
+import { EmptyState, cn } from '@app/ui';
 
 import {
   BentoCTA,
@@ -39,6 +40,7 @@ export default function PickDetailScreen() {
   const { data: pending } = usePendingApprovals();
   const decide = useDecideApproval();
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [exitMode, setExitMode] = useState<ExitMode>('agent');
 
   const p = (pending ?? []).find((x) => x.id === id);
 
@@ -59,10 +61,43 @@ export default function PickDetailScreen() {
   }
 
   const isBuy = p.side === 'BUY';
-  const decideAndClose = (outcome: 'approved' | 'declined') => {
-    decide.mutate({ proposalId: p.id, outcome });
+  const entry = p.qty > 0 ? p.estimatedNotional / p.qty : 0;
+  const timeStopDays = p.timeStopDays ?? 5;
+
+  const decline = () => {
+    decide.mutate({ proposalId: p.id, outcome: 'declined' });
     setConfirmOpen(false);
     router.back();
+  };
+
+  // Approve now EXECUTES server-side — surface what actually happened:
+  // placed (executed), refused by the last-line risk check (stays pending),
+  // or recorded-but-unexecuted (no broker connection).
+  const approveAndExecute = async () => {
+    setConfirmOpen(false);
+    try {
+      const res = await decide.mutateAsync({
+        proposalId: p.id,
+        outcome: 'approved',
+        exitMode,
+      });
+      if (res.riskBlocked) {
+        Alert.alert(
+          'Blocked by the risk engine',
+          `${res.riskVetoRule ?? 'risk rule'}: ${res.riskReason ?? ''}\n\nThe pick stays in your queue — approve again once the condition clears.`,
+        );
+        return; // stay on the pick; it's still pending server-side
+      }
+      if (res.executed === false) {
+        Alert.alert(
+          'Approved — not executed',
+          res.riskReason ?? 'No broker connection is available to execute.',
+        );
+      }
+      router.back();
+    } catch {
+      Alert.alert('Approval failed', 'The server rejected the request. Try again.');
+    }
   };
 
   return (
@@ -122,14 +157,26 @@ export default function PickDetailScreen() {
         </Tile>
 
         <Tile className="gap-2">
+          <TileLabel>Exit plan</TileLabel>
+          <Row k="Entry (approx)" v={`$${entry.toFixed(2)}`} />
+          {p.stopLoss != null && <Row k="Stop loss" v={`$${p.stopLoss.toFixed(2)}`} />}
+          {p.targetPrice != null && <Row k="Target" v={`$${p.targetPrice.toFixed(2)}`} />}
+          {p.rMultiple != null && <Row k="Reward : risk" v={`${p.rMultiple.toFixed(1)}R`} />}
+          <Row k="Time stop" v={`${timeStopDays} trading day${timeStopDays === 1 ? '' : 's'}`} />
+          <Text className="text-[11px] leading-[16px] text-text-tertiary dark:text-text-tertiary-dark">
+            If you delegate the close, stop &amp; target sit at the broker as a
+            bracket and the agent exits after {timeStopDays}d (or earlier on a
+            council SELL) — even while you're away from the phone.
+          </Text>
+        </Tile>
+
+        <Tile className="gap-2">
           <TileLabel>Risk check</TileLabel>
           <Row k="Risk level" v={levelLabel(p.riskLevel)} />
           <Row
             k="Notional"
             v={`$${Math.round(p.estimatedNotional).toLocaleString('en-US')}`}
           />
-          {p.stopLoss != null && <Row k="Stop loss" v={`$${p.stopLoss.toFixed(2)}`} />}
-          {p.targetPrice != null && <Row k="Target" v={`$${p.targetPrice.toFixed(2)}`} />}
           {(p.informationalFlags ?? []).map((f) => (
             <Text
               key={f}
@@ -157,7 +204,7 @@ export default function PickDetailScreen() {
           <View className="flex-1">
             <BentoQuiet
               label="Pass"
-              onPress={() => decideAndClose('declined')}
+              onPress={decline}
               disabled={decide.isPending}
               accessibilityLabel={`Decline ${p.symbol} pick`}
             />
@@ -182,24 +229,90 @@ export default function PickDetailScreen() {
                 v={`${p.qty} sh · ~$${Math.round(p.estimatedNotional).toLocaleString('en-US')}`}
               />
               {p.stopLoss != null && <Row k="Stop loss" v={`$${p.stopLoss.toFixed(2)}`} />}
+              {p.targetPrice != null && <Row k="Target" v={`$${p.targetPrice.toFixed(2)}`} />}
               <Row k="Broker" v="Alpaca paper" />
             </View>
+
+            <Text className="mt-4 text-[12px] font-medium text-text-secondary dark:text-text-secondary-dark">
+              Who closes this position?
+            </Text>
+            <View className="mt-2 flex-row gap-2">
+              <ExitModeOption
+                label="Agent closes it"
+                detail={`Bracket at broker · ${timeStopDays}d time stop`}
+                selected={exitMode === 'agent'}
+                onPress={() => setExitMode('agent')}
+                accessibilityLabel="Delegate the close to the agent"
+              />
+              <ExitModeOption
+                label="I'll close manually"
+                detail="No brackets · agent never exits"
+                selected={exitMode === 'manual'}
+                onPress={() => setExitMode('manual')}
+                accessibilityLabel="Keep the close manual"
+              />
+            </View>
+
             <View className="mt-4 gap-2">
               <BentoCTA
-                label={decide.isPending ? 'Submitting…' : 'Confirm approve'}
-                onPress={() => decideAndClose('approved')}
+                label={decide.isPending ? 'Submitting…' : 'Confirm & execute'}
+                onPress={approveAndExecute}
                 disabled={decide.isPending}
                 accessibilityLabel={`Confirm approval of ${p.symbol} order`}
               />
               <BentoQuiet label="Cancel" onPress={() => setConfirmOpen(false)} />
             </View>
             <Text className="mt-3 text-center text-[10px] text-text-tertiary dark:text-text-tertiary-dark">
-              Decision is audit-logged with your user id and timestamp.
+              Approval executes server-side and is audit-logged with your user
+              id, timestamp, and exit mode.
             </Text>
           </View>
         </View>
       </Modal>
     </SafeAreaView>
+  );
+}
+
+function ExitModeOption({
+  label,
+  detail,
+  selected,
+  onPress,
+  accessibilityLabel,
+}: {
+  label: string;
+  detail: string;
+  selected: boolean;
+  onPress: () => void;
+  accessibilityLabel: string;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="radio"
+      accessibilityLabel={accessibilityLabel}
+      accessibilityState={{ selected }}
+      className={cn(
+        'min-h-[56px] flex-1 justify-center rounded-lg border px-3 py-2',
+        selected
+          ? 'border-cta bg-cta/10 dark:border-cta-dark dark:bg-cta-dark/10'
+          : 'border-hairline dark:border-hairline-dark',
+      )}
+    >
+      <Text
+        className={cn(
+          'text-[12px] font-semibold',
+          selected
+            ? 'text-cta dark:text-cta-dark'
+            : 'text-text-primary dark:text-text-primary-dark',
+        )}
+      >
+        {label}
+      </Text>
+      <Text className="mt-0.5 text-[10px] text-text-tertiary dark:text-text-tertiary-dark">
+        {detail}
+      </Text>
+    </Pressable>
   );
 }
 
