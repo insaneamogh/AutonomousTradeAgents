@@ -281,6 +281,12 @@ class ZerodhaBroker(BrokerInterface):
         return self._default_product
 
     async def place_order(self, request: OrderRequest) -> Order:
+        if request.take_profit_price is not None or request.stop_loss_price is not None:
+            # Never silently drop the protective legs the user approved.
+            raise ZerodhaError(
+                "bracket exit legs are not supported on Zerodha in v1 — "
+                "Kite GTT-based exits land with the India phase"
+            )
         exchange, tradingsymbol = split_symbol(request.symbol)
         tag = _tag_from_client_order_id(request.client_order_id)
 
@@ -327,6 +333,28 @@ class ZerodhaBroker(BrokerInterface):
     async def cancel_order(self, broker_order_id: str) -> Order:
         await self._request("DELETE", f"/orders/regular/{broker_order_id}")
         return await self.get_order(broker_order_id)
+
+    async def cancel_open_orders(self, symbol: str) -> int:
+        """Cancel today's open orders on a symbol. Kite's orderbook is
+        day-scoped, which matches the intent (clear resting exits before a
+        close). Bracket-style GTT cleanup arrives with the India phase."""
+        wanted = symbol.upper()
+        orders = await self._request("GET", "/orders") or []
+        canceled = 0
+        for raw in orders:
+            status = str(raw.get("status", "")).upper()
+            raw_symbol = f"{raw.get('exchange', '')}:{raw.get('tradingsymbol', '')}".upper()
+            if status in _DEAD_KITE_STATUSES or raw_symbol != wanted:
+                continue
+            order_id = str(raw.get("order_id", ""))
+            if not order_id:
+                continue
+            try:
+                await self._request("DELETE", f"/orders/regular/{order_id}")
+                canceled += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("cancel_open_orders: %s failed — %s", order_id, exc)
+        return canceled
 
     async def get_order(self, broker_order_id: str) -> Order:
         # Kite returns the order's full state history; last entry is current.

@@ -18,13 +18,22 @@ import os
 from datetime import datetime, timezone
 
 from alpaca.trading.client import TradingClient
-from alpaca.trading.enums import OrderSide, OrderStatus as _AlpacaStatus, OrderType as _AlpacaType
+from alpaca.trading.enums import (
+    OrderClass,
+    OrderSide,
+    OrderStatus as _AlpacaStatus,
+    OrderType as _AlpacaType,
+    QueryOrderStatus,
+)
 from alpaca.trading.enums import TimeInForce as _AlpacaTif
 from alpaca.trading.requests import (
+    GetOrdersRequest,
     LimitOrderRequest,
     MarketOrderRequest,
     StopLimitOrderRequest,
+    StopLossRequest,
     StopOrderRequest,
+    TakeProfitRequest,
 )
 
 from broker.base import BrokerInterface
@@ -177,6 +186,30 @@ class AlpacaBroker(BrokerInterface):
         raw = await asyncio.to_thread(self._client.get_order_by_id, broker_order_id)
         return self._order_from_alpaca(raw)
 
+    async def cancel_open_orders(self, symbol: str) -> int:
+        """Cancel every open order on a symbol. Returns the cancel count.
+
+        Used by the position manager before an agent-initiated early close:
+        a bracket entry leaves OCO children resting at the broker, and a
+        market SELL would be rejected for unavailable qty while those
+        children hold the shares.
+        """
+        req = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol.upper()])
+        open_orders = await asyncio.to_thread(self._client.get_orders, req)
+        canceled = 0
+        for raw in open_orders:
+            order_id = str(getattr(raw, "id", ""))
+            if not order_id:
+                continue
+            try:
+                await asyncio.to_thread(self._client.cancel_order_by_id, order_id)
+                canceled += 1
+            except Exception as exc:  # noqa: BLE001 — already-filled races are fine
+                logger.warning(
+                    "cancel_open_orders: %s on %s failed — %s", order_id, symbol, exc
+                )
+        return canceled
+
     # ── Positions ────────────────────────────────────────────────────
 
     async def list_positions(self) -> list[Position]:
@@ -217,6 +250,21 @@ class AlpacaBroker(BrokerInterface):
             "time_in_force": tif,
             "client_order_id": request.client_order_id,
         }
+        if request.is_bracket:
+            # Entry + OCO children held BROKER-side. The stop/target the
+            # user approved survive an outage of our entire stack.
+            common["order_class"] = OrderClass.BRACKET
+            common["take_profit"] = TakeProfitRequest(
+                limit_price=round(request.take_profit_price, 2)
+            )
+            common["stop_loss"] = StopLossRequest(
+                stop_price=round(request.stop_loss_price, 2)
+            )
+        elif request.take_profit_price is not None or request.stop_loss_price is not None:
+            raise ValueError(
+                "Bracket orders need BOTH take_profit_price and stop_loss_price — "
+                "a one-legged bracket silently drops half the exit plan."
+            )
         if request.order_type is OrderType.MARKET:
             return MarketOrderRequest(**common)
         if request.order_type is OrderType.LIMIT:

@@ -34,6 +34,11 @@ class BrokerInterface(Protocol):
         """Fetch current state for a single order."""
         ...
 
+    async def cancel_open_orders(self, symbol: str) -> int:
+        """Cancel every open order on a symbol (e.g. resting bracket
+        children before an early close). Returns how many were canceled."""
+        ...
+
     async def list_positions(self) -> list[Position]:
         """All open positions on the account."""
         ...

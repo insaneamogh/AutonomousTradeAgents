@@ -50,6 +50,18 @@ class OrderRequest:
     time_in_force: TimeInForce = TimeInForce.DAY
     client_order_id: str | None = None  # for idempotent retries
 
+    # Bracket legs — when BOTH are set the broker holds the exit plan
+    # server-side (entry + OCO take-profit/stop-loss children). The
+    # disclosed "agent will close at stop X / target Y" promise survives
+    # even if our whole stack is down. Brokers without native brackets
+    # must raise rather than silently drop the protection.
+    take_profit_price: float | None = None
+    stop_loss_price: float | None = None
+
+    @property
+    def is_bracket(self) -> bool:
+        return self.take_profit_price is not None and self.stop_loss_price is not None
+
 
 @dataclass(frozen=True)
 class Order:
