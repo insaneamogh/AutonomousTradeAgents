@@ -23,7 +23,8 @@ from collections import defaultdict
 from datetime import timedelta
 from typing import Any
 
-from trading_agents.llm import LLM, Model
+from trading_agents.llm import LLM, Model, _cost_of, _usage_of
+from trading_agents.tracing import agent_generation
 from trading_agents.memory import (
     DecisionEntry,
     DecisionLog,
@@ -75,21 +76,28 @@ async def reflection_agent_run(
         prior = await confidence_store.get(strategy_id)
         user_prompt = _build_user_prompt(strategy_id, prior.confidence, trades)
 
-        resp = await llm.complete(
-            system=REFLECTION,
-            user=user_prompt,
-            model=Model.SONNET,
-            max_tokens=900,
-        )
-        try:
-            data = LLM.parse_json(resp.text)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "reflection: parse failed for %s — skipping (%s)",
-                strategy_id, exc,
+        # Trace the reflection agent like the council nodes — one generation
+        # per strategy reviewed. No-op when Langfuse keys are unset.
+        with agent_generation(
+            role="reflection", model=Model.SONNET, system=REFLECTION, user=user_prompt
+        ) as gen:
+            resp = await llm.complete(
+                system=REFLECTION,
+                user=user_prompt,
+                model=Model.SONNET,
+                max_tokens=900,
             )
-            # Don't mark these decisions reviewed; we'll retry next cycle.
-            continue
+            try:
+                data = LLM.parse_json(resp.text)
+                gen.succeed(output=data, usage=_usage_of(resp), cost=_cost_of(resp))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "reflection: parse failed for %s — skipping (%s)",
+                    strategy_id, exc,
+                )
+                gen.fail(status=f"unparseable reflection output: {exc}", usage=_usage_of(resp))
+                # Don't mark these decisions reviewed; we'll retry next cycle.
+                continue
 
         delta = float(data.get("confidence_delta", 0.0) or 0.0)
         wins = int(data.get("wins", 0) or 0)

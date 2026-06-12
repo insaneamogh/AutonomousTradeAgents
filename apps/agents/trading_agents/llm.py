@@ -169,28 +169,73 @@ async def complete_json(
         row records that this run ran on fallbacks (a degraded run changing
         the decision silently was audit finding §4.1).
     """
-    resp = await llm.complete(
-        system=system, user=user, model=model,
-        max_tokens=max_tokens, cache_system=cache_system,
-    )
-    try:
-        return LLM.parse_json(resp.text), False
-    except Exception as exc:  # noqa: BLE001 — malformed output, not a bug
-        logger.warning("complete_json: parse failed (%s) — re-asking once", exc)
+    # One Langfuse generation per agent node — the role (router / technical /
+    # …) names it; level says succeeded / degraded / failed. No-op when
+    # Langfuse keys are unset; never raises into the council.
+    from trading_agents.tracing import agent_generation
 
-    retry_user = (
-        f"{user}\n\nREMINDER: your previous reply was not valid JSON. "
-        "Respond with the JSON object ONLY — no prose, no markdown fences."
-    )
-    resp = await llm.complete(
-        system=system, user=retry_user, model=model,
-        max_tokens=max_tokens, cache_system=cache_system,
-    )
+    role = _infer_role(system)
+    with agent_generation(role=role, model=model, system=system, user=user) as gen:
+        resp = await llm.complete(
+            system=system, user=user, model=model,
+            max_tokens=max_tokens, cache_system=cache_system,
+        )
+        try:
+            data = LLM.parse_json(resp.text)
+            gen.succeed(output=data, usage=_usage_of(resp), cost=_cost_of(resp))
+            return data, False
+        except Exception as exc:  # noqa: BLE001 — malformed output, not a bug
+            logger.warning("complete_json: parse failed (%s) — re-asking once", exc)
+
+        retry_user = (
+            f"{user}\n\nREMINDER: your previous reply was not valid JSON. "
+            "Respond with the JSON object ONLY — no prose, no markdown fences."
+        )
+        resp = await llm.complete(
+            system=system, user=retry_user, model=model,
+            max_tokens=max_tokens, cache_system=cache_system,
+        )
+        try:
+            data = LLM.parse_json(resp.text)
+            gen.degrade(
+                output=data,
+                status="first reply was not valid JSON; retry parsed",
+                usage=_usage_of(resp),
+                cost=_cost_of(resp),
+            )
+            return data, True
+        except Exception as exc:  # noqa: BLE001
+            logger.error("complete_json: retry also malformed (%s) — degraded", exc)
+            gen.fail(status="both attempts returned unparseable JSON", usage=_usage_of(resp))
+            return None, True
+
+
+def _infer_role(system: str) -> str:
     try:
-        return LLM.parse_json(resp.text), True
-    except Exception as exc:  # noqa: BLE001
-        logger.error("complete_json: retry also malformed (%s) — degraded", exc)
-        return None, True
+        from trading_agents.cost_ledger import infer_role_from_system_prompt
+
+        return infer_role_from_system_prompt(system)
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
+def _usage_of(resp: "LLMResponse") -> dict[str, int]:
+    return {"input": resp.input_tokens, "output": resp.output_tokens}
+
+
+def _cost_of(resp: "LLMResponse") -> float | None:
+    try:
+        from trading_agents.cost_ledger import compute_cost_usd
+
+        return compute_cost_usd(
+            model=resp.model,
+            input_tokens=resp.input_tokens,
+            output_tokens=resp.output_tokens,
+            cache_read_tokens=resp.cache_read_tokens,
+            cache_creation_tokens=resp.cache_creation_tokens,
+        )
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # ─────────────────────────────────────────────────────────────────────

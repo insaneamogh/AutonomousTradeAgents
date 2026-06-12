@@ -104,14 +104,38 @@ async def run_council(
             row.strategy_id: row.confidence for row in await confidence_store.all()
         }
 
-    final = await run_graph(
-        state,
-        llm=llm,
-        risk_caps=risk_caps,
-        progress_cb=progress_cb,
-        # Pace only in MOCK mode — real LLM calls are their own pacing.
-        pacing_seconds=pacing_seconds if llm.mock else 0.0,
-    )
+    # Wrap the whole pass in a Langfuse trace — each agent node's LLM call
+    # nests under it as a generation (router / technical / … / drafter), so
+    # you can see what every agent did and whether it succeeded, ran
+    # degraded, or failed. No-op when Langfuse keys are unset.
+    from trading_agents.tracing import council_trace, flush as _trace_flush
+
+    try:
+        with council_trace(
+            symbol=state["symbol"], horizon=horizon, user_id=user_id
+        ) as trace:
+            final = await run_graph(
+                state,
+                llm=llm,
+                risk_caps=risk_caps,
+                progress_cb=progress_cb,
+                # Pace only in MOCK mode — real LLM calls are their own pacing.
+                pacing_seconds=pacing_seconds if llm.mock else 0.0,
+            )
+            trace.set_output(
+                output={
+                    "final_action": final.get("final_action"),
+                    "risk_approved": bool(final.get("risk_approved", False)),
+                    "risk_veto_rule": final.get("risk_veto_rule"),
+                    "selected_strategy": final.get("selected_strategy"),
+                },
+                metadata={"degraded_nodes": list(final.get("degraded_nodes") or [])},
+            )
+    finally:
+        # Short-lived processes (the cron) need the export kicked before
+        # exit; the long-lived API relies on the SDK's background flush but
+        # an extra flush here is harmless.
+        _trace_flush()
 
     proposal_dto = _to_proposal_dto(final) if final.get("risk_approved") else None
 

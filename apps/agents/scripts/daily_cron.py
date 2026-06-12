@@ -36,7 +36,7 @@ import asyncio
 import logging
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from trading_agents.features import resolve_feature_provider
 from trading_agents.llm import LLM
@@ -184,6 +184,7 @@ async def main(
     *,
     force: bool,
     skip_ghost_eval: bool = False,
+    skip_reflect: bool = False,
 ) -> int:
     log.info(
         "daily cron start — user=%s symbols=%s use_postgres=%s",
@@ -257,6 +258,32 @@ async def main(
         except Exception:  # noqa: BLE001
             log.exception("ghost_eval pass failed — continuing")
 
+    # Reflection pass — the worker existed but was never scheduled, so
+    # strategy-confidence priors never moved off 0.5 (audit roadmap P1).
+    # Runs after ghost eval on the same closed-trade window; failure never
+    # fails the cron. Skipped with --no-reflect.
+    if not skip_reflect:
+        try:
+            from trading_agents.nodes import reflection_agent_run
+
+            summary = await reflection_agent_run(
+                llm=llm,
+                decision_log=get_decision_log(),
+                confidence_store=get_confidence_store(),
+                since=timedelta(hours=24),
+            )
+            log.info("reflection pass — reviewed=%d", summary.get("reviewed", 0))
+        except Exception:  # noqa: BLE001
+            log.exception("reflection pass failed — continuing")
+
+    # Kick the Langfuse export before this short-lived process exits.
+    try:
+        from trading_agents.tracing import flush as _trace_flush
+
+        _trace_flush()
+    except Exception:  # noqa: BLE001
+        log.debug("trace flush failed", exc_info=True)
+
     return 1 if failed else 0
 
 
@@ -285,6 +312,11 @@ def cli() -> int:
         action="store_true",
         help="Skip the ghost-P&L marking pass after the council loop.",
     )
+    parser.add_argument(
+        "--no-reflect",
+        action="store_true",
+        help="Skip the EOD reflection pass (strategy-confidence update).",
+    )
     args = parser.parse_args()
     symbols = [s.strip().upper() for s in args.watchlist.split(",") if s.strip()]
     if not symbols:
@@ -306,7 +338,13 @@ def cli() -> int:
             symbols = user_symbols
 
     return asyncio.run(
-        main(args.user_id, symbols, force=args.force, skip_ghost_eval=args.skip_ghost_eval)
+        main(
+            args.user_id,
+            symbols,
+            force=args.force,
+            skip_ghost_eval=args.skip_ghost_eval,
+            skip_reflect=args.no_reflect,
+        )
     )
 
 
