@@ -294,10 +294,13 @@ Recommendation: don't reach for Temporal yet. A single worker process owning all
 
 ## Entries
 
-### 2026-06-13 — `<docs>` chore(docs): build log + main workflow + handoff
+### 2026-06-13 — `fix(ui)` NativeWind type env (unblocks `@app/ui` typecheck)
+- Committed NativeWind's generated `packages/ui/nativewind-env.d.ts` (its own header says to commit it) + the `tsconfig.json` `include` for it. `pnpm --filter @app/ui typecheck` now passes — clears the long-standing `@app/ui` tsc gate. Was sitting un-committed from codegen; not part of the feature work.
+
+### 2026-06-13 — `7bdee5ae` docs: build log + main workflow + handoff §0
 - Established this build log + the "log every commit here" rule in [CLAUDE.md](CLAUDE.md); switched the documented git workflow to land on `main` directly (user preference).
 - Updated [HANDOFF.md](HANDOFF.md) §0 with the extra steps the auto-mode/real-data/Langfuse work introduced (new env, per-user reconciler, agent-managed exits).
-- Merged the whole `agent-v1/auto-mode-real-data` line into `main`.
+- Fast-forwarded the whole `agent-v1/auto-mode-real-data` line into `main` and pushed `main`.
 
 ### 2026-06-12 — `b4eaded4` feat(agents): Langfuse per-agent tracing + scheduled reflection
 - Env-gated Langfuse ([tracing.py](apps/agents/trading_agents/tracing.py)): one trace per council run, one generation per agent (router/technical/fundamental/macro/selector/drafter/reflection) with OK/WARNING(degraded)/ERROR + tokens + cost. Hard no-op without keys; never raises into a decision. Built against langfuse 4.x.
