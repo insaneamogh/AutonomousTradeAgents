@@ -206,6 +206,17 @@ class AgentDecision(Base):
     realized_pnl: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Position lifecycle (migration 0009). Entries are always human-approved;
+    # ``exit_mode`` records whether the user delegated the CLOSE to the
+    # position manager ('agent') or kept it manual. ``close_reason`` is a
+    # named identifier like risk veto rules: 'agent_target' | 'agent_stop' |
+    # 'agent_time' | 'agent_signal' | 'user_manual' | 'external_broker'.
+    exit_mode: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="agent", server_default="agent"
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    close_reason: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
 
 # ─────────────────────────────────────────────────────────────────────
 # Orders + fills
@@ -407,6 +418,42 @@ class PositionsSnapshot(Base):
     daily_pnl_pct: Mapped[Decimal | None] = mapped_column(Numeric(6, 3), nullable=True)
 
     raw: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Watchlist — the symbols a user told the agent to track (migration 0009)
+# ─────────────────────────────────────────────────────────────────────
+
+
+class UserWatchlistItem(Base):
+    """One row per (user, symbol) the daily council should evaluate.
+
+    ``asset_class`` is 'equity'-only in v1 (US stocks + ETFs). The column
+    exists so options can slot in later without a schema rework — the API
+    rejects anything else until then.
+    """
+
+    __tablename__ = "user_watchlist"
+    __table_args__ = (
+        UniqueConstraint("user_id", "symbol", name="uq_user_watchlist_user_symbol"),
+        Index("ix_user_watchlist_user_id", "user_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
+    asset_class: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="equity", server_default="equity"
+    )
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────

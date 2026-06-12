@@ -29,7 +29,11 @@ from engine.risk.assets import cluster_for, sector_for
 from engine.risk.context import MockRiskContextProvider, RiskContextProvider
 from engine.risk.engine import evaluate
 from engine.risk.markets import is_derivative, market_of
-from engine.risk.postgres_context import PostgresRiskContextProvider
+from engine.risk.postgres_context import (
+    DbRiskState,
+    PostgresRiskContextProvider,
+    load_db_risk_state,
+)
 from engine.risk.types import (
     ClosedTrade,
     PortfolioPosition,
@@ -43,9 +47,11 @@ from engine.risk.types import (
 
 __all__ = [
     "ClosedTrade",
+    "DbRiskState",
     "MockRiskContextProvider",
     "PortfolioPosition",
     "PostgresRiskContextProvider",
+    "load_db_risk_state",
     "RiskCaps",
     "RiskContext",
     "RiskContextProvider",
