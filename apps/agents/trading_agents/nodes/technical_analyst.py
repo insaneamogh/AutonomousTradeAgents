@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from trading_agents.llm import LLM, Model
+from trading_agents.llm import LLM, Model, complete_json
 from trading_agents.prompts import TECHNICAL_ANALYST
 from trading_agents.state import CouncilState
 
@@ -28,12 +28,17 @@ async def technical_analyst_node(state: CouncilState, llm: LLM) -> CouncilState:
         f"  volume_ratio_20d:        {tech.get('volume_ratio_20d', 'n/a')}\n"
     )
 
-    resp = await llm.complete(system=TECHNICAL_ANALYST, user=user, model=Model.HAIKU, max_tokens=500)
-    try:
-        data = LLM.parse_json(resp.text)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("technical parse failed: %s", exc)
+    data, degraded = await complete_json(
+        llm,
+        system=TECHNICAL_ANALYST, user=user, model=Model.HAIKU, max_tokens=500
+    )
+    if data is None:
+        logger.warning("technical degraded — neutral default")
         data = {"score": 50.0, "confidence": 0.2, "thesis": "Parse error — neutral default.", "citations": []}
+
+    degraded_nodes = list(state.get("degraded_nodes") or [])
+    if degraded:
+        degraded_nodes.append("technical")
 
     return {
         **state,
@@ -43,4 +48,5 @@ async def technical_analyst_node(state: CouncilState, llm: LLM) -> CouncilState:
             "thesis": str(data.get("thesis", "")),
             "citations": list(data.get("citations", [])),
         },
+        "degraded_nodes": degraded_nodes,
     }

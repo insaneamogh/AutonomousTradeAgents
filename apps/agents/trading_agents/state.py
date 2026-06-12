@@ -55,3 +55,9 @@ class CouncilState(TypedDict, total=False):
     # ── Final ────────────────────────────────────────────────────────
     final_action: Literal["BUY", "SELL", "HOLD", "VETOED"]
     token_usage: dict[str, int]
+
+    # ── Degradation audit ────────────────────────────────────────────
+    degraded_nodes: list[str]
+    """Nodes whose LLM output was malformed and ran on a retry or a neutral
+    fallback this pass. Recorded on the decision row so calibration /
+    reflection can exclude degraded runs instead of learning from them."""

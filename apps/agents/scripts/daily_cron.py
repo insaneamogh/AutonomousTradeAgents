@@ -38,6 +38,7 @@ import os
 import sys
 from datetime import datetime, timezone
 
+from trading_agents.features import resolve_feature_provider
 from trading_agents.llm import LLM
 from trading_agents.memory import get_confidence_store, get_decision_log
 from trading_agents.runtime import run_council
@@ -92,7 +93,57 @@ async def _already_decided_today(
     return False
 
 
-async def _run_one(user_id: str, symbol: str, llm: LLM, *, force: bool) -> dict:
+def _equity_resolver(user_id: str):
+    """Latest reconciler-snapshot equity for the cron user (Postgres only).
+    The sizer needs REAL equity — synthetic 100k sizing against a real
+    account was audit finding §5."""
+
+    async def _resolve() -> float | None:
+        if not _is_truthy(os.environ.get("USE_POSTGRES")):
+            return None
+        import uuid as _uuid
+
+        from sqlalchemy import desc, select
+
+        from engine.db.models import PositionsSnapshot
+        from engine.db.session import async_session_factory
+
+        factory = async_session_factory()
+        async with factory() as session:
+            stmt = (
+                select(PositionsSnapshot.account_equity)
+                .where(PositionsSnapshot.user_id == _uuid.UUID(user_id))
+                .order_by(desc(PositionsSnapshot.captured_at))
+                .limit(1)
+            )
+            equity = (await session.execute(stmt)).scalar_one_or_none()
+        return float(equity) if equity is not None else None
+
+    return _resolve
+
+
+def _notify_proposal(user_id: str, proposal: dict, push_tasks: list) -> None:
+    """Fan out the 'new proposal' push. The audit's Break 4: cron proposals
+    never notified anyone and expired unseen. Failure never fails the cron."""
+    try:
+        from app.services.notifications import schedule_proposal_pending_notification
+
+        push_tasks.append(
+            schedule_proposal_pending_notification(user_id=user_id, proposal=proposal)
+        )
+    except Exception:  # noqa: BLE001 — push is best-effort, council result is already durable
+        log.exception("proposal push fan-out failed — continuing")
+
+
+async def _run_one(
+    user_id: str,
+    symbol: str,
+    llm: LLM,
+    *,
+    force: bool,
+    feature_provider,
+    push_tasks: list,
+) -> dict:
     """Run the council for a single symbol. Skips if already decided
     today unless ``force=True``.
     """
@@ -104,6 +155,7 @@ async def _run_one(user_id: str, symbol: str, llm: LLM, *, force: bool) -> dict:
         symbol=symbol,
         user_id=user_id,
         llm=llm,
+        feature_provider=feature_provider,
         decision_log=get_decision_log(),
         confidence_store=get_confidence_store(),
     )
@@ -115,6 +167,8 @@ async def _run_one(user_id: str, symbol: str, llm: LLM, *, force: bool) -> dict:
         result.get("selector_confidence", 0.0),
         result.get("decision_id"),
     )
+    if result.get("proposal") is not None:
+        _notify_proposal(user_id, result["proposal"], push_tasks)
     return {
         "symbol": symbol,
         "skipped": False,
@@ -137,18 +191,53 @@ async def main(
         ",".join(watchlist),
         _is_truthy(os.environ.get("USE_POSTGRES")),
     )
-    llm = LLM()
+
+    # Market-calendar gate: no NYSE close today → nothing to decide. The
+    # GitHub Actions schedule fires Mon-Fri regardless of holidays; this is
+    # the deterministic gate the audit asked for. --force overrides.
+    today = datetime.now(timezone.utc).date()
+    from engine.features import is_us_trading_day
+
+    if not force and not is_us_trading_day(today):
+        log.info("US market closed on %s — skipping council run", today)
+        return 0
+
+    # Both constructors hard-fail under the REQUIRE flags — a misconfigured
+    # production cron must crash loudly, never degrade to mock/synthetic.
+    try:
+        llm = LLM()
+        feature_provider = resolve_feature_provider(
+            equity_resolver=_equity_resolver(user_id)
+        )
+    except RuntimeError:
+        log.exception("daily cron refused to start (REQUIRE flag failed)")
+        return 2
     log.info("LLM mode: %s", "MOCK" if llm.mock else "REAL")
 
+    push_tasks: list = []
     rolled_up: list[dict] = []
     # Sequential — Anthropic prompt-caching benefits from steady cadence
     # within ~30s windows. Parallel would burn separate cache entries.
     for symbol in watchlist:
         try:
-            rolled_up.append(await _run_one(user_id, symbol, llm, force=force))
+            rolled_up.append(
+                await _run_one(
+                    user_id, symbol, llm,
+                    force=force,
+                    feature_provider=feature_provider,
+                    push_tasks=push_tasks,
+                )
+            )
         except Exception as exc:  # noqa: BLE001
             log.exception("council failed for %s — continuing", symbol)
             rolled_up.append({"symbol": symbol, "skipped": False, "error": str(exc)})
+
+    # Push fan-outs are fire-and-forget tasks — drain them before the
+    # process exits or the notifications die with the event loop.
+    if push_tasks:
+        results = await asyncio.gather(*push_tasks, return_exceptions=True)
+        sent = sum(1 for r in results if not isinstance(r, Exception))
+        log.info("proposal pushes drained — %d/%d ok", sent, len(push_tasks))
 
     processed = sum(1 for r in rolled_up if not r.get("skipped") and "error" not in r)
     skipped = sum(1 for r in rolled_up if r.get("skipped"))
@@ -201,9 +290,45 @@ def cli() -> int:
     if not symbols:
         log.error("empty watchlist — pass --watchlist or set AGENT_CRON_WATCHLIST")
         return 2
+
+    # The user's curated watchlist (user_watchlist table) overrides the
+    # static default when it exists — that's the product: "tell the agent
+    # what you're interested in, it tracks those."
+    if _is_truthy(os.environ.get("USE_POSTGRES")):
+        try:
+            user_symbols = asyncio.run(_load_user_watchlist(args.user_id))
+        except Exception:  # noqa: BLE001 — fall back to the CLI/default list
+            log.exception("user watchlist load failed — using default list")
+            user_symbols = []
+        if user_symbols:
+            log.info("using user watchlist (%d symbols): %s",
+                     len(user_symbols), ",".join(user_symbols))
+            symbols = user_symbols
+
     return asyncio.run(
         main(args.user_id, symbols, force=args.force, skip_ghost_eval=args.skip_ghost_eval)
     )
+
+
+async def _load_user_watchlist(user_id: str) -> list[str]:
+    """Active user_watchlist symbols, alphabetical. Empty when uncurated."""
+    import uuid as _uuid
+
+    from sqlalchemy import select
+
+    from engine.db.models import UserWatchlistItem
+    from engine.db.session import async_session_factory
+
+    factory = async_session_factory()
+    async with factory() as session:
+        stmt = (
+            select(UserWatchlistItem.symbol)
+            .where(UserWatchlistItem.user_id == _uuid.UUID(user_id))
+            .where(UserWatchlistItem.active.is_(True))
+            .order_by(UserWatchlistItem.symbol)
+        )
+        rows = (await session.execute(stmt)).scalars().all()
+    return [str(s).upper() for s in rows]
 
 
 if __name__ == "__main__":

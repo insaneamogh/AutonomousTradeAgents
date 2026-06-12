@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 
-from trading_agents.llm import LLM, Model
+from trading_agents.llm import LLM, Model, complete_json
 from trading_agents.prompts import MACRO_ANALYST
 from trading_agents.state import CouncilState
 
@@ -36,12 +36,17 @@ async def macro_analyst_node(state: CouncilState, llm: LLM) -> CouncilState:
         f"  sector_relative_strength:   {macro.get('sector_relative_strength', 'n/a')}\n"
     )
 
-    resp = await llm.complete(system=MACRO_ANALYST, user=user, model=Model.SONNET, max_tokens=500)
-    try:
-        data = LLM.parse_json(resp.text)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("macro parse failed: %s", exc)
+    data, degraded = await complete_json(
+        llm,
+        system=MACRO_ANALYST, user=user, model=Model.SONNET, max_tokens=500
+    )
+    if data is None:
+        logger.warning("macro degraded — neutral default")
         data = {"score": 50.0, "confidence": 0.2, "thesis": "Parse error — neutral default.", "citations": []}
+
+    degraded_nodes = list(state.get("degraded_nodes") or [])
+    if degraded:
+        degraded_nodes.append("macro")
 
     return {
         **state,
@@ -51,4 +56,5 @@ async def macro_analyst_node(state: CouncilState, llm: LLM) -> CouncilState:
             "thesis": str(data.get("thesis", "")),
             "citations": list(data.get("citations", [])),
         },
+        "degraded_nodes": degraded_nodes,
     }

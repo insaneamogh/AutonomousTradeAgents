@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from trading_agents.llm import LLM, Model
+from trading_agents.llm import LLM, Model, complete_json
 from trading_agents.prompts import FUNDAMENTAL_ANALYST
 from trading_agents.state import CouncilState
 
@@ -27,12 +27,17 @@ async def fundamental_analyst_node(state: CouncilState, llm: LLM) -> CouncilStat
         f"  piotroski_f_score:       {fund.get('piotroski_f_score', 'n/a')}\n"
     )
 
-    resp = await llm.complete(system=FUNDAMENTAL_ANALYST, user=user, model=Model.SONNET, max_tokens=500)
-    try:
-        data = LLM.parse_json(resp.text)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("fundamental parse failed: %s", exc)
+    data, degraded = await complete_json(
+        llm,
+        system=FUNDAMENTAL_ANALYST, user=user, model=Model.SONNET, max_tokens=500
+    )
+    if data is None:
+        logger.warning("fundamental degraded — neutral default")
         data = {"score": 50.0, "confidence": 0.2, "thesis": "Parse error — neutral default.", "citations": []}
+
+    degraded_nodes = list(state.get("degraded_nodes") or [])
+    if degraded:
+        degraded_nodes.append("fundamental")
 
     return {
         **state,
@@ -42,4 +47,5 @@ async def fundamental_analyst_node(state: CouncilState, llm: LLM) -> CouncilStat
             "thesis": str(data.get("thesis", "")),
             "citations": list(data.get("citations", [])),
         },
+        "degraded_nodes": degraded_nodes,
     }

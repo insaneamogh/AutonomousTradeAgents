@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 
-from trading_agents.llm import LLM, Model
+from trading_agents.llm import LLM, Model, complete_json
 from trading_agents.prompts import SELECTOR
 from trading_agents.state import CouncilState
 from trading_agents.strategies import STRATEGY_REGISTRY
@@ -52,11 +52,14 @@ async def selector_node(state: CouncilState, llm: LLM) -> CouncilState:
 
     user = "\n".join(parts) + "\n"
 
-    resp = await llm.complete(system=SELECTOR, user=user, model=Model.HAIKU, max_tokens=300)
-    try:
-        data = LLM.parse_json(resp.text)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("selector parse failed: %s — HOLD", exc)
+    data, degraded = await complete_json(
+        llm,
+        system=SELECTOR, user=user, model=Model.HAIKU, max_tokens=300
+    )
+    if degraded:
+        state = {**state, "degraded_nodes": [*(state.get("degraded_nodes") or []), "selector"]}
+    if data is None:
+        logger.warning("selector degraded — HOLD")
         return _hold(state, "Selector parse error.")
 
     strategy_raw = data.get("strategy")

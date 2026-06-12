@@ -22,6 +22,11 @@ from typing import Any
 logger = logging.getLogger("agents.llm")
 
 
+def _env_truthy(name: str) -> bool:
+    v = os.environ.get(name)
+    return v is not None and v.strip().lower() in ("1", "true", "yes", "on")
+
+
 class Model:
     OPUS = "claude-opus-4-7"
     SONNET = "claude-sonnet-4-6"
@@ -59,6 +64,14 @@ class LLM:
                 logger.warning("anthropic SDK not installed — falling back to MOCK mode")
                 self._mock = True
         if self._mock:
+            # Production guard: a misconfigured box must FAIL, not silently
+            # emit canned MOCK theses into a real user's approval inbox.
+            if _env_truthy("AGENTS_REQUIRE_REAL_LLM"):
+                raise RuntimeError(
+                    "AGENTS_REQUIRE_REAL_LLM=1 but the LLM resolved to MOCK mode "
+                    "(ANTHROPIC_API_KEY missing/blank or SDK not installed). "
+                    "Refusing to run the council on canned responses."
+                )
             logger.warning("LLM in MOCK mode (no ANTHROPIC_API_KEY)")
 
     @property
@@ -68,7 +81,13 @@ class LLM:
     def _get_client(self) -> Any:
         if self._client is None:
             from anthropic import AsyncAnthropic
-            self._client = AsyncAnthropic(api_key=self._api_key)
+            # Explicit timeout: a hung API call must never hang the council.
+            # The SDK retries transient failures itself (max_retries).
+            self._client = AsyncAnthropic(
+                api_key=self._api_key,
+                timeout=float(os.environ.get("LLM_TIMEOUT_SECONDS", "60")),
+                max_retries=2,
+            )
         return self._client
 
     async def complete(
@@ -95,6 +114,10 @@ class LLM:
             max_tokens=max_tokens,
             system=system_blocks,
             messages=[{"role": "user", "content": user}],
+            # temperature=0 by default: council variance should come from the
+            # market, not the sampler. Override via LLM_TEMPERATURE if a node
+            # ever needs creative range (document why before raising it).
+            temperature=float(os.environ.get("LLM_TEMPERATURE", "0.0")),
         )
 
         text = msg.content[0].text if msg.content else ""
@@ -118,6 +141,56 @@ class LLM:
             cleaned = re.sub(r"^```(json)?\n?", "", cleaned)
             cleaned = re.sub(r"\n?```$", "", cleaned)
         return json.loads(cleaned.strip())
+
+
+
+# ─────────────────────────────────────────────────────────────────────
+# JSON-call helper — works with ANY object exposing ``complete()``
+# (the real LLM, the mock, and the narrow test doubles in the suite).
+# ─────────────────────────────────────────────────────────────────────
+
+
+async def complete_json(
+    llm: Any,
+    *,
+    system: str,
+    user: str,
+    model: str = Model.SONNET,
+    max_tokens: int = 800,
+    cache_system: bool = True,
+) -> tuple[dict[str, Any] | None, bool]:
+    """``llm.complete()`` + parse, with ONE re-ask on malformed output.
+
+    Returns ``(data, degraded)``:
+      - ``(dict, False)``  first response parsed.
+      - ``(dict, True)``   first response was malformed; the retry parsed.
+      - ``(None, True)``   both attempts malformed — the caller applies its
+        neutral fallback AND must surface the degraded flag so the decision
+        row records that this run ran on fallbacks (a degraded run changing
+        the decision silently was audit finding §4.1).
+    """
+    resp = await llm.complete(
+        system=system, user=user, model=model,
+        max_tokens=max_tokens, cache_system=cache_system,
+    )
+    try:
+        return LLM.parse_json(resp.text), False
+    except Exception as exc:  # noqa: BLE001 — malformed output, not a bug
+        logger.warning("complete_json: parse failed (%s) — re-asking once", exc)
+
+    retry_user = (
+        f"{user}\n\nREMINDER: your previous reply was not valid JSON. "
+        "Respond with the JSON object ONLY — no prose, no markdown fences."
+    )
+    resp = await llm.complete(
+        system=system, user=retry_user, model=model,
+        max_tokens=max_tokens, cache_system=cache_system,
+    )
+    try:
+        return LLM.parse_json(resp.text), True
+    except Exception as exc:  # noqa: BLE001
+        logger.error("complete_json: retry also malformed (%s) — degraded", exc)
+        return None, True
 
 
 # ─────────────────────────────────────────────────────────────────────

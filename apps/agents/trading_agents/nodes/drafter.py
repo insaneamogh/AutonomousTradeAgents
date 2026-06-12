@@ -19,12 +19,21 @@ import logging
 
 from engine.sizing import SizingInputs, atr_position_size
 
-from trading_agents.llm import LLM, Model
+from trading_agents.llm import LLM, Model, complete_json
 from trading_agents.prompts import DRAFTER
 from trading_agents.state import CouncilState
 from trading_agents.strategies import resolve_strategy
 
 logger = logging.getLogger("agents.node.drafter")
+
+# Time-stop per horizon — IDENTICAL to the ghost evaluator's horizon map so
+# executed and non-executed picks are graded over the same window.
+_TIME_STOP_BY_HORIZON: dict[str, int] = {
+    "intraday": 1,
+    "short": 5,
+    "mid": 10,
+    "long": 20,
+}
 
 
 async def drafter_node(state: CouncilState, llm: LLM) -> CouncilState:
@@ -71,11 +80,14 @@ async def drafter_node(state: CouncilState, llm: LLM) -> CouncilState:
         )
     user = "\n".join(parts) + "\n"
 
-    resp = await llm.complete(system=DRAFTER, user=user, model=Model.SONNET, max_tokens=900)
-    try:
-        data = LLM.parse_json(resp.text)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("drafter parse failed: %s — HOLD", exc)
+    data, degraded = await complete_json(
+        llm,
+        system=DRAFTER, user=user, model=Model.SONNET, max_tokens=900
+    )
+    if degraded:
+        state = {**state, "degraded_nodes": [*(state.get("degraded_nodes") or []), "drafter"]}
+    if data is None:
+        logger.warning("drafter degraded — HOLD")
         return {**state, "proposal": None, "final_action": "HOLD"}
 
     verdict = str(data.get("verdict", "HOLD")).upper()
@@ -111,6 +123,16 @@ async def drafter_node(state: CouncilState, llm: LLM) -> CouncilState:
     sizer_note = f"Sizing ({sizing.method}): {sizing.notes}"
     combined_rationale = f"{rationale} | {sizer_note}" if rationale else sizer_note
 
+    # Exit plan — deterministic, disclosed at approval time. Time-stop
+    # mirrors the ghost evaluator's horizon mapping so executed and
+    # non-executed picks are graded over the same window.
+    time_stop_days = _TIME_STOP_BY_HORIZON.get(str(state.get("horizon", "short")), 5)
+    r_multiple: float | None = None
+    if sizing.stop_price is not None and sizing.target_price is not None:
+        risk_per_share = last_price - sizing.stop_price
+        if risk_per_share > 0:
+            r_multiple = round((sizing.target_price - last_price) / risk_per_share, 2)
+
     return {
         **state,
         "proposal": {
@@ -121,6 +143,8 @@ async def drafter_node(state: CouncilState, llm: LLM) -> CouncilState:
             "estimated_notional": sizing.target_notional,
             "stop_loss": sizing.stop_price,
             "target_price": sizing.target_price,
+            "time_stop_days": time_stop_days,
+            "r_multiple": r_multiple,
             "rationale": combined_rationale,
             "bull_case": str(data.get("bull_case", "")),
             "bear_case": str(data.get("bear_case", "")),

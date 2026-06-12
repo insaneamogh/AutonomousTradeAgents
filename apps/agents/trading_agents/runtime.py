@@ -16,9 +16,11 @@ log instance (typically one-per-process in the API or one-per-CLI-invocation).
 
 from __future__ import annotations
 
+import inspect
 import logging
+import os
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Any, Literal
 
 from trading_agents.features import synthetic_features
@@ -36,8 +38,22 @@ from trading_agents.state import CouncilState
 logger = logging.getLogger("agents.runtime")
 
 
-# Approval expiry: Phase 0 default. Strategy-Selector can override later.
-DEFAULT_APPROVAL_TTL = timedelta(minutes=15)
+# Approval expiry. This is a SWING product (1-10 day holds) — a proposal at
+# market open should survive until the close, not die in 15 minutes while
+# the user is in a meeting (audit finding: cron proposals expired unseen).
+# Default: 21:00 UTC same day (≥ NYSE close year-round; EDT close is 20:00
+# UTC). Override with AGENT_APPROVAL_TTL_MINUTES for tests / intraday work.
+_MARKET_DAY_END_UTC = time(21, 0)
+
+
+def approval_expiry(now: datetime) -> datetime:
+    override = os.environ.get("AGENT_APPROVAL_TTL_MINUTES", "").strip()
+    if override:
+        return now + timedelta(minutes=float(override))
+    candidate = datetime.combine(now.date(), _MARKET_DAY_END_UTC, tzinfo=timezone.utc)
+    if candidate <= now:
+        candidate += timedelta(days=1)
+    return candidate
 
 
 async def run_council(
@@ -69,12 +85,17 @@ async def run_council(
     }
     """
     llm = llm or LLM()
+    # Feature providers may be sync (synthetic) or async (real Alpaca/FRED
+    # provider) — await when needed so callers don't care which they wired.
+    context = feature_provider(symbol.upper(), horizon)
+    if inspect.isawaitable(context):
+        context = await context
     state: CouncilState = {
         "symbol": symbol.upper(),
         "horizon": horizon,
         "triggered_at": datetime.now(timezone.utc),
         "user_id": user_id,
-        "context": feature_provider(symbol.upper(), horizon),
+        "context": context,
     }
     if confidence_store is not None:
         # Selector pulls its priors out of state. We resolve once here so the
@@ -139,6 +160,8 @@ def _to_proposal_dto(state: CouncilState) -> dict[str, Any] | None:
         "estimatedNotional": float(p["estimated_notional"]),
         "stopLoss": p.get("stop_loss"),
         "targetPrice": p.get("target_price"),
+        "timeStopDays": int(p.get("time_stop_days", 5)),
+        "rMultiple": p.get("r_multiple"),
         "informationalFlags": list(p.get("informational_flags") or []),
         "rationale": p.get("rationale", ""),
         "bullCase": p.get("bull_case", ""),
@@ -146,7 +169,7 @@ def _to_proposal_dto(state: CouncilState) -> dict[str, Any] | None:
         "riskLevel": int(p.get("risk_level", 3)),
         "convictionLevel": int(p.get("conviction_level", 3)),
         "proposedAt": now.isoformat(),
-        "expiresAt": (now + DEFAULT_APPROVAL_TTL).isoformat(),
+        "expiresAt": approval_expiry(now).isoformat(),
     }
 
 
@@ -189,6 +212,9 @@ def _to_decision_entry(
             "proposal": final.get("proposal"),
             "regime": final.get("regime"),
             "analyst_subset": final.get("analyst_subset"),
+            # Non-empty when any node ran on a parse-retry or neutral
+            # fallback — calibration/reflection exclude these runs.
+            "degraded_nodes": list(final.get("degraded_nodes") or []),
         },
         # Full audit surface (WP0) — dedicated columns in Postgres.
         technical=tech or None,
