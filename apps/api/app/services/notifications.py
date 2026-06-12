@@ -70,7 +70,29 @@ async def _fan_out(
     symbol = str(proposal.get("symbol", "?"))
     qty = proposal.get("qty")
     title = "New trade proposal"
-    body = f"{side} {qty} {symbol} — tap to review" if qty is not None else f"{side} {symbol}"
+
+    # The user asked the entry ping to answer: why, what price, what's the
+    # P/L expectation, and when the agent will close. Proposal prices are
+    # fine on a lock screen (no account values, no tokens, no IDs — the
+    # AGENTV1 rule); the full bull/bear case stays in-app.
+    body = f"{side} {qty} {symbol}" if qty is not None else f"{side} {symbol}"
+    try:
+        notional = proposal.get("estimatedNotional")
+        if notional and qty:
+            body += f" @ ~${float(notional) / int(qty):,.2f}"
+        target = proposal.get("targetPrice")
+        stop = proposal.get("stopLoss")
+        if target is not None and stop is not None:
+            body += f" · target ${float(target):,.2f} / stop ${float(stop):,.2f}"
+        r_multiple = proposal.get("rMultiple")
+        if r_multiple is not None:
+            body += f" ({float(r_multiple):.1f}R)"
+        time_stop = proposal.get("timeStopDays")
+        if time_stop:
+            body += f" · auto-close in {int(time_stop)}d"
+    except (TypeError, ValueError):
+        pass  # never let formatting kill the ping — base body still sends
+    body += " — tap to review"
 
     msgs = [
         PushMessage(
@@ -94,6 +116,63 @@ async def _fan_out(
     logger.info(
         "notifications: fanned out proposal — user=%s sent=%d revoked=%d errors=%d",
         user_id, result.sent, len(result.revoked_tokens), len(result.other_errors),
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Position lifecycle events — fills, agent closes, external closes
+# ─────────────────────────────────────────────────────────────────────
+
+
+def schedule_position_event_notification(
+    *,
+    user_id: str,
+    title: str,
+    body: str,
+    store: NotificationStore | None = None,
+) -> asyncio.Task[None]:
+    """Generic position-event fan-out (order filled / agent closed /
+    closed at broker). Same rules as the proposal push: fire-and-forget,
+    lock-screen-safe body — symbol + qty only, never tokens/IDs/P&L
+    amounts the user hasn't opted into showing on a lock screen.
+    """
+    s = store or get_notification_store()
+    return asyncio.create_task(
+        _fan_out_plain(user_id=user_id, title=title, body=body, store=s)
+    )
+
+
+async def _fan_out_plain(
+    *, user_id: str, title: str, body: str, store: NotificationStore
+) -> None:
+    try:
+        devices = await store.list_active_devices(user_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("notifications: device lookup failed for %s — %s", user_id, exc)
+        return
+    if not devices:
+        return
+
+    msgs = [
+        PushMessage(
+            to=d.expo_push_token,
+            title=title,
+            body=body,
+            data={"kind": "position_event"},
+        )
+        for d in devices
+    ]
+
+    async def _revoke_token(token: str) -> None:
+        await store.revoke_by_token(token)
+
+    try:
+        result = await send_push(msgs, revoke_token=_revoke_token)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("notifications: position-event send_push raised — %s", exc)
+        return
+    logger.info(
+        "notifications: position event fanned out — user=%s sent=%d", user_id, result.sent
     )
 
 

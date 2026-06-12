@@ -43,13 +43,16 @@ from typing import TYPE_CHECKING
 # import in app.services.broker_use.
 from broker.types import OrderRequest, OrderType, Side, TimeInForce
 from engine.risk import (
+    DbRiskState,
     PortfolioPosition,
     RiskCaps,
     RiskContext,
     RiskProposal,
     Side as RiskSide,
     evaluate,
+    load_db_risk_state,
     market_of,
+    sector_for,
 )
 
 from app.schemas.approvals import ApprovalProposalDto
@@ -59,6 +62,10 @@ from app.services.broker_use import (
     with_broker_client,
 )
 from app.services.broker_store import BrokerConnectionRecord
+from app.services.order_store import (
+    persist_order_result,
+    persist_order_submit,
+)
 from app.services.paper_broker import get_paper_store, trading_mode
 from app.services.store import Store, get_store
 
@@ -98,22 +105,60 @@ async def execute_proposal(
     proposal_id: str,
     store: Store | None = None,
     risk_caps: RiskCaps | None = None,
+    exit_mode: str = "agent",
 ) -> ExecuteResponse:
-    """Resolve → re-risk → place → persist. Idempotent on ``proposal_id``."""
+    """Resolve → re-risk → place → persist. Idempotent on ``proposal_id``.
+
+    ``exit_mode`` is the user's per-position choice from the approval card:
+      - 'agent'  → bracket legs (stop + target) ride with the entry at the
+        broker, and the position manager may time-stop / early-exit it.
+      - 'manual' → no protective legs, no agent exits; the user owns the
+        close entirely.
+
+    Routing: paper mode prefers the user's REAL Alpaca paper account (real
+    market fills, working brackets — the whole reason v1 is Alpaca-only).
+    The in-memory simulator only remains as the no-broker-connected dev
+    fallback. Live mode requires a connection, full stop.
+    """
     s = store or get_store()
 
     proposal = await _find_pending_proposal(s, proposal_id)
     if proposal is None:
         raise ProposalNotFound(f"No pending proposal with id={proposal_id!r}")
 
-    # TRADING_MODE=paper (the default): full risk chain + simulated fill,
-    # no broker order endpoint is ever touched. The deliberate flip to
-    # real money is TRADING_MODE=live AND LIVE_TRADING_ENABLED=1.
-    if trading_mode() == "paper":
-        return await _execute_paper(
-            store=s, user_id=user_id, proposal=proposal, risk_caps=risk_caps
-        )
+    if exit_mode not in ("agent", "manual"):
+        raise ExecutorError(f"exit_mode must be 'agent' or 'manual', got {exit_mode!r}")
 
+    if trading_mode() == "paper":
+        try:
+            return await _execute_via_broker(
+                s, user_id=user_id, proposal=proposal,
+                risk_caps=risk_caps, exit_mode=exit_mode,
+            )
+        except BrokerUnavailableError as exc:
+            logger.info(
+                "executor[paper]: no usable broker connection (%s) — "
+                "falling back to the in-memory simulator", exc,
+            )
+            return await _execute_paper(
+                store=s, user_id=user_id, proposal=proposal,
+                risk_caps=risk_caps, exit_mode=exit_mode,
+            )
+
+    return await _execute_via_broker(
+        s, user_id=user_id, proposal=proposal, risk_caps=risk_caps, exit_mode=exit_mode
+    )
+
+
+async def _execute_via_broker(
+    s: Store,
+    *,
+    user_id: str,
+    proposal: ApprovalProposalDto,
+    risk_caps: RiskCaps | None,
+    exit_mode: str,
+) -> ExecuteResponse:
+    proposal_id = proposal.id
     async with with_broker_client(user_id) as (broker, conn):
         # 0. Live-trading gate. Alpaca-live and all Zerodha connections are
         # real money — refuse unless the operator deliberately flipped the
@@ -135,8 +180,9 @@ async def execute_proposal(
                 informational_flags=[],
             )
 
-        # 1. Re-evaluate risk against the BROKER's view of the world.
-        risk_ctx = await _build_risk_context(broker)
+        # 1. Re-evaluate risk against the BROKER's view of the world,
+        # merged with OUR halt/PDT state. Fails closed if state is unreadable.
+        risk_ctx = await _build_risk_context(broker, user_id=user_id)
         risk_decision = _re_run_risk(proposal, risk_ctx, risk_caps)
 
         if not risk_decision.approved:
@@ -158,20 +204,72 @@ async def execute_proposal(
             else proposal.qty
         )
 
-        # 2. Place the order. The client_order_id is the proposal id —
-        # Alpaca de-dupes on it for ~24h, so a retry of this whole
-        # function with the same proposal won't double-submit.
-        order = await broker.place_order(
-            OrderRequest(
-                symbol=proposal.symbol,
-                side=Side(proposal.side),
+        # 2. Persist intent FIRST (audit chain: decision → order), then place.
+        # The client_order_id is the proposal id — Alpaca de-dupes on it for
+        # ~24h, so a retry of this whole function won't double-submit, and
+        # the DB insert is ON CONFLICT DO NOTHING on the same key.
+        client_order_id = _client_order_id_for(proposal.id)
+        try:
+            order_row_id = await persist_order_submit(
+                user_id=user_id,
+                broker_connection_id=conn.id,
+                proposal=proposal,
+                client_order_id=client_order_id,
                 qty=adjusted_qty,
-                order_type=OrderType.MARKET if proposal.order_type == "MARKET" else OrderType.LIMIT,
-                limit_price=proposal.limit_price,
-                time_in_force=TimeInForce.DAY,
-                client_order_id=_client_order_id_for(proposal.id),
+                is_paper=conn.is_paper,
             )
+        except ExecutorError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — unrecorded order = audit break
+            raise ExecutorError(
+                "Execution blocked: order could not be recorded before "
+                "submission — failing closed. See server logs."
+            ) from exc
+
+        # Bracket legs: agent-managed BUYs carry the user-approved exit plan
+        # to the broker (OCO stop + target survive our downtime). GTC so
+        # the children outlive the entry day — this is a swing product.
+        use_bracket = (
+            exit_mode == "agent"
+            and proposal.side == "BUY"
+            and proposal.stop_loss is not None
+            and proposal.target_price is not None
         )
+
+        try:
+            order = await broker.place_order(
+                OrderRequest(
+                    symbol=proposal.symbol,
+                    side=Side(proposal.side),
+                    qty=adjusted_qty,
+                    order_type=OrderType.MARKET if proposal.order_type == "MARKET" else OrderType.LIMIT,
+                    limit_price=proposal.limit_price,
+                    time_in_force=TimeInForce.GTC if use_bracket else TimeInForce.DAY,
+                    client_order_id=client_order_id,
+                    take_profit_price=proposal.target_price if use_bracket else None,
+                    stop_loss_price=proposal.stop_loss if use_bracket else None,
+                )
+            )
+        except Exception:
+            # Row stays status='pending' on purpose — a transient failure is
+            # retryable: the retry reuses the same client_order_id, lands on
+            # the existing broker order if one was actually accepted, and the
+            # order poller reconciles true broker-side rejections into
+            # status='rejected'. Marking rejected here would kill the retry.
+            logger.exception(
+                "executor: broker.place_order failed for %s — row %s stays pending",
+                proposal_id, order_row_id,
+            )
+            raise
+
+        if order_row_id is not None:
+            try:
+                await persist_order_result(order_row_id=order_row_id, broker_order=order)
+            except Exception:  # noqa: BLE001 — order placed; poller heals the row
+                logger.exception(
+                    "executor: persist_order_result failed for %s — order poller will reconcile",
+                    order_row_id,
+                )
 
     logger.info(
         "executor: placed order proposal=%s user=%s symbol=%s qty=%d (trimmed_from=%d) broker_order_id=%s",
@@ -179,9 +277,10 @@ async def execute_proposal(
         adjusted_qty, proposal.qty, order.broker_order_id,
     )
 
-    # 3. Best-effort: mark the proposal "approved" so it leaves the pending list.
+    # 3. Best-effort: mark the proposal "approved" so it leaves the pending
+    # list, carrying the user's exit-mode choice onto the decision row.
     try:
-        await s.decide(proposal_id, "approved")
+        await s.decide(proposal_id, "approved", exit_mode=exit_mode)
     except Exception as exc:  # noqa: BLE001
         # The order is already placed — don't fail the route just because
         # the proposal-state write hiccupped. Reconciler will catch up.
@@ -189,7 +288,7 @@ async def execute_proposal(
 
     return ExecuteResponse(
         order=OrderResponse(
-            id=str(uuid.uuid4()),  # in-memory id; Postgres orders persistence is a follow-on
+            id=str(order_row_id) if order_row_id is not None else str(uuid.uuid4()),
             proposal_id=proposal_id,
             broker_order_id=order.broker_order_id,
             client_order_id=order.client_order_id or _client_order_id_for(proposal.id),
@@ -223,9 +322,14 @@ async def _execute_paper(
     user_id: str,
     proposal: ApprovalProposalDto,
     risk_caps: RiskCaps | None,
+    exit_mode: str = "agent",
 ) -> ExecuteResponse:
-    """Simulated execution: risk re-eval against the PAPER portfolio's
-    state, then an immediate fill at the proposal's limit/last price.
+    """In-memory simulated execution — the NO-BROKER-CONNECTED fallback.
+
+    Risk re-eval against the paper portfolio, then an immediate fill at the
+    proposal's limit/last price. Connected users get the real Alpaca paper
+    account instead (real market fills, working brackets); this simulator
+    can't hold bracket children, which is surfaced as an informational flag.
     Idempotent on the proposal-derived client_order_id like real brokers.
     """
     market = market_of(proposal.symbol)
@@ -233,6 +337,11 @@ async def _execute_paper(
 
     last_price = proposal.estimated_notional / max(proposal.qty, 1)
     pf.mark(proposal.symbol, last_price)
+
+    # Halt + PDT state applies to paper exactly like live — the whole point
+    # of the paper phase is exercising the identical rule chain. Fails
+    # closed on a DB error like the live path.
+    db_state = await _load_db_state_or_fail(user_id, pf.equity())
 
     risk_ctx = RiskContext(
         account_equity=pf.equity(),
@@ -244,9 +353,17 @@ async def _execute_paper(
                 qty=h.qty,
                 avg_entry_price=h.avg_entry_price,
                 market_value=h.qty * h.mark,
+                sector=sector_for(h.symbol),
             )
             for h in pf.holdings.values()
         ),
+        day_trades_last_5d=db_state.day_trades_last_5d,
+        recent_losing_closes=db_state.recent_losing_closes,
+        daily_pnl=db_state.daily_pnl,
+        daily_pnl_pct=db_state.daily_pnl_pct,
+        drawdown_halted=db_state.drawdown_halted,
+        drawdown_halt_reason=db_state.drawdown_halt_reason,
+        drawdown_halted_at=db_state.drawdown_halted_at,
     )
     risk_decision = _re_run_risk(proposal, risk_ctx, risk_caps)
 
@@ -285,9 +402,15 @@ async def _execute_paper(
     )
 
     try:
-        await store.decide(proposal.id, "approved")
+        await store.decide(proposal.id, "approved", exit_mode=exit_mode)
     except Exception as exc:  # noqa: BLE001 — fill already booked; don't fail the route
         logger.warning("executor[paper]: post-fill decide() failed — %s", exc)
+
+    flags = list(risk_decision.informational_flags) + ["paper_mode"]
+    if exit_mode == "agent" and proposal.stop_loss is not None:
+        # The in-memory book can't hold OCO children. Connected Alpaca
+        # paper accounts get real brackets — this flag is the nudge.
+        flags.append("no_bracket_in_memory")
 
     return ExecuteResponse(
         order=OrderResponse(
@@ -310,7 +433,7 @@ async def _execute_paper(
         risk_blocked=False,
         risk_reason="paper fill — simulated, no broker order placed",
         risk_veto_rule=None,
-        informational_flags=list(risk_decision.informational_flags) + ["paper_mode"],
+        informational_flags=flags,
     )
 
 
@@ -333,24 +456,78 @@ async def _find_pending_proposal(store: Store, proposal_id: str) -> ApprovalProp
     return None
 
 
-async def _build_risk_context(broker: "BrokerInterface") -> RiskContext:
-    """Read the BROKER's view of equity + positions + buying power.
+def _postgres_active() -> bool:
+    v = os.environ.get("USE_POSTGRES")
+    return v is not None and v.strip().lower() in ("1", "true", "yes", "on")
 
-    We deliberately don't pull from ``positions_snapshot`` here — the
-    reconciler's snapshot can be up to 30s stale, and an order-placement
-    moment is exactly when we want the freshest possible read.
+
+async def _load_db_state_or_fail(user_id: str, current_equity: float | None) -> DbRiskState:
+    """Halt + PDT + daily-drawdown state from Postgres — FAIL CLOSED.
+
+    The execution moment is the one place the system must never run blind:
+    if the DB-owned risk state can't be read, we refuse to place the order
+    rather than evaluating with no-halt/no-PDT defaults.
+
+    MockStore dev mode (USE_POSTGRES unset) has no halt/PDT tables at all —
+    returns defaults with a loud log so a misconfigured prod box is visible.
+    """
+    if not _postgres_active():
+        logger.warning(
+            "executor: USE_POSTGRES is off — halt/PDT state unavailable, "
+            "using permissive dev defaults. NEVER run live trading this way."
+        )
+        return DbRiskState()
+    try:
+        from engine.db.session import async_session_factory
+
+        return await load_db_risk_state(
+            async_session_factory(), user_id=user_id, current_equity=current_equity
+        )
+    except Exception as exc:  # noqa: BLE001 — any failure here fails closed
+        raise ExecutorError(
+            "Execution blocked: halt/PDT risk state could not be loaded — "
+            "failing closed. See server logs."
+        ) from exc
+
+
+async def _build_risk_context(broker: "BrokerInterface", *, user_id: str) -> RiskContext:
+    """Broker = freshest equity/positions; Postgres = halt + PDT state.
+
+    We deliberately don't pull equity/positions from ``positions_snapshot``
+    — the reconciler's snapshot can be up to 30s stale, and the
+    order-placement moment is exactly when we want the freshest read. The
+    DB still owns what the broker can't tell us: circuit-breaker status,
+    PDT day-trade count, wash-sale history, and today's drawdown baseline.
     """
     equity = await broker.get_account_equity()
     buying_power = await broker.get_buying_power()
-    positions = await broker.list_positions()
-    # PDT / drawdown halt / wash-sale state lives in our DB, not the
-    # broker. Phase 3.5 follow-on wires them; for the smoke we use
-    # conservative defaults (no halt, no PDT count).
+    broker_positions = await broker.list_positions()
+    positions = tuple(
+        PortfolioPosition(
+            symbol=p.symbol,
+            qty=p.qty,
+            avg_entry_price=p.avg_entry_price,
+            market_value=p.market_value,
+            sector=sector_for(p.symbol),
+        )
+        for p in broker_positions
+    )
+    cash = max(0.0, equity - sum(p.market_value for p in positions))
+
+    db_state = await _load_db_state_or_fail(user_id, equity)
+
     return RiskContext(
         account_equity=equity,
-        cash=equity - sum(p.market_value for p in positions),  # rough; broker has exact
+        cash=cash,
         buying_power=buying_power,
-        open_positions=tuple(),  # broker positions DTO → PortfolioPosition mapping is a follow-on
+        open_positions=positions,
+        day_trades_last_5d=db_state.day_trades_last_5d,
+        recent_losing_closes=db_state.recent_losing_closes,
+        daily_pnl=db_state.daily_pnl,
+        daily_pnl_pct=db_state.daily_pnl_pct,
+        drawdown_halted=db_state.drawdown_halted,
+        drawdown_halt_reason=db_state.drawdown_halt_reason,
+        drawdown_halted_at=db_state.drawdown_halted_at,
     )
 
 

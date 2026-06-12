@@ -89,7 +89,17 @@ class MockStore:
             self._pending = [p for p in self._pending if (p.expires_at is None or p.expires_at > now)]
             return list(self._pending)
 
-    async def decide(self, proposal_id: str, outcome: DecisionOutcome) -> DecisionResponse | None:
+    async def decide(
+        self,
+        proposal_id: str,
+        outcome: DecisionOutcome,
+        *,
+        exit_mode: str | None = None,
+    ) -> DecisionResponse | None:
+        # ``exit_mode`` is persisted on the Postgres path (agent_decisions
+        # column). The in-memory store has no decision row to carry it —
+        # accepted here for protocol parity.
+        _ = exit_mode
         async with self._lock:
             match = next((p for p in self._pending if p.id == proposal_id), None)
             if match is None:

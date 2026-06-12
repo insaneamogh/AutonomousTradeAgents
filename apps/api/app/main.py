@@ -42,6 +42,7 @@ from app.routers import (
     portfolio,
     review,
     strategies as strategies_router,
+    watchlist as watchlist_router,
 )
 
 settings = get_settings()
@@ -67,11 +68,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if use_pg and enable_reconciler:
         # Import lazily so MockStore code paths never pull these in.
         from engine.db.session import async_session_factory
-        from engine.reconciler import (
-            MockBrokerPoller,
-            Reconciler,
-            ReconcilerConfig,
-        )
+
+        from app.services.broker_store import get_broker_store
+        from app.services.reconciler_fleet import FleetConfig, ReconcilerFleet
 
         interval = float(os.environ.get("RECONCILER_INTERVAL_SECONDS", "30"))
         threshold = float(os.environ.get("DRAWDOWN_HALT_THRESHOLD_PCT", "-3.0"))
@@ -97,17 +96,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
             await session.commit()
 
-        reconciler = Reconciler(
-            poller=MockBrokerPoller(),  # Phase 0/1 default; Phase 2 swaps to AlpacaBrokerPoller
+        # Per-user reconciliation against the REAL broker. The mock-poller
+        # fallback only exists off-production so a local box with no broker
+        # connection still produces snapshots for demos.
+        reconciler = ReconcilerFleet(
             session_factory=session_factory,
-            user_id=_DEFAULT_USER_ID,
-            config=ReconcilerConfig(
+            broker_store=get_broker_store(),
+            config=FleetConfig(
                 interval_seconds=interval,
                 halt_threshold_pct=threshold,
+                allow_mock_fallback=not settings.is_production,
             ),
         )
         reconciler.start()
-        logger.info("reconciler started (interval=%ss, threshold=%s%%)", interval, threshold)
+        logger.info(
+            "reconciler fleet started (interval=%ss, threshold=%s%%, mock_fallback=%s)",
+            interval, threshold, not settings.is_production,
+        )
     elif use_pg:
         logger.info("PostgresStore active but reconciler disabled (RECONCILER_ENABLED=0)")
     else:
@@ -189,3 +194,4 @@ app.include_router(strategies_router.router, prefix="/api/v1")
 app.include_router(review.router, prefix="/api/v1")
 app.include_router(decisions.router, prefix="/api/v1")
 app.include_router(insights.router, prefix="/api/v1")
+app.include_router(watchlist_router.router, prefix="/api/v1")

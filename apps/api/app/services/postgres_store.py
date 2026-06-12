@@ -199,6 +199,8 @@ class PostgresStore:
         self,
         proposal_id: str,
         outcome: DecisionOutcome,
+        *,
+        exit_mode: str | None = None,
     ) -> DecisionResponse | None:
         now = _now()
         async with self._session_factory() as session:
@@ -217,10 +219,19 @@ class PostgresStore:
             if row is None:
                 return None
 
+            values: dict[str, Any] = {
+                "user_response": outcome,
+                "user_responded_at": now,
+                "completed_at": now,
+            }
+            if exit_mode in ("agent", "manual"):
+                # The user's per-position close delegation, chosen on the
+                # approval card. The position manager only touches
+                # exit_mode='agent' rows.
+                values["exit_mode"] = exit_mode
+
             await session.execute(
-                update(AgentDecision)
-                .where(AgentDecision.id == row.id)
-                .values(user_response=outcome, user_responded_at=now, completed_at=now)
+                update(AgentDecision).where(AgentDecision.id == row.id).values(**values)
             )
             await session.commit()
 
