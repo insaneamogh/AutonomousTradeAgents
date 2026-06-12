@@ -5,6 +5,61 @@ step that doesn't fit in code comments.
 
 ---
 
+## What changed on `agent-v1/auto-mode-real-data`
+
+This branch closed the auto-trade loop and replaced synthetic inputs with
+real data. Operating model now:
+
+```
+watchlist → daily council (real Alpaca bars + FRED macro) → push to phone
+  → user approves (picks exit mode) → SERVER-SIDE execution (no app round-trip)
+  → agent-mode entries placed as Alpaca BRACKET orders (stop+target at broker)
+  → per-user reconciler watches real equity → drawdown breaker
+  → position manager: time-stops + council-SELL early exits
+  → order_sync: fills, PDT ledger, detects user's manual closes at the broker
+  → EOD ghost eval + reflection (now scheduled inside the cron)
+```
+
+### Two ways to run
+
+**A. Mock mode — no infra, no keys (fresh laptop / CI).** Verifies the
+whole loop with canned LLM responses + an in-memory paper book:
+
+```bash
+DEV_AUTH_BYPASS=1 uv run --package api uvicorn app.main:app --port 8000
+# POST /api/v1/agent/run {"symbol":"NVDA"}  -> proposal with exit plan
+# POST /api/v1/approvals/{id}/decision {"outcome":"approved","exitMode":"agent"}
+#   -> executed=true, a filled paper order
+```
+
+**B. Real mode — the full stack.** Needs the infra below + the keys in
+`apps/api/.env.example`. The hard guards `AGENTS_REQUIRE_REAL_LLM=1` and
+`AGENTS_REQUIRE_REAL_DATA=1` make a misconfigured prod box FAIL rather than
+silently fall back to mock/synthetic.
+
+### New env (see `apps/api/.env.example` for the full list)
+
+| Var | Purpose |
+|---|---|
+| `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` | IEX daily bars → real technical features + ghost marks |
+| `FRED_API_KEY` | VIX / 10y / dollar for the Macro Analyst (free key) |
+| `AGENTS_REQUIRE_REAL_LLM` / `AGENTS_REQUIRE_REAL_DATA` | `1` in prod — hard-fail instead of mock/synthetic |
+| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_HOST` | per-agent council tracing; absent → no-op |
+| `LLM_TEMPERATURE` (0.0) / `LLM_TIMEOUT_SECONDS` (60) | determinism + hang protection |
+
+### Langfuse — what you'll see
+
+With the two `LANGFUSE_*` keys set, every council run is one **trace**
+(`council:<SYMBOL>`) and every agent is a **generation** under it
+(router / technical / fundamental / macro / selector / drafter / reflection),
+each showing the prompt, parsed output, tokens, cost, latency, and a level:
+`DEFAULT` = succeeded, `WARNING` = ran on a parse-retry, `ERROR` = unusable
+output. That's the "where do agents fail or succeed" view. Without keys it's
+a hard no-op — the council runs byte-identically. The daily cron flushes
+before exit; the long-lived API relies on the SDK's background flush.
+
+---
+
 ## Real Alpaca paper-trade smoke
 
 ### Preconditions
@@ -177,10 +232,13 @@ The script is **idempotent** on `(user, UTC date, symbol)` — re-running
 the same day is a no-op for symbols already decided. Use `--force` only
 during smoke testing.
 
-### Reflection cron
+### Reflection
 
-Runs EOD UTC (≈21:30 UTC = 17:30 EST, after market close + a buffer
-for late fills).
+The daily cron now runs the reflection pass **inline** after ghost eval
+(was never scheduled before this branch, so priors never moved). No
+separate job is required for the daily cadence; pass `--no-reflect` to the
+cron to skip it. The standalone CLI still exists for ad-hoc / wider-window
+runs:
 
 ```bash
 PYTHONPATH=apps/agents:packages/engine:packages/broker \
@@ -275,8 +333,8 @@ also call it directly to check the chain.
 | `council` | Last run < 8h ago, ≥1 run in last 24h |
 | `approvals` | Inbox clear OR oldest pending < 10m |
 | `broker` | At least one active connection |
-| `reconciler` | Last tick < 2m ago (only when `USE_POSTGRES=1`) |
-| `llmCost` | Placeholder until LiteLLM ledger lands |
+| `reconciler` | Last tick < 2m ago (only when `USE_POSTGRES=1`); now per-user via the reconciler fleet |
+| `llmCost` | Sums `llm_calls.cost_usd` over 30d (cost ledger is live); per-agent traces in Langfuse when keys are set |
 
 Anything `warning` or `danger` deserves operator attention. The
 `reconciler=unknown` state is **expected** for mock-mode runs and is
