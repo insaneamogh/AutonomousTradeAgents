@@ -294,6 +294,14 @@ Recommendation: don't reach for Temporal yet. A single worker process owning all
 
 ## Entries
 
+### 2026-06-13 — `fix` review batch A: safety bugs from the 3-pass code review
+- **Position-manager re-entrance guard** ([position_manager.py](apps/api/app/services/position_manager.py)): skip a decision if a SELL is already pending/accepted (`_has_in_flight_close`) — stops the duplicate "agent closing" push + redundant broker calls every tick until the close fills.
+- **degraded_nodes persisted** to `agent_decisions` (migration 0010 + model + first-class `DecisionEntry` field + runtime/PostgresDecisionLog wiring) — it dropped before the DB row for approved runs, so reflection/calibration couldn't exclude degraded runs.
+- **Paper-bracket guard**: loud WARNING when an `exit_mode=agent` BUY is placed without a real broker-side bracket (missing stop/target on the live path, or the in-memory paper fallback) — no longer a silent unprotected position.
+- **Sentry** init in [main.py](apps/api/app/main.py), env-gated on `SENTRY_DSN` (hard no-op without it).
+- Tests: re-entrance guard covered in test_position_manager. 226 + new tests green.
+- Open from the review (next batches): close-from-app endpoint+screen, multi-user user_id threading, per-user live consent, ops hardening (rate-limit/cron-index/holiday/conn-reuse).
+
 ### 2026-06-13 — `fix(ui)` NativeWind type env (unblocks `@app/ui` typecheck)
 - Committed NativeWind's generated `packages/ui/nativewind-env.d.ts` (its own header says to commit it) + the `tsconfig.json` `include` for it. `pnpm --filter @app/ui typecheck` now passes — clears the long-standing `@app/ui` tsc gate. Was sitting un-committed from codegen; not part of the feature work.
 

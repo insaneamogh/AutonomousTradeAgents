@@ -86,6 +86,17 @@ async def manage_positions_for_user(
             reason = await _exit_reason(session, decision, now)
             if reason is None:
                 continue
+            # Re-entrance guard: a SELL we placed on a prior tick may still
+            # be pending/accepted (closed_at only lands when it FILLS, via
+            # order_sync). Without this check the manager re-runs risk +
+            # cancel + place AND re-fires the "agent closing" push every
+            # tick until the fill confirms. Skip if an exit is already live.
+            if await _has_in_flight_close(session, decision.id):
+                logger.debug(
+                    "position_manager: close already in flight for %s (%s) — skipping",
+                    decision.symbol, decision.id,
+                )
+                continue
             try:
                 initiated = await _close_position(
                     session_factory,
@@ -102,6 +113,22 @@ async def manage_positions_for_user(
             if initiated:
                 closes += 1
         return closes
+
+
+async def _has_in_flight_close(session, decision_id) -> bool:
+    """True if a SELL order for this decision is already pending/accepted at
+    the broker — i.e. a close is in flight and we must not re-submit."""
+    from app.services.order_sync import IN_FLIGHT_STATUSES
+    from engine.db.models import Order
+
+    stmt = (
+        select(Order.id)
+        .where(Order.agent_decision_id == decision_id)
+        .where(Order.side == "SELL")
+        .where(Order.status.in_(IN_FLIGHT_STATUSES))
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none() is not None
 
 
 async def _exit_reason(session, decision, now: datetime) -> str | None:

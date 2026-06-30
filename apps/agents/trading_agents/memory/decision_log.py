@@ -58,6 +58,10 @@ class DecisionEntry:
     risk_reason: str | None = None
     token_usage: dict[str, Any] | None = None
     completed_at: datetime | None = None
+    # Names of council nodes that ran on a parse-retry or neutral fallback.
+    # Non-empty → the run was degraded; reflection/calibration exclude it.
+    # First-class so it survives even when proposal_dto replaces raw_state.
+    degraded_nodes: list[str] | None = None
     # The camelCase ApprovalProposalDto dict — present only when the risk
     # officer approved. Stored in the ``proposal`` JSONB column so the API's
     # ``list_pending`` can parse the row directly (single write path).

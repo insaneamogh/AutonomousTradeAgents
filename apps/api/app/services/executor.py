@@ -235,6 +235,16 @@ async def _execute_via_broker(
             and proposal.stop_loss is not None
             and proposal.target_price is not None
         )
+        if exit_mode == "agent" and proposal.side == "BUY" and not use_bracket:
+            # Don't silently demote to an unprotected entry — the position
+            # manager's time-stop becomes the ONLY exit, with no broker-side
+            # stop/target. Surface it loudly so it shows in Sentry/logs.
+            logger.warning(
+                "executor: agent-mode BUY %s placed WITHOUT a bracket "
+                "(missing stop_loss/target_price) — broker-side protection "
+                "absent; relying on the time-stop only.",
+                proposal.symbol,
+            )
 
         try:
             order = await broker.place_order(
@@ -411,6 +421,12 @@ async def _execute_paper(
         # The in-memory book can't hold OCO children. Connected Alpaca
         # paper accounts get real brackets — this flag is the nudge.
         flags.append("no_bracket_in_memory")
+        logger.warning(
+            "executor[paper]: agent-mode %s filled on the IN-MEMORY book — "
+            "no broker-side bracket exists; the position-manager time-stop is "
+            "the only exit. Connect an Alpaca paper account for real brackets.",
+            proposal.symbol,
+        )
 
     return ExecuteResponse(
         order=OrderResponse(

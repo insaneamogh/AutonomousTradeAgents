@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
-from app.services.position_manager import _exit_reason
+from app.services.position_manager import _exit_reason, _has_in_flight_close
 
 NOW = datetime(2026, 6, 12, 15, 0, tzinfo=UTC)
 
@@ -70,3 +70,13 @@ async def test_old_proposals_without_time_stop_use_horizon_fallback() -> None:
     decision.proposal = {}  # pre-0009 proposal shape
     reason = await _exit_reason(_session(False), decision, NOW)
     assert reason == "agent_time"  # 'short' horizon → 5d fallback
+
+
+async def test_in_flight_close_guard_detects_pending_sell() -> None:
+    """Re-entrance guard: a pending/accepted SELL for the decision means a
+    close is already live → the manager must not re-submit."""
+    assert await _has_in_flight_close(_session(newer_sell_exists=True), uuid.uuid4()) is True
+
+
+async def test_in_flight_close_guard_clear_when_no_open_sell() -> None:
+    assert await _has_in_flight_close(_session(newer_sell_exists=False), uuid.uuid4()) is False

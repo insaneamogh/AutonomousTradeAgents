@@ -250,5 +250,6 @@ def _to_decision_entry(
         risk_reason=str(final.get("risk_reason") or "") or None,
         token_usage=final.get("token_usage"),
         completed_at=datetime.now(timezone.utc),
+        degraded_nodes=list(final.get("degraded_nodes") or []) or None,
         proposal_dto=proposal_dto,
     )

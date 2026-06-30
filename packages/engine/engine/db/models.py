@@ -217,6 +217,10 @@ class AgentDecision(Base):
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     close_reason: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
+    # Council nodes that ran on a parse-retry or neutral fallback (migration
+    # 0010). Non-empty → degraded run; reflection/calibration exclude it.
+    degraded_nodes: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
+
 
 # ─────────────────────────────────────────────────────────────────────
 # Orders + fills

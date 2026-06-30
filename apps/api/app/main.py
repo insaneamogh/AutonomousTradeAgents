@@ -50,6 +50,30 @@ logging.basicConfig(level=settings.log_level)
 logger = logging.getLogger("api.main")
 
 
+def _init_sentry() -> None:
+    """Wire Sentry when SENTRY_DSN is set; hard no-op otherwise. Exceptions
+    surfacing in the API + reconciler fleet are otherwise invisible in prod."""
+    dsn = os.environ.get("SENTRY_DSN", "").strip()
+    if not dsn:
+        logger.info("Sentry disabled (no SENTRY_DSN)")
+        return
+    try:
+        import sentry_sdk
+
+        sentry_sdk.init(
+            dsn=dsn,
+            environment=settings.env,
+            # Conservative defaults; tune per traffic. Errors always sent.
+            traces_sample_rate=float(os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "0.0")),
+        )
+        logger.info("Sentry initialized (env=%s)", settings.env)
+    except Exception:  # noqa: BLE001 — telemetry must never block boot
+        logger.exception("Sentry init failed — continuing without it")
+
+
+_init_sentry()
+
+
 # Fixture user id — matches PostgresStore.DEFAULT_USER_ID. Phase 3 derives
 # this from real auth claims and the reconciler runs per-user.
 _DEFAULT_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")

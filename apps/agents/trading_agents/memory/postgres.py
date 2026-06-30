@@ -69,6 +69,7 @@ def _row_to_entry(r: AgentDecision) -> DecisionEntry:
         fill_avg_price=float(r.fill_avg_price) if r.fill_avg_price is not None else None,
         realized_pnl=float(r.realized_pnl) if r.realized_pnl is not None else None,
         reviewed_at=r.reviewed_at,
+        degraded_nodes=list(r.degraded_nodes) if r.degraded_nodes else None,
         technical=r.technical,
         fundamental=r.fundamental,
         macro=r.macro,
@@ -128,6 +129,7 @@ class PostgresDecisionLog:
                 fill_avg_price=entry.fill_avg_price,
                 realized_pnl=entry.realized_pnl,
                 reviewed_at=entry.reviewed_at,
+                degraded_nodes=entry.degraded_nodes,
             )
             session.add(row)
             await session.commit()
