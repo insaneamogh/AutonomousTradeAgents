@@ -64,16 +64,16 @@ async def _execute_council(
     pending-approvals entry (its ``proposal`` JSONB is the camelCase DTO),
     so we skip the legacy ``append_pending`` write to avoid duplicates.
 
-    NOTE Phase-0 single-user semantics: PostgresStore reads account /
-    activity / pending under the fixture user, so the decision row must
-    land there too (user_id=None → FIXTURE_USER_ID in the log). The
-    authed user's id is kept in logs only. Per-user stores are the
-    Phase 3+ migration — change both sides together.
+    Multi-user: the decision row is attributed to the AUTHED user, and the
+    store reads (pending / account / activity) are scoped to that same
+    user_id — so two users never see each other's proposals. Under
+    DEV_AUTH_BYPASS the authed user IS the fixture user, so dev/mock stays
+    single-bucket.
     """
     result = await run_council(
         symbol=body.symbol,
         horizon=body.horizon,
-        user_id=None,
+        user_id=user.id,
         decision_log=get_decision_log(),
         confidence_store=get_confidence_store(),
         progress_cb=progress_cb,

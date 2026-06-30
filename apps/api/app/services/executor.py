@@ -122,7 +122,8 @@ async def execute_proposal(
     """
     s = store or get_store()
 
-    proposal = await _find_pending_proposal(s, proposal_id)
+    # Scope to the caller — they can only execute their OWN pending proposal.
+    proposal = await _find_pending_proposal(s, proposal_id, user_id)
     if proposal is None:
         raise ProposalNotFound(f"No pending proposal with id={proposal_id!r}")
 
@@ -290,7 +291,7 @@ async def _execute_via_broker(
     # 3. Best-effort: mark the proposal "approved" so it leaves the pending
     # list, carrying the user's exit-mode choice onto the decision row.
     try:
-        await s.decide(proposal_id, "approved", exit_mode=exit_mode)
+        await s.decide(proposal_id, "approved", user_id=user_id, exit_mode=exit_mode)
     except Exception as exc:  # noqa: BLE001
         # The order is already placed — don't fail the route just because
         # the proposal-state write hiccupped. Reconciler will catch up.
@@ -412,7 +413,7 @@ async def _execute_paper(
     )
 
     try:
-        await store.decide(proposal.id, "approved", exit_mode=exit_mode)
+        await store.decide(proposal.id, "approved", user_id=user_id, exit_mode=exit_mode)
     except Exception as exc:  # noqa: BLE001 — fill already booked; don't fail the route
         logger.warning("executor[paper]: post-fill decide() failed — %s", exc)
 
@@ -458,7 +459,9 @@ async def _execute_paper(
 # ─────────────────────────────────────────────────────────────────────
 
 
-async def _find_pending_proposal(store: Store, proposal_id: str) -> ApprovalProposalDto | None:
+async def _find_pending_proposal(
+    store: Store, proposal_id: str, user_id: str | None = None
+) -> ApprovalProposalDto | None:
     """Locate the proposal in the user's pending queue.
 
     Returns None if it's not there. The caller raises ProposalNotFound —
@@ -466,7 +469,7 @@ async def _find_pending_proposal(store: Store, proposal_id: str) -> ApprovalProp
     it was already approved) needs the same code path but a different
     error, and we don't yet track that distinction in the Store.
     """
-    for p in await store.list_pending():
+    for p in await store.list_pending(user_id):
         if p.id == proposal_id:
             return p
     return None

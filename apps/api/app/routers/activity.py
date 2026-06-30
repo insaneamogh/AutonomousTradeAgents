@@ -20,7 +20,7 @@ async def list_activity(
     Phase 1 paginates over the ``agent_decisions`` + ``order_fills`` tables.
 
     Auth: requires a valid Bearer access token OR ``DEV_AUTH_BYPASS=1``.
+    Per-user scoped — the feed returned is the caller's own.
     """
-    _ = user  # Phase 3 follow-on: per-user filter
     store = get_store()
-    return await store.list_activity(limit=limit)
+    return await store.list_activity(user.id, limit=limit)

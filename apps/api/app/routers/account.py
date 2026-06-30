@@ -19,9 +19,8 @@ async def get_account(
     Phase 1 hits Alpaca + Postgres via the reconciler's cache.
 
     Auth: requires a valid Bearer access token OR ``DEV_AUTH_BYPASS=1`` for
-    the Phase 3 transition. Per-user filtering ships once PostgresStore
-    learns to read user_id (Phase 3 follow-on).
+    the Phase 3 transition. Per-user scoped — the snapshot returned is the
+    caller's own.
     """
-    _ = user  # Phase 3 follow-on: pass user.id into store.get_account
     store = get_store()
-    return await store.get_account()
+    return await store.get_account(user.id)

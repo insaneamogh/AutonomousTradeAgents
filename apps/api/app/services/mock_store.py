@@ -42,13 +42,19 @@ class MockStore:
 
     # ── Account ──────────────────────────────────────────────────────
 
-    async def get_account(self) -> AccountResponse:
+    async def get_account(self, user_id: str | None = None) -> AccountResponse:
+        # Single-bucket dev store — user_id accepted for Protocol parity,
+        # not used (DEV_AUTH_BYPASS resolves everything to the fixture user).
+        _ = user_id
         async with self._lock:
             return self._account
 
     # ── Activity ─────────────────────────────────────────────────────
 
-    async def list_activity(self, limit: int = 50) -> list[ActivityEntryDto]:
+    async def list_activity(
+        self, user_id: str | None = None, limit: int = 50
+    ) -> list[ActivityEntryDto]:
+        _ = user_id
         async with self._lock:
             return list(self._activity[:limit])
 
@@ -82,7 +88,8 @@ class MockStore:
             )
             return proposal
 
-    async def list_pending(self) -> list[ApprovalProposalDto]:
+    async def list_pending(self, user_id: str | None = None) -> list[ApprovalProposalDto]:
+        _ = user_id
         async with self._lock:
             now = _now()
             # Auto-expire stale proposals.
@@ -94,12 +101,13 @@ class MockStore:
         proposal_id: str,
         outcome: DecisionOutcome,
         *,
+        user_id: str | None = None,
         exit_mode: str | None = None,
     ) -> DecisionResponse | None:
         # ``exit_mode`` is persisted on the Postgres path (agent_decisions
-        # column). The in-memory store has no decision row to carry it —
-        # accepted here for protocol parity.
-        _ = exit_mode
+        # column). The in-memory store has no decision row to carry it, and
+        # is single-user — both accepted here for protocol parity.
+        _ = exit_mode, user_id
         async with self._lock:
             match = next((p for p in self._pending if p.id == proposal_id), None)
             if match is None:

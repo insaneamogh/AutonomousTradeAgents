@@ -42,10 +42,10 @@ router = APIRouter(prefix="/approvals", tags=["approvals"])
 async def list_pending(
     user: AuthedUser = Depends(get_current_user),
 ) -> list[ApprovalProposalDto]:
-    """Open proposals awaiting user decision. Auto-expired ones are filtered out."""
-    _ = user
+    """Open proposals awaiting user decision. Auto-expired ones are filtered
+    out. Per-user scoped — only the caller's own proposals."""
     store = get_store()
-    return await store.list_pending()
+    return await store.list_pending(user.id)
 
 
 @router.post(
@@ -75,7 +75,7 @@ async def decide(
     store = get_store()
 
     if body.outcome == "declined":
-        result = await store.decide(proposal_id, "declined")
+        result = await store.decide(proposal_id, "declined", user_id=user.id)
         if result is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -100,7 +100,9 @@ async def decide(
         # Live mode with no usable broker connection. Record the approval
         # so the user's intent is on the books; surface why nothing ran.
         logger.info("approve without broker for %s — %s", proposal_id, exc)
-        recorded = await store.decide(proposal_id, "approved", exit_mode=body.exit_mode)
+        recorded = await store.decide(
+            proposal_id, "approved", user_id=user.id, exit_mode=body.exit_mode
+        )
         if recorded is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

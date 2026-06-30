@@ -294,6 +294,11 @@ Recommendation: don't reach for Temporal yet. A single worker process owning all
 
 ## Entries
 
+### 2026-06-13 — `feat` review batch C: multi-user (per-user identity threading)
+- The API was single-fixture-user despite per-user auth. Now the authed `user.id` is threaded end to end: council attributes the decision row to the user ([agent.py](apps/api/app/routers/agent.py) `run_council(user_id=user.id)`); the Store Protocol + MockStore + PostgresStore methods (`get_account`/`list_activity`/`list_pending`/`decide`) take an optional `user_id` (→ `_uid()` resolves to the user or `DEFAULT_USER_ID` for cron/legacy); account/activity/approvals routes pass `user.id`; the executor scopes its proposal lookup + decide to the caller.
+- **Ownership enforced**: `decide`/`list_pending`/`close` filter by `user_id`, so user A can't see/approve/close user B's proposal (returns 404). Two real users no longer collide.
+- Backward-compatible (optional param, defaults to fixture) — mock/dev stays single-bucket under DEV_AUTH_BYPASS; 115 API tests still green. New: test_multiuser_scoping (executor threads user_id into store calls; `_uid` resolution).
+
 ### 2026-06-13 — `feat` review batch B: close-from-app (the missing spec item)
 - **API**: `GET /api/v1/positions` (open agent positions + live mark + exit plan) and `POST /api/v1/positions/{decision_id}/close` ([positions.py](apps/api/app/routers/positions.py), [positions_service.py](apps/api/app/services/positions_service.py)). Close reuses the position-manager's risk-gated path (`close_position_now`) — same bracket-cancel + audit persist as the agent's own closes, only `close_reason='user_manual'`. Works for BOTH manual-mode (user closes when ready) and agent-mode (user overrides early); ownership-checked; Postgres-only (mock → empty/not_found).
 - **Mobile**: [positions.tsx](apps/mobile/app/positions.tsx) — per-position rows (entry→mark, unrealized P&L, exit-mode badge, plan) + a confirm-guarded "Close now"; `usePositions` hook; linked from Settings → Agent. Closes the gap where "manual" exit only meant "go close it in Alpaca yourself."

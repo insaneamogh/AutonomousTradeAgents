@@ -49,6 +49,18 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _uid(user_id: str | None) -> uuid.UUID:
+    """Resolve the caller's user id to a UUID, falling back to the fixture
+    user when None (cron / legacy single-user callers). Authed routes pass
+    the real ``user.id`` so reads/writes are correctly per-user."""
+    if user_id is None:
+        return DEFAULT_USER_ID
+    try:
+        return uuid.UUID(user_id)
+    except (ValueError, TypeError):
+        return DEFAULT_USER_ID
+
+
 class PostgresStore:
     """SQLAlchemy 2.0 async store. Idempotent ``ensure_seed()`` on first use."""
 
@@ -72,16 +84,17 @@ class PostgresStore:
 
     # ── Account ──────────────────────────────────────────────────────
 
-    async def get_account(self) -> AccountResponse:
-        """Most-recent reconciler snapshot for the default user, or a
-        cold-boot fixture if the reconciler hasn't run yet."""
+    async def get_account(self, user_id: str | None = None) -> AccountResponse:
+        """Most-recent reconciler snapshot for the user, or a cold-boot
+        fixture if the reconciler hasn't run yet."""
         from engine.db.models import PositionsSnapshot
 
+        uid = _uid(user_id)
         async with self._session_factory() as session:
             await self._ensure_seed(session)
             stmt = (
                 select(PositionsSnapshot)
-                .where(PositionsSnapshot.user_id == DEFAULT_USER_ID)
+                .where(PositionsSnapshot.user_id == uid)
                 .order_by(desc(PositionsSnapshot.captured_at))
                 .limit(1)
             )
@@ -115,7 +128,9 @@ class PostgresStore:
 
     # ── Activity ─────────────────────────────────────────────────────
 
-    async def list_activity(self, limit: int = 50) -> list[ActivityEntryDto]:
+    async def list_activity(
+        self, user_id: str | None = None, limit: int = 50
+    ) -> list[ActivityEntryDto]:
         """Derive activity from agent_decisions, newest first.
 
         Mapping per decision:
@@ -125,11 +140,12 @@ class PostgresStore:
             risk_approved=False       → kind='vetoed'
             otherwise                 → kind='proposal'
         """
+        uid = _uid(user_id)
         async with self._session_factory() as session:
             await self._ensure_seed(session)
             stmt = (
                 select(AgentDecision)
-                .where(AgentDecision.user_id == DEFAULT_USER_ID)
+                .where(AgentDecision.user_id == uid)
                 .order_by(desc(AgentDecision.triggered_at))
                 .limit(limit)
             )
@@ -145,13 +161,14 @@ class PostgresStore:
 
     # ── Approvals / pending ──────────────────────────────────────────
 
-    async def list_pending(self) -> list[ApprovalProposalDto]:
+    async def list_pending(self, user_id: str | None = None) -> list[ApprovalProposalDto]:
+        uid = _uid(user_id)
         async with self._session_factory() as session:
             await self._ensure_seed(session)
             stmt = (
                 select(AgentDecision)
                 .where(
-                    AgentDecision.user_id == DEFAULT_USER_ID,
+                    AgentDecision.user_id == uid,
                     AgentDecision.risk_approved.is_(True),
                     AgentDecision.user_response.is_(None),
                 )
@@ -200,16 +217,20 @@ class PostgresStore:
         proposal_id: str,
         outcome: DecisionOutcome,
         *,
+        user_id: str | None = None,
         exit_mode: str | None = None,
     ) -> DecisionResponse | None:
         now = _now()
+        uid = _uid(user_id)
         async with self._session_factory() as session:
             await self._ensure_seed(session)
-            # Resolve the row by looking at the proposal JSONB's `id` field.
+            # Resolve the row by (user, proposal JSONB id). The user_id
+            # predicate is the ownership check — a caller can never decide
+            # another user's proposal (returns None → 404 at the route).
             stmt = (
                 select(AgentDecision)
                 .where(
-                    AgentDecision.user_id == DEFAULT_USER_ID,
+                    AgentDecision.user_id == uid,
                     AgentDecision.proposal["id"].astext == proposal_id,
                     AgentDecision.user_response.is_(None),
                 )
