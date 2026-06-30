@@ -35,6 +35,7 @@ export default function SettingsScreen() {
       <ScrollView contentContainerClassName="px-4 pb-32 pt-4 gap-4">
         <SectionLabel>Agent</SectionLabel>
         <WatchlistCard />
+        <PositionsCard />
 
         <SectionLabel>Notifications</SectionLabel>
         <NotificationsCard />
@@ -84,6 +85,32 @@ function WatchlistCard() {
           onPress={() => router.push('/watchlist')}
           accessibilityLabel="Manage the agent watchlist"
           testID="manage-watchlist"
+        />
+      </View>
+    </Card>
+  );
+}
+
+function PositionsCard() {
+  const router = useRouter();
+  return (
+    <Card>
+      <View className="flex-row items-center justify-between">
+        <View className="flex-1 pr-3">
+          <Text className="text-[15px] font-medium text-text-primary dark:text-text-primary-dark">
+            Positions
+          </Text>
+          <Text className="mt-0.5 text-[12px] leading-[17px] text-text-secondary dark:text-text-secondary-dark">
+            Open holdings the agent is managing — see the exit plan or close
+            one yourself.
+          </Text>
+        </View>
+        <Button
+          label="View"
+          variant="secondary"
+          onPress={() => router.push('/positions')}
+          accessibilityLabel="View open positions"
+          testID="view-positions"
         />
       </View>
     </Card>

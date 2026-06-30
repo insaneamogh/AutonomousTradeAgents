@@ -115,6 +115,57 @@ async def manage_positions_for_user(
         return closes
 
 
+async def close_position_now(
+    *,
+    user_id: str,
+    decision_id: str,
+    session_factory: async_sessionmaker,
+    reason: str = "user_manual",
+) -> dict:
+    """User-initiated close from the app. Works for BOTH manual-mode
+    positions (the user closes when they choose) AND agent-mode (the user
+    overrides the agent early). Same risk gate + bracket-cancel + persist +
+    push as the agent path — only the ``reason`` differs.
+
+    Returns ``{closed: bool, error: str | None}``. ``error`` is one of
+    not_found / not_owner / already_closed / no_open_position /
+    close_in_flight / risk_vetoed.
+    """
+    import os
+
+    from engine.db.models import AgentDecision
+
+    # Positions live in Postgres (decisions ARE the ledger). MockStore dev
+    # mode has no position to close.
+    if os.environ.get("USE_POSTGRES", "").strip().lower() not in ("1", "true", "yes", "on"):
+        return {"closed": False, "error": "not_found"}
+
+    try:
+        uid = uuid.UUID(user_id)
+        did = uuid.UUID(decision_id)
+    except (ValueError, TypeError):
+        return {"closed": False, "error": "not_found"}
+
+    async with session_factory() as session:
+        decision = await session.get(AgentDecision, did)
+        if decision is None:
+            return {"closed": False, "error": "not_found"}
+        if decision.user_id != uid:
+            # Ownership check — a user can never close another user's position.
+            return {"closed": False, "error": "not_owner"}
+        if decision.closed_at is not None:
+            return {"closed": False, "error": "already_closed"}
+        if not decision.fill_qty:
+            return {"closed": False, "error": "no_open_position"}
+        if await _has_in_flight_close(session, decision.id):
+            return {"closed": False, "error": "close_in_flight"}
+
+    initiated = await _close_position(
+        session_factory, user_id=user_id, decision=decision, reason=reason
+    )
+    return {"closed": initiated, "error": None if initiated else "risk_vetoed"}
+
+
 async def _has_in_flight_close(session, decision_id) -> bool:
     """True if a SELL order for this decision is already pending/accepted at
     the broker — i.e. a close is in flight and we must not re-submit."""

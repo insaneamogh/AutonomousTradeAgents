@@ -294,6 +294,11 @@ Recommendation: don't reach for Temporal yet. A single worker process owning all
 
 ## Entries
 
+### 2026-06-13 — `feat` review batch B: close-from-app (the missing spec item)
+- **API**: `GET /api/v1/positions` (open agent positions + live mark + exit plan) and `POST /api/v1/positions/{decision_id}/close` ([positions.py](apps/api/app/routers/positions.py), [positions_service.py](apps/api/app/services/positions_service.py)). Close reuses the position-manager's risk-gated path (`close_position_now`) — same bracket-cancel + audit persist as the agent's own closes, only `close_reason='user_manual'`. Works for BOTH manual-mode (user closes when ready) and agent-mode (user overrides early); ownership-checked; Postgres-only (mock → empty/not_found).
+- **Mobile**: [positions.tsx](apps/mobile/app/positions.tsx) — per-position rows (entry→mark, unrealized P&L, exit-mode badge, plan) + a confirm-guarded "Close now"; `usePositions` hook; linked from Settings → Agent. Closes the gap where "manual" exit only meant "go close it in Alpaca yourself."
+- shared-types: OpenPositionDto + ClosePositionResponse. Tests: test_positions_route (auth, empty-in-mock, 404). Mobile + shared-types typecheck clean.
+
 ### 2026-06-13 — `fix` review batch A: safety bugs from the 3-pass code review
 - **Position-manager re-entrance guard** ([position_manager.py](apps/api/app/services/position_manager.py)): skip a decision if a SELL is already pending/accepted (`_has_in_flight_close`) — stops the duplicate "agent closing" push + redundant broker calls every tick until the close fills.
 - **degraded_nodes persisted** to `agent_decisions` (migration 0010 + model + first-class `DecisionEntry` field + runtime/PostgresDecisionLog wiring) — it dropped before the DB row for approved runs, so reflection/calibration couldn't exclude degraded runs.

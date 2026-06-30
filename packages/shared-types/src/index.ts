@@ -167,6 +167,35 @@ export interface AddWatchlistRequest {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// /api/v1/positions — open agent positions + user-initiated close
+// ─────────────────────────────────────────────────────────────────────
+
+export interface OpenPositionDto {
+  decisionId: string;
+  symbol: string;
+  side: Side;
+  qty: number;
+  avgEntryPrice: number | null;
+  /** Live mark from the latest reconciler snapshot, when available. */
+  lastPrice: number | null;
+  unrealizedPnl: number | null;
+  exitMode: ExitMode;
+  stopLoss: number | null;
+  targetPrice: number | null;
+  timeStopDays: number | null;
+  /** ISO 8601 string. */
+  openedAt: string;
+}
+
+export interface ClosePositionResponse {
+  decisionId: string;
+  closed: boolean;
+  /** null on success; otherwise not_found / already_closed / close_in_flight / risk_vetoed / … */
+  error: string | null;
+  detail: string | null;
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // /api/v1/agent/run
 // ─────────────────────────────────────────────────────────────────────
 
