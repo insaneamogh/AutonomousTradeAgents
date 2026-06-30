@@ -106,6 +106,14 @@ class DecisionLog(Protocol):
         """Debug / testing only — full snapshot. Don't call in the hot path."""
         ...
 
+    async def has_decision_today(
+        self, *, user_id: str | None, symbol: str, day_utc: str
+    ) -> bool:
+        """Indexed idempotency check for the daily cron: is there already a
+        decision for (user, symbol) on ``day_utc`` (YYYY-MM-DD)? Replaces an
+        all-history scan."""
+        ...
+
 
 class InMemoryDecisionLog:
     """Process-local DecisionLog. The default for tests + CLI.
@@ -163,3 +171,15 @@ class InMemoryDecisionLog:
 
     async def all_decisions(self) -> list[DecisionEntry]:
         return list(self._rows)
+
+    async def has_decision_today(
+        self, *, user_id: str | None, symbol: str, day_utc: str
+    ) -> bool:
+        for r in self._rows:
+            if user_id is not None and r.user_id != user_id:
+                continue
+            if r.symbol != symbol:
+                continue
+            if r.triggered_at.strftime("%Y-%m-%d") == day_utc:
+                return True
+        return False

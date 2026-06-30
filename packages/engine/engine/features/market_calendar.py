@@ -44,6 +44,18 @@ US_MARKET_HOLIDAYS: frozenset[date] = frozenset(
         date(2027, 9, 6),    # Labor Day
         date(2027, 11, 25),  # Thanksgiving
         date(2027, 12, 24),  # Christmas (observed — Dec 25 is a Saturday)
+        # 2028 (Jan 1 is a Saturday → no NYSE observance; weekend rule covers it)
+        date(2028, 1, 17),   # Martin Luther King Jr. Day
+        date(2028, 2, 21),   # Washington's Birthday
+        date(2028, 4, 14),   # Good Friday
+        date(2028, 5, 29),   # Memorial Day
+        date(2028, 6, 19),   # Juneteenth
+        date(2028, 7, 4),    # Independence Day
+        date(2028, 9, 4),    # Labor Day
+        date(2028, 11, 23),  # Thanksgiving
+        date(2028, 12, 25),  # Christmas
+        # 2029 New Year (Jan 1 is a Monday) so the Dec→Jan rollover is covered
+        date(2029, 1, 1),    # New Year's Day
     }
 )
 

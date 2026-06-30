@@ -76,21 +76,13 @@ async def _already_decided_today(
 ) -> bool:
     """Has the council already produced a row for this (user, symbol) today?
 
-    Reads through the DecisionLog. The in-memory log forgets across
-    restarts, which is fine for dev; the Postgres log is the source of
-    truth in prod.
+    Uses the DecisionLog's indexed ``has_decision_today`` (an existence
+    query on (user_id, symbol, triggered_at)) — NOT a full-history scan,
+    so cron latency stays flat as the decision history grows.
     """
-    log_ = get_decision_log()
-    today = _today_utc()
-    decisions = await log_.all_decisions()
-    for d in decisions:
-        if d.user_id != user_id:
-            continue
-        if d.symbol != symbol:
-            continue
-        if d.triggered_at.strftime("%Y-%m-%d") == today:
-            return True
-    return False
+    return await get_decision_log().has_decision_today(
+        user_id=user_id, symbol=symbol, day_utc=_today_utc()
+    )
 
 
 def _equity_resolver(user_id: str):

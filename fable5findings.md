@@ -294,6 +294,12 @@ Recommendation: don't reach for Temporal yet. A single worker process owning all
 
 ## Entries
 
+### 2026-06-13 — `perf`/`feat` review batch D (part 1): cron index, holiday, rate-limit
+- **Cron idempotency** no longer scans all history: `DecisionLog.has_decision_today` is an indexed `(user_id, symbol, triggered_at)` existence query (in-memory + Postgres impls); [daily_cron.py](apps/agents/scripts/daily_cron.py) `_already_decided_today` uses it. Flat latency as history grows.
+- **Market-holiday table** extended through 2028 + 2029 New Year ([market_calendar.py](packages/engine/engine/features/market_calendar.py)) so the fail-open warning doesn't trip next year.
+- **Rate limiting** on `/auth/request-login`: in-process sliding window, 5/hour/email + 30/hour/IP → 429 ([rate_limit.py](apps/api/app/services/rate_limit.py)); conftest resets it per test. Redis window is the multi-worker upgrade (noted).
+- Tests: test_rate_limit; 161 API+agents green. Deferred 🟢 (noted): reconciler 3×→1× broker-connection reuse per tick, structured/request-id logging.
+
 ### 2026-06-13 — `feat` review batch C: multi-user (per-user identity threading)
 - The API was single-fixture-user despite per-user auth. Now the authed `user.id` is threaded end to end: council attributes the decision row to the user ([agent.py](apps/api/app/routers/agent.py) `run_council(user_id=user.id)`); the Store Protocol + MockStore + PostgresStore methods (`get_account`/`list_activity`/`list_pending`/`decide`) take an optional `user_id` (→ `_uid()` resolves to the user or `DEFAULT_USER_ID` for cron/legacy); account/activity/approvals routes pass `user.id`; the executor scopes its proposal lookup + decide to the caller.
 - **Ownership enforced**: `decide`/`list_pending`/`close` filter by `user_id`, so user A can't see/approve/close user B's proposal (returns 404). Two real users no longer collide.

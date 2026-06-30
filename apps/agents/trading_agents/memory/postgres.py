@@ -213,6 +213,30 @@ class PostgresDecisionLog:
             rows = (await session.execute(stmt)).scalars().all()
         return [_row_to_entry(r) for r in rows]
 
+    async def has_decision_today(
+        self, *, user_id: str | None, symbol: str, day_utc: str
+    ) -> bool:
+        """Indexed (user_id, symbol, triggered_at) existence check — replaces
+        the daily cron's full-history scan. ``day_utc`` is YYYY-MM-DD."""
+        from datetime import date as _date
+
+        uid = uuid.UUID(user_id) if user_id else FIXTURE_USER_ID
+        y, m, d = (int(p) for p in day_utc.split("-"))
+        day_start = datetime(y, m, d, tzinfo=timezone.utc)
+        day_end = datetime.combine(_date(y, m, d), datetime.max.time(), tzinfo=timezone.utc)
+        async with self._session_factory() as session:
+            stmt = (
+                select(AgentDecision.id)
+                .where(
+                    AgentDecision.user_id == uid,
+                    AgentDecision.symbol == symbol,
+                    AgentDecision.triggered_at >= day_start,
+                    AgentDecision.triggered_at <= day_end,
+                )
+                .limit(1)
+            )
+            return (await session.execute(stmt)).scalar_one_or_none() is not None
+
 
 # ─────────────────────────────────────────────────────────────────────
 # StrategyConfidenceStore

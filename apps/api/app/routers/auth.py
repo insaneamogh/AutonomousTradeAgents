@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.core.config import get_settings
 from app.middleware.auth import AuthedUser, get_current_user, require_real_auth
@@ -82,6 +82,7 @@ def _to_issued_response(issued: IssuedTokens) -> IssuedTokensResponse:
 )
 async def request_login(
     body: RequestLoginRequest,
+    request: Request,
     store: AuthStore = Depends(get_auth_store),
 ) -> RequestLoginResponse:
     """Issue a magic-link token.
@@ -90,11 +91,21 @@ async def request_login(
     SES). In Phase 3.1 dev mode we return the raw token in the response
     payload — the mobile app picks it up from the verify screen.
 
-    Rate limiting (5/hour/email) is on the Phase 3 follow-on list — see
-    AGENTV1.md. We log the request so abuse is visible immediately.
+    Rate-limited: 5/hour/email + 30/hour/IP (in-process sliding window).
+    Over-limit → 429. A Redis-backed window is the multi-worker upgrade.
     """
     settings = get_settings()
     is_prod = settings.env.lower() in ("prod", "production")
+
+    from app.services.rate_limit import check_login_rate
+
+    client_ip = request.client.host if request.client else None
+    if not check_login_rate(body.email, client_ip):
+        logger.warning("auth: rate limit hit for request-login (email/ip window)")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many login requests — wait a bit and try again.",
+        )
 
     try:
         challenge = await auth_request_login(
