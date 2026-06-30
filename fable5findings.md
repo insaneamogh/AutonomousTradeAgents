@@ -294,6 +294,10 @@ Recommendation: don't reach for Temporal yet. A single worker process owning all
 
 ## Entries
 
+### 2026-06-13 — `feat` review batch D (part 2): per-user live-trading consent
+- Live (real-money) trading was a single global `LIVE_TRADING_ENABLED` switch. Now it's a **two-key gate**: a live order requires that env **AND** the connection's own `live_trading_consent` flag. Migration 0011 + `BrokerConnection` column + `BrokerConnectionRecord` field + both store mappings + `set_live_consent` + `POST /api/v1/broker/connections/{id}/consent` (ownership-checked). Defaults False — existing connections stay paper-only until explicitly opted in. Executor blocks with `live_trading_disabled` if either key is missing.
+- Tests: env-on-but-no-consent → blocked; env-on-and-consent → executes. 120 API tests green.
+
 ### 2026-06-13 — `perf`/`feat` review batch D (part 1): cron index, holiday, rate-limit
 - **Cron idempotency** no longer scans all history: `DecisionLog.has_decision_today` is an indexed `(user_id, symbol, triggered_at)` existence query (in-memory + Postgres impls); [daily_cron.py](apps/agents/scripts/daily_cron.py) `_already_decided_today` uses it. Flat latency as history grows.
 - **Market-holiday table** extended through 2028 + 2029 New Year ([market_calendar.py](packages/engine/engine/features/market_calendar.py)) so the fail-open warning doesn't trip next year.

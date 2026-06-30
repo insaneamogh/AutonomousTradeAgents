@@ -106,6 +106,11 @@ class BrokerConnection(Base):
     )
 
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    # Per-connection real-money opt-in (migration 0011). A live order needs
+    # BOTH this AND the global LIVE_TRADING_ENABLED env. Default False.
+    live_trading_consent: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text_false()
+    )
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

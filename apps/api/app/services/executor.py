@@ -161,22 +161,25 @@ async def _execute_via_broker(
 ) -> ExecuteResponse:
     proposal_id = proposal.id
     async with with_broker_client(user_id) as (broker, conn):
-        # 0. Live-trading gate. Alpaca-live and all Zerodha connections are
-        # real money — refuse unless the operator deliberately flipped the
-        # env. Surfaced as a named deterministic rule for the audit trail.
-        if not conn.is_paper and not _live_trading_enabled():
+        # 0. Live-trading gate. A real-money order needs BOTH the operator's
+        # global LIVE_TRADING_ENABLED env AND this connection's explicit
+        # per-user consent flag — either missing → refuse, named for audit.
+        if not conn.is_paper and not (
+            _live_trading_enabled() and conn.live_trading_consent
+        ):
+            missing = (
+                "LIVE_TRADING_ENABLED is not set on the API"
+                if not _live_trading_enabled()
+                else "this connection has not granted live-trading consent"
+            )
             logger.warning(
-                "executor: live order BLOCKED proposal=%s user=%s broker=%s — "
-                "LIVE_TRADING_ENABLED is not set",
-                proposal_id, user_id, conn.broker,
+                "executor: live order BLOCKED proposal=%s user=%s broker=%s — %s",
+                proposal_id, user_id, conn.broker, missing,
             )
             return ExecuteResponse(
                 order=None,
                 risk_blocked=True,
-                risk_reason=(
-                    f"{conn.broker} connection is live (real money) and "
-                    "LIVE_TRADING_ENABLED is not set on the API."
-                ),
+                risk_reason=f"{conn.broker} connection is live (real money) and {missing}.",
                 risk_veto_rule="live_trading_disabled",
                 informational_flags=[],
             )

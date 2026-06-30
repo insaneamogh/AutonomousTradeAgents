@@ -378,7 +378,8 @@ def test_execute_blocks_live_connection_without_env(
 def test_execute_allows_live_connection_with_env(
     client: TestClient, monkeypatch
 ) -> None:
-    """Flipping LIVE_TRADING_ENABLED=1 deliberately opens the live path."""
+    """Flipping LIVE_TRADING_ENABLED=1 + per-connection consent opens the
+    live path (the two-key gate)."""
     monkeypatch.setenv("LIVE_TRADING_ENABLED", "1")
     broker = _FakeBroker(is_paper=False, name="zerodha")
     live_conn = BrokerConnectionRecord(
@@ -392,6 +393,7 @@ def test_execute_allows_live_connection_with_env(
         access_token_expires_at=None,
         refresh_token_expires_at=None,
         status="active",
+        live_trading_consent=True,  # per-user half of the gate
     )
     _patch_executor_with_fake_broker(monkeypatch, broker, conn=live_conn)
 
@@ -410,3 +412,38 @@ def test_execute_allows_live_connection_with_env(
     assert body["order"] is not None
     assert body["order"]["isPaper"] is False
     assert len(broker.placed) == 1
+
+
+def test_execute_blocks_live_when_env_set_but_no_consent(
+    client: TestClient, monkeypatch
+) -> None:
+    """Two-key gate: global env ON but the connection hasn't granted consent
+    → still blocked with live_trading_disabled. Nothing hits the broker."""
+    monkeypatch.setenv("LIVE_TRADING_ENABLED", "1")
+    broker = _FakeBroker(is_paper=False, name="zerodha")
+    live_conn = BrokerConnectionRecord(
+        id="conn-z2",
+        user_id="00000000-0000-0000-0000-000000000001",
+        broker="zerodha",
+        is_paper=False,
+        account_number="AB1234",
+        encrypted_access_token="enc",
+        encrypted_refresh_token=None,
+        access_token_expires_at=None,
+        refresh_token_expires_at=None,
+        status="active",
+        live_trading_consent=False,  # per-user half NOT granted
+    )
+    _patch_executor_with_fake_broker(monkeypatch, broker, conn=live_conn)
+
+    access = _login(client)
+    proposal = _seed_proposal(client, access)
+    if proposal is None:
+        pytest.skip("mock council HOLD'd")
+
+    r = client.post(f"/api/v1/orders/execute/{proposal['id']}", headers=_bearer(access))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["riskBlocked"] is True
+    assert body["riskVetoRule"] == "live_trading_disabled"
+    assert broker.placed == []

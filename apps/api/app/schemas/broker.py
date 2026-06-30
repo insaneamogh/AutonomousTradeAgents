@@ -62,8 +62,15 @@ class BrokerConnectionResponse(_Base):
     account_number: str | None
     status: str
     """active | revoked | expired"""
+    live_trading_consent: bool = False
+    """Per-connection real-money opt-in. Live orders also require the global
+    LIVE_TRADING_ENABLED env."""
     created_at: datetime
     last_used_at: datetime | None = None
+
+
+class SetConsentRequest(_Base):
+    enabled: bool
 
 
 class CallbackResponse(_Base):

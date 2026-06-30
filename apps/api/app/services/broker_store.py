@@ -47,6 +47,9 @@ class BrokerConnectionRecord:
     refresh_token_expires_at: datetime | None
     status: str = "active"
     """active | revoked | expired."""
+    live_trading_consent: bool = False
+    """Per-connection real-money opt-in. A live order needs this AND the
+    global LIVE_TRADING_ENABLED env. Default False — paper-safe."""
     last_used_at: datetime | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -75,6 +78,8 @@ class BrokerStore(Protocol):
     async def get_connection(self, connection_id: str) -> BrokerConnectionRecord | None: ...
 
     async def revoke_connection(self, connection_id: str) -> bool: ...
+
+    async def set_live_consent(self, connection_id: str, *, enabled: bool) -> bool: ...
 
 
 class InMemoryBrokerStore:
@@ -156,6 +161,14 @@ class InMemoryBrokerStore:
         rec.status = "revoked"
         rec.encrypted_access_token = ""
         rec.encrypted_refresh_token = None
+        rec.updated_at = datetime.now(timezone.utc)
+        return True
+
+    async def set_live_consent(self, connection_id: str, *, enabled: bool) -> bool:
+        rec = self._rows.get(connection_id)
+        if rec is None or rec.status == "revoked":
+            return False
+        rec.live_trading_consent = enabled
         rec.updated_at = datetime.now(timezone.utc)
         return True
 
