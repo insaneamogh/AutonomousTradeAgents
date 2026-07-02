@@ -37,6 +37,7 @@ from app.routers import (
     decisions,
     health as health_router,
     insights,
+    circuit_breaker,
     notifications,
     orders,
     portfolio,
@@ -237,6 +238,7 @@ app.include_router(agent.router, prefix="/api/v1")
 app.include_router(orders.router, prefix="/api/v1")
 app.include_router(portfolio.router, prefix="/api/v1")
 app.include_router(positions.router, prefix="/api/v1")
+app.include_router(circuit_breaker.router, prefix="/api/v1")
 app.include_router(health_router.router, prefix="/api/v1")
 app.include_router(strategies_router.router, prefix="/api/v1")
 app.include_router(review.router, prefix="/api/v1")

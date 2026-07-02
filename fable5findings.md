@@ -294,6 +294,15 @@ Recommendation: don't reach for Temporal yet. A single worker process owning all
 
 ## Entries
 
+### 2026-07-02 — `feat` review batch J: UI code-gaps (drawdown banner, keyboard, icon/splash)
+Closing the concrete UI gaps found when asked "is the UI perfect" (answer: no, and it was unrendered):
+- **Drawdown circuit-breaker banner** — the DESIGN.md-mandated persistent `danger` banner didn't exist. New vertical: `GET /api/v1/circuit-breaker` + `POST …/acknowledge` ([circuit_breaker_service.py](apps/api/app/services/circuit_breaker_service.py), [routers/circuit_breaker.py](apps/api/app/routers/circuit_breaker.py)), `useCircuitBreaker` hook, and [CircuitBreakerBanner.tsx](apps/mobile/src/components/CircuitBreakerBanner.tsx) mounted on Home + Picks. Shows while `halted`; "Acknowledge & resume" (confirm + warning haptic) flips the breaker to `manual_override` so BUYs pass again. Acknowledge = `require_real_auth`.
+- **Keyboard avoidance** (`KeyboardAvoidingView`) on the login + verify input screens.
+- **De-hardcoded the "Alpaca paper" broker string** on the approval confirm sheet — now derived from the active connection (falls back to "Paper account").
+- **Placeholder icon + splash** generated (dark canvas + mint upward mark, on-token) and wired into app.json (icon / splash / Android adaptive foreground) — no longer ships Expo's default logo; unblocks a real build. Real brand art is still a designer job.
+- Tests: circuit-breaker route (status/ack/auth). API 139 green; mobile + shared-types typecheck clean.
+- Honest caveat: STILL UNRENDERED. Layout/contrast/Dynamic-Type/VoiceOver need on-device testing (Expo Go or simulator) — see HANDOFF §0h.
+
 ### 2026-07-01 — `feat` review batch I: real market calendar (pandas_market_calendars)
 - [market_calendar.py](packages/engine/engine/features/market_calendar.py) `is_us_trading_day` now sources the XNYS calendar from `pandas_market_calendars` (cached 2024–2031, ~2008 days), falling back to the static holiday table when the package is absent and fail-open beyond both. Removes the "stale-in-2028" hardcoded-table risk the audit flagged — verified it correctly resolves 2028/2030 holidays the old table never had.
 - Added `pandas-market-calendars>=4.4.0` to engine deps (uv.lock updated). Tests: weekends/holidays/observed-closures on both paths. 47 engine+agents green.

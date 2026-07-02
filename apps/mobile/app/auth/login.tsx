@@ -6,7 +6,7 @@
 // because the API drops ``devToken`` from the response.
 
 import { useState } from 'react';
-import { Text, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 
@@ -74,6 +74,10 @@ export default function LoginScreen() {
 
   return (
     <SafeAreaView edges={['top', 'bottom']} className="flex-1 bg-bg-base dark:bg-bg-base-dark">
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        className="flex-1"
+      >
       <View className="flex-1 px-6 pt-16 pb-8 gap-6">
         <View className="gap-2">
           <Text className="text-[28px] font-bold text-text-primary dark:text-text-primary-dark">
@@ -173,6 +177,7 @@ export default function LoginScreen() {
           </Card>
         ) : null}
       </View>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }

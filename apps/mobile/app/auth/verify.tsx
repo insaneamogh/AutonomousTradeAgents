@@ -12,7 +12,14 @@
 // out of /auth → into /(tabs).
 
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Text, TextInput, View } from 'react-native';
+import {
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, router } from 'expo-router';
 
@@ -98,6 +105,10 @@ export default function VerifyScreen() {
 
   return (
     <SafeAreaView edges={['top', 'bottom']} className="flex-1 bg-bg-base dark:bg-bg-base-dark">
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        className="flex-1"
+      >
       <View className="flex-1 justify-center px-6 pb-8 gap-6">
         {status === 'verifying' ? (
           <Card variant="default" className="items-center gap-4 px-8 py-10">
@@ -203,6 +214,7 @@ export default function VerifyScreen() {
           </>
         ) : null}
       </View>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }

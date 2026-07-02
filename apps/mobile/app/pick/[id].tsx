@@ -29,6 +29,7 @@ import {
   levelLabel,
 } from '@/components/bento';
 import { useDecideApproval, usePendingApprovals } from '@/hooks/useApprovals';
+import { useBrokerConnections } from '@/hooks/useBrokerConnections';
 
 const FLAG_COPY: Record<string, string> = {
   wash_sale_warning: 'IRS wash-sale risk on this name',
@@ -39,9 +40,16 @@ export default function PickDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const { data: pending } = usePendingApprovals();
+  const { data: connections } = useBrokerConnections();
   const decide = useDecideApproval();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [exitMode, setExitMode] = useState<ExitMode>('agent');
+
+  // Real broker label for the confirm sheet — not a hardcoded "Alpaca paper".
+  const activeConn = (connections ?? []).find((c) => c.status === 'active');
+  const brokerLabel = activeConn
+    ? `${activeConn.broker[0].toUpperCase()}${activeConn.broker.slice(1)} ${activeConn.isPaper ? 'paper' : 'live'}`
+    : 'Paper account';
 
   const p = (pending ?? []).find((x) => x.id === id);
 
@@ -240,7 +248,7 @@ export default function PickDetailScreen() {
               />
               {p.stopLoss != null && <Row k="Stop loss" v={`$${p.stopLoss.toFixed(2)}`} />}
               {p.targetPrice != null && <Row k="Target" v={`$${p.targetPrice.toFixed(2)}`} />}
-              <Row k="Broker" v="Alpaca paper" />
+              <Row k="Broker" v={brokerLabel} />
             </View>
 
             <Text className="mt-4 text-[12px] font-medium text-text-secondary dark:text-text-secondary-dark">

@@ -13,6 +13,7 @@ import type { ActivityEntryDto } from '@app/shared-types';
 import { ErrorState, Skeleton, StatusPill, cn, formatRelative } from '@app/ui';
 
 import { BentoCTA, Tile, TileLabel, TileValue } from '@/components/bento';
+import { CircuitBreakerBanner } from '@/components/CircuitBreakerBanner';
 import { useAccount } from '@/hooks/useAccount';
 import { useActivity } from '@/hooks/useActivity';
 import { usePendingApprovals } from '@/hooks/useApprovals';
@@ -28,6 +29,7 @@ export default function HomeScreen() {
   return (
     <SafeAreaView edges={['top']} className="flex-1 bg-bg-canvas dark:bg-bg-canvas-dark">
       <ScrollView contentContainerClassName="px-4 pb-32 pt-4 gap-3">
+        <CircuitBreakerBanner />
         <Hero />
         <StatTiles />
         <ActivityTile />

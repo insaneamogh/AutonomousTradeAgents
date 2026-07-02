@@ -23,6 +23,7 @@ import {
   TileLabel,
   levelLabel,
 } from '@/components/bento';
+import { CircuitBreakerBanner } from '@/components/CircuitBreakerBanner';
 import { usePendingApprovals } from '@/hooks/useApprovals';
 import { useActivity } from '@/hooks/useActivity';
 import { useStartCouncilRun } from '@/hooks/useCouncilRun';
@@ -75,6 +76,7 @@ export default function PicksScreen() {
           <RefreshControl refreshing={isLoading} onRefresh={() => refetch()} />
         }
       >
+        <CircuitBreakerBanner />
         <View>
           <HeroHeadline>
             {pendingList.length > 0

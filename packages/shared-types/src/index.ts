@@ -196,6 +196,19 @@ export interface ClosePositionResponse {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// /api/v1/circuit-breaker — drawdown halt banner
+// ─────────────────────────────────────────────────────────────────────
+
+export interface CircuitBreakerResponse {
+  halted: boolean;
+  reason: string | null;
+  /** ISO 8601 string. */
+  haltedAt: string | null;
+  observedDrawdownPct: number | null;
+  thresholdPct: number | null;
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // /api/v1/agent/run
 // ─────────────────────────────────────────────────────────────────────
 
