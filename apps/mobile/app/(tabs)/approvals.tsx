@@ -7,7 +7,7 @@
 // breakdown + approve sheet.
 
 import { useMemo, useState } from 'react';
-import { Pressable, ScrollView, Text, View } from 'react-native';
+import { Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 
@@ -69,7 +69,12 @@ export default function PicksScreen() {
 
   return (
     <SafeAreaView edges={['top']} className="flex-1 bg-bg-canvas dark:bg-bg-canvas-dark">
-      <ScrollView contentContainerClassName="px-4 pb-32 pt-4 gap-3">
+      <ScrollView
+        contentContainerClassName="px-4 pb-32 pt-4 gap-3"
+        refreshControl={
+          <RefreshControl refreshing={isLoading} onRefresh={() => refetch()} />
+        }
+      >
         <View>
           <HeroHeadline>
             {pendingList.length > 0
@@ -182,7 +187,8 @@ function FilterChip({
       accessibilityLabel={`Filter: ${label}`}
       accessibilityState={{ selected: active }}
       className={cn(
-        'min-h-[32px] items-center justify-center rounded-full px-4 py-1.5',
+        // 44pt minimum tap target (CLAUDE.md / HIG).
+        'min-h-[44px] items-center justify-center rounded-full px-4 py-2',
         active
           ? 'bg-cta dark:bg-cta-dark'
           : 'border border-hairline dark:border-hairline-dark',

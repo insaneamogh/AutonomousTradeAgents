@@ -10,7 +10,7 @@
 // re-renders are scoped to the slice that changed.
 
 import { useState } from 'react';
-import { Linking, ScrollView, Text, View } from 'react-native';
+import { Alert, Linking, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 
@@ -368,6 +368,21 @@ function brokerLabel(connection: BrokerConnection): string {
 function ConnectedBrokerCard({ connection }: { connection: BrokerConnection }) {
   const revoke = useRevokeBrokerConnection();
 
+  const confirmDisconnect = () => {
+    Alert.alert(
+      `Disconnect ${brokerLabel(connection)}?`,
+      'The agent can no longer read positions or place orders for this account. You can reconnect anytime.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Disconnect',
+          style: 'destructive',
+          onPress: () => revoke.mutate(connection.id),
+        },
+      ],
+    );
+  };
+
   return (
     <Card variant="default" className="gap-3">
       <View className="flex-row items-center justify-between">
@@ -388,8 +403,8 @@ function ConnectedBrokerCard({ connection }: { connection: BrokerConnection }) {
       </View>
       <Button
         label={revoke.isPending ? 'Disconnecting…' : 'Disconnect'}
-        onPress={() => revoke.mutate(connection.id)}
-        variant="secondary"
+        onPress={confirmDisconnect}
+        variant="destructive"
         disabled={revoke.isPending}
         accessibilityLabel={`Disconnect ${brokerLabel(connection)}`}
         testID={`disconnect-${connection.broker}`}

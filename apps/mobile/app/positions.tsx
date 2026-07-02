@@ -6,9 +6,10 @@
 // the server's risk-gated close — the in-app counterpart to letting the
 // agent handle the exit. Entries are never auto-placed; this is exit-only.
 
-import { Alert, Pressable, ScrollView, Text, View } from 'react-native';
+import { Alert, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
+import * as Haptics from 'expo-haptics';
 
 import { ApiError } from '@/lib/api';
 import { EmptyState, ErrorState, Skeleton, cn } from '@app/ui';
@@ -37,10 +38,14 @@ export default function PositionsScreen() {
         {
           text: 'Close position',
           style: 'destructive',
-          onPress: () =>
+          onPress: () => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
             close.mutate(decisionId, {
               onSuccess: (res) => {
                 if (!res.closed) {
+                  Haptics.notificationAsync(
+                    Haptics.NotificationFeedbackType.Warning,
+                  ).catch(() => {});
                   Alert.alert(
                     'Not closed',
                     res.detail ?? 'A risk rule blocked the close — try again shortly.',
@@ -55,7 +60,8 @@ export default function PositionsScreen() {
                     : "Couldn't reach the agent server.";
                 Alert.alert('Close failed', detail);
               },
-            }),
+            });
+          },
         },
       ],
     );
@@ -63,7 +69,12 @@ export default function PositionsScreen() {
 
   return (
     <SafeAreaView edges={['top']} className="flex-1 bg-bg-canvas dark:bg-bg-canvas-dark">
-      <ScrollView contentContainerClassName="px-4 pb-16 pt-4 gap-3">
+      <ScrollView
+        contentContainerClassName="px-4 pb-16 pt-4 gap-3"
+        refreshControl={
+          <RefreshControl refreshing={isLoading} onRefresh={() => refetch()} />
+        }
+      >
         <Pressable
           onPress={() => router.back()}
           accessibilityRole="button"

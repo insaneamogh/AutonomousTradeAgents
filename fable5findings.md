@@ -294,6 +294,16 @@ Recommendation: don't reach for Temporal yet. A single worker process owning all
 
 ## Entries
 
+### 2026-07-01 — `feat` review batch F: iOS / Apple HIG fixes + build config
+From the HIG audit agent. Respecting DESIGN.md tokens (no raw hex/spacing):
+- **Haptics** on the trading actions (DESIGN.md §9): medium impact on approve/close, light on decline, warning notification on risk-block ([pick/[id].tsx](apps/mobile/app/pick/[id].tsx), [positions.tsx](apps/mobile/app/positions.tsx)).
+- **Approval confirm sheet** now uses `SafeAreaView edges={['bottom']}` so content clears the home indicator on notch-less iPhones (was fixed `pb-10`).
+- **Filter chips → 44pt** min tap target (were 32pt) — CLAUDE.md/HIG minimum.
+- **Pull-to-refresh** (`RefreshControl`) on the Picks + Positions lists (DESIGN.md §5).
+- **Broker disconnect** now a confirm dialog + `destructive` button variant (was a silent secondary-style tap).
+- **iOS build unblocked**: added `apps/mobile/eas.json` (dev/preview/production profiles + submit placeholders) and removed the `app.json` reference to a missing `notification-icon.png` that would fail prebuild. `extra.eas.projectId` is populated by `eas init` (documented in HANDOFF, not hardcoded).
+- Deferred (needs on-device testing, noted in HANDOFF): Dynamic Type at 200%, per-tile VoiceOver hints. Mobile + shared-types typecheck clean.
+
 ### 2026-07-01 — `fix` review batch E: auth + production hardening (3-agent audit)
 Fail-closed the production defaults a deploy could ship insecurely, from a fresh auth + prod-config + HIG audit (3 parallel review agents):
 - **Prod secrets guard** ([config.py](apps/api/app/core/config.py) `require_production_readiness`, called in the lifespan): refuses to boot in production if `JWT_SECRET` is default/short, `BROKER_TOKEN_ENCRYPTION_KEY` is unset (broker tokens would use the public dev key), or `CORS_ORIGINS` is wildcard/empty. (audit C1/C5)

@@ -13,6 +13,7 @@ import { useState } from 'react';
 import { Alert, Modal, Pressable, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import * as Haptics from 'expo-haptics';
 
 import type { ExitMode } from '@app/shared-types';
 import { EmptyState, cn } from '@app/ui';
@@ -65,6 +66,8 @@ export default function PickDetailScreen() {
   const timeStopDays = p.timeStopDays ?? 5;
 
   const decline = () => {
+    // Light impact — a low-stakes dismissal (DESIGN.md §9).
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     decide.mutate({ proposalId: p.id, outcome: 'declined' });
     setConfirmOpen(false);
     router.back();
@@ -75,6 +78,8 @@ export default function PickDetailScreen() {
   // or recorded-but-unexecuted (no broker connection).
   const approveAndExecute = async () => {
     setConfirmOpen(false);
+    // Medium impact — committing to a real (paper) order (DESIGN.md §9).
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     try {
       const res = await decide.mutateAsync({
         proposalId: p.id,
@@ -82,6 +87,8 @@ export default function PickDetailScreen() {
         exitMode,
       });
       if (res.riskBlocked) {
+        // Risk breach → warning haptic (DESIGN.md §9).
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
         Alert.alert(
           'Blocked by the risk engine',
           `${res.riskVetoRule ?? 'risk rule'}: ${res.riskReason ?? ''}\n\nThe pick stays in your queue — approve again once the condition clears.`,
@@ -219,7 +226,10 @@ export default function PickDetailScreen() {
         onRequestClose={() => setConfirmOpen(false)}
       >
         <View className="flex-1 justify-end bg-black/50">
-          <View className="rounded-t-xl bg-bg-tile px-4 pb-10 pt-4 dark:bg-bg-tile-dark">
+          <SafeAreaView
+            edges={['bottom']}
+            className="rounded-t-xl bg-bg-tile px-4 pb-6 pt-4 dark:bg-bg-tile-dark"
+          >
             <Text className="text-[16px] font-medium text-text-primary dark:text-text-primary-dark">
               Confirm order
             </Text>
@@ -266,7 +276,7 @@ export default function PickDetailScreen() {
               Approval executes server-side and is audit-logged with your user
               id, timestamp, and exit mode.
             </Text>
-          </View>
+          </SafeAreaView>
         </View>
       </Modal>
     </SafeAreaView>
