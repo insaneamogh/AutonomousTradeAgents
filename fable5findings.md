@@ -294,6 +294,11 @@ Recommendation: don't reach for Temporal yet. A single worker process owning all
 
 ## Entries
 
+### 2026-07-01 — `feat` review batch H: magic-link email delivery (env-gated)
+- Production login now works without the pull-token-from-logs workaround. New [email.py](apps/api/app/services/email.py): env-gated provider (`EMAIL_PROVIDER=resend|smtp` + `EMAIL_FROM`), renders the magic-link deep link (`autotrader://auth/verify?...`, overridable via `EMAIL_LINK_BASE`), and sends via Resend HTTP or SMTP. Hard no-op when unconfigured — never raises into login.
+- `request_login` sends the email whenever a provider is configured (best-effort; a send failure keeps the token valid to retry); the dev-token deep-link shortcut is preserved in non-prod, and a prod deploy with no provider logs a loud warning.
+- Tests: env-gating, deep-link URL, request_login calls the sender with the raw token in prod, dev fallback intact. `.env.example` documents the vars.
+
 ### 2026-07-01 — `fix` review batch G: auth concurrency (refresh CAS + magic-link claim, H1/M1)
 Closed the two remaining audit races (both needed concurrent same-token requests):
 - **Refresh rotation is now compare-and-swap** ([auth_store.py](apps/api/app/services/auth_store.py) + Postgres): `rotate_session(..., expected_current_hash=)` only lands if the row still holds the validated hash (Postgres `WHERE refresh_token_hash=old` + rowcount; in-memory atomic check). The service revokes the session on a CAS miss — two concurrent refreshes off one token can no longer both succeed. Bootstrap (first issue) stays unconditional.

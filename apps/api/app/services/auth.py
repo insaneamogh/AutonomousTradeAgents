@@ -106,6 +106,23 @@ async def request_login(
         email, record.id, expires_at.isoformat(),
     )
 
+    # Deliver via email when a provider is configured (best-effort; a send
+    # failure never blocks login — the token stays valid to retry). This is
+    # what makes production login work without the pull-token-from-logs
+    # workaround. Dev still gets ``dev_token`` for the deep-link shortcut.
+    from app.services.email import email_enabled, send_magic_link
+
+    emailed = False
+    if email_enabled():
+        emailed = await send_magic_link(email, raw_token)
+        logger.info("magic-link email to %s — sent=%s", email, emailed)
+    elif is_production:
+        logger.warning(
+            "magic-link for %s NOT emailed — no EMAIL_PROVIDER configured in prod; "
+            "the token is unreachable to the user. Configure email or use ENV=local.",
+            email,
+        )
+
     return LoginChallenge(
         magic_link_id=record.id,
         expires_at=expires_at,
