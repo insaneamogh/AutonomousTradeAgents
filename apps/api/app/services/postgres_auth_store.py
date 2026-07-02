@@ -167,18 +167,21 @@ class PostgresAuthStore:
             rows = (await session.execute(stmt)).scalars().all()
         return [_magic_to_record(r) for r in rows]
 
-    async def mark_magic_link_used(self, magic_link_id: str) -> None:
+    async def mark_magic_link_used(self, magic_link_id: str) -> bool:
         try:
             mid = uuid.UUID(magic_link_id)
         except (ValueError, TypeError):
-            return
+            return False
         async with self._session_factory() as session:
-            await session.execute(
+            # Atomic claim: the WHERE used_at IS NULL means only one concurrent
+            # verify can flip it; rowcount tells us if we were that winner.
+            result = await session.execute(
                 update(MagicLinkToken)
                 .where(MagicLinkToken.id == mid, MagicLinkToken.used_at.is_(None))
                 .values(used_at=_now())
             )
             await session.commit()
+        return bool(result.rowcount)
 
     # ── sessions ─────────────────────────────────────────────────────
 
@@ -220,18 +223,24 @@ class PostgresAuthStore:
         session_id: str,
         *,
         new_refresh_token_hash: str,
-    ) -> SessionRecord:
+        expected_current_hash: str | None = None,
+    ) -> SessionRecord | None:
         sid = uuid.UUID(session_id)
         async with self._session_factory() as session:
-            await session.execute(
-                update(UserSession)
-                .where(UserSession.id == sid)
-                .values(refresh_token_hash=new_refresh_token_hash, last_seen_at=_now())
+            stmt = update(UserSession).where(UserSession.id == sid)
+            # Compare-and-swap when the caller knows the hash it validated:
+            # the UPDATE only lands if the row still holds it, so two
+            # concurrent refreshes off the same token can't both succeed.
+            if expected_current_hash is not None:
+                stmt = stmt.where(UserSession.refresh_token_hash == expected_current_hash)
+            result = await session.execute(
+                stmt.values(refresh_token_hash=new_refresh_token_hash, last_seen_at=_now())
             )
             await session.commit()
+            if expected_current_hash is not None and not result.rowcount:
+                return None  # CAS miss — another rotation won
             row = await session.get(UserSession, sid)
-            assert row is not None
-        return _session_to_record(row)
+        return _session_to_record(row) if row is not None else None
 
     async def revoke_session(self, session_id: str) -> None:
         try:

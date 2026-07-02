@@ -142,7 +142,11 @@ async def verify_magic_link(
     if match is None:
         raise AuthError("invalid or expired magic-link token")
 
-    await store.mark_magic_link_used(match.id)
+    # Single-use: only proceed if WE claimed the token. A concurrent verify
+    # of the same link loses the claim and is rejected — never two sessions
+    # off one link.
+    if not await store.mark_magic_link_used(match.id):
+        raise AuthError("magic-link token already used")
 
     user = await store.upsert_user(email)
 
@@ -203,9 +207,21 @@ async def refresh(
     if user is None:
         raise AuthError("session user missing")
 
-    # Rotate: new refresh token, new hash, swap on the row.
+    # Rotate: new refresh token, new hash, COMPARE-AND-SWAP on the hash we
+    # just validated. If the swap misses, a concurrent refresh already
+    # rotated this token — treat the loser as a replay and revoke.
     new_refresh = mint_refresh(secret=secret, user_id=user.id, session_id=session.id)
-    await store.rotate_session(session.id, new_refresh_token_hash=hash_token(new_refresh))
+    rotated = await store.rotate_session(
+        session.id,
+        new_refresh_token_hash=hash_token(new_refresh),
+        expected_current_hash=session.refresh_token_hash,
+    )
+    if rotated is None:
+        logger.warning(
+            "concurrent refresh detected on session %s — revoking", session.id
+        )
+        await store.revoke_session(session.id)
+        raise AuthError("refresh token superseded — session revoked")
     new_access = mint_access(secret=secret, user_id=user.id, session_id=session.id)
 
     return IssuedTokens(

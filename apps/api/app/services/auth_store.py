@@ -61,7 +61,11 @@ class AuthStore(Protocol):
     # ── magic-link tokens ────────────────────────────────────────────
     async def create_magic_link(self, *, email: str, token_hash: str, expires_at: datetime) -> MagicLinkRecord: ...
     async def find_unused_magic_link(self, *, email: str) -> list[MagicLinkRecord]: ...
-    async def mark_magic_link_used(self, magic_link_id: str) -> None: ...
+    async def mark_magic_link_used(self, magic_link_id: str) -> bool:
+        """Atomically claim the token. Returns True only if THIS call flipped
+        it from unused→used — so a concurrent double-verify can't both issue
+        sessions off one link."""
+        ...
 
     # ── sessions ─────────────────────────────────────────────────────
     async def create_session(
@@ -74,7 +78,19 @@ class AuthStore(Protocol):
         device_label: str | None = None,
     ) -> SessionRecord: ...
     async def get_session(self, session_id: str) -> SessionRecord | None: ...
-    async def rotate_session(self, session_id: str, *, new_refresh_token_hash: str) -> SessionRecord: ...
+    async def rotate_session(
+        self,
+        session_id: str,
+        *,
+        new_refresh_token_hash: str,
+        expected_current_hash: str | None = None,
+    ) -> SessionRecord | None:
+        """Swap the refresh hash. When ``expected_current_hash`` is given this
+        is a COMPARE-AND-SWAP: the update only lands if the row still holds
+        that hash, and returns None otherwise (a concurrent rotation already
+        won — the caller treats that as a replay). ``None`` expected =
+        unconditional swap (bootstrap at first issue)."""
+        ...
     async def revoke_session(self, session_id: str) -> None: ...
 
 
@@ -156,10 +172,14 @@ class MockAuthStore:
             if m.email == email.lower() and m.used_at is None and m.expires_at > now
         ]
 
-    async def mark_magic_link_used(self, magic_link_id: str) -> None:
+    async def mark_magic_link_used(self, magic_link_id: str) -> bool:
+        # Single-threaded asyncio: no await between check and set, so this
+        # claim is atomic in-process. Returns True only for the winner.
         m = self._magic_links.get(magic_link_id)
-        if m is not None:
-            m.used_at = datetime.now(timezone.utc)
+        if m is None or m.used_at is not None:
+            return False
+        m.used_at = datetime.now(timezone.utc)
+        return True
 
     # sessions --------------------------------------------------------
     async def create_session(
@@ -190,8 +210,15 @@ class MockAuthStore:
         session_id: str,
         *,
         new_refresh_token_hash: str,
-    ) -> SessionRecord:
-        s = self._sessions[session_id]
+        expected_current_hash: str | None = None,
+    ) -> SessionRecord | None:
+        s = self._sessions.get(session_id)
+        if s is None:
+            return None
+        # Compare-and-swap: if the hash already moved, a concurrent refresh
+        # won this race — signal the miss so the caller treats it as replay.
+        if expected_current_hash is not None and s.refresh_token_hash != expected_current_hash:
+            return None
         s.refresh_token_hash = new_refresh_token_hash
         s.last_seen_at = datetime.now(timezone.utc)
         return s

@@ -142,3 +142,59 @@ def test_logout_ignores_foreign_refresh_token(client: TestClient) -> None:
         ).status_code
         == 200
     )
+
+
+# ── Concurrency: refresh CAS + magic-link single-use claim (H1/M1) ────
+
+
+async def test_rotate_session_is_compare_and_swap() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from app.services.auth_store import MockAuthStore
+
+    store = MockAuthStore()
+    sess = await store.create_session(
+        user_id="u1",
+        refresh_token_hash="H0",
+        expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+    )
+    # First rotation with the correct expected hash wins.
+    won = await store.rotate_session(
+        sess.id, new_refresh_token_hash="H1", expected_current_hash="H0"
+    )
+    assert won is not None and won.refresh_token_hash == "H1"
+    # A second rotation still expecting H0 misses (a concurrent refresh
+    # already moved it) → None.
+    missed = await store.rotate_session(
+        sess.id, new_refresh_token_hash="H2", expected_current_hash="H0"
+    )
+    assert missed is None
+    # Bootstrap form (no expected) is unconditional.
+    boot = await store.rotate_session(sess.id, new_refresh_token_hash="H3")
+    assert boot is not None and boot.refresh_token_hash == "H3"
+
+
+async def test_mark_magic_link_used_claims_once() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from app.services.auth_store import MockAuthStore
+
+    store = MockAuthStore()
+    link = await store.create_magic_link(
+        email="c@example.com",
+        token_hash="h",
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+    )
+    assert await store.mark_magic_link_used(link.id) is True  # winner
+    assert await store.mark_magic_link_used(link.id) is False  # already claimed
+
+
+def test_second_verify_of_same_link_is_rejected(client: TestClient) -> None:
+    email = "single-use@example.com"
+    ch = client.post("/api/v1/auth/request-login", json={"email": email}).json()
+    token = ch["devToken"]
+    first = client.post("/api/v1/auth/verify", json={"email": email, "token": token})
+    assert first.status_code == 200
+    # Replaying the exact same link → 401 (claimed once).
+    second = client.post("/api/v1/auth/verify", json={"email": email, "token": token})
+    assert second.status_code == 401

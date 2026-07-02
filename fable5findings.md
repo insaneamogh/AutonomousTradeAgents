@@ -294,6 +294,12 @@ Recommendation: don't reach for Temporal yet. A single worker process owning all
 
 ## Entries
 
+### 2026-07-01 — `fix` review batch G: auth concurrency (refresh CAS + magic-link claim, H1/M1)
+Closed the two remaining audit races (both needed concurrent same-token requests):
+- **Refresh rotation is now compare-and-swap** ([auth_store.py](apps/api/app/services/auth_store.py) + Postgres): `rotate_session(..., expected_current_hash=)` only lands if the row still holds the validated hash (Postgres `WHERE refresh_token_hash=old` + rowcount; in-memory atomic check). The service revokes the session on a CAS miss — two concurrent refreshes off one token can no longer both succeed. Bootstrap (first issue) stays unconditional.
+- **Magic-link single-use is now an atomic claim** — `mark_magic_link_used` returns whether THIS call flipped unused→used; `verify_magic_link` only issues a session on a winning claim, so a concurrent double-verify can't mint two sessions off one link.
+- Tests: store-level CAS + claim, and route-level second-verify→401. 24 auth tests green.
+
 ### 2026-07-01 — `feat` review batch F: iOS / Apple HIG fixes + build config
 From the HIG audit agent. Respecting DESIGN.md tokens (no raw hex/spacing):
 - **Haptics** on the trading actions (DESIGN.md §9): medium impact on approve/close, light on decline, warning notification on risk-block ([pick/[id].tsx](apps/mobile/app/pick/[id].tsx), [positions.tsx](apps/mobile/app/positions.tsx)).
