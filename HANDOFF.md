@@ -77,12 +77,70 @@ end of market day (not 15 min).
 
 ### 0f. Still open (added to §7 of the handoff)
 
-- **Sentry** — declared but unwired; needs a DSN. Langfuse covers LLM
-  observability; Sentry is for API exceptions.
 - **CLAUDE.md / PLAN.md drift** — they still say Zerodha is out-of-v1
   (it's built) and that LLM goes via a LiteLLM proxy (it's the Anthropic
   SDK directly). Reconcile when you get to it.
 - **wash-sale on the Postgres path** — still informational-only / silent.
+- **Refresh-rotation compare-and-swap + magic-link single-use claim** under
+  *concurrent same-token* requests (audit H1/M1) — narrow race, noted.
+- **Dynamic Type at 200%** + per-tile VoiceOver hints — need on-device testing.
+
+---
+
+## 0g. Production hardening (batch E) — the API now REFUSES to boot without these
+
+A fresh 3-agent security audit closed the fail-open production defaults. The
+practical change for you: **in production (`ENV=production` or `live`) the API
+will not start unless these are set** (a startup guard raises with a clear
+message). This is deliberate — it turns a silent insecure deploy into a loud
+failure.
+
+```
+JWT_SECRET=<random ≥32 chars>                 # `python -c "import secrets;print(secrets.token_urlsafe(48))"`
+BROKER_TOKEN_ENCRYPTION_KEY=<Fernet key>      # `python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"`
+CORS_ORIGINS=exp://exp.host,https://exp.host  # explicit list; '*' is refused in prod
+```
+
+Also now true (no action, just know it):
+- **`DEV_AUTH_BYPASS` is force-OFF in production** regardless of the env var —
+  a forgotten `=0` can no longer grant anonymous access.
+- **Logout kills the access token immediately** (tokens are session-bound);
+  `/approvals/*/decision` now requires a real session like `/orders/execute`.
+- **`SENTRY_DSN`** (optional) — set it to capture API + background-task
+  exceptions; without it Sentry is a no-op (not a boot failure).
+
+**Multi-worker caveat:** run the web service with **one** uvicorn worker
+(`UVICORN_WORKERS=1`, the default) until Redis is wired — the login
+rate-limiter, OAuth-state cache, and reconciler are per-process. Scaling web
+workers would split those. The reconciler must run in exactly one process.
+
+---
+
+## 0h. iOS build & TestFlight (making it a real iPhone app)
+
+Expo Go (§2) is enough to run it on your phone in development. To ship a real
+installable app / TestFlight build you need an Apple Developer account
+($99/yr) and:
+
+1. `npm i -g eas-cli && eas login`
+2. From `apps/mobile/`: `eas init` — this creates the EAS project and writes
+   `extra.eas.projectId` into `app.json` (required for push in standalone
+   builds; intentionally NOT hardcoded here). Commit that diff.
+3. `eas.json` is already in the repo (dev/preview/production profiles). For the
+   production build set `EXPO_PUBLIC_API_URL` to your Railway URL via an EAS
+   build-profile env or `eas secret`.
+4. Build: `eas build --platform ios --profile production`. EAS provisions the
+   signing certs/profiles for you (answer the prompts with your Apple account).
+5. Submit: fill the `submit.production.ios` placeholders in `eas.json`
+   (`appleId`, `ascAppId`, `appleTeamId` from App Store Connect), then
+   `eas submit --platform ios --profile production`.
+6. In App Store Connect → TestFlight, add yourself/testers. First external
+   TestFlight group needs a short Beta App Review.
+
+App-store metadata still to add before submit: an app icon + splash (drop
+`icon.png`/`splash.png` into `apps/mobile/assets/` and reference them in
+`app.json`), a privacy policy URL, and the App Privacy questionnaire
+(this app collects an email + broker tokens — declare them).
 
 ---
 
