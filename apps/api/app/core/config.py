@@ -14,6 +14,7 @@ here so the deploy command stays standard ``uvicorn --port $PORT``.
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from typing import Annotated
 
@@ -82,3 +83,67 @@ class Settings(BaseSettings):
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()
+
+
+# The insecure local defaults a production deploy must never ship with.
+_DEFAULT_JWT_SECRET = "change-me-locally-32-bytes-min"
+
+
+def production_config_problems(settings: Settings) -> list[str]:
+    """Return a list of fatal misconfigurations for a production deploy.
+
+    Empty list = safe to boot. Each entry is a human-readable problem. This
+    is the single source of truth for "what MUST be set in prod" — a
+    forgotten env var here is how a deploy silently ships with a known JWT
+    signing key or an unencrypted-token dev key.
+    """
+    if not settings.is_production:
+        return []
+
+    problems: list[str] = []
+
+    secret = (settings.jwt_secret or "").strip()
+    if secret == _DEFAULT_JWT_SECRET or len(secret) < 32:
+        problems.append(
+            "JWT_SECRET is unset/default/too-short — set a random ≥32-char value "
+            "(anyone with the default can forge tokens for any user)."
+        )
+
+    # Broker OAuth tokens are Fernet-encrypted with this key; the dev fallback
+    # is public in the repo, so real tokens would be trivially decryptable.
+    if not os.environ.get("BROKER_TOKEN_ENCRYPTION_KEY", "").strip():
+        problems.append(
+            "BROKER_TOKEN_ENCRYPTION_KEY is unset — broker tokens would be "
+            "encrypted with the public dev key. Set a real Fernet key."
+        )
+
+    if not settings.effective_cors_origins:
+        problems.append(
+            "CORS_ORIGINS is unset/wildcard — set an explicit comma-separated "
+            "allow-list (every cross-origin request is denied otherwise)."
+        )
+
+    if _truthy(os.environ.get("DEV_AUTH_BYPASS")):
+        problems.append(
+            "DEV_AUTH_BYPASS is truthy in production — it is force-disabled at "
+            "runtime, but unset it to avoid confusion."
+        )
+
+    return problems
+
+
+def _truthy(v: str | None) -> bool:
+    return v is not None and v.strip().lower() in ("1", "true", "yes", "on")
+
+
+def require_production_readiness() -> None:
+    """Fail fast at startup if a production deploy is missing critical secrets.
+    No-op outside production. Called from the app lifespan."""
+    settings = get_settings()
+    problems = production_config_problems(settings)
+    if problems:
+        joined = "\n  - ".join(problems)
+        raise RuntimeError(
+            "Refusing to start in production with insecure configuration:\n  - "
+            + joined
+        )

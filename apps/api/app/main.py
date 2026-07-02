@@ -86,6 +86,12 @@ def _is_truthy(v: str | None) -> bool:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    # Fail fast in production if critical secrets are missing/default. No-op
+    # outside production. This is the last gate before we accept traffic.
+    from app.core.config import require_production_readiness
+
+    require_production_readiness()
+
     reconciler = None
     use_pg = _is_truthy(os.environ.get("USE_POSTGRES"))
     enable_reconciler = _is_truthy(os.environ.get("RECONCILER_ENABLED", "1" if use_pg else "0"))
@@ -187,6 +193,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _security_headers(request, call_next):  # noqa: ANN001, ANN201
+    """Baseline hardening headers on every response. Cheap; matters most for
+    the broker-OAuth HTML pages (clickjacking / MIME-sniff) and HTTPS pinning
+    behind the TLS-terminating proxy (Railway/Fly)."""
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    if settings.is_production:
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+        )
+    return response
 
 
 @app.get("/health")

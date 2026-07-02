@@ -95,7 +95,10 @@ async def request_login(
     Over-limit → 429. A Redis-backed window is the multi-worker upgrade.
     """
     settings = get_settings()
-    is_prod = settings.env.lower() in ("prod", "production")
+    # Single source of truth — ``_PRODUCTION_ENVS`` also includes "live". An
+    # inline tuple here previously omitted it, leaking the dev magic-link
+    # token in the response body under ENV=live (account takeover).
+    is_prod = settings.is_production
 
     from app.services.rate_limit import check_login_rate
 
@@ -163,9 +166,20 @@ async def verify(
 )
 async def refresh(
     body: RefreshRequest,
+    request: Request,
     store: AuthStore = Depends(get_auth_store),
 ) -> IssuedTokensResponse:
     settings = get_settings()
+
+    from app.services.rate_limit import check_refresh_rate
+
+    client_ip = request.client.host if request.client else None
+    if not check_refresh_rate(client_ip):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many token refreshes — slow down.",
+        )
+
     try:
         issued = await auth_refresh(
             refresh_token=body.refresh_token,
@@ -208,6 +222,14 @@ async def logout(
             from app.services.jwt_service import verify_refresh
 
             claims = verify_refresh(secret=settings.jwt_secret, token=body.refresh_token)
+            # Ownership: a caller may only revoke their OWN session. Without
+            # this, user A holding user B's refresh token could log B out.
+            if claims.sub != user.id:
+                logger.warning(
+                    "auth: logout refresh-token subject %s != caller %s — refusing",
+                    claims.sub, user.id,
+                )
+                return LogoutResponse(revoked=False)
             session_id = claims.sid
         except TokenError:
             # Already-invalid refresh — treat as "nothing to revoke" + 200.

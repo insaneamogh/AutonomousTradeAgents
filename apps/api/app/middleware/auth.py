@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from fastapi import Depends, HTTPException, Request, status
 
@@ -46,7 +47,20 @@ def _is_truthy(v: str | None) -> bool:
 
 
 def _dev_bypass_enabled() -> bool:
-    """Default ON in local dev. Mobile-auth-ready deploys set this to 0."""
+    """Whether the no-Bearer fixture-user fallback is allowed.
+
+    FORCE-OFF in production regardless of the env var — a prod deploy that
+    forgets to set DEV_AUTH_BYPASS=0 must NEVER silently accept
+    unauthenticated requests. Default ON only in non-production for local
+    dev ergonomics.
+    """
+    if get_settings().is_production:
+        if _is_truthy(os.environ.get("DEV_AUTH_BYPASS")):
+            logger.warning(
+                "DEV_AUTH_BYPASS is set truthy but ENV is production — "
+                "IGNORING it. Unauthenticated access is never allowed in prod."
+            )
+        return False
     return _is_truthy(os.environ.get("DEV_AUTH_BYPASS", "1"))
 
 
@@ -109,6 +123,25 @@ async def get_current_user(
                 detail="user not found for token subject",
                 headers={"WWW-Authenticate": "Bearer"},
             )
+
+        # Session binding: access tokens carry the session id. If that
+        # session was revoked (logout / admin) or expired, refuse — so a
+        # logged-out access token can't keep executing trades for up to
+        # its 15-min TTL. Tokens minted before this (no sid) skip the check
+        # and age out within the TTL.
+        if claims.sid is not None:
+            session = await store.get_session(claims.sid)
+            if (
+                session is None
+                or session.revoked_at is not None
+                or session.expires_at < datetime.now(timezone.utc)
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="session revoked or expired",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+
         return AuthedUser(
             id=user.id,
             email=user.email,

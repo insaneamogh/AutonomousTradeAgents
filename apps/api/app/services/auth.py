@@ -206,7 +206,7 @@ async def refresh(
     # Rotate: new refresh token, new hash, swap on the row.
     new_refresh = mint_refresh(secret=secret, user_id=user.id, session_id=session.id)
     await store.rotate_session(session.id, new_refresh_token_hash=hash_token(new_refresh))
-    new_access = mint_access(secret=secret, user_id=user.id)
+    new_access = mint_access(secret=secret, user_id=user.id, session_id=session.id)
 
     return IssuedTokens(
         user=user,
@@ -244,7 +244,7 @@ async def _issue_pair(
     )
     refresh_token = mint_refresh(secret=secret, user_id=user.id, session_id=session.id)
     await store.rotate_session(session.id, new_refresh_token_hash=hash_token(refresh_token))
-    access_token = mint_access(secret=secret, user_id=user.id)
+    access_token = mint_access(secret=secret, user_id=user.id, session_id=session.id)
 
     return IssuedTokens(
         user=user,

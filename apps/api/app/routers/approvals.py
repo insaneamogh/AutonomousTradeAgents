@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.middleware.auth import AuthedUser, get_current_user
+from app.middleware.auth import AuthedUser, get_current_user, require_real_auth
 from app.schemas.approvals import (
     ApprovalProposalDto,
     DecisionRequest,
@@ -56,9 +56,14 @@ async def list_pending(
 async def decide(
     proposal_id: str,
     body: DecisionRequest,
-    user: AuthedUser = Depends(get_current_user),
+    user: AuthedUser = Depends(require_real_auth),
 ) -> DecisionResponse:
     """Approve (→ execute server-side) or decline a pending proposal.
+
+    Uses ``require_real_auth`` (never the DEV_AUTH_BYPASS fixture path):
+    approving runs the same broker-order/execute chain as
+    ``/orders/execute`` and ``/positions/{id}/close``, so it must demand a
+    real session like they do — no anonymous trade execution.
 
     Approve outcomes:
       - executed=True + order        the deterministic chain passed; the

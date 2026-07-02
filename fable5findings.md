@@ -294,6 +294,17 @@ Recommendation: don't reach for Temporal yet. A single worker process owning all
 
 ## Entries
 
+### 2026-07-01 — `fix` review batch E: auth + production hardening (3-agent audit)
+Fail-closed the production defaults a deploy could ship insecurely, from a fresh auth + prod-config + HIG audit (3 parallel review agents):
+- **Prod secrets guard** ([config.py](apps/api/app/core/config.py) `require_production_readiness`, called in the lifespan): refuses to boot in production if `JWT_SECRET` is default/short, `BROKER_TOKEN_ENCRYPTION_KEY` is unset (broker tokens would use the public dev key), or `CORS_ORIGINS` is wildcard/empty. (audit C1/C5)
+- **DEV_AUTH_BYPASS force-off in production** ([middleware/auth.py](apps/api/app/middleware/auth.py)) regardless of the env var — a forgotten `DEV_AUTH_BYPASS=0` can no longer grant anonymous fixture-user access in prod. (C2)
+- **`/approvals/{id}/decision` now `require_real_auth`** — it runs the same broker-execute chain as `/orders/execute`, so it must demand a real session (was bypassable). (C3)
+- **`ENV=live` no longer leaks the dev magic-link token** — `request-login` uses `settings.is_production` (which includes "live"), not an inline tuple that omitted it. (C4)
+- **Access tokens are session-bound** — `mint_access` embeds `sid`; the middleware rejects a token whose session is revoked/expired. Logout now kills the access token immediately instead of leaving a ≤15-min window on trade routes. (H2)
+- **Logout ownership check** — a caller can't revoke via someone else's refresh token. **Refresh endpoint rate-limited** (60/hr/IP). **Security headers** (nosniff / X-Frame-Options DENY / Referrer-Policy / HSTS in prod) on every response.
+- Tests: test_auth_hardening (live=prod, bypass-off-in-prod, config guard, logout revokes access token end-to-end, foreign-refresh refused). Full suite green.
+- Still open (noted): refresh-rotation compare-and-swap + magic-link single-use claim under *concurrent same-token* requests (H1/M1 — narrow race); multi-worker needs Redis for the rate-limiter/OAuth-state/reconciler singletons (documented, run 1 web worker).
+
 ### 2026-06-13 — `feat` review batch D (part 2): per-user live-trading consent
 - Live (real-money) trading was a single global `LIVE_TRADING_ENABLED` switch. Now it's a **two-key gate**: a live order requires that env **AND** the connection's own `live_trading_consent` flag. Migration 0011 + `BrokerConnection` column + `BrokerConnectionRecord` field + both store mappings + `set_live_consent` + `POST /api/v1/broker/connections/{id}/consent` (ownership-checked). Defaults False — existing connections stay paper-only until explicitly opted in. Executor blocks with `live_trading_disabled` if either key is missing.
 - Tests: env-on-but-no-consent → blocked; env-on-and-consent → executes. 120 API tests green.

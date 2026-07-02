@@ -180,13 +180,19 @@ ACCESS_TOKEN_TTL: timedelta = timedelta(minutes=15)
 REFRESH_TOKEN_TTL: timedelta = timedelta(days=30)
 
 
-def mint_access(*, secret: str, user_id: str) -> str:
-    """Short-lived access token. Sent on every authenticated request."""
+def mint_access(*, secret: str, user_id: str, session_id: str | None = None) -> str:
+    """Short-lived access token. Sent on every authenticated request.
+
+    Carries the ``sid`` so the auth middleware can check the session hasn't
+    been revoked — otherwise a logged-out (or admin-revoked) access token
+    would stay valid for its full TTL, including on trade-execution routes.
+    """
     return mint(
         secret=secret,
         user_id=user_id,
         typ="access",
         lifetime=ACCESS_TOKEN_TTL,
+        session_id=session_id,
     )
 
 

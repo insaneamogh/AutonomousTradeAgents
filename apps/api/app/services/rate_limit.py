@@ -18,6 +18,10 @@ EMAIL_LIMIT = 5
 IP_LIMIT = 30
 WINDOW_SECONDS = 3600
 
+# Refresh: a legit device refreshes ~4×/hour (15-min access TTL); 60/hour/IP
+# is generous headroom while still capping a stolen-token flood.
+REFRESH_IP_LIMIT = 60
+
 
 class SlidingWindowLimiter:
     def __init__(self) -> None:
@@ -53,6 +57,14 @@ def check_login_rate(email: str, ip: str | None) -> bool:
         email_ok = _limiter.allow(f"email:{email.lower().strip()}", limit=EMAIL_LIMIT)
         ip_ok = _limiter.allow(f"ip:{ip or 'unknown'}", limit=IP_LIMIT)
         return email_ok and ip_ok
+    except Exception:  # noqa: BLE001 — never lock users out on a limiter bug
+        return True
+
+
+def check_refresh_rate(ip: str | None) -> bool:
+    """True if this refresh is allowed (per-IP flood cap)."""
+    try:
+        return _limiter.allow(f"refresh-ip:{ip or 'unknown'}", limit=REFRESH_IP_LIMIT)
     except Exception:  # noqa: BLE001 — never lock users out on a limiter bug
         return True
 
