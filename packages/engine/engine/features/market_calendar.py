@@ -1,15 +1,17 @@
-"""US (NYSE) trading-day gate — deterministic, no external dependency.
+"""US (NYSE) trading-day gate.
 
-Weekends + the static full-closure holiday list below. Early-close days
-(day after Thanksgiving, Christmas Eve) count as TRADING days — a daily-bar
-swing product only cares whether a close prints.
+Primary source is ``pandas_market_calendars`` (the XNYS calendar) — the
+authoritative, self-updating holiday schedule. When that package isn't
+installed (e.g. a slim runtime that hasn't ``uv sync``'d it) we fall back
+to the static full-closure table below, and if the requested year is also
+outside that table we fail OPEN (report the weekday as a trading day).
 
-Fail-open by design: a year missing from the table logs loudly and reports
-the day as open. Running the council on a surprise holiday wastes one cron
-pass (proposals expire unseen); silently skipping a real trading day loses
-a live trading day — the worse failure.
+Rationale for fail-open: running the council on a surprise holiday wastes
+one cron pass (proposals expire unseen); silently skipping a real trading
+day loses a live trading day — the worse failure.
 
-Swap to ``pandas_market_calendars`` when intraday (v1.5) raises the stakes.
+Early-close days (day after Thanksgiving, Christmas Eve) count as TRADING
+days — a daily-bar swing product only cares whether a close prints.
 """
 
 from __future__ import annotations
@@ -61,15 +63,48 @@ US_MARKET_HOLIDAYS: frozenset[date] = frozenset(
 
 _COVERED_YEARS = frozenset(d.year for d in US_MARKET_HOLIDAYS)
 
+# Lazily-built (valid_days_set, min_date, max_date) from pandas_market_calendars,
+# or None when the package isn't importable. Sentinel ``False`` = not yet tried.
+_MCAL_CACHE: object = False
+
+
+def _mcal_valid_days() -> tuple[frozenset[date], date, date] | None:
+    """Trading days from the XNYS calendar over a wide window, cached once.
+    Returns None if pandas_market_calendars isn't installed / errors."""
+    global _MCAL_CACHE
+    if _MCAL_CACHE is not False:
+        return _MCAL_CACHE  # type: ignore[return-value]
+    try:
+        import pandas_market_calendars as mcal
+
+        cal = mcal.get_calendar("XNYS")
+        start, end = date(2024, 1, 1), date(2031, 12, 31)
+        idx = cal.valid_days(start_date=start.isoformat(), end_date=end.isoformat())
+        days = frozenset(ts.date() for ts in idx)
+        _MCAL_CACHE = (days, start, end)
+        logger.info("market_calendar: using pandas_market_calendars XNYS (%d days cached)", len(days))
+    except Exception as exc:  # noqa: BLE001 — any failure → static fallback
+        logger.info("market_calendar: pandas_market_calendars unavailable (%s) — static table", exc)
+        _MCAL_CACHE = None
+    return _MCAL_CACHE  # type: ignore[return-value]
+
 
 def is_us_trading_day(d: date) -> bool:
     """True when NYSE prints a daily close on ``d``."""
-    if d.weekday() >= 5:  # Saturday / Sunday
+    if d.weekday() >= 5:  # Saturday / Sunday — cheap short-circuit
         return False
+
+    mcal = _mcal_valid_days()
+    if mcal is not None:
+        days, lo, hi = mcal
+        if lo <= d <= hi:
+            return d in days
+        # Outside the cached window — fall through to the static table.
+
     if d.year not in _COVERED_YEARS:
         logger.warning(
-            "market_calendar: %s not in the holiday table (covered: %s) — "
-            "treating as OPEN. Extend US_MARKET_HOLIDAYS.",
+            "market_calendar: %s not in the holiday table (covered: %s) and "
+            "pandas_market_calendars unavailable — treating as OPEN.",
             d.year, sorted(_COVERED_YEARS),
         )
         return True

@@ -294,6 +294,10 @@ Recommendation: don't reach for Temporal yet. A single worker process owning all
 
 ## Entries
 
+### 2026-07-01 — `feat` review batch I: real market calendar (pandas_market_calendars)
+- [market_calendar.py](packages/engine/engine/features/market_calendar.py) `is_us_trading_day` now sources the XNYS calendar from `pandas_market_calendars` (cached 2024–2031, ~2008 days), falling back to the static holiday table when the package is absent and fail-open beyond both. Removes the "stale-in-2028" hardcoded-table risk the audit flagged — verified it correctly resolves 2028/2030 holidays the old table never had.
+- Added `pandas-market-calendars>=4.4.0` to engine deps (uv.lock updated). Tests: weekends/holidays/observed-closures on both paths. 47 engine+agents green.
+
 ### 2026-07-01 — `feat` review batch H: magic-link email delivery (env-gated)
 - Production login now works without the pull-token-from-logs workaround. New [email.py](apps/api/app/services/email.py): env-gated provider (`EMAIL_PROVIDER=resend|smtp` + `EMAIL_FROM`), renders the magic-link deep link (`autotrader://auth/verify?...`, overridable via `EMAIL_LINK_BASE`), and sends via Resend HTTP or SMTP. Hard no-op when unconfigured — never raises into login.
 - `request_login` sends the email whenever a provider is configured (best-effort; a send failure keeps the token valid to retry); the dev-token deep-link shortcut is preserved in non-prod, and a prod deploy with no provider logs a loud warning.
