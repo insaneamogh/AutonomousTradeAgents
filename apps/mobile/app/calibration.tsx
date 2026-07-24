@@ -45,7 +45,7 @@ export default function CalibrationScreen() {
           <Tile>
             <EmptyState
               title="No graded trades yet"
-              description="Grade closed trades in the Review tab — the scorecard builds itself from there."
+              description="Grade closed trades in the Review tab - the scorecard builds itself from there."
             />
           </Tile>
         ) : (
@@ -91,13 +91,13 @@ export default function CalibrationScreen() {
               <TileLabel>When you overrode the agent</TileLabel>
               {data.overrides.count === 0 ? (
                 <Text className="text-[12px] text-text-tertiary dark:text-text-tertiary-dark">
-                  No scoreable overrides yet — they need a disagreement AND a closed trade.
+                  No scoreable overrides yet - they need a disagreement AND a closed trade.
                 </Text>
               ) : (
                 <>
                   <Text className="text-[13px] leading-[19px] text-text-secondary dark:text-text-secondary-dark">
                     You disagreed {data.overrides.count} time
-                    {data.overrides.count === 1 ? '' : 's'} on closed trades — and were right{' '}
+                    {data.overrides.count === 1 ? '' : 's'} on closed trades - and were right{' '}
                     <Text
                       className={cn(
                         'font-medium',

@@ -451,7 +451,7 @@ async def _execute_paper(
             submitted_at=fill.filled_at,
         ),
         risk_blocked=False,
-        risk_reason="paper fill — simulated, no broker order placed",
+        risk_reason="paper fill - simulated, no broker order placed",
         risk_veto_rule=None,
         informational_flags=flags,
     )

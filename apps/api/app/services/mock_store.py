@@ -173,7 +173,7 @@ class MockStore:
                 bull_case=(
                     "Earnings revisions remain positive. AI-capex narrative supports continued "
                     "multiple. Relative strength vs. peers is in the top decile. Volume profile "
-                    "constructive — accumulation pattern over the last 8 sessions."
+                    "constructive - accumulation pattern over the last 8 sessions."
                 ),
                 bear_case=(
                     "Sentiment is crowded; insider sells last week add a counter-signal. If "
@@ -197,7 +197,7 @@ class MockStore:
                 side="BUY",
                 qty=21,
                 price=187.40,
-                headline="Filled @ $187.40 — followed playbook, 3.2% size",
+                headline="Filled @ $187.40 - followed playbook, 3.2% size",
                 timestamp=_minutes_ago(7),
             ),
             ActivityEntryDto(
@@ -206,7 +206,7 @@ class MockStore:
                 symbol="HMT",
                 side="BUY",
                 verdict="HOLD",
-                headline="Vetoed — bear researcher flagged 200-DMA divergence",
+                headline="Vetoed - bear researcher flagged 200-DMA divergence",
                 timestamp=_minutes_ago(54),
             ),
             ActivityEntryDto(
@@ -216,7 +216,7 @@ class MockStore:
                 side="SELL",
                 qty=8,
                 price=432.18,
-                headline="Closed +1.8R — trailing stop hit on weekly weakness",
+                headline="Closed +1.8R - trailing stop hit on weekly weakness",
                 timestamp=_minutes_ago(122),
             ),
             ActivityEntryDto(
@@ -224,7 +224,7 @@ class MockStore:
                 kind="declined",
                 symbol="TSLA",
                 side="BUY",
-                headline="User declined — preferred to wait for earnings",
+                headline="User declined - preferred to wait for earnings",
                 timestamp=_minutes_ago(180),
             ),
         ]

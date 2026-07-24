@@ -99,7 +99,7 @@ export default function CouncilTheaterScreen() {
               {data?.error ?? "Couldn't reach the agent server."}
             </Text>
             <Text className="text-[11px] text-text-tertiary dark:text-text-tertiary-dark">
-              The run may have expired — head back and run again.
+              The run may have expired - head back and run again.
             </Text>
           </Tile>
         ) : (

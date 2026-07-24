@@ -56,7 +56,7 @@ export default function StrategiesScreen() {
 
         <View className="items-center justify-center rounded-lg border border-dashed border-hairline px-4 py-5 dark:border-hairline-dark">
           <Text className="text-[12px] text-text-tertiary dark:text-text-tertiary-dark">
-            + Backtest new strategy — ships with the Phase 1 backtester
+            + Backtest new strategy - ships with the Phase 1 backtester
           </Text>
         </View>
 

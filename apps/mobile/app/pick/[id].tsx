@@ -99,13 +99,13 @@ export default function PickDetailScreen() {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
         Alert.alert(
           'Blocked by the risk engine',
-          `${res.riskVetoRule ?? 'risk rule'}: ${res.riskReason ?? ''}\n\nThe pick stays in your queue — approve again once the condition clears.`,
+          `${res.riskVetoRule ?? 'risk rule'}: ${res.riskReason ?? ''}\n\nThe pick stays in your queue - approve again once the condition clears.`,
         );
         return; // stay on the pick; it's still pending server-side
       }
       if (res.executed === false) {
         Alert.alert(
-          'Approved — not executed',
+          'Approved - not executed',
           res.riskReason ?? 'No broker connection is available to execute.',
         );
       }
@@ -181,7 +181,7 @@ export default function PickDetailScreen() {
           <Text className="text-[11px] leading-[16px] text-text-tertiary dark:text-text-tertiary-dark">
             If you delegate the close, stop &amp; target sit at the broker as a
             bracket and the agent exits after {timeStopDays}d (or earlier on a
-            council SELL) — even while you're away from the phone.
+            council SELL) - even while you're away from the phone.
           </Text>
         </Tile>
 
@@ -202,7 +202,7 @@ export default function PickDetailScreen() {
           ))}
           {(p.informationalFlags ?? []).length === 0 && (
             <Text className="text-[11px] text-text-tertiary dark:text-text-tertiary-dark">
-              All blocking rules clear — flags would show here.
+              All blocking rules clear - flags would show here.
             </Text>
           )}
         </Tile>

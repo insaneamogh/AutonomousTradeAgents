@@ -86,7 +86,7 @@ export default function PicksScreen() {
           <HeroSub>
             {pendingList.length > 0
               ? 'waiting for your approval'
-              : 'Every council run lands here — including vetoes.'}
+              : 'Every council run lands here - including vetoes.'}
           </HeroSub>
         </View>
 
@@ -158,7 +158,7 @@ export default function PicksScreen() {
           </View>
           {startRun.isError && (
             <Text className="text-[12px] text-rose dark:text-rose-dark">
-              Couldn't start the run — is the server reachable?
+              Couldn't start the run - is the server reachable?
             </Text>
           )}
           <BentoCTA

@@ -153,7 +153,7 @@ function ActivityTile() {
         />
       ) : data.length === 0 ? (
         <Text className="text-[12px] text-text-tertiary dark:text-text-tertiary-dark">
-          Quiet so far — run the council from the Picks tab.
+          Quiet so far - run the council from the Picks tab.
         </Text>
       ) : (
         data.slice(0, 4).map((e) => <ActivityLine key={e.id} entry={e} />)

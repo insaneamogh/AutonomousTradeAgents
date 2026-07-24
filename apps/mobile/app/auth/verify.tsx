@@ -129,7 +129,7 @@ export default function VerifyScreen() {
                 Enter your token
               </Text>
               <Text className="text-[14px] leading-[20px] text-text-secondary dark:text-text-secondary-dark">
-                Paste the login token from your email — or, in a test deploy, from the server logs
+                Paste the login token from your email - or, in a test deploy, from the server logs
                 (search for "magic-link issued").
               </Text>
             </View>

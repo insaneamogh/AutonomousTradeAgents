@@ -161,7 +161,7 @@ async def alpaca_callback(
     if stash is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="unknown or expired state — start the OAuth flow again",
+            detail="unknown or expired state - start the OAuth flow again",
         )
     if stash.user_id != user.id:
         # Don't tell the attacker WHY (no "wrong user" leak) — just refuse.
@@ -296,7 +296,7 @@ async def _complete_zerodha_connect(
     if stash is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="unknown or expired state — start the Zerodha connect flow again",
+            detail="unknown or expired state - start the Zerodha connect flow again",
         )
     if expected_user_id is not None and stash.user_id != expected_user_id:
         logger.warning(

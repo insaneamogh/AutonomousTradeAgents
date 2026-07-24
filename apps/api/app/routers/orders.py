@@ -79,5 +79,5 @@ async def execute(
         logger.exception("executor: unhandled error for proposal=%s", proposal_id)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="broker call failed — see server logs",
+            detail="broker call failed - see server logs",
         ) from exc

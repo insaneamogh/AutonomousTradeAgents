@@ -66,7 +66,7 @@ async def _council_health(store: Store) -> ComponentHealth:
     if not activity:
         return ComponentHealth(
             status="warning",
-            label="No council runs yet — tap Run on Approvals to seed",
+            label="No council runs yet - tap Run on Approvals to seed",
         )
 
     last = activity[0]
@@ -126,7 +126,7 @@ async def _broker_health(
     if not active:
         return ComponentHealth(
             status="warning",
-            label="No broker connected — connect Alpaca in Settings",
+            label="No broker connected - connect Alpaca in Settings",
         )
     conn = active[0]
     env_tag = "paper" if conn.is_paper else "live"

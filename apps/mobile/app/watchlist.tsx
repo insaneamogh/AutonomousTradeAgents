@@ -50,7 +50,7 @@ export default function WatchlistScreen() {
         const detail =
           err instanceof ApiError && typeof (err.body as { detail?: string })?.detail === 'string'
             ? (err.body as { detail: string }).detail
-            : "Couldn't add the symbol — try again.";
+            : "Couldn't add the symbol - try again.";
         setError(detail);
       },
     });
@@ -77,7 +77,7 @@ export default function WatchlistScreen() {
           <HeroSub>
             {list.length > 0
               ? `The agent evaluates these ${list.length} name${list.length === 1 ? '' : 's'} every trading day.`
-              : 'Empty — the agent falls back to its default 10-name list.'}
+              : 'Empty - the agent falls back to its default 10-name list.'}
           </HeroSub>
         </View>
 
@@ -109,7 +109,7 @@ export default function WatchlistScreen() {
             <Text className="text-[11px] text-rose dark:text-rose-dark">{error}</Text>
           )}
           <Text className="text-[10px] text-text-tertiary dark:text-text-tertiary-dark">
-            US stocks &amp; ETFs only in v1 — options and futures are out of scope.
+            US stocks &amp; ETFs only in v1 - options and futures are out of scope.
           </Text>
         </Tile>
 
