@@ -14,7 +14,7 @@ import { Alert, Linking, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 
-import { Button, Card, ErrorState, Skeleton, Toggle, cn } from '@app/ui';
+import { Button, Card, ErrorState, HapticPressable, Skeleton, Toggle, cn } from '@app/ui';
 
 import { ApiError } from '@/lib/api';
 import {
@@ -28,11 +28,15 @@ import { revokeRegisteredDevice } from '@/hooks/usePushRegistration';
 import { useAuthStore } from '@/stores/authStore';
 import { useBiometricStore } from '@/stores/biometricStore';
 import { useNotificationsStore } from '@/stores/notificationsStore';
+import { ThemePreference, useThemeStore } from '@/stores/themeStore';
 
 export default function SettingsScreen() {
   return (
     <SafeAreaView edges={['top']} className="flex-1 bg-bg-base dark:bg-bg-base-dark">
       <ScrollView contentContainerClassName="px-4 pb-32 pt-4 gap-4">
+        <SectionLabel>Appearance</SectionLabel>
+        <AppearanceCard />
+
         <SectionLabel>Agent</SectionLabel>
         <WatchlistCard />
         <PositionsCard />
@@ -58,6 +62,66 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
     <Text className="mt-2 text-[11px] font-semibold uppercase tracking-[1.2px] text-text-secondary dark:text-text-secondary-dark">
       {children}
     </Text>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Appearance — light / dark / system theme override
+// ─────────────────────────────────────────────────────────────────────
+
+const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
+  { value: 'system', label: 'System' },
+  { value: 'light', label: 'Light' },
+  { value: 'dark', label: 'Dark' },
+];
+
+function AppearanceCard() {
+  const preference = useThemeStore((s) => s.preference);
+  const setPreference = useThemeStore((s) => s.setPreference);
+
+  return (
+    <Card variant="default" className="gap-3">
+      <View className="gap-1">
+        <Text className="text-[15px] font-semibold text-text-primary dark:text-text-primary-dark">
+          Theme
+        </Text>
+        <Text className="text-[12px] leading-[17px] text-text-tertiary dark:text-text-tertiary-dark">
+          System follows your device. Light and Dark override it everywhere in
+          the app.
+        </Text>
+      </View>
+      <View className="flex-row gap-1 rounded-lg bg-bg-surface-muted p-1 dark:bg-bg-surface-muted-dark">
+        {THEME_OPTIONS.map((opt) => {
+          const active = preference === opt.value;
+          return (
+            <HapticPressable
+              key={opt.value}
+              haptic="selection"
+              onPress={() => setPreference(opt.value)}
+              accessibilityRole="button"
+              accessibilityLabel={`Set theme to ${opt.label}`}
+              accessibilityState={{ selected: active }}
+              testID={`theme-${opt.value}`}
+              className={cn(
+                'flex-1 items-center justify-center rounded-md py-2',
+                active && 'bg-bg-surface dark:bg-bg-surface-elevated-dark',
+              )}
+            >
+              <Text
+                className={cn(
+                  'text-[13px] font-medium',
+                  active
+                    ? 'text-text-primary dark:text-text-primary-dark'
+                    : 'text-text-secondary dark:text-text-secondary-dark',
+                )}
+              >
+                {opt.label}
+              </Text>
+            </HapticPressable>
+          );
+        })}
+      </View>
+    </Card>
   );
 }
 
@@ -298,7 +362,7 @@ function BrokersCard() {
           </Text>
           <Text className="text-[13px] leading-[19px] text-text-secondary dark:text-text-secondary-dark">
             Link your Alpaca account so the agent can read positions and (with your approval per
-            trade) place orders. Paper-only in Phase 3 — live is gated on the paper-validation phase.
+            trade) place orders. Paper-only in Phase 3 - live is gated on the paper-validation phase.
           </Text>
           <Button
             label={pendingState ? 'Waiting for browser…' : 'Connect Alpaca paper'}
@@ -320,7 +384,7 @@ function BrokersCard() {
           </Text>
           <Text className="text-[13px] leading-[19px] text-text-secondary dark:text-text-secondary-dark">
             Log in at Kite in the browser; the connection completes there. Kite tokens expire
-            daily around 6:00 IST, so you reconnect each trading day. Live account — orders stay
+            daily around 6:00 IST, so you reconnect each trading day. Live account - orders stay
             blocked until live trading is enabled on the server.
           </Text>
           <Button
@@ -333,7 +397,7 @@ function BrokersCard() {
           />
           {zerodhaPending ? (
             <Button
-              label="I've logged in — refresh"
+              label="I've logged in - refresh"
               variant="secondary"
               onPress={() => {
                 setZerodhaPending(false);
@@ -417,7 +481,7 @@ function RevokedBrokerCard({ connection }: { connection: BrokerConnection }) {
   return (
     <Card variant="inset" className="gap-1">
       <Text className="text-[13px] font-semibold text-text-secondary dark:text-text-secondary-dark">
-        {brokerLabel(connection)} — revoked
+        {brokerLabel(connection)} - revoked
       </Text>
       <Text className="text-[12px] text-text-tertiary dark:text-text-tertiary-dark">
         Reconnect anytime above.
@@ -459,7 +523,7 @@ function SecurityCard() {
             Require Face ID on launch
           </Text>
           <Text className="text-[12px] leading-[17px] text-text-tertiary dark:text-text-tertiary-dark">
-            Re-locks when you background the app — recommended for any device that holds broker access.
+            Re-locks when you background the app - recommended for any device that holds broker access.
           </Text>
         </View>
         <Toggle

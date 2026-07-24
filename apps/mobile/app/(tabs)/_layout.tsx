@@ -8,13 +8,15 @@ import {
   House,
   Settings as SettingsIcon,
 } from 'lucide-react-native';
-import { useColorScheme } from 'react-native';
+import { useColorScheme } from 'nativewind';
 
 import { palette } from '@app/ui';
 
 export default function TabsLayout() {
-  const scheme = useColorScheme() ?? 'dark';
-  const pal = palette[scheme];
+  // NativeWind's hook (not react-native's) so the tab-bar chrome follows the
+  // in-app Appearance override, not just the OS scheme.
+  const { colorScheme } = useColorScheme();
+  const pal = palette[colorScheme ?? 'dark'];
 
   return (
     <Tabs

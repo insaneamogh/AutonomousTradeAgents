@@ -10,12 +10,11 @@
 //                               autotrader://broker/callback?... → /settings
 //   - Push registration         requests OS permission + posts device token
 //   - Notification handler      foreground display + tap → /approvals
+//   - Theme                     applies the persisted light/dark/system
+//                               preference on boot (Settings › Appearance)
 //
 // Order matters: registerAuthSnapshot() must run BEFORE any TanStack Query
 // fetch fires (the queries read the access token via the interceptor).
-//
-// Deferred:
-//   - Theme provider (system / light / dark override from Settings)
 
 import { useEffect } from 'react';
 import { QueryClientProvider, useQueryClient } from '@tanstack/react-query';
@@ -32,6 +31,7 @@ import { usePushRegistration } from '@/hooks/usePushRegistration';
 import { registerAuthSnapshot } from '@/lib/api';
 import { queryClient } from '@/lib/queryClient';
 import { useAuthStore } from '@/stores/authStore';
+import { useThemeStore } from '@/stores/themeStore';
 
 import '../src/global.css';
 
@@ -63,6 +63,13 @@ registerAuthSnapshot(() => {
 });
 
 export default function RootLayout() {
+  // Apply the persisted appearance preference before the tree renders so the
+  // first paint is already in the right theme (no flash). The store's initial
+  // value is read synchronously from MMKV.
+  useEffect(() => {
+    useThemeStore.getState().applyTheme();
+  }, []);
+
   return (
     <QueryClientProvider client={queryClient}>
       <SafeAreaProvider>

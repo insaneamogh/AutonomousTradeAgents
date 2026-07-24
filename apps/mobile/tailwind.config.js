@@ -16,7 +16,10 @@ module.exports = {
     '../../packages/ui/src/**/*.{ts,tsx}',
   ],
   presets: [require('nativewind/preset')],
-  darkMode: 'media',
+  // 'class' lets the in-app theme control (Settings › Appearance) override the
+  // OS scheme via NativeWind's colorScheme.set(). 'system' preference falls
+  // back to the device appearance. See src/stores/themeStore.ts.
+  darkMode: 'class',
   theme: {
     extend: {
       colors: {
