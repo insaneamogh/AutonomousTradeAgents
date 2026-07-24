@@ -294,6 +294,12 @@ Recommendation: don't reach for Temporal yet. A single worker process owning all
 
 ## Entries
 
+### 2026-07-24 — `2c98f0e9` / `7f75d674` / `d05957fd` mobile: build unblock + theme toggle + de-em-dash
+- **Build was fully broken.** `app.json` had `newArchEnabled: false`, but Reanimated 4 + RN 0.81 require the New Architecture — `pod install` hard-failed on `assert_new_architecture_enabled`. Flipped it on. Separately, `react` floated to 19.2.7 via `^19.1.0` while RN 0.81.6's bundled renderer is 19.1.4 and demands an exact match (runtime red-screen "Incompatible React versions"). Pinned react to `19.1.4` + a root `pnpm.overrides`. App now builds + runs on the iOS simulator.
+- **Theme toggle** (the `_layout.tsx` "deferred" note): dark styling already existed everywhere via NativeWind `dark:`, but was OS-only. tailwind `darkMode` `media`→`class`; new `themeStore` (zustand) persists System/Light/Dark synchronously via MMKV (`src/lib/kv.ts`); applied on boot; Settings › Appearance segmented control. Verified: forcing Dark flips the whole app while the OS stays light.
+- **Em dashes** replaced with hyphens in user-facing copy only — mobile rendered strings + API display copy (mock_store seed headlines, health status labels, executor risk_reason, broker/orders error details). Comments, docstrings, and the `'—'` missing-value glyph left alone.
+- Gitignored the CNG-generated `apps/mobile/ios/` + `android/`.
+
 ### 2026-07-02 — `feat` review batch J: UI code-gaps (drawdown banner, keyboard, icon/splash)
 Closing the concrete UI gaps found when asked "is the UI perfect" (answer: no, and it was unrendered):
 - **Drawdown circuit-breaker banner** — the DESIGN.md-mandated persistent `danger` banner didn't exist. New vertical: `GET /api/v1/circuit-breaker` + `POST …/acknowledge` ([circuit_breaker_service.py](apps/api/app/services/circuit_breaker_service.py), [routers/circuit_breaker.py](apps/api/app/routers/circuit_breaker.py)), `useCircuitBreaker` hook, and [CircuitBreakerBanner.tsx](apps/mobile/src/components/CircuitBreakerBanner.tsx) mounted on Home + Picks. Shows while `halted`; "Acknowledge & resume" (confirm + warning haptic) flips the breaker to `manual_override` so BUYs pass again. Acknowledge = `require_real_auth`.
