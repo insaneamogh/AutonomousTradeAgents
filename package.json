@@ -28,5 +28,10 @@
     "apps/mobile",
     "packages/shared-types",
     "packages/ui"
-  ]
+  ],
+  "pnpm": {
+    "overrides": {
+      "react": "19.1.4"
+    }
+  }
 }
