@@ -19,6 +19,11 @@ dependencies = [
   # Workspace siblings (path-resolved by uv).
   "broker",
   "engine",
+  # The API imports trading_agents directly (council runtime, progress
+  # events, decision log) from routers/agent.py + services/agent_runs.py,
+  # so it is a real dependency — without it `uv run --package api` cannot
+  # import app.main at all.
+  "agents",
 ]
 
 [build-system]
@@ -28,6 +33,7 @@ build-backend = "hatchling.build"
 [tool.uv.sources]
 broker = { workspace = true }
 engine = { workspace = true }
+agents = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]

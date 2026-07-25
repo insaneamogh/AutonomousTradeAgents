@@ -26,6 +26,24 @@ def _reset_decision_log() -> None:
     reset_memory_stores_for_tests()
 
 
+@pytest.fixture(autouse=True)
+def _force_trading_day(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the market-calendar gate open.
+
+    ``main(force=False)`` short-circuits before the council on weekends and
+    holidays, so without this the idempotency/resilience assertions below
+    only hold Mon-Fri (and the "already decided" test passed for the wrong
+    reason at the weekend). These tests cover the per-symbol loop, not the
+    calendar; the gate itself has its own tests in packages/engine.
+
+    ``daily_cron.main`` imports the helper inside the function body, so we
+    patch it on the defining module rather than on daily_cron.
+    """
+    import engine.features
+
+    monkeypatch.setattr(engine.features, "is_us_trading_day", lambda _d: True)
+
+
 async def test_skip_when_already_decided_today(monkeypatch) -> None:
     """Second call for (user, NVDA) on the same day must skip."""
     import daily_cron

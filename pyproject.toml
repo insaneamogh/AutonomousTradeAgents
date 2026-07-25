@@ -7,6 +7,20 @@ requires-python = ">=3.12"
 [tool.uv.workspace]
 members = ["apps/api", "apps/agents", "packages/broker", "packages/engine"]
 
+# Toolchain the Makefile targets shell out to (`make test` / `lint` /
+# `typecheck`). These were configured below ([tool.pytest.ini_options],
+# [tool.ruff], [tool.mypy]) but never declared, so a clean clone failed
+# with "No module named pytest". Installed by `uv sync` into the root env.
+[dependency-groups]
+dev = [
+  "pytest>=8.3.0",
+  "pytest-asyncio>=0.24.0",
+  "anyio>=4.6.0",
+  "ruff>=0.7.0",
+  "mypy>=1.13.0",
+  "httpx2>=2.9.1",
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
