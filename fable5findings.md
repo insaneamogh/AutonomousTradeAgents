@@ -294,6 +294,17 @@ Recommendation: don't reach for Temporal yet. A single worker process owning all
 
 ## Entries
 
+### 2026-07-25 — `59cf1a33` / `5587eb8d` toolchain: clean-clone breaks + local sim runbook
+Found by actually running the stack from scratch. Three independent breaks, none of which a returning contributor could avoid:
+- **`make dev-api` could not start.** `apps/api` imports `trading_agents` ([agent.py](apps/api/app/routers/agent.py), [agent_runs.py](apps/api/app/services/agent_runs.py)) but declared neither the `agents` dependency nor its `[tool.uv.sources]` entry, so `uv run --package api` died on `ModuleNotFoundError: trading_agents`. The API only booted with a hand-set `PYTHONPATH`. Declared as the real workspace dep it is.
+- **`make test` / `lint` / `typecheck` all failed.** pytest, ruff and mypy are configured in the root pyproject and invoked by the Makefile, but were never declared → "No module named pytest". Added `[dependency-groups] dev`.
+- **All 14 route test modules failed to collect** on a fresh resolve: starlette 1.3's `TestClient` rejects httpx<2. Added `httpx2`.
+- **Two date-dependent test failures** in [test_daily_cron.py](apps/agents/tests/test_daily_cron.py): both called `main(force=False)`, so the market-calendar gate short-circuited before `run_council` and the assertions only held Mon–Fri (`test_skip_when_already_decided_today` was passing for the *wrong* reason at the weekend — gate-blocked, not idempotency). Autouse fixture pins the gate open; the calendar itself is covered in `packages/engine`.
+- Suite after: **278 passed, 8 skipped.**
+- RUNBOOK gained a verified **local iOS-simulator quickstart** (Xcode/CocoaPods prereqs, why Expo Go can't work, the `EXPO_PUBLIC_*` rebuild caveat, dev-token login, mock-mode caveats).
+- **Corrected an earlier claim of mine:** the previous entry's "approve doesn't execute" note was wrong — it was read off a stale local `main`. On current `main` [approvals.py](apps/api/app/routers/approvals.py) *does* call `execute_proposal` and returns `executed`/`riskBlocked`/`riskReason`, and [order_sync.py](apps/api/app/services/order_sync.py) writes `fill_qty`/`fill_avg_price` on fills plus `realized_pnl`/`closed_at` on closes. Note removed rather than left to mislead.
+- **Live finding:** the Railway deploy in `apps/mobile/.env` (`autonomoustradeagents-autonomous.up.railway.app`) returns `Application not found` — the service is gone, not stale. Local API is the only working target until it is redeployed.
+
 ### 2026-07-24 — `2c98f0e9` / `7f75d674` / `d05957fd` mobile: build unblock + theme toggle + de-em-dash
 - **Build was fully broken.** `app.json` had `newArchEnabled: false`, but Reanimated 4 + RN 0.81 require the New Architecture — `pod install` hard-failed on `assert_new_architecture_enabled`. Flipped it on. Separately, `react` floated to 19.2.7 via `^19.1.0` while RN 0.81.6's bundled renderer is 19.1.4 and demands an exact match (runtime red-screen "Incompatible React versions"). Pinned react to `19.1.4` + a root `pnpm.overrides`. App now builds + runs on the iOS simulator.
 - **Theme toggle** (the `_layout.tsx` "deferred" note): dark styling already existed everywhere via NativeWind `dark:`, but was OS-only. tailwind `darkMode` `media`→`class`; new `themeStore` (zustand) persists System/Light/Dark synchronously via MMKV (`src/lib/kv.ts`); applied on boot; Settings › Appearance segmented control. Verified: forcing Dark flips the whole app while the OS stays light.
