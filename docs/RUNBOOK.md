@@ -5,6 +5,88 @@ step that doesn't fit in code comments.
 
 ---
 
+## Run the whole thing locally on an iOS simulator
+
+Verified end to end on 2026-07-24 (iPhone 17 Pro sim, Expo SDK 54, mock
+LLM + in-memory paper book). No Postgres, no broker, no API keys.
+
+### Prerequisites
+
+Xcode (full install, not just Command Line Tools) plus CocoaPods:
+
+```bash
+sudo xcode-select -s /Applications/Xcode.app/Contents/Developer   # needs your password
+brew install cocoapods
+```
+
+`xcode-select -p` must print the Xcode path, not `/Library/Developer/CommandLineTools`.
+
+### 1. Install + start the API
+
+```bash
+make install
+DEV_AUTH_BYPASS=1 TRADING_MODE=paper make dev-api-legacy
+```
+
+Health check: `curl localhost:8000/health`.
+
+### 2. Point the app at the API
+
+`apps/mobile/.env` (gitignored; copy from `.env.example`):
+
+```
+EXPO_PUBLIC_API_URL=http://localhost:8000
+```
+
+`EXPO_PUBLIC_*` values are compiled into the bundle, so **restart Metro
+with `--clear` after changing this** or the old URL stays baked in.
+
+### 3. Build the dev client
+
+Expo Go will NOT work: `react-native-mmkv` 3 and Reanimated 4 are native
+modules, so a dev build is required. `ios/` and `android/` are gitignored
+(CNG) and regenerate from `app.json`:
+
+```bash
+xcrun simctl boot "iPhone 17 Pro"            # or any available device
+cd apps/mobile && npx expo run:ios
+```
+
+First build takes ~10 min (New Architecture codegen). Later runs reuse it;
+JS-only changes just need Metro.
+
+### 4. Sign in
+
+The login screen posts to `/api/v1/auth/request-login`. Outside
+production the response carries the token, and the screen shows a
+**"Continue with dev token"** button — no email provider needed. With
+`EMAIL_PROVIDER` unset that button is the only way in.
+
+### What you get
+
+Home (portfolio, activity, system health), Approve (pending picks →
+`/pick/[id]` → approve executes server-side), Strategies (confidence
+priors), Review (empty until a position closes), Settings (theme,
+watchlist, notifications, brokers, biometric).
+
+Caveats in this mode: the seeded portfolio/activity is fixture data;
+`ANTHROPIC_API_KEY` unset means a deterministic mock council; the paper
+book is in-memory and resets when the API restarts; approvals are stored
+by `MockStore`, so `USE_POSTGRES=1` is required for Review, Reflection,
+the reconciler, and agent-managed exits.
+
+### Gotchas
+
+- **Session drops on API restart.** Access tokens live in memory only and
+  the mock auth store is per-process. Re-run the dev-token login.
+- **Two theme paths.** Settings › Appearance overrides the OS scheme
+  (`darkMode: 'class'` + `colorScheme.set`); "System" hands control back.
+- Mobile `.env` pointing at a dead host surfaces as `HTTP 404
+  /api/v1/auth/request-login` on the login screen. Check the URL before
+  debugging auth.
+
+---
+
 ## What changed on `agent-v1/auto-mode-real-data`
 
 This branch closed the auto-trade loop and replaced synthetic inputs with
