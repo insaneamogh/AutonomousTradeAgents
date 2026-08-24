@@ -1,192 +1,276 @@
-# Autonomous Trading Agent — v1
+# Autonomous Trading Agent
 
-> Autonomous trading agent app. The user connects a broker — **Alpaca**
-> (US, paper + live) or **Zerodha Kite Connect** (India: NSE/BSE equity,
-> NFO futures + options, intraday via MIS) — an LLM **council** drafts
-> proposals; deterministic Python **disposes** (risk-checks, sizes,
-> executes); the mobile app surfaces approvals and journals every decision.
+US-equities swing-trading system. An LLM **agent council** proposes trades, a
+**deterministic risk engine** decides/sizes/vetoes them, and a mobile app
+surfaces every pick plus a full audit trail.
 
-**Status:** Phase 4 — paper-trading rollout. Council runs daily, the
-operator hand-grades closed trades, calibration agreement signal is
-live, LLM cost ledger is wired. Real Alpaca paper-trade smoke proven
-end-to-end. **Deployable to Railway in 10 minutes — see [`RAILWAY.md`](RAILWAY.md).**
-
-**Branch:** `agent-v1` (orphan — no shared history with previous TradeMatrix work).
+> **The one architectural rule: agents propose, deterministic code disposes.**
+> LLM output is never the kill-switch. Every order routes through
+> `packages/engine/risk` → `packages/broker`. Risk vetoes are plain Python
+> with named rule identifiers (`pdt_block`, `drawdown_halt`, …).
 
 ---
 
-## What works today
+## Architecture
 
-| Layer | What's there |
-|---|---|
-| **Mobile** (Expo + NativeWind) | Magic-link auth, biometric unlock, Alpaca OAuth connect, push notifications, Approvals inbox, Strategies tab, Review swipe-deck, Settings tab, Home health strip + agreement strip. |
-| **API** (FastAPI) | 7 routers: auth, broker, notifications, account, activity, approvals, agent, orders, health, strategies, review. 30+ endpoints. HS256 JWT + scrypt-hashed refresh rotation + Fernet-encrypted broker tokens. |
-| **Agent council** | 7/7 specialist nodes — Router, Technical, Fundamental, Macro, Selector, Drafter, Reflection. LangGraph + asyncio fallback. Mock + real Anthropic both wired. |
-| **Risk engine** | 14 rules, market-aware (US + India) — drawdown halt, forbid-short, PDT (US), wash-sale (US), F&O lot-size, derivative-notional cap, MIS square-off window (IN), position size, sector, correlation cluster, etc. First-veto-wins ordering. |
-| **Paper mode** | `TRADING_MODE=paper` (default) — simulated fills against per-market paper books (US $100K / IN ₹10L), full risk chain, zero broker calls. Two-key flip to live: `TRADING_MODE=live` + `LIVE_TRADING_ENABLED=1`. |
-| **Brokers** | `BrokerInterface` + two adapters: `AlpacaBroker` (alpaca-py, OAuth or env keys) and `ZerodhaBroker` (Kite Connect v3 over httpx — equities, F&O via `NFO:` symbols, CNC/MIS/NRML products, daily-token auth). |
-| **Executor** | `/orders/execute/{proposal_id}` — decrypt-on-use → live-trading gate (`LIVE_TRADING_ENABLED`) → re-evaluate risk → `place_order` on whichever broker is connected. Idempotent via `client_order_id` (native at Alpaca, tag-emulated at Zerodha). |
-| **Persistence** | All 7 stores have Protocol + InMemory + Postgres impls (auth, broker, notifications, decision-log, strategy-confidence, review, cost-ledger). `USE_POSTGRES=1` env flips them all. |
-| **Observability** | `/api/v1/health/full` reports per-component status. LLM cost ledger writes every call. Soft-cap warning at `LLM_COST_WARN_USD`. |
-| **Tests** | **210 passed + 8 skipped.** Skips gate on a real `ANTHROPIC_API_KEY` or `RUN_POSTGRES_TESTS=1`. |
+```mermaid
+flowchart TB
+    subgraph mobile["📱 Mobile — Expo / React Native"]
+        HOME[Home<br/>portfolio · activity]
+        PICKS[Picks feed]
+        THEATER[Council theater<br/>live node progress]
+        DETAIL[Pick detail<br/>bull / bear / risk]
+        AUDIT[Biography · Veto ledger<br/>Calibration]
+    end
 
----
+    subgraph api["⚙️ API — FastAPI on Railway"]
+        ROUTES[Routers<br/>agent · approvals · decisions<br/>insights · review · auth]
+        EXEC[Executor<br/>risk re-eval → order]
+        RECON[Reconciler<br/>polls broker every 30s]
+    end
 
-## Deploy + run mobile against it (10 minutes)
+    subgraph council["🧠 Agent council — LangGraph"]
+        ROUTER[Router<br/>detects regime]
+        TA[Technical]
+        FA[Fundamental]
+        MA[Macro]
+        SEL[Selector<br/>picks strategy]
+        DRAFT[Drafter<br/>builds proposal]
+        RISK["Risk Officer<br/>⚠️ NOT an LLM<br/>deterministic veto"]
+    end
 
-**Start here →** [**`HANDOFF.md`**](HANDOFF.md) — the single doc you
-follow end-to-end: Railway deploy, Alpaca + Anthropic credential
-wiring, Expo Go session, post-deploy smoke checklist. Includes
-troubleshooting for everything that can go wrong.
+    subgraph engine["🔒 Engine — deterministic Python"]
+        RULES[risk/ · named veto rules]
+        SIZING[sizing/ · ATR position size]
+        FEAT[features/ · technicals + macro]
+        PRICES[prices/ · daily bars]
+    end
 
-[`RAILWAY.md`](RAILWAY.md) is the deeper reference — extended
-troubleshooting, daily-cron scheduling examples, Fly-machines alt.
-Short version:
+    subgraph ext["External"]
+        ALPACA[(Alpaca<br/>bars + paper orders)]
+        FRED[(FRED<br/>VIX · 10y · DXY)]
+        CLAUDE[(Anthropic<br/>Claude)]
+        PG[(Postgres)]
+    end
 
-```bash
-# 1. Push this repo to GitHub
-git push origin agent-v1
+    PICKS -->|tap Run| ROUTES
+    ROUTES --> ROUTER
+    FEAT -->|feature dict| ROUTER
+    ROUTER --> TA & FA & MA
+    TA & FA & MA --> SEL
+    SEL --> DRAFT
+    DRAFT -->|calls| SIZING
+    DRAFT --> RISK
+    RISK -->|reads| RULES
+    RISK -->|approved| ROUTES
+    RISK -.->|vetoed · rule logged| PG
 
-# 2. Railway dashboard → New Project → Deploy from GitHub → pick repo
-#    (Railway auto-detects railway.toml + apps/api/Dockerfile)
+    ROUTES -->|progress events| THEATER
+    ROUTES --> PICKS --> DETAIL
+    DETAIL -->|approve| EXEC
+    EXEC -->|re-runs risk| RULES
+    EXEC --> ALPACA
+    RECON --> ALPACA
+    RECON --> PG
+    ROUTES --> PG --> AUDIT
 
-# 3. Add Postgres plugin → DATABASE_URL is set automatically
-
-# 4. Set the required env vars (see RAILWAY.md §4):
-#    ENV=production, USE_POSTGRES=1, DEV_AUTH_BYPASS=0,
-#    JWT_SECRET=<generated>, BROKER_TOKEN_ENCRYPTION_KEY=<generated>,
-#    CORS_ORIGINS=exp://exp.host,https://exp.host
-
-# 5. Run the mobile against it:
-echo "EXPO_PUBLIC_API_URL=https://your-app.railway.app" > apps/mobile/.env
-pnpm install
-pnpm --filter @app/mobile dev   # scan QR with Expo Go
+    FEAT --> ALPACA
+    FEAT --> FRED
+    TA & FA & MA & SEL & DRAFT --> CLAUDE
 ```
 
-What's running by default: the council in **MOCK mode** (canned LLM
-responses), in-memory broker tokens, the daily cron is unscheduled.
-Add `ANTHROPIC_API_KEY` to flip the council to real Claude; add
-Alpaca OAuth creds to enable the Connect Alpaca button. Both are
-optional for first-launch verification.
+### Decision lifecycle
 
----
+```mermaid
+sequenceDiagram
+    participant U as You
+    participant A as API
+    participant C as Council
+    participant R as Risk engine
+    participant B as Alpaca paper
+    participant D as agent_decisions
 
-## Local dev
-
-```bash
-# JS side — Expo dev server for mobile + UI package
-pnpm install
-pnpm --filter @app/mobile dev
-
-# Python side — FastAPI + agent council
-uv sync                                # one-time, locks Python deps
-make dev-api                           # auth-enforced (DEV_AUTH_BYPASS=0)
-make dev-api-legacy                    # pre-mobile-auth fallback if you need it
-
-# Local Postgres (optional — defaults to in-memory)
-make infra-up
-make migrate
-USE_POSTGRES=1 make dev-api
-
-# Run the daily council against the in-memory stores
-PYTHONPATH=apps/agents:packages/engine:packages/broker \
-    python apps/agents/scripts/daily_cron.py --watchlist NVDA,AAPL
-
-# Run the Reflection one-shot
-PYTHONPATH=apps/agents:packages/engine:packages/broker \
-    python -m trading_agents.reflection_cli --since 24h
+    U->>A: POST /agent/run/start
+    A-->>U: 202 {runId}
+    A->>C: run_council()
+    C->>C: Router → analysts → Selector → Drafter
+    loop every node
+        C-->>A: progress event
+        U->>A: GET /run/{id}/progress
+    end
+    C->>R: evaluate(proposal)
+    alt approved
+        R-->>A: ✅ clear
+        A->>D: write decision + proposal
+        U->>A: approve
+        A->>R: re-run risk
+        A->>B: place order
+        B-->>D: fill → realized P&L
+    else vetoed
+        R-->>A: ❌ named rule
+        A->>D: write veto (feeds Veto Ledger + Ghost P&L)
+    end
 ```
 
-Test suite (always green on clean checkout):
-
-```bash
-PYTHONPATH=apps/api:apps/agents:packages/engine:packages/broker \
-DEV_AUTH_BYPASS=1 \
-pytest packages/engine/tests/ apps/agents/tests/ apps/api/tests/ packages/broker/tests/
-# → 210 passed, 8 skipped
-```
-
----
-
-## Where to look first
-
-| File | What it answers |
-|---|---|
-| [`RAILWAY.md`](RAILWAY.md) | **Deploy step-by-step** + mobile-against-Railway setup |
-| [`PLAN.md`](PLAN.md) | What we're building + the phase-by-phase implementation order |
-| [`DESIGN.md`](DESIGN.md) | Mobile design system — tokens, components, accessibility |
-| [`AGENTV1.md`](AGENTV1.md) | Running session log — what's built, what's next, current playbook |
-| [`CLAUDE.md`](CLAUDE.md) | Agent-collaboration guide. Read before coding. |
-| [`apps/api/AUTH.md`](apps/api/AUTH.md) | Auth + broker OAuth + push + executor + review + cost-ledger flow docs |
-| [`docs/RUNBOOK.md`](docs/RUNBOOK.md) | Operator runbook: smoke harness, daily review checklist, cost tuning |
+**Every council run writes exactly one `agent_decisions` row** — approved,
+held, or vetoed. That row is the audit anchor the trade biography, veto
+ledger, ghost P&L and calibration scorecard all read from.
 
 ---
 
 ## Repo layout
 
 ```
-.
-├── apps/
-│   ├── mobile/          Expo. 6 tabs (Home, Approvals, Strategies, Review, Settings + auth flow).
-│   ├── api/             FastAPI gateway. Dockerfile + start.sh for Railway. 30+ endpoints.
-│   └── agents/          LangGraph council. 7 nodes + Reflection out-of-band. Daily cron.
-│
-├── packages/
-│   ├── shared-types/    TS wire types shared mobile ↔ api
-│   ├── ui/              RN primitives + design tokens. ConfidenceBar, StatusPill, SwipeDeck, PnLPill, etc.
-│   ├── broker/          BrokerInterface protocol + AlpacaBroker + ZerodhaBroker (Kite Connect)
-│   └── engine/          Risk engine (11 rules), sizing, backtester, reconciler, db ORM
-│
-├── infra/
-│   ├── docker-compose.yml   Local Postgres + TimescaleDB + Redis
-│   └── migrations/          Alembic — 7 migrations (0001 schema → 0007 llm_calls)
-│
-├── docs/
-│   └── RUNBOOK.md       Operator runbook
-│
-├── scripts/
-│   └── smoke_paper_trade.py    End-to-end smoke against an Alpaca paper account
-│
-├── apps/api/Dockerfile  Multi-stage Python 3.12 image
-├── railway.toml         Railway deploy config
-├── .env.example         Every env var the deploy needs
-└── Makefile             dev-api / dev-api-legacy / infra-up / migrate / test
+apps/
+  agents/     Agent council (LangGraph) + daily cron + ghost evaluator
+    trading_agents/
+      nodes/      One file per agent: router, technical, fundamental,
+                  macro, selector, drafter, risk_officer, reflection
+      prompts/    System prompt per agent
+      memory/     DecisionLog + StrategyConfidence (in-memory + Postgres)
+      graph.py    Wires the nodes; LangGraph with asyncio fallback
+      runtime.py  run_council() — the public entry point
+      llm.py      Anthropic wrapper (prompt caching, MOCK fallback)
+      tracing.py  Langfuse — one trace/run, one generation/agent
+    scripts/      daily_cron.py, ghost_eval.py
+  api/        FastAPI gateway (deployed to Railway)
+    app/routers/   agent, approvals, decisions, insights, review, auth, health
+    app/services/  executor, stores, biography, ghost, review services
+  mobile/     Expo React Native app
+    app/           Screens (expo-router file routing)
+    src/hooks/     TanStack Query hooks, one per endpoint family
+    src/components/bento.tsx   Design-system primitives
+
+packages/
+  engine/     Deterministic core — NO LLM anywhere in here
+    risk/       Named veto rules + evaluate()
+    sizing/     ATR position sizing
+    features/   Real technicals (Alpaca bars) + macro (FRED)
+    prices/     Daily close providers (Alpaca | seeded synthetic)
+    reconciler/ Broker polling → positions_snapshot + circuit breaker
+    backtester/ Event-driven backtester + walk-forward
+    db/models.py  All SQLAlchemy models — single source of truth
+  broker/     BrokerInterface + Alpaca (US) and Zerodha (India) impls
+  ui/         Shared RN components + design tokens
+  shared-types/  TypeScript DTOs shared by mobile + API
+
+infra/migrations/   Alembic migrations (auto-applied on deploy)
 ```
 
-**Architectural rule (the only one that matters):** Agents propose,
-deterministic code disposes. The LLM council drafts narratives + picks
-strategies + sizes proposals, but every order routes through
-`packages/engine/risk` before reaching `packages/broker`. Risk vetoes
-are pure Python with named `veto_rule` strings — never LLM output.
+---
+
+## Quick start
+
+```bash
+make install          # pnpm + uv workspaces
+make dev-api          # FastAPI on :8000 (in-memory, no DB needed)
+make dev-mobile       # Expo dev server on :8081
+make test             # pytest + vitest
+make lint typecheck
+```
+
+Local Postgres (optional — defaults to in-memory stores):
+
+```bash
+make infra-up && make migrate && make dev-api-postgres
+```
+
+Run the council headlessly:
+
+```bash
+uv run --package agents python -m scripts.daily_cron --force
+```
 
 ---
 
-## What this is NOT
+## Environment variables
 
-- **Not TradeMatrix.** The scoring engine is out of scope.
-- **Not multi-market.** US equities + ETFs only in v1. India/Zerodha v2+.
-- **Not options/F&O.** v3+.
-- **Not live trading yet.** `is_paper=True` flows through every layer.
-  PLAN.md §11 gates live capital on Phase 4 paper-validation closing
-  (5–6 months of paper with the founder + 2–3 trusted users).
+### Required in production
+
+| Var | Purpose |
+|---|---|
+| `ENV` | `production` |
+| `USE_POSTGRES` | `1` — switches every store to Postgres |
+| `DATABASE_URL` | Set automatically by the Railway Postgres plugin |
+| `DEV_AUTH_BYPASS` | `0` — must be off in production |
+| `JWT_SECRET` | Generate fresh, 32+ bytes |
+| `BROKER_TOKEN_ENCRYPTION_KEY` | Fresh base64 Fernet key — encrypts broker tokens |
+| `CORS_ORIGINS` | e.g. `exp://exp.host,https://exp.host` |
+
+### Unlock real behavior
+
+| Var | Without it |
+|---|---|
+| `ANTHROPIC_API_KEY` | Council runs in **MOCK mode** — canned `"MOCK: …"` theses |
+| `ALPACA_API_KEY` + `ALPACA_SECRET_KEY` | Synthetic prices; no broker orders. Free paper keys from app.alpaca.markets (Paper toggle **on**) |
+| `FRED_API_KEY` | Macro analyst has no VIX / 10y / DXY. Free instant signup |
+| `LANGFUSE_PUBLIC_KEY` + `LANGFUSE_SECRET_KEY` | Tracing is a silent no-op |
+| `SENTRY_DSN` | No error tracking |
+| `RESEND_API_KEY` | Magic-link email won't send |
+
+### Safety switches
+
+| Var | Default | Meaning |
+|---|---|---|
+| `LIVE_TRADING_ENABLED` | off | Any non-paper order is blocked with `live_trading_disabled` |
+| `TRADING_MODE` | `paper` | Paper simulation vs real broker routing |
+| `AGENTS_REQUIRE_REAL_LLM` | off | `1` = refuse to run on canned MOCK responses |
+| `AGENTS_REQUIRE_REAL_DATA` | off | `1` = refuse to run on synthetic features |
+| `DRAWDOWN_HALT_THRESHOLD_PCT` | `-3.0` | Circuit breaker trip point |
+
+Mobile needs `EXPO_PUBLIC_API_URL` in `apps/mobile/.env`.
 
 ---
 
-## Recent rounds
+## Deploy (Railway)
 
-  - **2026-05-30 — Review tooling + LLM cost ledger.** Review tab with
-    swipe-deck UX; agreement strip on Home; cost ledger writes every
-    call; `/health/full` LLM cost pill lights up.
-  - **2026-05-30 — Phase 4 kickoff.** Daily council cron; per-strategy
-    P&L view; Strategies tab; Home health strip.
-  - **2026-05-27 — Order executor + Alpaca paper-trade smoke.**
-    `/orders/execute/{id}` route. Smoke harness gated on
-    `RUN_ALPACA_SMOKE=1`.
-  - **2026-05-27 — Postgres adapters.** All 5 stores get Postgres impls.
-  - **2026-05-27 — Push notifications.** Expo Push + council fan-out hook.
-  - **2026-05-26 — Alpaca OAuth + encrypted token storage.** PKCE flow
-    + Fernet broker-token encryption.
-  - **2026-05-26 — Mobile auth + biometric + deep-link.**
-  - **2026-05-26 — Phase 3 kickoff (magic-link + JWT).**
+1. Push to GitHub → Railway → New Project → Deploy from repo
+   (auto-detects `railway.toml` + `apps/api/Dockerfile`)
+2. Add the **Postgres** plugin — `DATABASE_URL` is injected
+3. Set the required env vars above
+4. `apps/api/scripts/start.sh` runs `alembic upgrade head` then launches uvicorn
 
-See [`AGENTV1.md`](AGENTV1.md) for the full session log.
+Point the mobile app at it:
+
+```bash
+echo "EXPO_PUBLIC_API_URL=https://<your-app>.up.railway.app" > apps/mobile/.env
+make dev-mobile
+```
+
+---
+
+## Observability
+
+| Concern | Where |
+|---|---|
+| Per-agent traces, latency, cost | Langfuse (`tracing.py`) — one trace/run, one generation/node |
+| LLM spend | `llm_calls` table + `/api/v1/health/full` |
+| Errors | Sentry (FastAPI integration) |
+| Component health | `GET /api/v1/health/full` — council, approvals, broker, reconciler, LLM cost |
+| Prompt caching | Enabled on every system block; cache tokens tracked in the ledger |
+
+---
+
+## Scope
+
+**In v1:** US equities + ETFs · Alpaca paper → live · swing trades (1–10 day
+holds, daily bars) · LangGraph council · per-trade self-approval.
+
+**Out of v1:** options/F&O · intraday (v1.5) · India/Zerodha (v2) ·
+real-time tick data · performance-fee pricing.
+
+**This is not** a real-time trading system — it runs on **daily bars**, with
+the reconciler polling account state every 30s. It is not financial advice,
+and nothing here should touch real money before the Phase-4 paper-validation
+gate in `PLAN.md`.
+
+---
+
+## Related documents
+
+| File | What |
+|---|---|
+| `CLAUDE.md` | Contract for AI agents working in this repo — read before writing code |
+| `PLAN.md` | Full product + phase roadmap |
+| `DESIGN.md` | Design system (tokens, components, rules) |
+| `fable5findings.md` | Running build log — one entry per commit |
