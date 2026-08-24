@@ -15,9 +15,9 @@ dockerfilePath = "apps/api/Dockerfile"
 [deploy]
 healthcheckPath = "/health"
 # Generous — a cold Railway deploy runs Alembic migrations (with a DB-ready
-# retry loop) before uvicorn binds. 60s was too tight; 300s covers a slow
+# retry loop) before uvicorn binds. 600s covers a slow
 # first migrate + boot without prematurely failing the deploy.
-healthcheckTimeout = 300
+healthcheckTimeout = 600
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
 # Railway picks the start command from the Dockerfile's CMD. We

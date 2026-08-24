@@ -1,0 +1,22 @@
+# Keep the build context lean — the image only needs Python sources,
+# migrations, and the lockfile. Everything below is either huge, local-
+# only, or secret-bearing.
+.git
+.venv
+node_modules
+**/node_modules
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+.expo
+**/.expo
+apps/mobile
+packages/ui
+packages/shared-types
+.env
+**/.env
+*.md
+!README.md
+.claude
+.DS_Store

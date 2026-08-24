@@ -50,12 +50,23 @@ class LLM:
     set. Anything else triggers mock mode.
     """
 
+    # Values ops teams leave as stand-ins. A non-empty placeholder must mean
+    # MOCK, not "attempt real calls and 401 on every council node".
+    _PLACEHOLDER_KEYS = frozenset({"replace_me", "changeme", "change_me", "placeholder", "todo", "xxx"})
+
     def __init__(self, api_key: str | None = None) -> None:
         env_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
         self._api_key = api_key or (env_key or None)
         self._client: Any = None
         # Empty string or missing → mock. Treat whitespace-only the same way so
         # an accidentally-blanked-out export doesn't crash on the first call.
+        if self._api_key and self._api_key.lower() in self._PLACEHOLDER_KEYS:
+            logger.warning(
+                "ANTHROPIC_API_KEY is the placeholder %r — treating as unset (MOCK mode). "
+                "Set a real key to enable live council reasoning.",
+                self._api_key,
+            )
+            self._api_key = None
         self._mock = not self._api_key
         if not self._mock:
             try:

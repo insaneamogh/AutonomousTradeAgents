@@ -1,9 +1,11 @@
 # Multi-stage build for the FastAPI gateway.
 #
-# We deliberately don't ``uv sync`` here — the workspace deps (broker,
-# engine, agents) are path-imported via PYTHONPATH at runtime exactly
-# like local dev. Third-party deps come from PyPI via ``uv pip install``.
-# This keeps the build reproducible without committing a lockfile.
+# Third-party deps are installed from ``uv.lock`` (exported to a pinned
+# requirements file at build time) so the container can never drift from
+# the workspace again — the previous hand-maintained list silently
+# omitted langgraph/langfuse/litellm/pandas and left those features dead
+# in production. Workspace members (broker, engine, agents) stay
+# path-imported via PYTHONPATH at runtime, exactly like local dev.
 #
 # Build context is the repo root. Build command (Railway picks this up
 # from ``railway.toml``):
@@ -31,28 +33,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# uv is dramatically faster than vanilla pip + works without a lockfile.
-RUN pip install --no-cache-dir uv==0.5.0
+# uv resolves + installs from the committed lockfile.
+RUN pip install --no-cache-dir uv==0.10.2
 
-# Install third-party deps. Versions mirror apps/api/pyproject.toml
-# + apps/agents/pyproject.toml + packages/broker/pyproject.toml.
-# Bumping any of those? Mirror it here.
-RUN uv pip install --system --no-cache \
-        'fastapi>=0.115.0' \
-        'uvicorn[standard]>=0.32.0' \
-        'pydantic>=2.9.0' \
-        'pydantic-settings>=2.6.0' \
-        'sqlalchemy[asyncio]>=2.0.35' \
-        'asyncpg>=0.30.0' \
-        'alembic>=1.13.0' \
-        'httpx>=0.27.0' \
-        'redis[asyncio]>=5.1.0' \
-        'python-jose[cryptography]>=3.3.0' \
-        'passlib[bcrypt]>=1.7.4' \
-        'cryptography>=43.0.0' \
-        'sentry-sdk[fastapi]>=2.0.0' \
-        'anthropic>=0.39.0' \
-        'alpaca-py>=0.32.0'
+# Install third-party deps straight from uv.lock — single source of
+# truth shared with local dev. ``--all-packages`` covers every workspace
+# member's dependencies (api + agents + engine + broker);
+# ``--no-emit-workspace`` keeps the members themselves out (they're
+# PYTHONPATH-imported at runtime, not installed).
+COPY pyproject.toml uv.lock /tmp/workspace/
+COPY apps/api/pyproject.toml      /tmp/workspace/apps/api/
+COPY apps/agents/pyproject.toml   /tmp/workspace/apps/agents/
+COPY packages/engine/pyproject.toml /tmp/workspace/packages/engine/
+COPY packages/broker/pyproject.toml /tmp/workspace/packages/broker/
+RUN cd /tmp/workspace \
+    && uv export --frozen --no-dev --no-emit-workspace --no-hashes \
+         --all-packages -o /tmp/requirements.txt \
+    && uv pip install --system --no-cache -r /tmp/requirements.txt \
+    && rm -rf /tmp/workspace /tmp/requirements.txt
 
 # ─────────────────────────────────────────────────────────────────────
 # Stage 2 — runtime image
