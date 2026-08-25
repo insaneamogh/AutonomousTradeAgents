@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 
 from trading_agents.llm import LLM, Model, complete_json
+from trading_agents.nodes._guards import clamp_confidence, clamp_score
 from trading_agents.prompts import MACRO_ANALYST
 from trading_agents.state import CouncilState
 
@@ -51,8 +52,10 @@ async def macro_analyst_node(state: CouncilState, llm: LLM) -> CouncilState:
     return {
         **state,
         "macro": {
-            "score": float(data.get("score", 50.0)),
-            "confidence": float(data.get("confidence", 0.0)),
+            "score": clamp_score(data.get("score", 50.0), field="macro.score"),
+            "confidence": clamp_confidence(
+                data.get("confidence", 0.0), field="macro.confidence"
+            ),
             "thesis": str(data.get("thesis", "")),
             "citations": list(data.get("citations", [])),
         },

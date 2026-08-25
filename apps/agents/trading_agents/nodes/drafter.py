@@ -20,6 +20,7 @@ import logging
 from engine.sizing import SizingInputs, atr_position_size
 
 from trading_agents.llm import LLM, Model, complete_json
+from trading_agents.nodes._guards import clamp_confidence, clamp_level
 from trading_agents.prompts import DRAFTER
 from trading_agents.state import CouncilState
 from trading_agents.strategies import resolve_strategy
@@ -100,7 +101,9 @@ async def drafter_node(state: CouncilState, llm: LLM) -> CouncilState:
     last_price = float(ctx.get("last_price", 100.0) or 100.0)
     equity = float(ctx.get("portfolio_equity", 100_000.0) or 100_000.0)
     atr_14 = ctx.get("technicals", {}).get("atr_14")
-    confidence = max(0.0, min(1.0, float(data.get("confidence", 0.5))))
+    # An unparseable confidence collapses to 0.0, which sizes down to
+    # qty<1 and converts the pass to HOLD below — the safe direction.
+    confidence = clamp_confidence(data.get("confidence", 0.5), field="drafter.confidence")
 
     sizing = atr_position_size(
         SizingInputs(
@@ -148,8 +151,10 @@ async def drafter_node(state: CouncilState, llm: LLM) -> CouncilState:
             "rationale": combined_rationale,
             "bull_case": str(data.get("bull_case", "")),
             "bear_case": str(data.get("bear_case", "")),
-            "risk_level": int(data.get("risk_level", 3)),
-            "conviction_level": int(data.get("conviction_level", 3)),
+            "risk_level": clamp_level(data.get("risk_level", 3), field="risk_level"),
+            "conviction_level": clamp_level(
+                data.get("conviction_level", 3), field="conviction_level"
+            ),
             "confidence": confidence,
             "sizing_method": sizing.method,
         },
