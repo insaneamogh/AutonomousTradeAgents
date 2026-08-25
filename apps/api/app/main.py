@@ -89,7 +89,7 @@ def _init_sentry() -> None:
             traces_sample_rate=float(os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "0.0")),
         )
         logger.info("Sentry initialized (env=%s)", settings.env)
-    except Exception:  # noqa: BLE001 — telemetry must never block boot
+    except Exception:
         logger.exception("Sentry init failed — continuing without it")
 
 
@@ -143,6 +143,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 .on_conflict_do_nothing(index_elements=["id"])
             )
             await session.commit()
+
+        # Give every existing user the env-key Alpaca PAPER connection when
+        # ALPACA_API_KEY / ALPACA_SECRET_KEY are configured. Without a
+        # broker_connections row the keys bought market data but nothing
+        # could trade, and the UI read "No broker linked". Idempotent, paper
+        # only, and never auto-grants live consent.
+        from sqlalchemy import select as _select
+
+        from app.services.broker.env_bootstrap import (
+            ensure_env_broker_connection,
+            env_keys_present,
+        )
+
+        if env_keys_present():
+            async with session_factory() as session:
+                user_ids = (await session.execute(_select(User.id))).scalars().all()
+            created = 0
+            for uid in user_ids:
+                if await ensure_env_broker_connection(str(uid)):
+                    created += 1
+            logger.info(
+                "env broker bootstrap: %d/%d users linked to Alpaca paper",
+                created, len(user_ids),
+            )
 
         # Per-user reconciliation against the REAL broker. The mock-poller
         # fallback only exists off-production so a local box with no broker
@@ -261,7 +285,7 @@ _API_PATH_PREFIX = "/api/"
 
 
 @app.middleware("http")
-async def _security_headers(request, call_next):  # noqa: ANN001, ANN201
+async def _security_headers(request, call_next):
     """Baseline hardening headers on every response. Cheap; matters most for
     the broker-OAuth HTML pages and the web app (clickjacking / MIME-sniff)
     and HTTPS pinning behind the TLS-terminating proxy (Railway/Fly)."""

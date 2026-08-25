@@ -40,9 +40,10 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING, AsyncIterator
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from app.services.broker.broker_store import (
     BrokerConnectionRecord,
@@ -56,6 +57,7 @@ from app.services.broker.crypto import (
 from app.services.broker.crypto import (
     is_available as crypto_available,
 )
+from app.services.broker.env_bootstrap import ALPACA_ENV_SENTINEL
 
 # Lazy imports: ``broker.alpaca`` pulls in the ``alpaca-py`` SDK which is
 # declared in ``packages/broker/pyproject.toml`` but may not be
@@ -123,8 +125,8 @@ def _check_not_expired(conn: BrokerConnectionRecord) -> None:
         return
     expires = conn.access_token_expires_at
     if expires.tzinfo is None:
-        expires = expires.replace(tzinfo=timezone.utc)
-    if expires <= datetime.now(timezone.utc):
+        expires = expires.replace(tzinfo=UTC)
+    if expires <= datetime.now(UTC):
         raise BrokerUnavailableError(
             f"Stored {conn.broker} access token has expired"
             + (
@@ -136,7 +138,7 @@ def _check_not_expired(conn: BrokerConnectionRecord) -> None:
         )
 
 
-def _build_alpaca(access_token: str, conn: BrokerConnectionRecord) -> "BrokerInterface":
+def _build_alpaca(access_token: str, conn: BrokerConnectionRecord) -> BrokerInterface:
     try:
         from broker.alpaca import AlpacaBroker
     except ImportError as exc:
@@ -144,10 +146,24 @@ def _build_alpaca(access_token: str, conn: BrokerConnectionRecord) -> "BrokerInt
             "Broker integration requires the 'alpaca-py' Python package. "
             "Run `uv sync` to install."
         ) from exc
+
+    # Env-key connection (see services/broker/env_bootstrap.py): the row
+    # stores a sentinel rather than an OAuth token, and the real
+    # credentials live in the process environment. Same shape as the
+    # Zerodha path below, which also takes its API key from env.
+    if access_token == ALPACA_ENV_SENTINEL:
+        try:
+            return AlpacaBroker.from_env()
+        except RuntimeError as exc:
+            raise BrokerUnavailableError(
+                "Alpaca connection is env-key backed but ALPACA_API_KEY / "
+                "ALPACA_SECRET_KEY are not set on the API."
+            ) from exc
+
     return AlpacaBroker.from_oauth_token(access_token, paper=conn.is_paper)
 
 
-def _build_zerodha(access_token: str, conn: BrokerConnectionRecord) -> "BrokerInterface":
+def _build_zerodha(access_token: str, conn: BrokerConnectionRecord) -> BrokerInterface:
     from broker.zerodha import ZerodhaBroker  # httpx-only; always importable
 
     kite_api_key = os.environ.get("KITE_API_KEY", "").strip()
@@ -164,7 +180,7 @@ async def with_broker_client(
     *,
     broker: str | None = None,
     store: BrokerStore | None = None,
-) -> AsyncIterator[tuple["BrokerInterface", BrokerConnectionRecord]]:
+) -> AsyncIterator[tuple[BrokerInterface, BrokerConnectionRecord]]:
     """Yield a broker client configured with the user's decrypted token.
 
     Raises ``BrokerUnavailableError`` on:
@@ -223,7 +239,7 @@ async def with_broker_client(
         # the broker client's internals; we can't deterministically wipe
         # them, but we can stop holding pointers so they're GC-eligible.
         del client
-        access_token = "_dropped_"  # noqa: F841 — intent: rebind away from the secret
+        access_token = "_dropped_"
 
 
 @asynccontextmanager
@@ -231,7 +247,7 @@ async def with_alpaca_client(
     user_id: str,
     *,
     store: BrokerStore | None = None,
-) -> AsyncIterator[tuple["BrokerInterface", BrokerConnectionRecord]]:
+) -> AsyncIterator[tuple[BrokerInterface, BrokerConnectionRecord]]:
     """Legacy Alpaca-only wrapper. Prefer ``with_broker_client``."""
     async with with_broker_client(user_id, broker="alpaca", store=store) as pair:
         yield pair
