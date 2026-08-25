@@ -294,6 +294,63 @@ Recommendation: don't reach for Temporal yet. A single worker process owning all
 
 ## Entries
 
+### 2026-08-25 — web UI wired onto the Railway domain (no commit hash yet — see next entry after push)
+
+User report: visiting the Railway domain showed the raw FastAPI 404
+(`{"detail":"Not Found"}`) instead of the app. Root cause: the API has
+never had anything registered at `/` — Railway's single service only ever
+ran `apps/api`'s Dockerfile, and no web build of `apps/mobile` has ever
+existed (no export step, no "build" script, nothing in the image). This
+was never a routing bug to fix, it was a missing feature to add.
+
+**What's now wired up**, verified end to end locally by actually serving
+the production export through the API (not the Expo dev server):
+- `apps/mobile`: added a `build` script (`expo export --platform web`).
+  `resolveBaseUrl()` in `src/lib/api.ts` now resolves same-origin
+  (`window.location.origin`) for a production web build specifically
+  (`!__DEV__`) — the export is served BY the API itself, so same-origin
+  is always right and survives a domain change with no rebuild; dev
+  (`expo start --web`) is untouched, still falls through to the existing
+  debugger-host/localhost logic.
+- `apps/api/Dockerfile`: new `web-builder` stage (`node:22-slim`, pnpm
+  9.12.0 via corepack) runs the export; the runtime stage copies its
+  `apps/mobile/dist` output into the image at the same relative path a
+  local checkout would have it, so `main.py` finds it with no env var.
+- `.dockerignore`: stopped blanket-excluding `apps/mobile` /
+  `packages/ui` / `packages/shared-types` (they were never needed by the
+  Python-only build before; `**/node_modules` and `**/.expo` already cover
+  the heavy stuff generically, so nothing got less lean).
+- `apps/api/app/main.py`: mounts `/_expo` + `/assets` as static files and
+  adds a catch-all `GET /{full_path}` — registered dead last, so every
+  API route still wins its match first — that serves `index.html` for
+  anything else (client-side routing handles the rest), except `/api/*`
+  which still 404s as JSON. New `_CSP_WEB` policy (`self` + Google Fonts
+  for the desktop tree's Inter/Space Grotesk) scoped to non-API,
+  non-`/docs` paths only — the existing strict `default-src 'none'` API
+  policy is untouched for `/api/*` and `/health`.
+- Entirely inert in local dev unless you've actually run
+  `pnpm --filter @app/mobile run build` yourself — `uvicorn --reload`
+  without that step logs "Web UI disabled" and behaves exactly as before.
+
+**Verified locally** by building the real export and serving it through
+`uvicorn` on port 8000 (not 8081): `GET /` → 200 HTML, `GET /positions`
+(an arbitrary client route) → 200 HTML (SPA fallback), `GET
+/api/v1/does-not-exist` → still 404 JSON, `GET /health` → unaffected, CSP
+header correctly differs by path (`curl` against all four). Then in an
+actual browser against that same port-8000 build: fresh dev-token logins
+landed correctly on Platinum Glass at desktop width and the calm mobile
+UI at 375px, in the SAME build — confirming the `DesktopShell` width fix
+and the auth-race fix above both hold in a real production export, not
+just the dev server.
+
+**Not verified — no Docker locally in this environment.** The Dockerfile
+itself was reviewed by hand (Node 20+ requirement satisfied by
+`node:22-slim`, pnpm version matches `packageManager` in package.json,
+the exact `pnpm install && pnpm --filter @app/mobile run build` sequence
+already proven above) but never actually run through `docker build`.
+Railway will build it for real on the next push — worth watching that
+first build's logs.
+
 ### 2026-08-25 — `4729a13f` + `37e4a4ac`: desktop-on-first-load bug + magic-link verify loop/race
 
 User-reported: Railway showed a bare `{"detail":"Not Found"}`, and locally
