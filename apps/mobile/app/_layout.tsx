@@ -26,6 +26,7 @@ import * as Linking from 'expo-linking';
 import * as Notifications from 'expo-notifications';
 
 import { BiometricGate } from '@/components/BiometricGate';
+import { DesktopShell } from '@/components/DesktopShell';
 import { completeAlpacaOAuth, brokerConnectionsKey } from '@/hooks/useBrokerConnections';
 import { usePushRegistration } from '@/hooks/usePushRegistration';
 import { registerAuthSnapshot } from '@/lib/api';
@@ -74,7 +75,11 @@ export default function RootLayout() {
     <QueryClientProvider client={queryClient}>
       <SafeAreaProvider>
         <StatusBar style="auto" />
-        <RootGate />
+        {/* Frames the phone-width UI on desktop browsers; passthrough on
+            native and on narrow viewports. */}
+        <DesktopShell>
+          <RootGate />
+        </DesktopShell>
       </SafeAreaProvider>
     </QueryClientProvider>
   );

@@ -32,6 +32,7 @@
     "lucide-react-native": "^0.460.0",
     "nativewind": "^4.1.0",
     "react": "19.1.4",
+    "react-dom": "19.1.4",
     "react-native": "^0.81.5",
     "react-native-gesture-handler": "~2.28.0",
     "react-native-mmkv": "^3.1.0",

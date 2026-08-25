@@ -5,6 +5,8 @@
  *   - error-shape normalization (throws ApiError with status + body)
  *   - Bearer-token injection from the auth store
  *   - automatic refresh-on-401 with single retry (Phase 3)
+ *   - the trading lock: order-placing calls are refused unless the
+ *     biometric gate has actually verified the user (see below)
  *
  * Refresh strategy (PLAN.md §3): the API hands out 15-min access tokens
  * + 30-day refresh tokens (rotated on every refresh call). The client
@@ -22,10 +24,30 @@ import { Platform } from 'react-native';
 
 const DEFAULT_PORT = 8000;
 
+/**
+ * Refuse a cleartext base URL outside `__DEV__`.
+ *
+ * This client places real-money orders and carries a bearer token on every
+ * request. A release build talking `http://` would hand both to anyone on
+ * the path, so a misconfigured EXPO_PUBLIC_API_URL must fail loudly at
+ * startup rather than silently downgrade — and the LAN/simulator fallbacks
+ * below have no business existing in a release build at all.
+ */
+function assertSecure(url: string): string {
+  if (__DEV__) return url;
+  if (!url.startsWith('https://')) {
+    throw new Error(
+      `Insecure API base URL (${url}). Release builds must use https:// — ` +
+        'set EXPO_PUBLIC_API_URL to your https API origin.',
+    );
+  }
+  return url;
+}
+
 function resolveBaseUrl(): string {
   // 1. Explicit override wins.
   const fromEnv = process.env.EXPO_PUBLIC_API_URL;
-  if (fromEnv) return fromEnv.replace(/\/+$/, '');
+  if (fromEnv) return assertSecure(fromEnv.replace(/\/+$/, ''));
 
   // 2. Use the Expo dev server's host so a physical device can reach the
   //    API at the same LAN IP as the bundler.
@@ -34,13 +56,13 @@ function resolveBaseUrl(): string {
   if (debuggerHost) {
     const host = debuggerHost.split(':')[0];
     if (host && host !== 'localhost' && host !== '127.0.0.1') {
-      return `http://${host}:${DEFAULT_PORT}`;
+      return assertSecure(`http://${host}:${DEFAULT_PORT}`);
     }
   }
 
   // 3. Platform-specific simulator/emulator fallbacks.
-  if (Platform.OS === 'android') return `http://10.0.2.2:${DEFAULT_PORT}`;
-  return `http://localhost:${DEFAULT_PORT}`;
+  if (Platform.OS === 'android') return assertSecure(`http://10.0.2.2:${DEFAULT_PORT}`);
+  return assertSecure(`http://localhost:${DEFAULT_PORT}`);
 }
 
 export const BASE_URL = resolveBaseUrl();
@@ -55,6 +77,57 @@ export class ApiError extends Error {
     this.status = status;
     this.body = body;
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Trading lock
+//
+// The biometric gate can only prove identity when the device HAS enrolled
+// biometrics. When it doesn't, we still let the user read their portfolio
+// — but every order-placing call is refused here, at the one chokepoint no
+// screen can route around. Enforcing in the API client (rather than per
+// button) means a new screen is fail-closed by default.
+// ─────────────────────────────────────────────────────────────────────
+
+/** Paths that move money. Matched as prefixes against the request path. */
+const TRADING_PATHS = [
+  '/api/v1/approvals/',
+  '/api/v1/orders/execute',
+  '/api/v1/positions/',
+  '/api/v1/agent/run',
+];
+
+const TRADING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+let _tradingUnlocked = false;
+let _tradingLockReason = 'Biometric verification required.';
+
+/**
+ * Called by the biometric gate. `unlocked` is true only after a successful
+ * biometric authentication; unavailable hardware, missing enrolment, and a
+ * backgrounded app all leave it false.
+ */
+export function setTradingUnlocked(unlocked: boolean, reason?: string): void {
+  _tradingUnlocked = unlocked;
+  if (reason) _tradingLockReason = reason;
+}
+
+export function isTradingUnlocked(): boolean {
+  return _tradingUnlocked;
+}
+
+/** Thrown instead of issuing a trading request while the app is locked. */
+export class TradingLockedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TradingLockedError';
+  }
+}
+
+function isTradingRequest(path: string, method: string): boolean {
+  if (!TRADING_METHODS.has(method)) return false;
+  const normalized = path.startsWith('/') ? path : `/${path}`;
+  return TRADING_PATHS.some((p) => normalized.startsWith(p));
 }
 
 export interface RequestOptions {
@@ -104,6 +177,13 @@ async function _request<T>(
   options: RequestOptions,
   retried: boolean,
 ): Promise<T> {
+  const method = options.method ?? 'GET';
+  if (isTradingRequest(path, method)) {
+    if (!_tradingUnlocked) {
+      throw new TradingLockedError(_tradingLockReason);
+    }
+  }
+
   const url = `${BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
   const headers: Record<string, string> = { 'content-type': 'application/json' };
 
@@ -115,7 +195,7 @@ async function _request<T>(
   }
 
   const res = await fetch(url, {
-    method: options.method ?? 'GET',
+    method,
     headers,
     body: options.body != null ? JSON.stringify(options.body) : undefined,
     signal: options.signal,

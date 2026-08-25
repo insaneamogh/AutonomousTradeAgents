@@ -155,12 +155,27 @@ class AlpacaBroker(BrokerInterface):
 
     @classmethod
     def from_env(cls) -> AlpacaBroker:
-        """Build from ALPACA_API_KEY / ALPACA_API_SECRET / ALPACA_BASE_URL env."""
-        key = os.environ["ALPACA_API_KEY"]
-        secret = os.environ["ALPACA_API_SECRET"]
-        # The Alpaca SDK selects paper vs live from the `paper` kwarg, not
-        # the URL — but we honor ALPACA_BASE_URL for consistency with .env.
-        base = os.environ.get("ALPACA_BASE_URL", "")
+        """Build from ALPACA_API_KEY / ALPACA_SECRET_KEY / ALPACA_BASE_URL env.
+
+        ``ALPACA_API_SECRET`` is accepted as a legacy alias: this module
+        historically read that name while ``engine.features`` /
+        ``engine.prices`` read ``ALPACA_SECRET_KEY``, so a deployment
+        configured for market data would KeyError the moment it tried to
+        trade. Both names now resolve.
+        """
+        key = os.environ.get("ALPACA_API_KEY", "").strip()
+        secret = (
+            os.environ.get("ALPACA_SECRET_KEY", "").strip()
+            or os.environ.get("ALPACA_API_SECRET", "").strip()
+        )
+        if not key or not secret:
+            raise RuntimeError(
+                "AlpacaBroker.from_env: set ALPACA_API_KEY and ALPACA_SECRET_KEY"
+            )
+        # Alpaca's SDK selects paper vs live from the `paper` kwarg, not the
+        # URL. Default to PAPER when unset — an unconfigured environment must
+        # never fall through to real money.
+        base = os.environ.get("ALPACA_BASE_URL", "").strip()
         paper = "paper" in base.lower() if base else True
         return cls(api_key=key, secret_key=secret, paper=paper)
 
