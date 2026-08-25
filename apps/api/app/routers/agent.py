@@ -36,6 +36,7 @@ from app.schemas.approvals import ApprovalProposalDto
 from app.services.agent_runs import get_run_registry
 from app.services.notifications import schedule_proposal_pending_notification
 from app.services.store import get_store
+from trading_agents.features import resolve_feature_provider
 from trading_agents.memory import get_confidence_store, get_decision_log
 from trading_agents.progress import ProgressEvent
 from trading_agents.runtime import run_council
@@ -49,6 +50,38 @@ def _postgres_active() -> bool:
     """Mirror of the store/memory factories' env switch."""
     v = os.environ.get("USE_POSTGRES")
     return v is not None and v.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _equity_resolver(user_id: str):
+    """Latest reconciler-snapshot equity for the caller (Postgres only).
+
+    Mirrors daily_cron._equity_resolver: the ATR sizer must size against
+    REAL account equity, never the synthetic 100k fixture, when a broker
+    is connected. None → the provider falls back with a loud log.
+    """
+
+    async def _resolve() -> float | None:
+        if not _postgres_active():
+            return None
+        import uuid as _uuid
+
+        from sqlalchemy import desc, select
+
+        from engine.db.models import PositionsSnapshot
+        from engine.db.session import async_session_factory
+
+        factory = async_session_factory()
+        async with factory() as session:
+            stmt = (
+                select(PositionsSnapshot.account_equity)
+                .where(PositionsSnapshot.user_id == _uuid.UUID(user_id))
+                .order_by(desc(PositionsSnapshot.captured_at))
+                .limit(1)
+            )
+            row = (await session.execute(stmt)).scalar_one_or_none()
+        return float(row) if row is not None else None
+
+    return _resolve
 
 
 async def _execute_council(
@@ -70,10 +103,18 @@ async def _execute_council(
     DEV_AUTH_BYPASS the authed user IS the fixture user, so dev/mock stays
     single-bucket.
     """
+    # Same provider resolution as the daily cron: real Alpaca bars + FRED
+    # macro when data keys exist, synthetic otherwise (dev/CI). Without
+    # this, every app-triggered run analyzed hash-generated prices — and
+    # the AGENTS_REQUIRE_REAL_DATA production guard was silently bypassed.
+    feature_provider = resolve_feature_provider(
+        equity_resolver=_equity_resolver(user.id)
+    )
     result = await run_council(
         symbol=body.symbol,
         horizon=body.horizon,
         user_id=user.id,
+        feature_provider=feature_provider,
         decision_log=get_decision_log(),
         confidence_store=get_confidence_store(),
         progress_cb=progress_cb,

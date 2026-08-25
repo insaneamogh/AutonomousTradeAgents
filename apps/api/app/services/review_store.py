@@ -121,6 +121,131 @@ class InMemoryReviewStore:
         ]
 
 
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Postgres impl — migration 0006's decision_review table
+# ─────────────────────────────────────────────────────────────────────
+
+
+class PostgresReviewStore:
+    """SQLAlchemy-backed ReviewStore. Upsert leans on the
+    (decision_id, operator_user_id) unique constraint so concurrent
+    grades of the same decision can't produce duplicates.
+    """
+
+    def __init__(self) -> None:
+        from engine.db.session import async_session_factory
+
+        self._session_factory = async_session_factory()
+
+    @staticmethod
+    def _to_record(row) -> DecisionReviewRecord:  # noqa: ANN001 — SQLAlchemy row
+        return DecisionReviewRecord(
+            id=str(row.id),
+            decision_id=str(row.decision_id),
+            operator_user_id=str(row.operator_user_id),
+            grade=row.grade,
+            notes=row.notes,
+            reviewed_at=row.reviewed_at,
+        )
+
+    async def upsert_review(
+        self,
+        *,
+        decision_id: str,
+        operator_user_id: str,
+        grade: Grade,
+        notes: str | None = None,
+    ) -> DecisionReviewRecord:
+        from sqlalchemy import select
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        from engine.db.models import DecisionReview
+
+        now = datetime.now(timezone.utc)
+        async with self._session_factory() as session:
+            stmt = (
+                pg_insert(DecisionReview)
+                .values(
+                    id=uuid.uuid4(),
+                    decision_id=uuid.UUID(decision_id),
+                    operator_user_id=uuid.UUID(operator_user_id),
+                    grade=grade,
+                    notes=notes,
+                    reviewed_at=now,
+                )
+                .on_conflict_do_update(
+                    constraint="uq_decision_review_decision_operator",
+                    set_={"grade": grade, "notes": notes, "reviewed_at": now},
+                )
+            )
+            await session.execute(stmt)
+            await session.commit()
+
+            row = (
+                await session.execute(
+                    select(DecisionReview).where(
+                        DecisionReview.decision_id == uuid.UUID(decision_id),
+                        DecisionReview.operator_user_id == uuid.UUID(operator_user_id),
+                    )
+                )
+            ).scalar_one()
+        return self._to_record(row)
+
+    async def get_review_by_decision_and_operator(
+        self,
+        *,
+        decision_id: str,
+        operator_user_id: str,
+    ) -> DecisionReviewRecord | None:
+        from sqlalchemy import select
+
+        from engine.db.models import DecisionReview
+
+        try:
+            did = uuid.UUID(decision_id)
+            oid = uuid.UUID(operator_user_id)
+        except (ValueError, TypeError):
+            return None
+        async with self._session_factory() as session:
+            row = (
+                await session.execute(
+                    select(DecisionReview).where(
+                        DecisionReview.decision_id == did,
+                        DecisionReview.operator_user_id == oid,
+                    )
+                )
+            ).scalar_one_or_none()
+        return self._to_record(row) if row is not None else None
+
+    async def list_reviews_for_operator(
+        self,
+        operator_user_id: str,
+    ) -> list[DecisionReviewRecord]:
+        from sqlalchemy import select
+
+        from engine.db.models import DecisionReview
+
+        try:
+            oid = uuid.UUID(operator_user_id)
+        except (ValueError, TypeError):
+            return []
+        async with self._session_factory() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(DecisionReview).where(
+                            DecisionReview.operator_user_id == oid
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        return [self._to_record(r) for r in rows]
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Factory
 # ─────────────────────────────────────────────────────────────────────
@@ -134,19 +259,13 @@ def _is_truthy(v: str | None) -> bool:
 
 
 def get_review_store() -> ReviewStore:
-    """Process singleton. Postgres impl deferred — InMemory is the live
-    default during the Phase 4 month-1 review window.
-    """
-    import logging
-
+    """Process singleton. Postgres when USE_POSTGRES=1, else in-memory."""
     global _review_store
     if _review_store is None:
         if _is_truthy(os.environ.get("USE_POSTGRES")):
-            logging.getLogger("api.review").warning(
-                "USE_POSTGRES=1 but PostgresReviewStore is not yet wired — "
-                "falling back to InMemoryReviewStore. Reviews won't persist."
-            )
-        _review_store = InMemoryReviewStore()
+            _review_store = PostgresReviewStore()
+        else:
+            _review_store = InMemoryReviewStore()
     return _review_store
 
 
