@@ -290,14 +290,17 @@ here once, in one place, instead of only as inline asides inside each entry.
    code's own handling), not bugs — just newly *visible* after this
    session added the missing `py.typed` marker to `engine`/`broker`/
    `trading_agents`, which had been silently hiding them.
-3. **Store-selector duplication not collapsed.** Six modules under
-   `apps/api/app/services/*/` (`auth_store`, `broker_store`,
-   `notification_store`, `review_store`, `store`, `watchlist_store`) each
-   hand-roll the identical in-memory-vs-Postgres singleton-selector
-   pattern. A shared factory-based helper would collapse it, but
-   `broker_store.py` also bundles a second singleton (`PendingOAuthCache`)
-   that would need its own wrapper — not a perfectly clean 1:1 collapse,
-   so left as a flagged finding rather than a forced fix.
+3. ~~**Store-selector duplication not collapsed.**~~ **Resolved
+   2026-08-25 (`9d938eef`).** Six modules under `apps/api/app/services/*/`
+   (`auth_store`, `broker_store`, `notification_store`, `review_store`,
+   `store`, `watchlist_store`) each hand-rolled the identical
+   in-memory-vs-Postgres singleton-selector pattern. Collapsed into
+   `app/core/singleton.py::LazyEnvSingleton`. `broker_store.py`'s second
+   singleton (`PendingOAuthCache`) turned out exactly as anticipated here
+   — it doesn't fit the helper's shape (no Postgres/Mock split), so it
+   kept its own small hand-rolled wrapper, reset alongside the
+   shared-helper-based store rather than forced into the abstraction. See
+   the build-log entry below for the full shape.
 4. **`executor.py` and `order_store.py` still mix concerns internally.**
    Moving them into `services/orders/` (this session) didn't touch their
    insides. `executor.py` has five separable jobs in one file (live-trading
@@ -308,10 +311,11 @@ here once, in one place, instead of only as inline asides inside each entry.
    and the order-row CRUD the filename actually promises). Splitting
    either is a deeper behavior-preserving refactor than a file move —
    real, but higher risk, left for a dedicated pass.
-5. **`watchlist_store.py`'s new home (`services/council/`) is a judgment
-   call, not a clean fit** — it has no real coupling to anything else in
-   that bucket or any other. Worth revisiting if a better home suggests
-   itself.
+5. ~~**`watchlist_store.py`'s new home (`services/council/`) is a
+   judgment call, not a clean fit**~~ **Resolved 2026-08-25
+   (`9d938eef`).** It had no real coupling to anything else in `council/`
+   or any other existing bucket, so it moved to a new `services/watchlist/`
+   bucket of its own — the better home this note invited revisiting for.
 6. **Product-level open questions are unchanged** — see §8 above
    (Zerodha in/out, auto-window semantics, when to flip cron to
    real-LLM/real-data, wash-sale promotion). Still the user's calls, not
@@ -354,6 +358,79 @@ here once, in one place, instead of only as inline asides inside each entry.
 **Scope decisions locked this build:** instruments = US stocks/ETFs only (options/futures out); exits = Alpaca **bracket** (broker-enforced stop/target) **+** agent early-exit/time-stop for `exit_mode=agent`; entries always human-approved; Zerodha stays dark for v1.
 
 ## Entries
+
+### 2026-08-25 — `9d938eef` refactor(api): collapse the store-selector duplication into a shared helper
+
+Closes technical-debt items #3 and #5 above. Scope was six files, all
+under `apps/api/app/services/`: `auth/auth_store.py`,
+`broker/broker_store.py`, `notifications/notification_store.py`,
+`council/review_store.py`, `council/store.py`, and
+`council/watchlist_store.py` — deliberately excluding
+`orders/executor.py`/`orders/order_store.py` (item #4 above), which a
+parallel agent was working on in its own worktree at the same time.
+
+- **New `app/core/singleton.py::LazyEnvSingleton[T]`**, matching the
+  small-focused-utility style of `core/time.py`/`core/ids.py`.
+  Parametrized by **factory callables**, not bare classes, specifically
+  so it covers both shapes found in the six files: a Mock/InMemory impl
+  defined right there in the module (pass the class itself — a no-arg
+  constructor already satisfies `Callable[[], T]`) and a Postgres impl
+  that needs a lazy import to defer pulling in SQLAlchemy until
+  `USE_POSTGRES=1` actually selects it (pass a small `_build_postgres_x()`
+  closure that does the import). `council/store.py` needed the
+  closure-wrapper treatment on **both** sides, since it lazily imports
+  `MockStore` too, not just `PostgresStore`. `.get()`/`.reset()` are the
+  only two methods. Each of the six modules keeps its existing
+  module-level singleton variable name, now holding a `LazyEnvSingleton`
+  instance instead of `T | None`, plus its two existing public functions
+  (`get_x_store`, `reset_x_store_for_tests`) as one-line delegators — the
+  ~30 call sites across routers/tests that call those two names were
+  left untouched, on purpose.
+- **`PendingOAuthCache` (bundled inside `broker_store.py`) does not use
+  the shared helper.** It's a second, unrelated singleton in the same
+  file (short-lived OAuth state cache, no Postgres/Mock split to switch
+  on — always the same implementation, just lazily constructed), so
+  `LazyEnvSingleton` doesn't fit its shape. Kept as its own small
+  hand-rolled lazy singleton with a comment explaining why, and its reset
+  folded into `reset_broker_store_for_tests()` alongside the
+  shared-helper-based store's reset — same combined public function as
+  before, two singletons cleared under the hood.
+- **`watchlist_store.py` moved `services/council/` → `services/watchlist/`**
+  (new bucket, `git mv` + one new empty `__init__.py`). It had zero real
+  import coupling to anything else in `council/` (verified by grep, not
+  assumed) — a "closest fit, not a clean fit" judgment call from the
+  file-split commit (`7b74bfd6`) that a dedicated `watchlist/` bucket
+  resolves cleanly, matching the one-domain-per-bucket shape of the other
+  five buckets. Three import sites updated to the new path:
+  `app/schemas/agent.py`, `app/routers/watchlist.py`, and
+  `apps/api/tests/test_agent_symbol_validation.py` (all three imported
+  `SYMBOL_RE` and/or `get_watchlist_store` by the old dotted path).
+- **Added `reset_watchlist_store_for_tests()`** — this function did not
+  exist before this commit anywhere in `watchlist_store.py`. Nothing
+  currently calls it (no test in the suite exercises cross-test state for
+  the watchlist store), so this is purely additive: added for parity so
+  all six modules expose the same `get_x_store`/`reset_x_store_for_tests`
+  pair, on the theory that a future test needing it shouldn't have to add
+  the missing half under time pressure.
+- Verified: `apps/api/tests` 209 passed / 7 skipped, byte-for-byte the
+  same as the pre-refactor baseline; full Python suite (`apps/api` +
+  `apps/agents` + `packages/engine` + `packages/broker`) 378 passed / 8
+  skipped, also unchanged. The 18 test files that specifically exercise
+  these six stores' `reset_*_for_tests` functions (`test_auth*.py`,
+  `test_broker.py`, `test_notifications.py`, `test_health_route.py`,
+  `test_orders_route.py`, `test_paper_mode.py`, `test_portfolio_route.py`,
+  `test_positions_route.py`, `test_rate_limit.py`,
+  `test_tenant_isolation.py`, `test_zerodha_*.py`,
+  `test_strategies_route.py`, `test_review_route.py`,
+  `test_circuit_breaker_route.py`, `test_agent_symbol_validation.py`) run
+  clean in isolation too: 170 passed. `ruff check apps/api --select F,I`
+  clean. `mypy apps/api/app`: identical 64 pre-existing errors, same
+  files and messages as the pre-refactor baseline (the moved
+  `watchlist_store.py`'s one pre-existing `rowcount` nit moved with it,
+  unchanged) — zero new findings.
+- Nothing left open from this pass. `executor.py`/`order_store.py`
+  (item #4 above) stays a separate, dedicated pass by design — out of
+  scope here, different worktree, different agent.
 
 ### 2026-08-25 — `04559318` fix(api): resolve mypy type-narrowing gaps in postgres_auth_store
 
