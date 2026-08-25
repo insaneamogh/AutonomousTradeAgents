@@ -6,14 +6,27 @@ fetch data (PLAN.md §5.3). The agents package calls
 ``run_council``.
 """
 
-from engine.features.bars import AlpacaDailyBarsProvider, BarsProvider
+from engine.features.bars import (
+    AlpacaDailyBarsProvider,
+    AlpacaIntradayBarsProvider,
+    BarsProvider,
+    IntradayBar,
+    IntradayBarsProvider,
+    intraday_provider_from_env,
+)
 from engine.features.macro import (
     compute_macro,
     fred_latest,
     reset_fred_cache,
     sector_relative_strength,
 )
-from engine.features.market_calendar import US_MARKET_HOLIDAYS, is_us_trading_day
+from engine.features.market_calendar import (
+    US_MARKET_HOLIDAYS,
+    is_us_market_open,
+    is_us_trading_day,
+    minutes_until_us_market_open,
+    us_market_session_bounds,
+)
 from engine.features.provider import (
     DEFAULT_EQUITY_FALLBACK,
     FundamentalsProvider,
@@ -31,7 +44,10 @@ from engine.features.technicals import (
     MIN_BARS,
     DailyBar,
     InsufficientBarsError,
+    atr_wilder,
     compute_technicals,
+    rsi_wilder,
+    sma,
 )
 
 __all__ = [
@@ -41,19 +57,29 @@ __all__ = [
     "MIN_QUANT_BARS",
     "US_MARKET_HOLIDAYS",
     "AlpacaDailyBarsProvider",
+    "AlpacaIntradayBarsProvider",
     "BarsProvider",
     "DailyBar",
     "FundamentalsProvider",
     "InsufficientBarsError",
+    "IntradayBar",
+    "IntradayBarsProvider",
     "QuantFeatures",
     "RealFeatureProvider",
+    "atr_wilder",
     "compute_macro",
     "compute_quant",
     "compute_technicals",
     "feature_provider_from_env",
     "fred_latest",
+    "intraday_provider_from_env",
+    "is_us_market_open",
     "is_us_trading_day",
+    "minutes_until_us_market_open",
     "relative_strength_ranks",
     "reset_fred_cache",
+    "rsi_wilder",
     "sector_relative_strength",
+    "sma",
+    "us_market_session_bounds",
 ]

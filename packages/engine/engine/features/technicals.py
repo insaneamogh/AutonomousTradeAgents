@@ -177,3 +177,36 @@ def _trend_position_score(
         score += 25.0 if last > sma200 else 0.0
         score += 25.0 if sma50 > sma200 else 0.0
     return round(score, 1)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Public primitives
+#
+# The continuous scanner needs the same Wilder recursions ``compute_technicals``
+# uses, but evaluated on a series with today's LIVE price appended — that is
+# what makes an intraday "RSI left the oversold band" trigger a real band
+# transition rather than a restatement of yesterday's close. Exposing the
+# recursions beats the scanner reaching for the underscore-prefixed
+# internals, and it guarantees the two layers cannot drift apart.
+# ─────────────────────────────────────────────────────────────────────
+
+
+def rsi_wilder(closes: list[float], period: int = 14) -> float | None:
+    """Classical Wilder RSI over ``closes``. None when history is too short."""
+    if len(closes) < period + 1:
+        return None
+    return _rsi_wilder(closes, period)
+
+
+def atr_wilder(bars: list[DailyBar], period: int = 14) -> float | None:
+    """Wilder ATR over ``bars``. None when history is too short."""
+    if len(bars) < period + 1:
+        return None
+    return _atr_wilder(bars, period)
+
+
+def sma(values: list[float], window: int) -> float | None:
+    """Simple moving average of the last ``window`` values, or None."""
+    if window <= 0 or len(values) < window:
+        return None
+    return _sma(values, window)
