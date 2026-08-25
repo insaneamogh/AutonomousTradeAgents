@@ -7,7 +7,12 @@ fetch data (PLAN.md §5.3). The agents package calls
 """
 
 from engine.features.bars import AlpacaDailyBarsProvider, BarsProvider
-from engine.features.macro import compute_macro, fred_latest, sector_relative_strength
+from engine.features.macro import (
+    compute_macro,
+    fred_latest,
+    reset_fred_cache,
+    sector_relative_strength,
+)
 from engine.features.market_calendar import US_MARKET_HOLIDAYS, is_us_trading_day
 from engine.features.provider import (
     DEFAULT_EQUITY_FALLBACK,
@@ -26,7 +31,6 @@ __all__ = [
     "DEFAULT_EQUITY_FALLBACK",
     "MIN_BARS",
     "US_MARKET_HOLIDAYS",
-    "is_us_trading_day",
     "AlpacaDailyBarsProvider",
     "BarsProvider",
     "DailyBar",
@@ -37,5 +41,7 @@ __all__ = [
     "compute_technicals",
     "feature_provider_from_env",
     "fred_latest",
+    "is_us_trading_day",
+    "reset_fred_cache",
     "sector_relative_strength",
 ]
