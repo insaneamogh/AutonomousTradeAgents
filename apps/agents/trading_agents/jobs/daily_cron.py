@@ -33,12 +33,17 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import inspect
 import logging
 import os
 import sys
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from engine.env import env_flag
+from engine.scanner import ScanSignal
 from trading_agents.features import resolve_feature_provider
 from trading_agents.llm import LLM
 from trading_agents.memory import get_confidence_store, get_decision_log
@@ -57,6 +62,47 @@ DEFAULT_WATCHLIST: tuple[str, ...] = (
     "SPY", "QQQ", "AAPL", "NVDA", "MSFT",
     "GOOG", "AMZN", "META", "TSLA", "JPM",
 )
+
+
+@dataclass(frozen=True)
+class SymbolScanContext:
+    """Why the scanner woke the council for one symbol, and where it ranks.
+
+    Passed straight through to the analysts' feature dict so a triggered
+    run can say WHICH deterministic condition fired rather than arriving
+    with no more context than a scheduled sweep. Typed rather than a loose
+    dict because this crosses the scanner → agents boundary.
+    """
+
+    signals: tuple[ScanSignal, ...] = ()
+    relative_strength_rank: float | None = None
+
+
+def _with_scan_context(
+    provider: Any, scan_context: Mapping[str, SymbolScanContext]
+) -> Any:
+    """Wrap a feature provider so triggered runs carry their trigger reason.
+
+    Wrapping rather than threading a parameter through ``run_council`` keeps
+    the council's contract intact: agents still receive one pre-computed
+    feature dict and still never fetch anything themselves.
+    """
+
+    async def _provider(symbol: str, horizon: str = "short") -> dict[str, Any]:
+        features = provider(symbol, horizon)
+        if inspect.isawaitable(features):
+            features = await features
+        ctx = scan_context.get(symbol.upper())
+        if ctx is None:
+            return features
+        if ctx.signals:
+            features["scan_triggers"] = [s.as_dict() for s in ctx.signals]
+        quant = features.get("quant")
+        if ctx.relative_strength_rank is not None and isinstance(quant, dict):
+            quant["relative_strength_rank"] = ctx.relative_strength_rank
+        return features
+
+    return _provider
 
 
 def _today_utc() -> str:
@@ -174,12 +220,21 @@ async def main(
     force: bool,
     skip_ghost_eval: bool = False,
     skip_reflect: bool = False,
+    scan_context: Mapping[str, SymbolScanContext] | None = None,
 ) -> int:
+    """Run the council across ``watchlist``. Returns a process exit code.
+
+    ``scan_context`` is set by the continuous scanner: a triggered pass
+    covers only the symbols that tripped a deterministic rule and forwards
+    the rule identifiers to the analysts. A scheduled full sweep passes
+    None and behaves exactly as before.
+    """
     log.info(
-        "daily cron start — user=%s symbols=%s use_postgres=%s",
+        "daily cron start — user=%s symbols=%s use_postgres=%s triggered=%s",
         user_id,
         ",".join(watchlist),
         env_flag("USE_POSTGRES"),
+        bool(scan_context),
     )
 
     # Market-calendar gate: no NYSE close today → nothing to decide. The
@@ -203,6 +258,9 @@ async def main(
         log.exception("daily cron refused to start (REQUIRE flag failed)")
         return 2
     log.info("LLM mode: %s", "MOCK" if llm.mock else "REAL")
+
+    if scan_context:
+        feature_provider = _with_scan_context(feature_provider, scan_context)
 
     push_tasks: list = []
     rolled_up: list[dict] = []
