@@ -18,8 +18,19 @@
  * The desktop module is pulled in with a guarded `require` so it is never
  * evaluated in the native bundle — it is plain DOM + CSS and has no
  * meaning outside a browser.
+ *
+ * Width source, and why it's not `useWindowDimensions()`: on a *fresh* web
+ * load (not a warm reload), react-native-web's `Dimensions` singleton has
+ * been observed reporting `width: 0` on first render and never correcting
+ * itself — there's no subsequent native `resize` event to trigger a re-read
+ * when the viewport was already at its final size before the bundle ran.
+ * That silently stuck every first-time visitor on a wide screen with the
+ * phone UI. `useWebViewportWidth()` below reads `window.innerWidth`
+ * directly (the DOM's own value, not RN's shimmed cache) and only falls
+ * back to `useWindowDimensions()` on native, where this bug doesn't apply.
  */
 
+import { useEffect, useState } from 'react';
 import { Platform, useWindowDimensions, View } from 'react-native';
 
 import { useAuthStore } from '@/stores/authStore';
@@ -45,19 +56,42 @@ function loadDesktopApp(): DesktopAppComponent | null {
 }
 
 /**
+ * Viewport width, read from the DOM directly on web (see the file-level
+ * note on why `useWindowDimensions()` alone isn't reliable here) and kept
+ * current via the native `resize` event. Native platforms never run the
+ * web branch at all — `useWindowDimensions()` has no equivalent bug there.
+ */
+function useWebViewportWidth(): number {
+  const rnWidth = useWindowDimensions().width;
+  const [domWidth, setDomWidth] = useState(() =>
+    Platform.OS === 'web' && typeof window !== 'undefined' ? window.innerWidth : rnWidth,
+  );
+
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+    const onResize = () => setDomWidth(window.innerWidth);
+    onResize(); // correct once more post-mount in case layout settled after first read
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  return Platform.OS === 'web' ? domWidth : rnWidth;
+}
+
+/**
  * True when the Platinum Glass tree is what's on screen — i.e. the
  * expo-router `<Slot />` is NOT mounted. The root layout's auth-route
  * guard reads this so it doesn't try to `router.replace()` into a
  * navigator that doesn't exist on this surface.
  */
 export function useIsDesktopSurface(): boolean {
-  const { width } = useWindowDimensions();
+  const width = useWebViewportWidth();
   const isAuthed = useAuthStore((s) => s.status === 'authenticated');
   return Platform.OS === 'web' && width >= DESKTOP_BREAKPOINT && isAuthed;
 }
 
 export function DesktopShell({ children }: { children: React.ReactNode }) {
-  const { width } = useWindowDimensions();
+  const width = useWebViewportWidth();
   const isAuthed = useAuthStore((s) => s.status === 'authenticated');
 
   const wideWeb = Platform.OS === 'web' && width >= DESKTOP_BREAKPOINT;
