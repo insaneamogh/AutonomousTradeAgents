@@ -294,6 +294,14 @@ Recommendation: don't reach for Temporal yet. A single worker process owning all
 
 ## Entries
 
+### 2026-08-25 — fix(deploy): diagnose the dead Railway deploy — Postgres was never running
+Root cause was **not** the container. `apps/api/Dockerfile` was correct the whole time (multi-stage `COPY --from=deps /usr/local`, exec bit, LF endings, `CMD` form — all fine, all ruled out).
+- **The database service was down.** `Postgres-CUSN` existed in the `autonomous` environment but had *zero* active deployments (last one `REMOVED` on 2026-06-10). A `*.railway.internal` name resolves only while the target service has a **running** deployment in the **same** environment, so `postgres-cusn.railway.internal` failed DNS with `socket.gaierror: [Errno -2]`. Alembic died, `start.sh` exited 1 after 6 retries, Railway restarted, and uvicorn never bound — hence 18 healthcheck failures with no app ever listening. Redeployed the Postgres service instance; the very next app deploy went green on the first migration attempt.
+- **The "no stdout" symptom was a CLI artifact.** `railway logs <id> -d` returns *build* output; container stdout is only reachable with a filter (`--filter 'start.sh'`, `--filter '@level:error'`). The `[start.sh] boot` banner had been in the logs all along. Documented this at the top of [start.sh](apps/api/scripts/start.sh) so the next person doesn't lose hours to it.
+- **Hardening:** `start.sh` now preflights the `DATABASE_URL` hostname (10 × 3s) before invoking Alembic and, on failure, prints a one-line named cause instead of a 60-line SQLAlchemy/asyncpg traceback.
+- Verified: `GET /health` → `{"status":"ok","env":"staging","version":"0.0.1"}`; deploy `166b5aa1` SUCCESS; logs show `Migrations applied` then `Uvicorn running on http://0.0.0.0:8080`.
+- Follow-up: `REDIS_URL` points at `redis-hdnc.railway.internal`, which is also not deployed. Harmless today — nothing under `apps/api/app` imports redis — but it will fail the same way the moment something does.
+
 ### 2026-07-25 — `59cf1a33` / `5587eb8d` toolchain: clean-clone breaks + local sim runbook
 Found by actually running the stack from scratch. Three independent breaks, none of which a returning contributor could avoid:
 - **`make dev-api` could not start.** `apps/api` imports `trading_agents` ([agent.py](apps/api/app/routers/agent.py), [agent_runs.py](apps/api/app/services/agent_runs.py)) but declared neither the `agents` dependency nor its `[tool.uv.sources]` entry, so `uv run --package api` died on `ModuleNotFoundError: trading_agents`. The API only booted with a hand-set `PYTHONPATH`. Declared as the real workspace dep it is.

@@ -8,6 +8,17 @@
 #      attempt). Migrations are idempotent — `upgrade head` is safe to
 #      re-run.
 #   2. Launch uvicorn bound to 0.0.0.0:$PORT.
+#
+# Reading these logs on Railway: `railway logs <deployment-id> -d` shows
+# BUILD output, not container stdout. To see the lines below you must pass
+# a filter, e.g.
+#
+#     railway logs <deployment-id> -d --since 1h --filter 'start.sh'
+#     railway logs <deployment-id> -d --since 1h --filter '@level:error'
+#
+# Without a filter the container's own output is invisible from the CLI,
+# which is exactly how a dead database masqueraded for hours as a
+# container that "never produced a single line of stdout".
 
 set -e
 
@@ -21,6 +32,31 @@ PORT="${PORT:-8000}"
 
 if [ "${USE_POSTGRES:-0}" = "1" ] && [ -n "${DATABASE_URL:-}" ]; then
     echo "[start.sh] USE_POSTGRES=1 — running Alembic migrations"
+
+    # Preflight the DB hostname before handing off to Alembic. On Railway a
+    # `*.railway.internal` name only resolves while the target service has a
+    # RUNNING deployment in the SAME environment — a stopped Postgres fails
+    # DNS, and Alembic buries that in a 60-line SQLAlchemy/asyncpg traceback
+    # whose only real content is `socket.gaierror: [Errno -2]`. Diagnose it
+    # here in one line instead.
+    db_host=$(python3 -c 'import sys,urllib.parse; print(urllib.parse.urlsplit(sys.argv[1]).hostname or "")' "${DATABASE_URL}" 2>/dev/null || true)
+    if [ -n "${db_host}" ]; then
+        dns_attempt=1
+        dns_max=10
+        until python3 -c 'import socket,sys; socket.getaddrinfo(sys.argv[1], None)' "${db_host}" 2>/dev/null; do
+            if [ "$dns_attempt" -ge "$dns_max" ]; then
+                echo "[start.sh] FATAL: database host '${db_host}' did not resolve after ${dns_max} attempts."
+                echo "[start.sh]   A '*.railway.internal' name resolves ONLY while that service has a"
+                echo "[start.sh]   running deployment in the SAME Railway environment. Check that the"
+                echo "[start.sh]   Postgres service is deployed here, not just present in the sidebar."
+                exit 1
+            fi
+            echo "[start.sh] waiting for DNS on ${db_host} (${dns_attempt}/${dns_max})"
+            dns_attempt=$((dns_attempt + 1))
+            sleep 3
+        done
+        echo "[start.sh] DNS ok: ${db_host}"
+    fi
 
     # Retry the migration: the DB may still be provisioning on a cold
     # Railway deploy. Up to ~60s of retries (12 × 5s) before giving up.
