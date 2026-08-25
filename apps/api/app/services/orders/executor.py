@@ -43,17 +43,19 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from app.schemas.approvals import ApprovalProposalDto
-from app.schemas.orders import ExecuteResponse, OrderResponse
+from app.schemas.orders import ExecuteResponse
 from app.services.broker.broker_use import (
     BrokerUnavailableError,
     with_broker_client,
 )
 from app.services.council.store import Store, get_store
+from app.services.orders.execute_response import build_execute_response
 from app.services.orders.execution_claim import (
     claim_decision_for_execution,
     finalize_execution_claim,
     release_execution_claim,
 )
+from app.services.orders.live_trading_gate import check_live_trading_gate
 from app.services.orders.order_store import persist_order_result, persist_order_submit
 from app.services.orders.paper_broker import get_paper_store, trading_mode
 
@@ -83,11 +85,6 @@ if TYPE_CHECKING:
     from broker.base import BrokerInterface
 
 logger = logging.getLogger("api.executor")
-
-
-def _live_trading_enabled() -> bool:
-    """Single switch for real-money orders. Default OFF — paper only."""
-    return env_flag("LIVE_TRADING_ENABLED")
 
 
 class ExecutorError(Exception):
@@ -169,28 +166,12 @@ async def _execute_via_broker(
 ) -> ExecuteResponse:
     proposal_id = proposal.id
     async with with_broker_client(user_id) as (broker, conn):
-        # 0. Live-trading gate. A real-money order needs BOTH the operator's
-        # global LIVE_TRADING_ENABLED env AND this connection's explicit
-        # per-user consent flag — either missing → refuse, named for audit.
-        if not conn.is_paper and not (
-            _live_trading_enabled() and conn.live_trading_consent
-        ):
-            missing = (
-                "LIVE_TRADING_ENABLED is not set on the API"
-                if not _live_trading_enabled()
-                else "this connection has not granted live-trading consent"
-            )
-            logger.warning(
-                "executor: live order BLOCKED proposal=%s user=%s broker=%s — %s",
-                proposal_id, user_id, conn.broker, missing,
-            )
-            return ExecuteResponse(
-                order=None,
-                risk_blocked=True,
-                risk_reason=f"{conn.broker} connection is live (real money) and {missing}.",
-                risk_veto_rule="live_trading_disabled",
-                informational_flags=[],
-            )
+        # 0. Live-trading gate — see live_trading_gate.py for the two-key
+        # rule (operator env + per-connection consent). Either missing →
+        # refuse, named for audit.
+        blocked = check_live_trading_gate(conn, proposal_id=proposal_id, user_id=user_id)
+        if blocked is not None:
+            return blocked
 
         # 1. Re-evaluate risk against the BROKER's view of the world,
         # merged with OUR halt/PDT state. Fails closed if state is unreadable.
@@ -367,30 +348,26 @@ async def _execute_via_broker(
         # the proposal-state write hiccupped. Reconciler will catch up.
         logger.warning("executor: post-place decide() failed for %s — %s", proposal_id, exc)
 
-    return ExecuteResponse(
-        order=OrderResponse(
-            # No DB row means Postgres is inactive (dev). Use the
-            # client_order_id — a real, stable identifier the broker also
-            # knows — instead of a fabricated UUID that matches nothing.
-            id=str(order_row_id) if order_row_id is not None else client_order_id,
-            proposal_id=proposal_id,
-            broker_order_id=order.broker_order_id,
-            client_order_id=order.client_order_id or _client_order_id_for(proposal.id),
-            symbol=order.symbol,
-            side=order.side.value if hasattr(order.side, "value") else str(order.side),
-            qty=order.qty,
-            requested_qty=proposal.qty,
-            order_type=proposal.order_type,
-            limit_price=proposal.limit_price,
-            status=order.status.value if hasattr(order.status, "value") else str(order.status),
-            filled_qty=order.filled_qty,
-            avg_fill_price=order.avg_fill_price,
-            is_paper=conn.is_paper,
-            submitted_at=order.submitted_at,
-        ),
-        risk_blocked=False,
+    return build_execute_response(
+        # No DB row means Postgres is inactive (dev). Use the
+        # client_order_id — a real, stable identifier the broker also
+        # knows — instead of a fabricated UUID that matches nothing.
+        order_id=str(order_row_id) if order_row_id is not None else client_order_id,
+        proposal_id=proposal_id,
+        broker_order_id=order.broker_order_id,
+        client_order_id=order.client_order_id or _client_order_id_for(proposal.id),
+        symbol=order.symbol,
+        side=order.side.value if hasattr(order.side, "value") else str(order.side),
+        qty=order.qty,
+        requested_qty=proposal.qty,
+        order_type=proposal.order_type,
+        limit_price=proposal.limit_price,
+        status=order.status.value if hasattr(order.status, "value") else str(order.status),
+        filled_qty=order.filled_qty,
+        avg_fill_price=order.avg_fill_price,
+        is_paper=conn.is_paper,
+        submitted_at=order.submitted_at,
         risk_reason="risk re-eval passed",
-        risk_veto_rule=None,
         informational_flags=list(risk_decision.informational_flags),
     )
 
@@ -532,30 +509,26 @@ async def _execute_paper(
             proposal.symbol,
         )
 
-    return ExecuteResponse(
-        order=OrderResponse(
-            # The simulated book's fill id IS the order's identity here —
-            # there is no orders row to point at, and a random UUID would
-            # match nothing on either side.
-            id=fill.id,
-            proposal_id=proposal.id,
-            broker_order_id=fill.id,
-            client_order_id=fill.client_order_id or _client_order_id_for(proposal.id),
-            symbol=fill.symbol,
-            side=fill.side,
-            qty=fill.qty,
-            requested_qty=proposal.qty,
-            order_type=proposal.order_type,
-            limit_price=proposal.limit_price,
-            status="filled",
-            filled_qty=fill.qty,
-            avg_fill_price=fill.price,
-            is_paper=True,
-            submitted_at=fill.filled_at,
-        ),
-        risk_blocked=False,
+    return build_execute_response(
+        # The simulated book's fill id IS the order's identity here —
+        # there is no orders row to point at, and a random UUID would
+        # match nothing on either side.
+        order_id=fill.id,
+        proposal_id=proposal.id,
+        broker_order_id=fill.id,
+        client_order_id=fill.client_order_id or _client_order_id_for(proposal.id),
+        symbol=fill.symbol,
+        side=fill.side,
+        qty=fill.qty,
+        requested_qty=proposal.qty,
+        order_type=proposal.order_type,
+        limit_price=proposal.limit_price,
+        status="filled",
+        filled_qty=fill.qty,
+        avg_fill_price=fill.price,
+        is_paper=True,
+        submitted_at=fill.filled_at,
         risk_reason="paper fill - simulated, no broker order placed",
-        risk_veto_rule=None,
         informational_flags=flags,
     )
 
