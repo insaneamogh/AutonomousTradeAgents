@@ -134,13 +134,23 @@ apps/
       tracing.py  Langfuse — one trace/run, one generation/agent
     trading_agents/cli/    council.py, reflection.py   (run by hand)
     trading_agents/jobs/   daily_cron.py, ghost_eval.py (run by cron)
-  api/        FastAPI gateway (deployed to Railway)
+  api/        FastAPI gateway (deployed to Railway) — also serves the web
+              build below (static assets + SPA catch-all; API routes and
+              /health always win their match first)
     app/routers/   agent, approvals, decisions, insights, review, auth, health
-    app/services/  executor, stores, biography, ghost, review services
-  mobile/     Expo React Native app
-    app/           Screens (expo-router file routing)
-    src/hooks/     TanStack Query hooks, one per endpoint family
-    src/components/bento.tsx   Design-system primitives
+    app/services/  auth/ broker/ orders/ council/ notifications/ platform/
+                    (six subpackages, grouped by import coupling — see
+                    fable5findings.md's build log for the exact split)
+  mobile/     Expo React Native app — two design systems, one codebase
+    app/           Phone screens (expo-router file routing)
+    src/hooks/     TanStack Query hooks, one per endpoint family — shared
+                    by both design systems below
+    src/components/DesktopShell.tsx   The switch point: native or web
+                    <1024px renders the phone UI untouched; web ≥1024px
+                    with a session replaces it with desktop/ instead
+    src/desktop/   Platinum Glass desktop UI (web only, ≥1024px) — own
+                    theme/nav/screens, never shares a component with the
+                    phone tree (see STITCH_DESIGN_SYSTEM.md)
 
 packages/
   engine/     Deterministic core — NO LLM anywhere in here
@@ -166,7 +176,8 @@ infra/migrations/   Alembic migrations (auto-applied on deploy)
 make install          # pnpm + uv workspaces
 make dev-api          # FastAPI on :8000 (in-memory, no DB needed)
 make dev-mobile       # Expo dev server on :8081
-make test             # pytest + vitest
+make test             # pytest (Python side; the JS test runner is
+                       # currently non-functional — see fable5findings.md)
 make lint typecheck
 ```
 
@@ -229,9 +240,14 @@ Mobile needs `EXPO_PUBLIC_API_URL` in `apps/mobile/.env`.
    (auto-detects `railway.toml` + `apps/api/Dockerfile`)
 2. Add the **Postgres** plugin — `DATABASE_URL` is injected
 3. Set the required env vars above
-4. `apps/api/scripts/start.sh` runs `alembic upgrade head` then launches uvicorn
+4. The Dockerfile's `web-builder` stage exports `apps/mobile` for web and
+   bakes it into the image; `apps/api/scripts/start.sh` runs
+   `alembic upgrade head` then launches uvicorn, which serves that web
+   build directly — visiting the Railway URL in a browser opens the app
+   itself (desktop-width → Platinum Glass, phone-width → the mobile UI),
+   no separate static-hosting step needed
 
-Point the mobile app at it:
+Point the native mobile app at it:
 
 ```bash
 echo "EXPO_PUBLIC_API_URL=https://<your-app>.up.railway.app" > apps/mobile/.env
@@ -273,5 +289,6 @@ gate in `PLAN.md`.
 |---|---|
 | `CLAUDE.md` | Contract for AI agents working in this repo — read before writing code |
 | `PLAN.md` | Full product + phase roadmap |
-| `DESIGN.md` | Design system (tokens, components, rules) |
-| `fable5findings.md` | Running build log — one entry per commit |
+| `DESIGN.md` | Mobile design system (tokens, components, rules) |
+| `STITCH_DESIGN_SYSTEM.md` | Desktop web design system ("Platinum Glass") — the companion to `DESIGN.md`, never blended with it |
+| `fable5findings.md` | Running build log (one entry per commit) + an indexed "Technical debt & follow-ups" list of what's known-pending |
