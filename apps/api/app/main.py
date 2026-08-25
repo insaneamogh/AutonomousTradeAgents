@@ -25,6 +25,7 @@ from typing import AsyncIterator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.core.config import get_settings
 from app.routers import (
@@ -186,14 +187,48 @@ if settings.is_production and not _effective_cors_origins:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_effective_cors_origins,
-    # We use Bearer-token auth (Authorization header), not cookies, so
-    # ``allow_credentials`` could be False. We keep it True for forward
-    # compat with any cookie-based admin tooling — works as long as
-    # origins are explicit (no wildcard) in production.
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    # Auth is Bearer-only (Authorization header) — no cookies, no browser
+    # credentials. Keeping this False means a hostile page can never ride an
+    # ambient session, and it stops a future wildcard origin from silently
+    # becoming credentialed.
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept"],
 )
+
+# Host allow-list. Set ALLOWED_HOSTS (comma-separated) on deployed boxes —
+# it closes Host-header poisoning + DNS-rebinding against the API. Unset
+# falls back to "*" with a production warning rather than hard-failing a
+# deploy that predates this env var.
+_allowed_hosts = [
+    h.strip() for h in os.environ.get("ALLOWED_HOSTS", "").split(",") if h.strip()
+] or ["*"]
+if settings.is_production and _allowed_hosts == ["*"]:
+    logger.warning(
+        "ALLOWED_HOSTS is unset in production — the API accepts any Host "
+        "header. Set it to your API hostname(s), e.g. "
+        "'api.example.com,healthcheck.railway.app'."
+    )
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts)
+
+
+# Paths whose responses carry bearer tokens or broker-account detail. Marked
+# no-store so no proxy, CDN, or browser cache retains them.
+_NO_STORE_PREFIXES = ("/api/v1/auth", "/api/v1/broker")
+
+# This is a JSON API plus a couple of plain-HTML OAuth landing pages: no
+# scripts, no styles, no images, never framed. The docs UI is the one
+# exception (it loads Swagger from a CDN) and gets its own policy.
+_CSP_API = (
+    "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+)
+_CSP_DOCS = (
+    "default-src 'none'; script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "
+    "style-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "
+    "img-src 'self' https://fastapi.tiangolo.com data:; "
+    "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"
+)
+_DOCS_PATHS = ("/docs", "/redoc", "/openapi.json")
 
 
 @app.middleware("http")
@@ -202,9 +237,27 @@ async def _security_headers(request, call_next):  # noqa: ANN001, ANN201
     the broker-OAuth HTML pages (clickjacking / MIME-sniff) and HTTPS pinning
     behind the TLS-terminating proxy (Railway/Fly)."""
     response = await call_next(request)
+    path = request.url.path
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        _CSP_DOCS if path.startswith(_DOCS_PATHS) else _CSP_API,
+    )
+    # Nothing here is a user-facing web app — deny every powerful feature.
+    response.headers.setdefault(
+        "Permissions-Policy",
+        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), "
+        "magnetometer=(), microphone=(), payment=(), usb=()",
+    )
+    response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    if path.startswith(_NO_STORE_PREFIXES):
+        # Access/refresh tokens and broker-account payloads must never be
+        # held by an intermediary cache. setdefault would let a route's own
+        # weaker value win, so this one is unconditional.
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
     if settings.is_production:
         response.headers.setdefault(
             "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
