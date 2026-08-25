@@ -38,6 +38,7 @@ import os
 import sys
 from datetime import UTC, datetime, timedelta
 
+from engine.env import env_flag
 from trading_agents.features import resolve_feature_provider
 from trading_agents.llm import LLM
 from trading_agents.memory import get_confidence_store, get_decision_log
@@ -56,10 +57,6 @@ DEFAULT_WATCHLIST: tuple[str, ...] = (
     "SPY", "QQQ", "AAPL", "NVDA", "MSFT",
     "GOOG", "AMZN", "META", "TSLA", "JPM",
 )
-
-
-def _is_truthy(v: str | None) -> bool:
-    return v is not None and v.strip().lower() in ("1", "true", "yes", "on")
 
 
 def _today_utc() -> str:
@@ -91,7 +88,7 @@ def _equity_resolver(user_id: str):
     account was audit finding §5."""
 
     async def _resolve() -> float | None:
-        if not _is_truthy(os.environ.get("USE_POSTGRES")):
+        if not env_flag("USE_POSTGRES"):
             return None
         import uuid as _uuid
 
@@ -182,7 +179,7 @@ async def main(
         "daily cron start — user=%s symbols=%s use_postgres=%s",
         user_id,
         ",".join(watchlist),
-        _is_truthy(os.environ.get("USE_POSTGRES")),
+        env_flag("USE_POSTGRES"),
     )
 
     # Market-calendar gate: no NYSE close today → nothing to decide. The
@@ -242,7 +239,7 @@ async def main(
 
     # Ghost P&L pass — marks vetoed/declined picks against daily closes.
     # Postgres only (the ghost_outcomes table); failure never fails cron.
-    if not skip_ghost_eval and _is_truthy(os.environ.get("USE_POSTGRES")):
+    if not skip_ghost_eval and env_flag("USE_POSTGRES"):
         try:
             from scripts.ghost_eval import evaluate_ghosts
 
@@ -318,7 +315,7 @@ def cli() -> int:
     # The user's curated watchlist (user_watchlist table) overrides the
     # static default when it exists — that's the product: "tell the agent
     # what you're interested in, it tracks those."
-    if _is_truthy(os.environ.get("USE_POSTGRES")):
+    if env_flag("USE_POSTGRES"):
         try:
             user_symbols = asyncio.run(_load_user_watchlist(args.user_id))
         except Exception:  # fall back to the CLI/default list

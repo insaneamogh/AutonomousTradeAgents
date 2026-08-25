@@ -14,20 +14,15 @@ this module only resolves WHICH provider a run uses:
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from engine.env import env_flag
 from trading_agents.features.synthetic import synthetic_features
 
 logger = logging.getLogger("agents.features")
 
 FeatureProvider = Callable[..., Any]
-
-
-def _env_truthy(name: str) -> bool:
-    v = os.environ.get(name)
-    return v is not None and v.strip().lower() in ("1", "true", "yes", "on")
 
 
 def resolve_feature_provider(
@@ -43,7 +38,7 @@ def resolve_feature_provider(
                     " + FRED" if provider.fred_api_key else ", no FRED key")
         return provider
 
-    if _env_truthy("AGENTS_REQUIRE_REAL_DATA"):
+    if env_flag("AGENTS_REQUIRE_REAL_DATA"):
         raise RuntimeError(
             "AGENTS_REQUIRE_REAL_DATA=1 but ALPACA_API_KEY/ALPACA_SECRET_KEY "
             "are not set — refusing to run the council on synthetic features."

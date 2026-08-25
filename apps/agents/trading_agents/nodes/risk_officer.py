@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 from typing import cast
 
+from engine.env import env_flag
 from engine.risk import (
     MockRiskContextProvider,
     RiskCaps,
@@ -131,9 +132,8 @@ def _default_provider(state: CouncilState) -> RiskContextProvider:
     reading reconciler-written snapshots; otherwise Mock (synthetic context
     from the feature dict). Same env switch as ``app.services.store``.
     """
-    import os
 
-    if os.environ.get("USE_POSTGRES", "").strip().lower() in ("1", "true", "yes", "on"):
+    if env_flag("USE_POSTGRES"):
         # Lazy import — keeps the agents package light when running offline.
         from engine.db.session import async_session_factory
         from engine.risk import PostgresRiskContextProvider

@@ -20,8 +20,7 @@ same data later. Keeping it agent-side now avoids pulling FastAPI into
 
 from __future__ import annotations
 
-import os
-
+from engine.env import env_flag
 from trading_agents.memory.decision_log import (
     DecisionEntry,
     DecisionLog,
@@ -50,10 +49,6 @@ _decision_log: DecisionLog | None = None
 _confidence_store: StrategyConfidenceStore | None = None
 
 
-def _is_truthy(v: str | None) -> bool:
-    return v is not None and v.strip().lower() in ("1", "true", "yes", "on")
-
-
 def get_decision_log() -> DecisionLog:
     """Singleton ``DecisionLog`` for this process.
 
@@ -62,7 +57,7 @@ def get_decision_log() -> DecisionLog:
     """
     global _decision_log
     if _decision_log is None:
-        if _is_truthy(os.environ.get("USE_POSTGRES")):
+        if env_flag("USE_POSTGRES"):
             from trading_agents.memory.postgres import PostgresDecisionLog
 
             _decision_log = PostgresDecisionLog()
@@ -75,7 +70,7 @@ def get_confidence_store() -> StrategyConfidenceStore:
     """Singleton prior store. Same env switch as ``get_decision_log``."""
     global _confidence_store
     if _confidence_store is None:
-        if _is_truthy(os.environ.get("USE_POSTGRES")):
+        if env_flag("USE_POSTGRES"):
             from trading_agents.memory.postgres import PostgresStrategyConfidenceStore
 
             _confidence_store = PostgresStrategyConfidenceStore()

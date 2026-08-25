@@ -20,11 +20,12 @@ revs prices. Cache reads are charged at 10% of input.
 
 from __future__ import annotations
 
-import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Protocol, runtime_checkable
+
+from engine.env import env_flag
 
 # ─────────────────────────────────────────────────────────────────────
 # Pricing table
@@ -195,10 +196,6 @@ def infer_role_from_system_prompt(system: str) -> str:
 _cost_ledger: CostLedger | None = None
 
 
-def _is_truthy(v: str | None) -> bool:
-    return v is not None and v.strip().lower() in ("1", "true", "yes", "on")
-
-
 def get_cost_ledger() -> CostLedger:
     """Process singleton. Postgres impl deferred; InMemory is the live
     default while the API picks up auth + Postgres in stages.
@@ -207,7 +204,7 @@ def get_cost_ledger() -> CostLedger:
 
     global _cost_ledger
     if _cost_ledger is None:
-        if _is_truthy(os.environ.get("USE_POSTGRES")):
+        if env_flag("USE_POSTGRES"):
             logging.getLogger("agents.cost").warning(
                 "USE_POSTGRES=1 but PostgresCostLedger is not yet wired — "
                 "falling back to InMemoryCostLedger. Costs won't persist."

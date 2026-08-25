@@ -19,12 +19,9 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from engine.env import env_flag
+
 logger = logging.getLogger("agents.llm")
-
-
-def _env_truthy(name: str) -> bool:
-    v = os.environ.get(name)
-    return v is not None and v.strip().lower() in ("1", "true", "yes", "on")
 
 
 class Model:
@@ -77,7 +74,7 @@ class LLM:
         if self._mock:
             # Production guard: a misconfigured box must FAIL, not silently
             # emit canned MOCK theses into a real user's approval inbox.
-            if _env_truthy("AGENTS_REQUIRE_REAL_LLM"):
+            if env_flag("AGENTS_REQUIRE_REAL_LLM"):
                 raise RuntimeError(
                     "AGENTS_REQUIRE_REAL_LLM=1 but the LLM resolved to MOCK mode "
                     "(ANTHROPIC_API_KEY missing/blank or SDK not installed). "
