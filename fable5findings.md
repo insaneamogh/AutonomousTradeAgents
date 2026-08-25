@@ -294,6 +294,60 @@ Recommendation: don't reach for Temporal yet. A single worker process owning all
 
 ## Entries
 
+### 2026-08-25 — `3f0b551a`…`47f7081f` refactor: presentation pass over agents/engine/broker
+
+Six commits making the deterministic + agent packages readable cold, ahead of a
+code walkthrough. No behavior changes; **378 passed / 8 skipped** throughout, and
+MOCK mode (no API keys) re-verified on every moved entry point.
+
+- **Lint debt cleared** (`3f0b551a`). `uvx ruff check` on these paths went 198 →
+  0. Configured rather than suppressed: workspace packages declared isort
+  first-party (`engine` was sorting in among PyPI deps), and RUF001/2/3 + UP042
+  ignored with the reasoning inline — this codebase writes prose with em-dashes,
+  and `(str, Enum)` is not swappable for `StrEnum` without changing `str()`
+  output. Re-attached six WHY-comments that rode on now-dead `noqa` directives.
+- **`engine.env.env_flag`** (`eb01e954`) — one definition of what a truthy env
+  switch is, replacing six private copies in apps/agents. Deleted the empty
+  `trading_agents/tools/` package. **apps/api still has 13 copies — see below.**
+- **`engine/db/models.py` split** (`5e484439`) — 727 lines / 16 tables in one
+  file, whose docstring still described the Phase-0 eight. Now
+  `models/{accounts,trading,council}.py`, each with an accurate table map. The
+  package `__init__` re-exports all 16, so every existing import across api,
+  agents and migrations is untouched and Alembic still sees full metadata.
+- **Entry points grouped** (`62cadbc2`) — `trading_agents/cli/` (council,
+  reflection — run by a human) and `trading_agents/jobs/` (daily_cron,
+  ghost_eval — run by cron). This killed a real bug-in-waiting:
+  `apps/agents/scripts/` was a namespace-package collision with the repo-root
+  `scripts/`, which is why one test could `from scripts.ghost_eval import …`
+  while its sibling needed `sys.path` surgery. Both now import normally. Three
+  docstrings/README lines documented three different, mostly wrong, invocations;
+  all now say the one correct thing.
+- **Analyst nodes de-duplicated** (`2b081aed`) — technical/fundamental/macro
+  were the same 55-line node three times. The degradation contract ("never
+  raise, name yourself in `degraded_nodes` so the Risk Officer knows the council
+  was blind") had three implementations that could drift apart. Now one
+  `nodes/_specialist.py`; each analyst is a declaration of what differs. Prompt
+  text verified byte-identical before/after, and label widths kept per-analyst
+  so prompt-cache entries don't bust.
+
+Line counts moved little (agents 5636→5719, engine 7261→7716 of which +326 is
+the concurrent FRED work above, broker 1573→1594) because the cuts were
+duplication and the additions were docstrings the audit rules require. **The
+honest finding: agents/engine/broker are not where the bloat is.** `apps/api` is
+17,697 lines — more than the other three combined — and was out of scope here.
+
+Follow-ups, highest value first, all in `apps/api`:
+1. `app/services/` is a flat 38-file / 8,646-line directory. Split into
+   `services/{auth,broker,orders,council,notifications,platform}/`. Biggest
+   single readability win left in the repo.
+2. `executor.py` (787) and `order_store.py` (625) are the two largest files in
+   the codebase and both mix concerns.
+3. Twelve store modules each hand-roll the same in-memory-vs-Postgres singleton
+   selector. One shared helper collapses ~12 copies.
+4. 13 copies of the truthy-env helper → `engine.env.env_flag` now exists.
+5. 8 copies of `def _now()`, all `datetime.now(timezone.utc)` — and apps/api has
+   not had the `UP017`/`datetime.UTC` pass the other packages just got.
+
 ### 2026-08-25 — `dd5de4b7` fix(engine): make the FRED macro block outage-proof and concurrent
 
 **FRED verified live** against the real Railway key: VIXCLS **15.13**, DGS10 **4.74%**, DTWEXBGS **118.06**. Answering the "IDK WHY USE FRED" question, and the docs link:
