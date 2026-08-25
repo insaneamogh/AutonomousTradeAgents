@@ -277,6 +277,11 @@ async def main(
 
 
 def cli() -> int:
+    """Parse argv and run the daily pass. Returns a process exit code.
+
+    Non-zero only when a symbol actually failed — a weekend/holiday
+    short-circuit is a successful no-op, so cron does not alert on it.
+    """
     parser = argparse.ArgumentParser(description="Daily council cron.")
     parser.add_argument(
         "--user-id",

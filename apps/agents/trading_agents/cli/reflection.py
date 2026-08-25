@@ -124,6 +124,7 @@ async def _main(since: timedelta, seed: bool) -> int:
 
 
 def main() -> int:
+    """Parse argv and run one reflection pass. Returns a process exit code."""
     parser = argparse.ArgumentParser(description="Reflection Agent one-shot runner.")
     parser.add_argument(
         "--since",

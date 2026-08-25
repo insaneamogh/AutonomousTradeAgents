@@ -69,6 +69,7 @@ async def _main(symbol: str, horizon: str, force_fallback: bool) -> int:
 
 
 def main() -> int:
+    """Parse argv and run one council pass. Returns a process exit code."""
     parser = argparse.ArgumentParser(description="Council smoke test.")
     parser.add_argument("--symbol", default="NVDA")
     parser.add_argument("--horizon", default="short", choices=["intraday", "short", "mid", "long"])
