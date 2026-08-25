@@ -294,6 +294,26 @@ Recommendation: don't reach for Temporal yet. A single worker process owning all
 
 ## Entries
 
+### 2026-08-25 — `dd5de4b7` fix(engine): make the FRED macro block outage-proof and concurrent
+
+**FRED verified live** against the real Railway key: VIXCLS **15.13**, DGS10 **4.74%**, DTWEXBGS **118.06**. Answering the "IDK WHY USE FRED" question, and the docs link:
+
+- **Why FRED.** [macro.py](packages/engine/engine/features/macro.py) pulls three daily series that feed the Macro Analyst node's prompt as context (never as a gate): VIX = risk-appetite regime, DGS10 = discount-rate/duration input, DTWEXBGS = the dollar's tailwind/headwind on large-cap earnings. These are the right three for a US-equity swing product, and FRED is the free authoritative publisher of all three.
+- **`series/observations` is correct; `release/observations` is not.** They answer different questions: `series/observations` returns the observation history of **one** series (what we want), `release/observations` returns everything published in a **release** — hundreds of unrelated series — and is for release-calendar browsing. Empirically the release path also **404s** on the live API today. The `/v2/` in the URL the user linked is the *documentation site's* path, not an API version; probing `api.stlouisfed.org/fred/v2/series/observations` returns 401 (no such route) while `fred/series/observations` returns 200. **Nothing to adopt — our URL and `file_type=json` + `sort_order=desc` are current.**
+- **Missing values confirmed handled.** FRED writes `"."` on non-publication days — verified live: DGS10 is `"."` on 2026-01-01. We pull `limit=10` descending and take the first parseable value, which clears the longest US market closure comfortably. `limit=1` would have returned `None` every holiday, so the existing choice was right.
+
+Fixed (the resilience story, which was the real gap):
+
+- The three series were fetched **serially at a 15s timeout each** — a hung FRED could stall the council **45s per symbol**. Now fetched concurrently under one 8s wall-clock budget (`asyncio.timeout` + `gather`); measured 1.96s → 0.53s warm.
+- **Failures were not cached**, so an outage cost a full timeout per series *per symbol* in a run. Failures now negative-cache for 5 minutes; successes still cache per (series, UTC day).
+- **`FRED_API_KEY` was leaking into logs.** `logger.exception(...)` on an httpx error prints the exception whose message embeds the full request URL — including `api_key`. Now logs only the exception type / HTTP status.
+- `asyncio.CancelledError` was being swallowed as a fetch failure; now re-raised.
+- New `reset_fred_cache()` export + [test_features_macro.py](packages/engine/tests/test_features_macro.py) (9 tests): holiday `"."` skipping, day-caching, negative caching, key redaction, total outage → all-`None` block, hung-FRED budget, MOCK mode (no key → no network), and concurrency. Suite 351 → **360 passed / 8 skipped**.
+
+`compute_macro` is confirmed resilient end to end: it never raises and never blocks past the budget, so a FRED outage degrades the macro block to `n/a` rather than 500-ing the council.
+
+**Security work package P3 — verified complete, no code changes needed.** All seven items were already landed by the prior session in `ef9e3563` + `c96fcad1` (F2 logout `sid`, F8 `/auth/verify` rate limit + `asyncio.to_thread` scrypt, F3 `DEV_AUTH_BYPASS` default-off, F5 `JWT_SECRET_PREVIOUS`, F14/15/16 CORS/CSP/`no-store`/`TrustedHost`) and in `5d31d2ff` (F30 compare-and-swap execution claim, F31 live bracket-leg hard-refuse). Each has a named test — see `test_auth_p3_hardening.py` and `test_executor_correctness.py::test_concurrent_approvals_place_exactly_one_order` / `::test_live_agent_buy_without_bracket_is_refused`.
+
 ### 2026-08-25 — `42360a2c` fix(api) + `d7ca0d03` fix(api) + `195300a8` feat(agents) + `06647cc4` test: security work package P2 (tenancy + prompt injection + LLM bounds)
 - **F1 (critical) cross-tenant leakage.** `/review/queue`, `/review/agreement`, `/review/scorecard`, `/strategies/performance`, `/ghost/summary`, `/risk/vetoes` authenticated the caller and then dropped the identity (`_ = user`), returning **every** tenant's symbols, bull/bear text, fill prices and realized P&L. `/decisions/{id}/timeline` was a plain IDOR — any user could read any decision's full council timeline. Root cause was `DecisionLog.all_decisions()` having no user parameter at all.
   - `all_decisions` and `list_pending_reflection` now take a **required keyword-only `user_id`** ([decision_log.py](apps/agents/trading_agents/memory/decision_log.py)) so mypy forces every call site to declare intent — an `Optional`-defaulting-`None` would have let the same bug reappear silently. Scheduled jobs that genuinely grade the whole book (the EOD reflection pass) pass the new module-level `ALL_USERS` sentinel; **no HTTP handler may**.
