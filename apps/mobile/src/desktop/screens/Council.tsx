@@ -36,7 +36,15 @@ import {
 } from '../primitives';
 import { scoreHex } from '../theme';
 
-const ORDER: CouncilNode[] = ['router', 'technical', 'fundamental', 'macro', 'selector', 'drafter', 'risk_officer'];
+const ORDER: CouncilNode[] = [
+  'router',
+  'technical',
+  'fundamental',
+  'macro',
+  'selector',
+  'drafter',
+  'risk_officer',
+];
 
 const LABEL: Record<CouncilNode, string> = {
   router: 'Router',
@@ -97,7 +105,11 @@ export function CouncilScreen({ runId, symbol }: { runId: string; symbol: string
 
   if (data?.status === 'failed') {
     return (
-      <DataStreamInterrupted code={data.error ?? 'RUN_FAILED'} node="agents · council graph" onRetry={() => void refetch()} />
+      <DataStreamInterrupted
+        code={data.error ?? 'RUN_FAILED'}
+        node="agents · council graph"
+        onRetry={() => void refetch()}
+      />
     );
   }
 
@@ -112,7 +124,14 @@ export function CouncilScreen({ runId, symbol }: { runId: string; symbol: string
         </Button>
       </Row>
 
-      <Row style={{ justifyContent: 'space-between', alignItems: 'flex-end', gap: 20, flexWrap: 'wrap' }}>
+      <Row
+        style={{
+          justifyContent: 'space-between',
+          alignItems: 'flex-end',
+          gap: 20,
+          flexWrap: 'wrap',
+        }}
+      >
         <Stack gap={8}>
           <Row gap={14}>
             <span className="pg-h1 pg-num">{symbol}</span>
@@ -126,7 +145,9 @@ export function CouncilScreen({ runId, symbol }: { runId: string; symbol: string
             )}
           </Row>
           <span className="pg-body-sm">
-            {running ? 'Seven nodes, one pass. Nothing executes without your approval.' : 'Deliberation complete.'}
+            {running
+              ? 'Seven nodes, one pass. Nothing executes without your approval.'
+              : 'Deliberation complete.'}
           </span>
         </Stack>
         <Stack gap={4} style={{ alignItems: 'flex-end' }}>
@@ -184,19 +205,20 @@ export function CouncilScreen({ runId, symbol }: { runId: string; symbol: string
 
 function NodeCard({ row }: { row: NodeRow }) {
   const { node, state, summary } = row;
-  const score = typeof summary?.score === 'number' ? (summary.score as number) : null;
-  const confidence = typeof summary?.confidence === 'number' ? (summary.confidence as number) : null;
-  const thesis = typeof summary?.thesis === 'string' ? (summary.thesis as string) : null;
+  const score = typeof summary?.score === 'number' ? summary.score : null;
+  const confidence = typeof summary?.confidence === 'number' ? summary.confidence : null;
+  const thesis = typeof summary?.thesis === 'string' ? summary.thesis : null;
   const isRisk = node === 'risk_officer';
   const approved = isRisk ? summary?.approved === true : null;
 
-  const accent = isRisk && summary != null
-    ? approved
-      ? 'var(--pg-bull)'
-      : 'var(--pg-bear)'
-    : score != null
-      ? scoreHex(score)
-      : 'var(--pg-outline-variant)';
+  const accent =
+    isRisk && summary != null
+      ? approved
+        ? 'var(--pg-bull)'
+        : 'var(--pg-bear)'
+      : score != null
+        ? scoreHex(score)
+        : 'var(--pg-outline-variant)';
 
   return (
     <Card
@@ -206,7 +228,8 @@ function NodeCard({ row }: { row: NodeRow }) {
         gap: 12,
         opacity: state === 'pending' ? 0.55 : state === 'skipped' ? 0.35 : 1,
         borderColor: state === 'done' ? accent : undefined,
-        boxShadow: state === 'done' && (isRisk || (score ?? 0) >= 85) ? `0 0 24px ${accent}22` : undefined,
+        boxShadow:
+          state === 'done' && (isRisk || (score ?? 0) >= 85) ? `0 0 24px ${accent}22` : undefined,
         transition: 'opacity 300ms ease, border-color 300ms ease',
       }}
     >
@@ -250,7 +273,12 @@ function NodeCard({ row }: { row: NodeRow }) {
           {thesis ? (
             <p
               className="pg-body-sm"
-              style={{ display: '-webkit-box', WebkitLineClamp: 4, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}
+              style={{
+                display: '-webkit-box',
+                WebkitLineClamp: 4,
+                WebkitBoxOrient: 'vertical',
+                overflow: 'hidden',
+              }}
               title={thesis}
             >
               {thesis}
@@ -295,19 +323,30 @@ function StateChip({ state }: { state: NodeState }) {
 
 /* ── verdict ─────────────────────────────────────────────────────── */
 
-function Verdict({ result, onOpenPick }: { result: AgentRunResponse; onOpenPick: (id: string) => void }) {
+function Verdict({
+  result,
+  onOpenPick,
+}: {
+  result: AgentRunResponse;
+  onOpenPick: (id: string) => void;
+}) {
   const p = result.proposal;
   const cleared = p != null;
   const wash = cleared ? 'var(--pg-bull-wash)' : 'var(--pg-bear-wash)';
 
   return (
-    <Card variant="hero" style={{ gap: 16, backgroundImage: `linear-gradient(140deg, ${wash}, transparent 60%)` }}>
+    <Card
+      variant="hero"
+      style={{ gap: 16, backgroundImage: `linear-gradient(140deg, ${wash}, transparent 60%)` }}
+    >
       <CardHead
         label="Verdict"
         right={
           <Row gap={8}>
             {result.regime ? <Pill>{result.regime.toUpperCase()}</Pill> : null}
-            {result.llmMock ? <Pill title="No ANTHROPIC_API_KEY — deterministic mock output">MOCK LLM</Pill> : null}
+            {result.llmMock ? (
+              <Pill title="No ANTHROPIC_API_KEY — deterministic mock output">MOCK LLM</Pill>
+            ) : null}
             <Pill tone={result.riskApproved ? 'bull' : 'bear'}>
               {result.riskApproved ? 'RISK CLEAR' : 'RISK VETO'}
             </Pill>
@@ -328,14 +367,20 @@ function Verdict({ result, onOpenPick }: { result: AgentRunResponse; onOpenPick:
           <p className="pg-body-md">{p.rationale}</p>
           <Row>
             {/* Platinum/ink CTA — never green. */}
-            <Button kind="primary" onClick={() => onOpenPick(p.id)} ariaLabel={`Review and approve the ${p.symbol} proposal`}>
+            <Button
+              kind="primary"
+              onClick={() => onOpenPick(p.id)}
+              ariaLabel={`Review and approve the ${p.symbol} proposal`}
+            >
               Review &amp; approve →
             </Button>
           </Row>
         </>
       ) : (
         <>
-          <span className="pg-h2">{result.finalAction === 'VETOED' ? 'Vetoed by the risk engine' : 'Council holds'}</span>
+          <span className="pg-h2">
+            {result.finalAction === 'VETOED' ? 'Vetoed by the risk engine' : 'Council holds'}
+          </span>
           <p className="pg-body-md">{result.riskReason || 'No trade this run.'}</p>
           {result.riskVetoRule ? (
             <Row>
@@ -360,7 +405,16 @@ function EventLog({ events, running }: { events: CouncilProgressEvent[]; running
     <Card style={{ gap: 12 }}>
       <CardHead
         label="Stream"
-        right={running ? <Pill tone="bull"><span className="pg-live-dot" aria-hidden />LIVE</Pill> : <Pill>ENDED</Pill>}
+        right={
+          running ? (
+            <Pill tone="bull">
+              <span className="pg-live-dot" aria-hidden />
+              LIVE
+            </Pill>
+          ) : (
+            <Pill>ENDED</Pill>
+          )
+        }
       />
       <div ref={ref} style={{ maxHeight: 260, overflowY: 'auto' }} aria-live="polite">
         {events.length === 0 ? (
@@ -375,7 +429,11 @@ function EventLog({ events, running }: { events: CouncilProgressEvent[]; running
               <Row
                 key={e.seq}
                 gap={10}
-                style={{ padding: '7px 0', borderTop: e.seq === events[0].seq ? undefined : '1px solid var(--pg-card-border)' }}
+                style={{
+                  padding: '7px 0',
+                  borderTop:
+                    e.seq === events[0].seq ? undefined : '1px solid var(--pg-card-border)',
+                }}
               >
                 <span className="pg-num pg-dim" style={{ fontSize: 11, flex: 'none' }}>
                   {clock(e.at)}

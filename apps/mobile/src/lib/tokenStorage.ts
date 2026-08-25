@@ -25,13 +25,19 @@ const SESSION_USER_KEY = 'autotrader.auth.user';
 // SecureStore has no web implementation. Web is a dev-preview surface only
 // (real users are on iOS/Android), so localStorage is an acceptable
 // fallback there — never ship web to production with broker tokens.
+// Each method is deliberately `async` with no `await` inside: the shape must
+// match SecureStore's real (genuinely async) signature below so `store.*`
+// calls work identically on both branches.
 const webStore = {
+  // eslint-disable-next-line @typescript-eslint/require-await
   async getItemAsync(key: string): Promise<string | null> {
     return globalThis.localStorage?.getItem(key) ?? null;
   },
+  // eslint-disable-next-line @typescript-eslint/require-await
   async setItemAsync(key: string, value: string): Promise<void> {
     globalThis.localStorage?.setItem(key, value);
   },
+  // eslint-disable-next-line @typescript-eslint/require-await
   async deleteItemAsync(key: string): Promise<void> {
     globalThis.localStorage?.removeItem(key);
   },

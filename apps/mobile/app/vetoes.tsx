@@ -85,8 +85,8 @@ export default function VetoLedgerScreen() {
               <RuleTile key={r.rule} r={r} />
             ))}
             <Text className="mt-1 text-center text-[10px] leading-[14px] text-text-tertiary dark:text-text-tertiary-dark">
-              "Prevented" uses finalized ghost outcomes - what the blocked trade actually did
-              afterward. "—" means the evaluation window hasn't closed yet.
+              &quot;Prevented&quot; uses finalized ghost outcomes - what the blocked trade actually
+              did afterward. &quot;—&quot; means the evaluation window hasn&apos;t closed yet.
             </Text>
           </>
         )}

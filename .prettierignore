@@ -1,0 +1,32 @@
+# Dependencies / build outputs
+node_modules
+.pnp
+.expo
+dist
+build
+coverage
+.turbo
+web-build
+
+# Lockfiles
+pnpm-lock.yaml
+uv.lock
+
+# Python side — out of scope for this pass, edited by other agents in parallel.
+apps/api
+apps/agents
+packages/engine
+packages/broker
+*.py
+
+# Hand-authored planning docs — maintained manually, not auto-formatted.
+CLAUDE.md
+PLAN.md
+DESIGN.md
+STITCH_DESIGN_SYSTEM.md
+fable5findings.md
+docs/
+
+# Infra / ops — not part of the JS/TS workspace.
+infra/
+scripts/

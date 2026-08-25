@@ -93,7 +93,7 @@ const KIND_TONE: Record<string, 'mint' | 'rose' | 'default'> = {
 
 function EventRow({ e, isLast }: { e: TimelineEventDto; isLast: boolean }) {
   const vetoed = e.kind === 'risk_verdict' && e.data.approved === false;
-  const pnl = typeof e.data.realizedPnl === 'number' ? (e.data.realizedPnl as number) : null;
+  const pnl = typeof e.data.realizedPnl === 'number' ? e.data.realizedPnl : null;
   const dotTone = vetoed
     ? 'bg-rose dark:bg-rose-dark'
     : KIND_TONE[e.kind] === 'mint'
@@ -148,7 +148,7 @@ function EventRow({ e, isLast }: { e: TimelineEventDto; isLast: boolean }) {
                   className="text-[12px] font-medium text-text-primary dark:text-text-primary-dark"
                   style={{ fontVariant: ['tabular-nums'] }}
                 >
-                  {typeof a.score === 'number' ? Math.round(a.score as number) : '—'}
+                  {typeof a.score === 'number' ? Math.round(a.score) : '—'}
                 </Text>
                 <Text
                   className="flex-1 text-[11px] text-text-secondary dark:text-text-secondary-dark"

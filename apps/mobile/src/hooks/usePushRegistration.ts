@@ -104,7 +104,7 @@ export function usePushRegistration(): void {
         if (err instanceof ApiError) {
           const detail =
             typeof err.body === 'object' && err.body && 'detail' in err.body
-              ? String((err.body as { detail: unknown }).detail)
+              ? String(err.body.detail)
               : err.message;
           setLastError(detail);
         } else if (err instanceof Error) {

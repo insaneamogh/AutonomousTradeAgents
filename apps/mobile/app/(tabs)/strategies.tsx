@@ -18,10 +18,8 @@ import {
   TileLabel,
   TileValue,
 } from '@/components/bento';
-import {
-  StrategyPerformance,
-  useStrategiesPerformance,
-} from '@/hooks/useStrategiesPerformance';
+import type { StrategyPerformance } from '@/hooks/useStrategiesPerformance';
+import { useStrategiesPerformance } from '@/hooks/useStrategiesPerformance';
 
 export default function StrategiesScreen() {
   const { data, isLoading, isError, refetch } = useStrategiesPerformance(30);
@@ -32,8 +30,8 @@ export default function StrategiesScreen() {
         <View>
           <HeroHeadline>Strategies</HeroHeadline>
           <HeroSub>
-            {data?.windowDays ?? 30}-day track record. Confidence shifts as Reflection grades
-            closed trades.
+            {data?.windowDays ?? 30}-day track record. Confidence shifts as Reflection grades closed
+            trades.
           </HeroSub>
         </View>
 
@@ -139,9 +137,7 @@ function Foot({ label, value }: { label: string; value: string }) {
       <Text className="text-[9px] font-semibold uppercase tracking-[1px] text-text-tertiary dark:text-text-tertiary-dark">
         {label}
       </Text>
-      <Text className="text-[11px] text-text-secondary dark:text-text-secondary-dark">
-        {value}
-      </Text>
+      <Text className="text-[11px] text-text-secondary dark:text-text-secondary-dark">{value}</Text>
     </View>
   );
 }

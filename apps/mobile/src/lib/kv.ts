@@ -12,6 +12,7 @@
  */
 
 import { Platform } from 'react-native';
+import type * as ReactNativeMmkv from 'react-native-mmkv';
 
 interface SyncKv {
   getString(key: string): string | undefined;
@@ -21,7 +22,8 @@ interface SyncKv {
 
 function createNativeKv(): SyncKv {
   // Lazy require so web bundles don't pull the native module.
-  const { MMKV } = require('react-native-mmkv') as typeof import('react-native-mmkv');
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { MMKV } = require('react-native-mmkv') as typeof ReactNativeMmkv;
   const mmkv = new MMKV({ id: 'autotrader.prefs' });
   return {
     getString: (key) => mmkv.getString(key),

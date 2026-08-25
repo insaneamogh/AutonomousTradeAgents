@@ -32,7 +32,7 @@ import { Pill, Row, Stack } from './primitives';
 import { signedPct, usd } from './format';
 import { useRegime } from './regime';
 import { sectionOf, useNav } from './nav';
-import type { DesktopRoute, SectionId } from './nav';
+import type { SectionId } from './nav';
 
 const NAV: { id: SectionId; label: string; icon: (p: { size?: number }) => ReactNode }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: IconDashboard },
@@ -51,7 +51,15 @@ export function Shell({ children }: { children: ReactNode }) {
 
   return (
     <div className="pg-root" data-pg-theme={isDark ? 'dark' : 'light'} data-regime={regime}>
-      <div style={{ display: 'flex', flexDirection: 'column', height: '100%', position: 'relative', zIndex: 1 }}>
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          height: '100%',
+          position: 'relative',
+          zIndex: 1,
+        }}
+      >
         <Header />
         <div className="pg-body">
           <Sidebar />
@@ -79,7 +87,9 @@ function Header() {
       <Row gap={10}>
         <Mark />
         <Stack gap={0}>
-          <span style={{ fontSize: 14, fontWeight: 600, letterSpacing: '-0.01em' }}>Autonomous Trader</span>
+          <span style={{ fontSize: 14, fontWeight: 600, letterSpacing: '-0.01em' }}>
+            Autonomous Trader
+          </span>
           <span className="label-caps" style={{ fontSize: 10 }}>
             Trading desk
           </span>
@@ -135,7 +145,16 @@ function Mark() {
         justifyContent: 'center',
       }}
     >
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--pg-bull)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <svg
+        width="18"
+        height="18"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="var(--pg-bull)"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
         <path d="M3 17l5-6 4 4 8-9" />
       </svg>
     </div>
@@ -161,7 +180,7 @@ function Sidebar() {
             type="button"
             className="pg-sidebar-link"
             aria-current={isActive ? 'page' : undefined}
-            onClick={() => go({ name: item.id } as DesktopRoute)}
+            onClick={() => go({ name: item.id })}
           >
             <Icon size={18} />
             {item.label}
@@ -184,7 +203,12 @@ function Sidebar() {
           {email}
         </div>
       </div>
-      <button type="button" className="pg-sidebar-link" onClick={() => void signOut()} aria-label="Sign out">
+      <button
+        type="button"
+        className="pg-sidebar-link"
+        onClick={() => void signOut()}
+        aria-label="Sign out"
+      >
         <IconLogout size={18} />
         Sign out
       </button>

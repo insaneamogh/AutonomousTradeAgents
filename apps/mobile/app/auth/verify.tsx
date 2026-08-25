@@ -92,7 +92,7 @@ export default function VerifyScreen() {
       if (err instanceof ApiError) {
         const detail =
           typeof err.body === 'object' && err.body && 'detail' in err.body
-            ? String((err.body as { detail: unknown }).detail)
+            ? String(err.body.detail)
             : err.message;
         setError(detail);
       } else {
@@ -122,111 +122,111 @@ export default function VerifyScreen() {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         className="flex-1"
       >
-      <View className="flex-1 justify-center px-6 pb-8 gap-6">
-        {status === 'verifying' ? (
-          <Card variant="default" className="items-center gap-4 px-8 py-10">
-            <ActivityIndicator size="large" />
-            <Text className="text-[15px] font-semibold text-text-primary dark:text-text-primary-dark">
-              Signing you in…
-            </Text>
-            <Text className="text-center text-[13px] leading-[19px] text-text-secondary dark:text-text-secondary-dark">
-              Validating your login token with the agent server.
-            </Text>
-          </Card>
-        ) : null}
-
-        {status === 'manual' ? (
-          <>
-            <View className="gap-2">
-              <Text className="text-[24px] font-bold text-text-primary dark:text-text-primary-dark">
-                Enter your token
+        <View className="flex-1 justify-center px-6 pb-8 gap-6">
+          {status === 'verifying' ? (
+            <Card variant="default" className="items-center gap-4 px-8 py-10">
+              <ActivityIndicator size="large" />
+              <Text className="text-[15px] font-semibold text-text-primary dark:text-text-primary-dark">
+                Signing you in…
               </Text>
-              <Text className="text-[14px] leading-[20px] text-text-secondary dark:text-text-secondary-dark">
-                Paste the login token from your email - or, in a test deploy, from the server logs
-                (search for "magic-link issued").
+              <Text className="text-center text-[13px] leading-[19px] text-text-secondary dark:text-text-secondary-dark">
+                Validating your login token with the agent server.
               </Text>
-            </View>
+            </Card>
+          ) : null}
 
-            <Card variant="default" className="gap-4">
+          {status === 'manual' ? (
+            <>
               <View className="gap-2">
-                <Text className="text-[11px] font-semibold uppercase tracking-[1.2px] text-text-secondary dark:text-text-secondary-dark">
-                  Email
+                <Text className="text-[24px] font-bold text-text-primary dark:text-text-primary-dark">
+                  Enter your token
                 </Text>
-                <TextInput
-                  value={email}
-                  onChangeText={(t) => {
-                    setEmail(t);
-                    setError(null);
-                  }}
-                  placeholder="you@example.com"
-                  placeholderTextColor="#9CA3AF"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  keyboardType="email-address"
-                  textContentType="emailAddress"
-                  accessibilityLabel="Email"
-                  editable={!submitting}
-                  className={cn(
-                    'h-11 rounded-md border px-3 text-[15px]',
-                    'border-border-strong dark:border-border-strong-dark',
-                    'bg-bg-surface-elevated dark:bg-bg-surface-elevated-dark',
-                    'text-text-primary dark:text-text-primary-dark',
-                  )}
-                />
+                <Text className="text-[14px] leading-[20px] text-text-secondary dark:text-text-secondary-dark">
+                  Paste the login token from your email - or, in a test deploy, from the server logs
+                  (search for &quot;magic-link issued&quot;).
+                </Text>
               </View>
 
-              <View className="gap-2">
-                <Text className="text-[11px] font-semibold uppercase tracking-[1.2px] text-text-secondary dark:text-text-secondary-dark">
-                  Login token
-                </Text>
-                <TextInput
-                  value={token}
-                  onChangeText={(t) => {
-                    setToken(t);
-                    setError(null);
-                  }}
-                  placeholder="paste token here"
-                  placeholderTextColor="#9CA3AF"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  multiline
-                  accessibilityLabel="Login token"
-                  editable={!submitting}
-                  className={cn(
-                    'min-h-11 rounded-md border px-3 py-2.5 text-[14px]',
-                    'border-border-strong dark:border-border-strong-dark',
-                    'bg-bg-surface-elevated dark:bg-bg-surface-elevated-dark',
-                    'text-text-primary dark:text-text-primary-dark',
-                  )}
+              <Card variant="default" className="gap-4">
+                <View className="gap-2">
+                  <Text className="text-[11px] font-semibold uppercase tracking-[1.2px] text-text-secondary dark:text-text-secondary-dark">
+                    Email
+                  </Text>
+                  <TextInput
+                    value={email}
+                    onChangeText={(t) => {
+                      setEmail(t);
+                      setError(null);
+                    }}
+                    placeholder="you@example.com"
+                    placeholderTextColor="#9CA3AF"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    keyboardType="email-address"
+                    textContentType="emailAddress"
+                    accessibilityLabel="Email"
+                    editable={!submitting}
+                    className={cn(
+                      'h-11 rounded-md border px-3 text-[15px]',
+                      'border-border-strong dark:border-border-strong-dark',
+                      'bg-bg-surface-elevated dark:bg-bg-surface-elevated-dark',
+                      'text-text-primary dark:text-text-primary-dark',
+                    )}
+                  />
+                </View>
+
+                <View className="gap-2">
+                  <Text className="text-[11px] font-semibold uppercase tracking-[1.2px] text-text-secondary dark:text-text-secondary-dark">
+                    Login token
+                  </Text>
+                  <TextInput
+                    value={token}
+                    onChangeText={(t) => {
+                      setToken(t);
+                      setError(null);
+                    }}
+                    placeholder="paste token here"
+                    placeholderTextColor="#9CA3AF"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    multiline
+                    accessibilityLabel="Login token"
+                    editable={!submitting}
+                    className={cn(
+                      'min-h-11 rounded-md border px-3 py-2.5 text-[14px]',
+                      'border-border-strong dark:border-border-strong-dark',
+                      'bg-bg-surface-elevated dark:bg-bg-surface-elevated-dark',
+                      'text-text-primary dark:text-text-primary-dark',
+                    )}
+                  />
+                </View>
+
+                <Button
+                  label={submitting ? 'Verifying…' : 'Verify + sign in'}
+                  onPress={onManualSubmit}
+                  loading={submitting}
+                  disabled={submitting}
+                  fullWidth
+                  accessibilityLabel="Verify and sign in"
+                  testID="verify-manual-submit"
                 />
-              </View>
+
+                {error ? (
+                  <Text className="text-[13px] leading-[19px] text-danger dark:text-danger-dark">
+                    {error}
+                  </Text>
+                ) : null}
+              </Card>
 
               <Button
-                label={submitting ? 'Verifying…' : 'Verify + sign in'}
-                onPress={onManualSubmit}
-                loading={submitting}
-                disabled={submitting}
-                fullWidth
-                accessibilityLabel="Verify and sign in"
-                testID="verify-manual-submit"
+                label="Back to login"
+                variant="tertiary"
+                onPress={() => router.replace('/auth/login')}
+                testID="verify-back-to-login"
               />
-
-              {error ? (
-                <Text className="text-[13px] leading-[19px] text-danger dark:text-danger-dark">
-                  {error}
-                </Text>
-              ) : null}
-            </Card>
-
-            <Button
-              label="Back to login"
-              variant="tertiary"
-              onPress={() => router.replace('/auth/login')}
-              testID="verify-back-to-login"
-            />
-          </>
-        ) : null}
-      </View>
+            </>
+          ) : null}
+        </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );

@@ -179,24 +179,18 @@ export default function PickDetailScreen() {
           {p.rMultiple != null && <Row k="Reward : risk" v={`${p.rMultiple.toFixed(1)}R`} />}
           <Row k="Time stop" v={`${timeStopDays} trading day${timeStopDays === 1 ? '' : 's'}`} />
           <Text className="text-[11px] leading-[16px] text-text-tertiary dark:text-text-tertiary-dark">
-            If you delegate the close, stop &amp; target sit at the broker as a
-            bracket and the agent exits after {timeStopDays}d (or earlier on a
-            council SELL) - even while you're away from the phone.
+            If you delegate the close, stop &amp; target sit at the broker as a bracket and the
+            agent exits after {timeStopDays}d (or earlier on a council SELL) - even while
+            you&apos;re away from the phone.
           </Text>
         </Tile>
 
         <Tile className="gap-2">
           <TileLabel>Risk check</TileLabel>
           <Row k="Risk level" v={levelLabel(p.riskLevel)} />
-          <Row
-            k="Notional"
-            v={`$${Math.round(p.estimatedNotional).toLocaleString('en-US')}`}
-          />
+          <Row k="Notional" v={`$${Math.round(p.estimatedNotional).toLocaleString('en-US')}`} />
           {(p.informationalFlags ?? []).map((f) => (
-            <Text
-              key={f}
-              className="text-[11px] text-warning dark:text-warning-dark"
-            >
+            <Text key={f} className="text-[11px] text-warning dark:text-warning-dark">
               ⚠ {FLAG_COPY[f] ?? f}
             </Text>
           ))}
@@ -281,8 +275,8 @@ export default function PickDetailScreen() {
               <BentoQuiet label="Cancel" onPress={() => setConfirmOpen(false)} />
             </View>
             <Text className="mt-3 text-center text-[10px] text-text-tertiary dark:text-text-tertiary-dark">
-              Approval executes server-side and is audit-logged with your user
-              id, timestamp, and exit mode.
+              Approval executes server-side and is audit-logged with your user id, timestamp, and
+              exit mode.
             </Text>
           </SafeAreaView>
         </View>

@@ -24,12 +24,8 @@ import {
 } from '@app/ui';
 
 import { HeroHeadline, HeroSub, Tile, TileLabel, TileValue } from '@/components/bento';
-import {
-  Grade,
-  ReviewQueueItem,
-  useGradeDecision,
-  useReviewQueue,
-} from '@/hooks/useReview';
+import type { Grade, ReviewQueueItem } from '@/hooks/useReview';
+import { useGradeDecision, useReviewQueue } from '@/hooks/useReview';
 
 const WINDOW_DAYS = 30;
 
@@ -135,8 +131,7 @@ function Body() {
   }
 
   const onAction = (direction: 'left' | 'right' | 'up', item: ReviewQueueItem) => {
-    const g: Grade =
-      direction === 'right' ? 'good' : direction === 'left' ? 'bad' : 'skip';
+    const g: Grade = direction === 'right' ? 'good' : direction === 'left' ? 'bad' : 'skip';
     grade.mutate({ decisionId: item.decisionId, grade: g });
   };
 
@@ -147,9 +142,27 @@ function Body() {
       renderItem={(i) => <ReviewCardBody item={i} />}
       onAction={onAction}
       actions={[
-        { direction: 'left', label: 'Bad call', tone: 'loss', icon: '✗', accessibilityLabel: 'Mark as bad call' },
-        { direction: 'up', label: 'Skip', tone: 'neutral', icon: '↻', accessibilityLabel: 'Skip this trade' },
-        { direction: 'right', label: 'Good call', tone: 'gain', icon: '✓', accessibilityLabel: 'Mark as good call' },
+        {
+          direction: 'left',
+          label: 'Bad call',
+          tone: 'loss',
+          icon: '✗',
+          accessibilityLabel: 'Mark as bad call',
+        },
+        {
+          direction: 'up',
+          label: 'Skip',
+          tone: 'neutral',
+          icon: '↻',
+          accessibilityLabel: 'Skip this trade',
+        },
+        {
+          direction: 'right',
+          label: 'Good call',
+          tone: 'gain',
+          icon: '✓',
+          accessibilityLabel: 'Mark as good call',
+        },
       ]}
     />
   );
@@ -161,8 +174,7 @@ function Body() {
 
 function ReviewCardBody({ item }: { item: ReviewQueueItem }) {
   const pnl = item.realizedPnl ?? 0;
-  const sideTone =
-    item.side === 'BUY' ? 'gain' : item.side === 'SELL' ? 'loss' : 'neutral';
+  const sideTone = item.side === 'BUY' ? 'gain' : item.side === 'SELL' ? 'loss' : 'neutral';
 
   return (
     <View className="flex-1 gap-3.5">
@@ -180,8 +192,7 @@ function ReviewCardBody({ item }: { item: ReviewQueueItem }) {
               'text-[14px] font-semibold',
               sideTone === 'gain' && 'text-gain dark:text-gain-dark',
               sideTone === 'loss' && 'text-loss dark:text-loss-dark',
-              sideTone === 'neutral' &&
-                'text-text-tertiary dark:text-text-tertiary-dark',
+              sideTone === 'neutral' && 'text-text-tertiary dark:text-text-tertiary-dark',
             )}
           >
             {item.side}
@@ -224,26 +235,14 @@ function ReviewCardBody({ item }: { item: ReviewQueueItem }) {
 
       {/* Bull / bear narrative — the operator's main signal for grading */}
       <View className="flex-1 gap-3 pt-1">
-        {item.bullCase ? (
-          <CaseBlock label="Bull case" tone="gain" text={item.bullCase} />
-        ) : null}
-        {item.bearCase ? (
-          <CaseBlock label="Bear case" tone="loss" text={item.bearCase} />
-        ) : null}
+        {item.bullCase ? <CaseBlock label="Bull case" tone="gain" text={item.bullCase} /> : null}
+        {item.bearCase ? <CaseBlock label="Bear case" tone="loss" text={item.bearCase} /> : null}
       </View>
     </View>
   );
 }
 
-function CaseBlock({
-  label,
-  tone,
-  text,
-}: {
-  label: string;
-  tone: 'gain' | 'loss';
-  text: string;
-}) {
+function CaseBlock({ label, tone, text }: { label: string; tone: 'gain' | 'loss'; text: string }) {
   return (
     <View className="gap-1">
       <Text

@@ -18,7 +18,13 @@
 
 import { useEffect } from 'react';
 import { QueryClientProvider, useQueryClient } from '@tanstack/react-query';
-import { Slot, useGlobalSearchParams, useRootNavigationState, useRouter, useSegments } from 'expo-router';
+import {
+  Slot,
+  useGlobalSearchParams,
+  useRootNavigationState,
+  useRouter,
+  useSegments,
+} from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { Platform } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -42,6 +48,8 @@ import '../src/global.css';
 // module has no web implementation.
 if (Platform.OS !== 'web') {
   Notifications.setNotificationHandler({
+    // Expo's NotificationHandler type requires a function returning a Promise.
+    // eslint-disable-next-line @typescript-eslint/require-await
     handleNotification: async () => ({
       shouldShowAlert: true,
       shouldPlaySound: true,

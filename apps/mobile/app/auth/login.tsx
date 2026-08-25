@@ -42,9 +42,10 @@ export default function LoginScreen() {
       setChallenge(res);
     } catch (err) {
       if (err instanceof ApiError) {
-        const detail = typeof err.body === 'object' && err.body && 'detail' in err.body
-          ? String((err.body as { detail: unknown }).detail)
-          : err.message;
+        const detail =
+          typeof err.body === 'object' && err.body && 'detail' in err.body
+            ? String(err.body.detail)
+            : err.message;
         setError(detail);
       } else {
         setError("Couldn't reach the agent server. Make sure the API is running.");
@@ -78,105 +79,105 @@ export default function LoginScreen() {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         className="flex-1"
       >
-      <View className="flex-1 px-6 pt-16 pb-8 gap-6">
-        <View className="gap-2">
-          <Text className="text-[28px] font-bold text-text-primary dark:text-text-primary-dark">
-            Sign in
-          </Text>
-          <Text className="text-[15px] leading-[22px] text-text-secondary dark:text-text-secondary-dark">
-            We'll email you a one-tap login link. No password.
-          </Text>
-        </View>
-
-        <Card variant="default" className="gap-4">
+        <View className="flex-1 px-6 pt-16 pb-8 gap-6">
           <View className="gap-2">
-            <Text className="text-[11px] font-semibold uppercase tracking-[1.2px] text-text-secondary dark:text-text-secondary-dark">
-              Email
+            <Text className="text-[28px] font-bold text-text-primary dark:text-text-primary-dark">
+              Sign in
             </Text>
-            <TextInput
-              value={email}
-              onChangeText={(t) => {
-                setEmail(t);
-                setError(null);
-              }}
-              placeholder="you@example.com"
-              placeholderTextColor="#9CA3AF"
-              autoCapitalize="none"
-              autoCorrect={false}
-              keyboardType="email-address"
-              textContentType="emailAddress"
-              accessibilityLabel="Email"
-              editable={!submitting}
-              className={cn(
-                'h-11 rounded-md border px-3 text-[15px]',
-                'border-border-strong dark:border-border-strong-dark',
-                'bg-bg-surface-elevated dark:bg-bg-surface-elevated-dark',
-                'text-text-primary dark:text-text-primary-dark',
-              )}
-            />
+            <Text className="text-[15px] leading-[22px] text-text-secondary dark:text-text-secondary-dark">
+              We&apos;ll email you a one-tap login link. No password.
+            </Text>
           </View>
 
-          <Button
-            label={submitting ? 'Sending…' : 'Send login link'}
-            onPress={onSubmit}
-            loading={submitting}
-            disabled={submitting || email.length === 0}
-            fullWidth
-            accessibilityLabel="Send login link"
-            testID="login-submit"
-          />
+          <Card variant="default" className="gap-4">
+            <View className="gap-2">
+              <Text className="text-[11px] font-semibold uppercase tracking-[1.2px] text-text-secondary dark:text-text-secondary-dark">
+                Email
+              </Text>
+              <TextInput
+                value={email}
+                onChangeText={(t) => {
+                  setEmail(t);
+                  setError(null);
+                }}
+                placeholder="you@example.com"
+                placeholderTextColor="#9CA3AF"
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="email-address"
+                textContentType="emailAddress"
+                accessibilityLabel="Email"
+                editable={!submitting}
+                className={cn(
+                  'h-11 rounded-md border px-3 text-[15px]',
+                  'border-border-strong dark:border-border-strong-dark',
+                  'bg-bg-surface-elevated dark:bg-bg-surface-elevated-dark',
+                  'text-text-primary dark:text-text-primary-dark',
+                )}
+              />
+            </View>
 
-          {error ? (
-            <Text className="text-[13px] leading-[19px] text-danger dark:text-danger-dark">
-              {error}
-            </Text>
-          ) : null}
-        </Card>
+            <Button
+              label={submitting ? 'Sending…' : 'Send login link'}
+              onPress={onSubmit}
+              loading={submitting}
+              disabled={submitting || email.length === 0}
+              fullWidth
+              accessibilityLabel="Send login link"
+              testID="login-submit"
+            />
 
-        {challenge ? (
-          <Card variant="inset" className="gap-3">
-            <Text className="text-[13px] font-semibold text-text-primary dark:text-text-primary-dark">
-              Check your email
-            </Text>
-            <Text className="text-[13px] leading-[19px] text-text-secondary dark:text-text-secondary-dark">
-              A magic link is on the way to {email}. Tap it to sign in. It expires in 15 minutes.
-            </Text>
-
-            {challenge.devToken ? (
-              <View className="gap-2 pt-2">
-                <Text className="text-[11px] font-semibold uppercase tracking-[1.2px] text-warning dark:text-warning-dark">
-                  Dev mode
-                </Text>
-                <Text className="text-[12px] leading-[17px] text-text-tertiary dark:text-text-tertiary-dark">
-                  The API returned the token in the response. Continue directly:
-                </Text>
-                <Button
-                  label="Continue with dev token"
-                  variant="secondary"
-                  onPress={continueWithDevToken}
-                  fullWidth
-                  accessibilityLabel="Continue with dev token"
-                  testID="login-dev-continue"
-                />
-              </View>
-            ) : (
-              <View className="gap-2 pt-2">
-                <Text className="text-[12px] leading-[17px] text-text-tertiary dark:text-text-tertiary-dark">
-                  Got the token from your email or the server logs? Enter it manually:
-                </Text>
-                <Button
-                  label="Enter token manually"
-                  variant="secondary"
-                  onPress={enterTokenManually}
-                  fullWidth
-                  accessibilityLabel="Enter login token manually"
-                  testID="login-manual-token"
-                />
-              </View>
-            )}
+            {error ? (
+              <Text className="text-[13px] leading-[19px] text-danger dark:text-danger-dark">
+                {error}
+              </Text>
+            ) : null}
           </Card>
-        ) : null}
-      </View>
+
+          {challenge ? (
+            <Card variant="inset" className="gap-3">
+              <Text className="text-[13px] font-semibold text-text-primary dark:text-text-primary-dark">
+                Check your email
+              </Text>
+              <Text className="text-[13px] leading-[19px] text-text-secondary dark:text-text-secondary-dark">
+                A magic link is on the way to {email}. Tap it to sign in. It expires in 15 minutes.
+              </Text>
+
+              {challenge.devToken ? (
+                <View className="gap-2 pt-2">
+                  <Text className="text-[11px] font-semibold uppercase tracking-[1.2px] text-warning dark:text-warning-dark">
+                    Dev mode
+                  </Text>
+                  <Text className="text-[12px] leading-[17px] text-text-tertiary dark:text-text-tertiary-dark">
+                    The API returned the token in the response. Continue directly:
+                  </Text>
+                  <Button
+                    label="Continue with dev token"
+                    variant="secondary"
+                    onPress={continueWithDevToken}
+                    fullWidth
+                    accessibilityLabel="Continue with dev token"
+                    testID="login-dev-continue"
+                  />
+                </View>
+              ) : (
+                <View className="gap-2 pt-2">
+                  <Text className="text-[12px] leading-[17px] text-text-tertiary dark:text-text-tertiary-dark">
+                    Got the token from your email or the server logs? Enter it manually:
+                  </Text>
+                  <Button
+                    label="Enter token manually"
+                    variant="secondary"
+                    onPress={enterTokenManually}
+                    fullWidth
+                    accessibilityLabel="Enter login token manually"
+                    testID="login-manual-token"
+                  />
+                </View>
+              )}
+            </Card>
+          ) : null}
+        </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );

@@ -41,12 +41,12 @@ export default function PicksScreen() {
   const [filter, setFilter] = useState<Filter>('all');
   const [tickerIndex, setTickerIndex] = useState(0);
 
-  const vetoed = useMemo(
-    () => (activity ?? []).filter((e) => e.kind === 'vetoed'),
-    [activity],
-  );
+  const vetoed = useMemo(() => (activity ?? []).filter((e) => e.kind === 'vetoed'), [activity]);
   const decided = useMemo(
-    () => (activity ?? []).filter((e) => e.kind === 'approved' || e.kind === 'declined' || e.kind === 'filled'),
+    () =>
+      (activity ?? []).filter(
+        (e) => e.kind === 'approved' || e.kind === 'declined' || e.kind === 'filled',
+      ),
     [activity],
   );
 
@@ -72,9 +72,7 @@ export default function PicksScreen() {
     <SafeAreaView edges={['top']} className="flex-1 bg-bg-canvas dark:bg-bg-canvas-dark">
       <ScrollView
         contentContainerClassName="px-4 pb-32 pt-4 gap-3"
-        refreshControl={
-          <RefreshControl refreshing={isLoading} onRefresh={() => refetch()} />
-        }
+        refreshControl={<RefreshControl refreshing={isLoading} onRefresh={() => refetch()} />}
       >
         <CircuitBreakerBanner />
         <View>
@@ -158,7 +156,7 @@ export default function PicksScreen() {
           </View>
           {startRun.isError && (
             <Text className="text-[12px] text-rose dark:text-rose-dark">
-              Couldn't start the run - is the server reachable?
+              Couldn&apos;t start the run - is the server reachable?
             </Text>
           )}
           <BentoCTA
@@ -191,9 +189,7 @@ function FilterChip({
       className={cn(
         // 44pt minimum tap target (CLAUDE.md / HIG).
         'min-h-[44px] items-center justify-center rounded-full px-4 py-2',
-        active
-          ? 'bg-cta dark:bg-cta-dark'
-          : 'border border-hairline dark:border-hairline-dark',
+        active ? 'bg-cta dark:bg-cta-dark' : 'border border-hairline dark:border-hairline-dark',
       )}
     >
       <Text
@@ -257,9 +253,7 @@ function VetoTile({ e }: { e: ActivityEntryDto }) {
           {e.symbol}
         </Text>
         <View className="rounded-full border border-rose px-2.5 py-1 dark:border-rose-dark">
-          <Text className="text-[10px] font-semibold text-rose dark:text-rose-dark">
-            VETOED
-          </Text>
+          <Text className="text-[10px] font-semibold text-rose dark:text-rose-dark">VETOED</Text>
         </View>
       </View>
       <Text className="text-[11px] text-text-secondary dark:text-text-secondary-dark">
@@ -270,8 +264,7 @@ function VetoTile({ e }: { e: ActivityEntryDto }) {
 }
 
 function DecidedTile({ e }: { e: ActivityEntryDto }) {
-  const tone =
-    e.kind === 'filled' ? 'mint' : e.kind === 'approved' ? 'mint' : ('muted' as const);
+  const tone = e.kind === 'filled' ? 'mint' : e.kind === 'approved' ? 'mint' : ('muted' as const);
   return (
     <Tile inset className="gap-1">
       <View className="flex-row items-center justify-between">

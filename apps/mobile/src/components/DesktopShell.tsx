@@ -49,8 +49,10 @@ let cachedDesktopApp: DesktopAppComponent | null = null;
 function loadDesktopApp(): DesktopAppComponent | null {
   if (Platform.OS !== 'web') return null;
   if (cachedDesktopApp == null) {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires, global-require
-    cachedDesktopApp = (require('@/desktop/DesktopApp') as { default: DesktopAppComponent }).default;
+    // Guarded dynamic require, deliberate: keeps the desktop tree out of the native bundle.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    cachedDesktopApp = (require('@/desktop/DesktopApp') as { default: DesktopAppComponent })
+      .default;
   }
   return cachedDesktopApp;
 }

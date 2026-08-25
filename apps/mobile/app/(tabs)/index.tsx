@@ -17,11 +17,8 @@ import { CircuitBreakerBanner } from '@/components/CircuitBreakerBanner';
 import { useAccount } from '@/hooks/useAccount';
 import { useActivity } from '@/hooks/useActivity';
 import { usePendingApprovals } from '@/hooks/useApprovals';
-import {
-  ComponentHealth,
-  ComponentStatus,
-  useHealthFull,
-} from '@/hooks/useHealthFull';
+import type { ComponentHealth, ComponentStatus } from '@/hooks/useHealthFull';
+import { useHealthFull } from '@/hooks/useHealthFull';
 import { useGhostSummary, useVetoLedger } from '@/hooks/useInsights';
 import { useReviewAgreement } from '@/hooks/useReview';
 
@@ -179,7 +176,8 @@ function ActivityLine({ entry }: { entry: ActivityEntryDto }) {
       disabled={!decisionId}
       accessibilityRole="button"
       accessibilityLabel={`Open ${entry.symbol} trade biography`}
-      className="min-h-[32px] flex-row items-baseline gap-2 active:opacity-70">
+      className="min-h-[32px] flex-row items-baseline gap-2 active:opacity-70"
+    >
       <Text className="w-14 text-[11px] text-text-tertiary dark:text-text-tertiary-dark">
         {formatRelative(entry.timestamp)}
       </Text>
@@ -285,18 +283,18 @@ function AgreementTile() {
       accessibilityLabel="Open the calibration scorecard"
       className="active:opacity-80"
     >
-    <Tile className="flex-row items-center justify-between">
-      <View className="flex-1 gap-0.5 pr-3">
-        <TileLabel>Calibration · 30d</TileLabel>
-        <Text className="text-[12px] leading-[17px] text-text-secondary dark:text-text-secondary-dark">
-          Your grades match Reflection over {data.totalReviewed} review
-          {data.totalReviewed === 1 ? '' : 's'}.
-        </Text>
-      </View>
-      <TileValue size="lg" tone={tone}>
-        {pct}%
-      </TileValue>
-    </Tile>
+      <Tile className="flex-row items-center justify-between">
+        <View className="flex-1 gap-0.5 pr-3">
+          <TileLabel>Calibration · 30d</TileLabel>
+          <Text className="text-[12px] leading-[17px] text-text-secondary dark:text-text-secondary-dark">
+            Your grades match Reflection over {data.totalReviewed} review
+            {data.totalReviewed === 1 ? '' : 's'}.
+          </Text>
+        </View>
+        <TileValue size="lg" tone={tone}>
+          {pct}%
+        </TileValue>
+      </Tile>
     </Pressable>
   );
 }
@@ -334,9 +332,7 @@ function HealthTile() {
 }
 
 function HealthCell({ label, h }: { label: string; h: ComponentHealth }) {
-  return (
-    <StatusPill tone={_toneFromStatus(h.status)} label={label} hint={h.label} layout="dot" />
-  );
+  return <StatusPill tone={_toneFromStatus(h.status)} label={label} hint={h.label} layout="dot" />;
 }
 
 function _toneFromStatus(s: ComponentStatus): 'ok' | 'warning' | 'danger' | 'muted' {

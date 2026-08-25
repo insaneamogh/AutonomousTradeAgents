@@ -24,7 +24,8 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AppState, AppStateStatus, Platform, Text, View } from 'react-native';
+import type { AppStateStatus } from 'react-native';
+import { AppState, Platform, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as LocalAuthentication from 'expo-local-authentication';
 

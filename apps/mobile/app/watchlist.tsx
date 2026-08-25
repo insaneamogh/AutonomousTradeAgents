@@ -5,14 +5,7 @@
 // else with a clear message, mirrored here in the helper copy.
 
 import { useState } from 'react';
-import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 
@@ -26,7 +19,7 @@ import {
   useWatchlist,
 } from '@/hooks/useWatchlist';
 
-const SYMBOL_PATTERN = /^[A-Z][A-Z0-9.\-]{0,9}$/;
+const SYMBOL_PATTERN = /^[A-Z][A-Z0-9.-]{0,9}$/;
 
 export default function WatchlistScreen() {
   const router = useRouter();

@@ -17,8 +17,8 @@ import { useRouter } from 'expo-router';
 import { Button, Card, ErrorState, HapticPressable, Skeleton, Toggle, cn } from '@app/ui';
 
 import { ApiError } from '@/lib/api';
+import type { BrokerConnection } from '@/hooks/useBrokerConnections';
 import {
-  BrokerConnection,
   startAlpacaOAuth,
   startZerodhaConnect,
   useBrokerConnections,
@@ -28,7 +28,8 @@ import { revokeRegisteredDevice } from '@/hooks/usePushRegistration';
 import { useAuthStore } from '@/stores/authStore';
 import { useBiometricStore } from '@/stores/biometricStore';
 import { useNotificationsStore } from '@/stores/notificationsStore';
-import { ThemePreference, useThemeStore } from '@/stores/themeStore';
+import type { ThemePreference } from '@/stores/themeStore';
+import { useThemeStore } from '@/stores/themeStore';
 
 export default function SettingsScreen() {
   return (
@@ -86,8 +87,7 @@ function AppearanceCard() {
           Theme
         </Text>
         <Text className="text-[12px] leading-[17px] text-text-tertiary dark:text-text-tertiary-dark">
-          System follows your device. Light and Dark override it everywhere in
-          the app.
+          System follows your device. Light and Dark override it everywhere in the app.
         </Text>
       </View>
       <View className="flex-row gap-1 rounded-lg bg-bg-surface-muted p-1 dark:bg-bg-surface-muted-dark">
@@ -139,8 +139,7 @@ function WatchlistCard() {
             Watchlist
           </Text>
           <Text className="mt-0.5 text-[12px] leading-[17px] text-text-secondary dark:text-text-secondary-dark">
-            The symbols the agent evaluates every trading day. Stocks &amp; ETFs
-            only in v1.
+            The symbols the agent evaluates every trading day. Stocks &amp; ETFs only in v1.
           </Text>
         </View>
         <Button
@@ -165,8 +164,7 @@ function PositionsCard() {
             Positions
           </Text>
           <Text className="mt-0.5 text-[12px] leading-[17px] text-text-secondary dark:text-text-secondary-dark">
-            Open holdings the agent is managing — see the exit plan or close
-            one yourself.
+            Open holdings the agent is managing — see the exit plan or close one yourself.
           </Text>
         </View>
         <Button
@@ -251,7 +249,8 @@ function NotificationsCard() {
       {permission === 'denied' && enabled ? (
         <View className="gap-2">
           <Text className="text-[12px] leading-[17px] text-text-secondary dark:text-text-secondary-dark">
-            Notifications are blocked in iOS / Android settings. Open the system settings to grant permission.
+            Notifications are blocked in iOS / Android settings. Open the system settings to grant
+            permission.
           </Text>
           <Button
             label="Open system settings"
@@ -279,7 +278,7 @@ function NotificationsCard() {
 function detailFromError(err: unknown, fallback: string): string {
   if (err instanceof ApiError) {
     return typeof err.body === 'object' && err.body && 'detail' in err.body
-      ? String((err.body as { detail: unknown }).detail)
+      ? String(err.body.detail)
       : err.message;
   }
   return fallback;
@@ -344,12 +343,8 @@ function BrokersCard() {
     );
   }
 
-  const activeAlpaca = (data ?? []).find(
-    (c) => c.broker === 'alpaca' && c.status === 'active',
-  );
-  const activeZerodha = (data ?? []).find(
-    (c) => c.broker === 'zerodha' && c.status === 'active',
-  );
+  const activeAlpaca = (data ?? []).find((c) => c.broker === 'alpaca' && c.status === 'active');
+  const activeZerodha = (data ?? []).find((c) => c.broker === 'zerodha' && c.status === 'active');
 
   return (
     <View className="gap-3">
@@ -362,7 +357,8 @@ function BrokersCard() {
           </Text>
           <Text className="text-[13px] leading-[19px] text-text-secondary dark:text-text-secondary-dark">
             Link your Alpaca account so the agent can read positions and (with your approval per
-            trade) place orders. Paper-only in Phase 3 - live is gated on the paper-validation phase.
+            trade) place orders. Paper-only in Phase 3 - live is gated on the paper-validation
+            phase.
           </Text>
           <Button
             label={pendingState ? 'Waiting for browser…' : 'Connect Alpaca paper'}
@@ -383,9 +379,9 @@ function BrokersCard() {
             Connect Zerodha
           </Text>
           <Text className="text-[13px] leading-[19px] text-text-secondary dark:text-text-secondary-dark">
-            Log in at Kite in the browser; the connection completes there. Kite tokens expire
-            daily around 6:00 IST, so you reconnect each trading day. Live account - orders stay
-            blocked until live trading is enabled on the server.
+            Log in at Kite in the browser; the connection completes there. Kite tokens expire daily
+            around 6:00 IST, so you reconnect each trading day. Live account - orders stay blocked
+            until live trading is enabled on the server.
           </Text>
           <Button
             label={zerodhaPending ? 'Finish login in browser, then refresh' : 'Connect Zerodha'}
@@ -417,9 +413,11 @@ function BrokersCard() {
         </Text>
       ) : null}
 
-      {(data ?? []).filter((c) => c.status === 'revoked').map((c) => (
-        <RevokedBrokerCard key={c.id} connection={c} />
-      ))}
+      {(data ?? [])
+        .filter((c) => c.status === 'revoked')
+        .map((c) => (
+          <RevokedBrokerCard key={c.id} connection={c} />
+        ))}
     </View>
   );
 }
@@ -523,7 +521,8 @@ function SecurityCard() {
             Require Face ID on launch
           </Text>
           <Text className="text-[12px] leading-[17px] text-text-tertiary dark:text-text-tertiary-dark">
-            Re-locks when you background the app - recommended for any device that holds broker access.
+            Re-locks when you background the app - recommended for any device that holds broker
+            access.
           </Text>
         </View>
         <Toggle
@@ -540,8 +539,8 @@ function SecurityCard() {
             Disable biometric?
           </Text>
           <Text className="text-[12px] leading-[17px] text-text-secondary dark:text-text-secondary-dark">
-            Anyone who can unlock your phone will be able to see open positions and approve trades. The
-            session refresh token is still encrypted at rest, but the in-app gate is gone.
+            Anyone who can unlock your phone will be able to see open positions and approve trades.
+            The session refresh token is still encrypted at rest, but the in-app gate is gone.
           </Text>
           <View className="flex-row gap-2">
             <View className="flex-1">
