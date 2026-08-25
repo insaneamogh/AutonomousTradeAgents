@@ -18,7 +18,7 @@
 
 import { useEffect } from 'react';
 import { QueryClientProvider, useQueryClient } from '@tanstack/react-query';
-import { Slot, useRootNavigationState, useRouter, useSegments } from 'expo-router';
+import { Slot, useGlobalSearchParams, useRootNavigationState, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { Platform } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -122,12 +122,31 @@ function RootGate() {
  * completes, the auth status sits at 'idle' or 'restoring'; ``AuthRouteGuard``
  * doesn't redirect during that window so a fresh launch with a valid
  * refresh token doesn't briefly flash the login screen.
+ *
+ * Skipped when we land directly on `/auth/verify` with a token already in
+ * the URL: that screen redeems the magic link and calls `signIn()` itself,
+ * and it's the one that should win. Racing an unrelated `restore()` against
+ * it was a real bug — `restore()`'s own `/auth/refresh` call reads whatever
+ * refresh token happened to already be in storage (e.g. an older session
+ * on a shared or re-used browser); if that independent call resolved
+ * *after* the verify screen's `signIn()` had already set the new session,
+ * its failure handler ran `clearAll()` and dropped status back to
+ * 'unauthenticated' — silently logging the user back out immediately after
+ * a successful login, with no error shown anywhere to explain why.
  */
 function AuthBootstrap({ children }: { children: React.ReactNode }) {
   const restore = useAuthStore((s) => s.restore);
+  const segments = useSegments();
+  const params = useGlobalSearchParams<{ email?: string; token?: string }>();
+  const isRedeemingMagicLink =
+    (segments as readonly string[]).join('/') === 'auth/verify' &&
+    Boolean(params.email && params.token);
+
   useEffect(() => {
+    if (isRedeemingMagicLink) return;
     void restore();
-    // restore is stable (Zustand setter); intentional one-shot.
+    // restore is stable (Zustand setter); isRedeemingMagicLink is read once
+    // at mount (this route doesn't change under us) — intentional one-shot.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   return <>{children}</>;

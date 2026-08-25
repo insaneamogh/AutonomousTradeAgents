@@ -37,6 +37,17 @@ interface IssuedTokensResponse {
   refreshExpiresInSeconds: number;
 }
 
+// Magic-link tokens are one-shot: the API invalidates a token the moment
+// it's redeemed. This screen can remount with the exact same (email, token)
+// URL params still in place — e.g. Fast Refresh in dev, or a re-render of
+// the router tree before navigation away from `/auth/verify` completes —
+// and a `useRef` guard does NOT survive a remount, so it silently stopped
+// protecting against exactly this. Module-level state does survive it
+// (it only resets on a real page reload, which starts the token fresh
+// from the URL too), so it's the one that actually stops a re-submit of
+// an already-consumed token.
+const redeemedPairs = new Set<string>();
+
 export default function VerifyScreen() {
   const params = useLocalSearchParams<{ email?: string; token?: string }>();
   const signIn = useAuthStore((s) => s.signIn);
@@ -54,9 +65,11 @@ export default function VerifyScreen() {
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    if (hasAutoToken) {
-      void verify(params.email as string, params.token as string);
-    }
+    if (!hasAutoToken) return;
+    const pair = `${params.email}:${params.token}`;
+    if (redeemedPairs.has(pair)) return;
+    redeemedPairs.add(pair);
+    void verify(params.email as string, params.token as string);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.email, params.token]);
 
