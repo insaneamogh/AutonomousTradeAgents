@@ -8,6 +8,15 @@ Phase 0/1 surface:
     POST /api/v1/approvals/{proposal_id}/decision
     POST /api/v1/agent/run            ← runs the LangGraph council
 
+Also serves the web build: the Expo web export of ``apps/mobile`` (the
+Platinum Glass desktop UI and the calm/muted mobile UI in one bundle — the
+client picks which to render from viewport width, see
+``apps/mobile/src/components/DesktopShell.tsx``). Mounted at the very
+bottom of this file, after every API route, and entirely absent unless the
+Docker build actually produced ``apps/mobile/dist`` — a local
+``uvicorn --reload`` run without that build step still just serves the
+API, same as always.
+
 Lifespan: when ``USE_POSTGRES=1`` (and the reconciler is enabled), a
 background ``Reconciler`` task starts on app startup and runs until shutdown.
 It writes ``positions_snapshot`` rows + flips ``circuit_breaker_state``
@@ -20,11 +29,14 @@ from __future__ import annotations
 import logging
 import os
 import uuid
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.core.config import get_settings
@@ -216,9 +228,11 @@ app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts)
 # no-store so no proxy, CDN, or browser cache retains them.
 _NO_STORE_PREFIXES = ("/api/v1/auth", "/api/v1/broker")
 
-# This is a JSON API plus a couple of plain-HTML OAuth landing pages: no
-# scripts, no styles, no images, never framed. The docs UI is the one
-# exception (it loads Swagger from a CDN) and gets its own policy.
+# The JSON API + a couple of plain-HTML OAuth landing pages: no scripts, no
+# styles, no images, never framed. Two carve-outs get their own, looser
+# policy: the docs UI (loads Swagger from a CDN) and the web app (the
+# Expo export mounted at the bottom of this file — a real script+style
+# bundle that fetches the API from the same origin).
 _CSP_API = (
     "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
 )
@@ -228,24 +242,40 @@ _CSP_DOCS = (
     "img-src 'self' https://fastapi.tiangolo.com data:; "
     "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"
 )
+# react-native-web injects its CSS-in-JS as inline <style> tags at runtime,
+# hence 'unsafe-inline' on style-src — there's no build-time hash to pin.
+# The desktop (Platinum Glass) tree also loads Inter/Space Grotesk from
+# Google Fonts (apps/mobile/src/desktop/runtime.ts) — allowed explicitly
+# rather than widened to any host.
+_CSP_WEB = (
+    "default-src 'self'; script-src 'self'; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+    "img-src 'self' data:; font-src 'self' data: https://fonts.gstatic.com; "
+    "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"
+)
 _DOCS_PATHS = ("/docs", "/redoc", "/openapi.json")
+_API_PATH_PREFIX = "/api/"
 
 
 @app.middleware("http")
 async def _security_headers(request, call_next):  # noqa: ANN001, ANN201
     """Baseline hardening headers on every response. Cheap; matters most for
-    the broker-OAuth HTML pages (clickjacking / MIME-sniff) and HTTPS pinning
-    behind the TLS-terminating proxy (Railway/Fly)."""
+    the broker-OAuth HTML pages and the web app (clickjacking / MIME-sniff)
+    and HTTPS pinning behind the TLS-terminating proxy (Railway/Fly)."""
     response = await call_next(request)
     path = request.url.path
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
-    response.headers.setdefault(
-        "Content-Security-Policy",
-        _CSP_DOCS if path.startswith(_DOCS_PATHS) else _CSP_API,
-    )
-    # Nothing here is a user-facing web app — deny every powerful feature.
+    if path.startswith(_DOCS_PATHS):
+        csp = _CSP_DOCS
+    elif path.startswith(_API_PATH_PREFIX) or path == "/health":
+        csp = _CSP_API
+    else:
+        csp = _CSP_WEB
+    response.headers.setdefault("Content-Security-Policy", csp)
+    # The web app has no use for any of these either — deny every powerful
+    # feature regardless of which policy branch served the response.
     response.headers.setdefault(
         "Permissions-Policy",
         "accelerometer=(), camera=(), geolocation=(), gyroscope=(), "
@@ -298,3 +328,49 @@ app.include_router(review.router, prefix="/api/v1")
 app.include_router(decisions.router, prefix="/api/v1")
 app.include_router(insights.router, prefix="/api/v1")
 app.include_router(watchlist_router.router, prefix="/api/v1")
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Web UI — the Expo web export of apps/mobile (Platinum Glass desktop +
+# calm/muted mobile, one bundle; the client picks which to render from
+# viewport width). Built by the Docker web-builder stage into
+# apps/mobile/dist, which lands at this exact relative position in both
+# the container (WORKDIR /app, source copied to /app/apps/...) and a
+# local checkout — so no env var is needed to find it. Registered dead
+# last: every route above still wins its exact/prefix match first, so
+# this can only ever catch what nothing else claimed.
+# ─────────────────────────────────────────────────────────────────────
+_web_dist = Path(__file__).resolve().parents[2] / "mobile" / "dist"
+
+if _web_dist.is_dir():
+    app.mount("/_expo", StaticFiles(directory=_web_dist / "_expo"), name="web-expo-static")
+    if (_web_dist / "assets").is_dir():
+        app.mount("/assets", StaticFiles(directory=_web_dist / "assets"), name="web-assets")
+
+    _web_index = _web_dist / "index.html"
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_web_app(full_path: str) -> FileResponse:
+        """SPA fallback for everything not matched above. Desktop vs. mobile
+        is decided entirely client-side (DesktopShell.tsx reads viewport
+        width), so every path — '/', '/positions', '/auth/verify', a deep
+        link's landing route — gets the same index.html and expo-router
+        renders the right screen from the URL once the bundle boots.
+
+        ``/api/*`` is excluded so a bad/removed endpoint still 404s as JSON
+        instead of silently returning the app shell.
+        """
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not Found")
+        # No-cache: index.html references content-hashed bundle filenames
+        # (e.g. entry-<hash>.js) that change every deploy — a cached shell
+        # pointing at a hash the server no longer has would 404 on load.
+        return FileResponse(_web_index, headers={"Cache-Control": "no-cache"})
+
+    logger.info("Web UI enabled — serving %s", _web_dist)
+else:
+    logger.info(
+        "Web UI disabled — %s not found (run `pnpm --filter @app/mobile run build` "
+        "to generate it locally; the Docker image builds it automatically)",
+        _web_dist,
+    )

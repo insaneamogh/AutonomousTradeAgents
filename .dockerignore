@@ -1,6 +1,10 @@
-# Keep the build context lean — the image only needs Python sources,
-# migrations, and the lockfile. Everything below is either huge, local-
-# only, or secret-bearing.
+# Keep the build context lean. The image needs Python sources + the
+# lockfile for the API/agents/engine/broker packages, AND the JS sources
+# for apps/mobile + packages/ui + packages/shared-types (the web-builder
+# stage exports the web UI from these). Everything below is either huge,
+# local-only, or secret-bearing regardless of which stage would use it —
+# **/node_modules and **/.expo already cover the JS packages' own build
+# caches, so there's no need to exclude those package directories wholesale.
 .git
 .venv
 node_modules
@@ -11,9 +15,7 @@ node_modules
 .ruff_cache
 .expo
 **/.expo
-apps/mobile
-packages/ui
-packages/shared-types
+**/dist
 .env
 **/.env
 *.md

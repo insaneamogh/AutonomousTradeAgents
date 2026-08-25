@@ -49,7 +49,17 @@ function resolveBaseUrl(): string {
   const fromEnv = process.env.EXPO_PUBLIC_API_URL;
   if (fromEnv) return assertSecure(fromEnv.replace(/\/+$/, ''));
 
-  // 2. Use the Expo dev server's host so a physical device can reach the
+  // 2. Production web build: the app is exported statically and served BY
+  //    the API itself (FastAPI's SPA catch-all — see apps/api/app/main.py),
+  //    so same-origin is always correct and survives a domain change with
+  //    no rebuild. Guarded by `!__DEV__` so `expo start --web` (served from
+  //    the Metro dev server's own origin, not the API's) still falls
+  //    through to the debugger-host / localhost:8000 logic below.
+  if (Platform.OS === 'web' && !__DEV__ && typeof window !== 'undefined') {
+    return assertSecure(window.location.origin);
+  }
+
+  // 3. Use the Expo dev server's host so a physical device can reach the
   //    API at the same LAN IP as the bundler.
   const debuggerHost =
     Constants.expoConfig?.hostUri ?? Constants.expoGoConfig?.debuggerHost;
@@ -60,7 +70,7 @@ function resolveBaseUrl(): string {
     }
   }
 
-  // 3. Platform-specific simulator/emulator fallbacks.
+  // 4. Platform-specific simulator/emulator fallbacks.
   if (Platform.OS === 'android') return assertSecure(`http://10.0.2.2:${DEFAULT_PORT}`);
   return assertSecure(`http://localhost:${DEFAULT_PORT}`);
 }

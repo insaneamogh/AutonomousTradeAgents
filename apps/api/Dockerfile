@@ -1,4 +1,4 @@
-# Multi-stage build for the FastAPI gateway.
+# Multi-stage build for the FastAPI gateway — which also serves the web UI.
 #
 # Third-party deps are installed from ``uv.lock`` (exported to a pinned
 # requirements file at build time) so the container can never drift from
@@ -19,7 +19,39 @@
 #                -p 8000:8000 autotrader-api
 
 # ─────────────────────────────────────────────────────────────────────
-# Stage 1 — install dependencies into a dedicated layer for caching
+# Stage 0 — web UI: Expo's static web export of apps/mobile (Platinum
+# Glass desktop + the calm/muted mobile UI — one bundle, client picks
+# which to render). Node-only stage; nothing here reaches the final
+# image except the exported apps/mobile/dist directory. Kept separate
+# from the Python stages below so a JS dependency bump can't invalidate
+# their (much slower) install-and-compile cache.
+# ─────────────────────────────────────────────────────────────────────
+FROM node:22-slim AS web-builder
+
+RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
+
+WORKDIR /repo
+
+# Workspace manifests first — same cache-layering idea as the Python
+# stage below: this layer only invalidates when a package.json/lockfile
+# actually changes, not on every source edit.
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc tsconfig.base.json turbo.json ./
+COPY apps/mobile/package.json apps/mobile/package.json
+COPY packages/ui/package.json packages/ui/package.json
+COPY packages/shared-types/package.json packages/shared-types/package.json
+RUN pnpm install --frozen-lockfile
+
+COPY apps/mobile apps/mobile
+COPY packages/ui packages/ui
+COPY packages/shared-types packages/shared-types
+
+# ui and shared-types have no build step of their own — Metro resolves
+# them straight from TS source, so this is the only compile this stage
+# needs to run.
+RUN pnpm --filter @app/mobile run build
+
+# ─────────────────────────────────────────────────────────────────────
+# Stage 1 — install Python dependencies into a dedicated layer for caching
 # ─────────────────────────────────────────────────────────────────────
 FROM python:3.12-slim AS deps
 
@@ -77,6 +109,11 @@ COPY packages/engine  /app/packages/engine
 COPY packages/broker  /app/packages/broker
 COPY apps/agents      /app/apps/agents
 COPY apps/api         /app/apps/api
+
+# Web UI export from Stage 0. Lands at apps/mobile/dist relative to this
+# WORKDIR, same as it would in a local checkout — app/main.py finds it by
+# that relative path, no env var required.
+COPY --from=web-builder /repo/apps/mobile/dist /app/apps/mobile/dist
 
 # Workspace siblings are imported via PYTHONPATH, exactly like
 # ``make dev-api`` does locally.
