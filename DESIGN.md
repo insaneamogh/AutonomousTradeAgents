@@ -4,6 +4,10 @@
 **Scope:** Mobile app (React Native + NativeWind)
 **Principle:** Calm, premium, trustworthy. Trading apps are anxiety machines — yours shouldn't be.
 
+For the desktop web surface (≥1024px, `apps/mobile/src/desktop/`), see
+[`STITCH_DESIGN_SYSTEM.md`](STITCH_DESIGN_SYSTEM.md) — a deliberately separate design system
+("Platinum Glass"). The two are never blended; do not port tokens or components between them.
+
 ---
 
 ## 1. Design philosophy

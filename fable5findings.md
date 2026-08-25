@@ -294,6 +294,49 @@ Recommendation: don't reach for Temporal yet. A single worker process owning all
 
 ## Entries
 
+### 2026-08-25 — `f2156171` + `9e5604f9`: Platinum Glass desktop UI (documented + verified retroactively)
+
+**Process note, stated plainly:** neither commit got a build-log entry when it landed, and
+`9e5604f9`'s message is the literal placeholder "Latest commit" — not Conventional Commits. Both
+are already pushed to `main`, so per this repo's git-hygiene rules the message is not being
+rewritten; this entry (and [`STITCH_DESIGN_SYSTEM.md`](STITCH_DESIGN_SYSTEM.md), added alongside
+it) is the missing documentation, written after the fact by re-deriving what the diffs actually
+do and verifying it against the running app rather than trusting the commit message.
+
+**What's there.** `f2156171` fixed the desktop build (react/react-dom version mismatch pinned
+`react-dom` to 19.1.4; `BiometricGate` now treats web as N/A instead of fail-closed; Alpaca env
+name unified between broker and engine) and shipped a *placeholder* `DesktopShell` that just
+framed the phone UI in a centered column on wide screens. `9e5604f9` replaced that placeholder
+with the real thing: a second, self-contained UI tree at `apps/mobile/src/desktop/` — 18 files,
+~4,400 lines — implementing the "Platinum Glass" system against `STITCH_DESIGN_SYSTEM.md` (a doc
+that, until this entry, didn't exist in this repo either; see that file's own note on this).
+`DesktopShell` gates on `Platform.OS === 'web' && width >= 1024 && isAuthed` and **replaces**
+the router subtree rather than wrapping it — native and narrow-web paths never evaluate the
+desktop module (guarded `require`), so the phone build is untouched by construction, not by
+convention.
+
+**Verified, not assumed:**
+- `tsc --noEmit` clean across the whole mobile package (includes the desktop tree).
+- Booted `expo start --web` and drove it with a browser: dark mode is the default (matches spec),
+  the light/dark toggle works, and all 7 sidebar sections (Dashboard, Picks, Positions,
+  Strategies, Review, Insights, Settings) render real content wired to the actual
+  `useAccount`/`usePendingApprovals`/`useAuthStore` hooks — not placeholder markup. With no API
+  running, screens correctly show shimmer/empty states rather than crashing or printing raw
+  "No data," which is what the spec requires.
+- Confirmed mobile isolation directly: at 375×812 after a reload, the app renders the plain
+  mobile sign-in screen with zero desktop chrome — even with the desktop auth gate temporarily
+  forced open for the test (reverted before finishing; net diff on `DesktopShell.tsx` is zero).
+- `apps/mobile` lint (`eslint . --max-warnings 0`) does **not** run — root `package.json` pins
+  `eslint@^9` but no `eslint.config.js` (flat config) exists anywhere in the repo. This predates
+  the desktop work (confirmed via `git log` on the config files — there is no prior config to
+  have regressed) and isn't specific to it; flagging here since it means `lint` gave no signal on
+  either desktop commit or anything else recently. Worth its own fix.
+
+**Docs added this entry:** [`STITCH_DESIGN_SYSTEM.md`](STITCH_DESIGN_SYSTEM.md) at repo root —
+the desktop companion to `DESIGN.md`, with tokens/glass/motion verified line-for-line against
+`apps/mobile/src/desktop/theme.ts` rather than transcribed from the original brief. `DESIGN.md`
+now links to it. See that file's own change log for specifics.
+
 ### 2026-08-25 — `3f0b551a`…`47f7081f` refactor: presentation pass over agents/engine/broker
 
 Six commits making the deterministic + agent packages readable cold, ahead of a
