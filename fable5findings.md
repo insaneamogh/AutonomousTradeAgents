@@ -355,6 +355,40 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 ## Entries
 
+### 2026-08-25 — `04559318` fix(api): resolve mypy type-narrowing gaps in postgres_auth_store
+
+First of four items delegated to parallel subagents (in isolated git
+worktrees) from the "Technical debt & follow-ups" list two entries below.
+This one: the 3 mypy errors that the `py.typed` fix made visible in
+`apps/api/app/services/auth/postgres_auth_store.py`.
+
+Both were type-narrowing gaps, not bugs — `upsert_user`'s `row` picked up
+an inferred non-Optional `User` from the if-branch's `.scalar_one()`,
+making the else-branch's `session.get()` (`User | None`) look like an
+incompatible reassignment; fixed with an explicit annotation, the
+existing `assert row is not None` untouched. `mark_magic_link_used` and
+`rotate_session` read `.rowcount` off a statically-`Result[Any]`-typed
+`session.execute()` call; fixed with `assert isinstance(result,
+CursorResult)`, verified empirically (a standalone sqlite smoke test, not
+just an assumption) that a Core UPDATE with no `.returning()` is always a
+CursorResult at runtime.
+
+Mypy on the file: 3 → 0. Whole-package: 64 → 61 (confirmed via
+`git stash`/`stash pop` that only this file's count moved). Full
+`apps/api` suite: 209 passed / 7 skipped, unchanged. Independently
+re-verified on `main` after cherry-picking, not just taken on the
+subagent's word.
+
+**Honest gap surfaced, not fixed here:** `test_postgres_stores.py` does
+have tests exercising all three fixed code paths, but none of them run by
+default — they're `skipif`-gated on `RUN_POSTGRES_TESTS=1` + a live DB,
+and the module isn't even imported in the default run (the store factory
+imports it lazily behind `env_flag("USE_POSTGRES")`, and each test
+imports `PostgresAuthStore` inside its own body, which never executes
+once skip-marked). Today's signal for this file is mypy + the ad hoc
+runtime check above, not CI. Worth wiring a real Postgres test lane at
+some point; not attempted here.
+
 ### 2026-08-25 — `a6a771a7` + `9aec5e66` + `7b74bfd6`: apps/api cleanup — the backlog the refactor pass parked
 
 The refactor pass two entries below this one explicitly scoped `apps/api`
