@@ -40,8 +40,8 @@ __all__ = [
     "InMemoryStrategyConfidenceStore",
     "StrategyConfidenceRow",
     "StrategyConfidenceStore",
-    "get_decision_log",
     "get_confidence_store",
+    "get_decision_log",
     "reset_memory_stores_for_tests",
 ]
 

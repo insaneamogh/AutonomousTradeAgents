@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from trading_agents.features.synthetic import synthetic_features
 

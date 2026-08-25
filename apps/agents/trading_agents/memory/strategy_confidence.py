@@ -13,8 +13,8 @@ phase is where we'll have enough data to relax the bound).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
 from trading_agents.strategies import STRATEGY_REGISTRY
@@ -38,7 +38,7 @@ class StrategyConfidenceRow:
     last_reflection_at: datetime | None = None
     notes: str = ""
 
-    def clamped(self) -> "StrategyConfidenceRow":
+    def clamped(self) -> StrategyConfidenceRow:
         """Return a copy with confidence clipped to the abs bounds."""
         return StrategyConfidenceRow(
             strategy_id=self.strategy_id,
@@ -112,7 +112,7 @@ class InMemoryStrategyConfidenceStore:
         row.confidence = max(MIN_CONFIDENCE, min(MAX_CONFIDENCE, row.confidence + bounded_delta))
         row.wins += wins
         row.losses += losses
-        row.last_reflection_at = datetime.now(timezone.utc)
+        row.last_reflection_at = datetime.now(UTC)
         if notes:
             row.notes = notes
         return row.clamped()

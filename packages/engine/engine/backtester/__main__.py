@@ -20,7 +20,7 @@ import argparse
 import logging
 import math
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from engine.backtester.engine import BacktestResult, Engine
 from engine.backtester.events import Bar
@@ -41,7 +41,7 @@ log = logging.getLogger("engine.backtester")
 def _synthetic_bars(symbol: str, n_days: int = 500, seed: int = 42) -> list[Bar]:
     """Geometric-Brownian-ish daily series with a mild positive drift."""
     rng = random.Random(seed)
-    start = datetime(2024, 1, 2, 21, 0, tzinfo=timezone.utc)
+    start = datetime(2024, 1, 2, 21, 0, tzinfo=UTC)
     bars: list[Bar] = []
     price = 100.0
     drift = 0.0003       # ~7.5% annualized

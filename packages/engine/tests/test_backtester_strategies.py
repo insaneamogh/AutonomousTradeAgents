@@ -13,7 +13,7 @@ test_backtester_risk.py. These tests isolate the strategy.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from engine.backtester import (
     Bar,
@@ -43,7 +43,7 @@ def _make_bar(
     high: float | None = None,
     low: float | None = None,
 ) -> Bar:
-    start = datetime(2025, 1, 2, 21, 0, tzinfo=timezone.utc)
+    start = datetime(2025, 1, 2, 21, 0, tzinfo=UTC)
     return Bar(
         symbol=symbol,
         timestamp=start + timedelta(days=day),

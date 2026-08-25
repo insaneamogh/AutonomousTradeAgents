@@ -64,12 +64,11 @@ class Breakout:
                     orders.append(_order(bar, Side.BUY, buy_qty, self.name))
                     self._long = True
                     self._held_qty = buy_qty
-        elif self._long and len(self._lows) >= self.exit_window:
-            if bar.close < min(self._lows):
-                if self._held_qty >= 1:
-                    orders.append(_order(bar, Side.SELL, self._held_qty, self.name))
-                self._long = False
-                self._held_qty = 0
+        elif self._long and len(self._lows) >= self.exit_window and bar.close < min(self._lows):
+            if self._held_qty >= 1:
+                orders.append(_order(bar, Side.SELL, self._held_qty, self.name))
+            self._long = False
+            self._held_qty = 0
 
         # Now buffer this bar.
         self._highs.append(bar.high)

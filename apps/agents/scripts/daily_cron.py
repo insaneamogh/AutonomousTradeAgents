@@ -36,7 +36,7 @@ import asyncio
 import logging
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from trading_agents.features import resolve_feature_provider
 from trading_agents.llm import LLM
@@ -68,7 +68,7 @@ def _today_utc() -> str:
     day map to the same UTC date in 99% of cases. Phase 1.5 swaps to NY
     business days via ``pandas_market_calendars``.
     """
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return datetime.now(UTC).strftime("%Y-%m-%d")
 
 
 async def _already_decided_today(
@@ -123,7 +123,7 @@ def _notify_proposal(user_id: str, proposal: dict, push_tasks: list) -> None:
         push_tasks.append(
             schedule_proposal_pending_notification(user_id=user_id, proposal=proposal)
         )
-    except Exception:  # noqa: BLE001 — push is best-effort, council result is already durable
+    except Exception:  # push is best-effort, council result is already durable
         log.exception("proposal push fan-out failed — continuing")
 
 
@@ -188,7 +188,7 @@ async def main(
     # Market-calendar gate: no NYSE close today → nothing to decide. The
     # GitHub Actions schedule fires Mon-Fri regardless of holidays; this is
     # the deterministic gate the audit asked for. --force overrides.
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(UTC).date()
     from engine.features import is_us_trading_day
 
     if not force and not is_us_trading_day(today):
@@ -221,7 +221,7 @@ async def main(
                     push_tasks=push_tasks,
                 )
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.exception("council failed for %s — continuing", symbol)
             rolled_up.append({"symbol": symbol, "skipped": False, "error": str(exc)})
 
@@ -247,7 +247,7 @@ async def main(
             from scripts.ghost_eval import evaluate_ghosts
 
             await evaluate_ghosts()
-        except Exception:  # noqa: BLE001
+        except Exception:
             log.exception("ghost_eval pass failed — continuing")
 
     # Reflection pass — the worker existed but was never scheduled, so
@@ -265,7 +265,7 @@ async def main(
                 since=timedelta(hours=24),
             )
             log.info("reflection pass — reviewed=%d", summary.get("reviewed", 0))
-        except Exception:  # noqa: BLE001
+        except Exception:
             log.exception("reflection pass failed — continuing")
 
     # Kick the Langfuse export before this short-lived process exits.
@@ -273,7 +273,7 @@ async def main(
         from trading_agents.tracing import flush as _trace_flush
 
         _trace_flush()
-    except Exception:  # noqa: BLE001
+    except Exception:
         log.debug("trace flush failed", exc_info=True)
 
     return 1 if failed else 0
@@ -321,7 +321,7 @@ def cli() -> int:
     if _is_truthy(os.environ.get("USE_POSTGRES")):
         try:
             user_symbols = asyncio.run(_load_user_watchlist(args.user_id))
-        except Exception:  # noqa: BLE001 — fall back to the CLI/default list
+        except Exception:  # fall back to the CLI/default list
             log.exception("user watchlist load failed — using default list")
             user_symbols = []
         if user_symbols:

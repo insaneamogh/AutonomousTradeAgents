@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any, Final, Protocol, runtime_checkable
 
 ALL_USERS: Final[str] = "__ALL_USERS__"
@@ -46,7 +46,7 @@ class DecisionEntry:
     user_id: str | None = None
     symbol: str = ""
     horizon: str = "short"
-    triggered_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    triggered_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     regime: str | None = None
     selected_strategy: str | None = None
     selector_confidence: float = 0.0
@@ -177,7 +177,7 @@ class InMemoryDecisionLog:
         since: timedelta = timedelta(hours=24),
         limit: int = 200,
     ) -> list[DecisionEntry]:
-        cutoff = datetime.now(timezone.utc) - since
+        cutoff = datetime.now(UTC) - since
         pending = [
             r for r in self._rows
             if _visible_to(r, user_id)
@@ -190,7 +190,7 @@ class InMemoryDecisionLog:
     async def mark_reviewed(self, decision_id: str) -> None:
         for r in self._rows:
             if r.id == decision_id:
-                r.reviewed_at = datetime.now(timezone.utc)
+                r.reviewed_at = datetime.now(UTC)
                 return
 
     async def update_outcome(

@@ -14,7 +14,7 @@ veto_rule: mis_square_off_block
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 from engine.risk.markets import market_of
 from engine.risk.types import RiskCaps, RiskContext, RiskDecision, RiskProposal
@@ -28,7 +28,7 @@ def mis_square_off_block(
     if market_of(proposal.symbol) != "IN" or not proposal.is_intraday:
         return None
 
-    now_utc = context.now_utc or datetime.now(timezone.utc)
+    now_utc = context.now_utc or datetime.now(UTC)
     now_ist = now_utc.astimezone(IST)
     cutoff = now_ist.replace(
         hour=caps.mis_entry_cutoff_hour_ist,

@@ -7,7 +7,6 @@ by the daily ingest job (FMP/yfinance/Polygon).
 
 from __future__ import annotations
 
-
 # Coarse sector buckets matching the GICS L1 names — close enough for
 # concentration math. Anything not in the map falls into "other".
 SECTOR_BY_SYMBOL: dict[str, str] = {

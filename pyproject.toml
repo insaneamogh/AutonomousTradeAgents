@@ -37,7 +37,23 @@ select = [
   "SIM",
   "RUF",
 ]
-ignore = ["E501"]  # line length handled by formatter
+ignore = [
+  "E501",    # line length handled by formatter
+  # This codebase deliberately uses typographic punctuation in prose —
+  # em-dashes, →, ×, ≥ — because the comments explain WHY and are read by
+  # humans, not parsed. Flagging them as "ambiguous unicode" is noise.
+  "RUF001", "RUF002", "RUF003",
+  # `class Side(str, Enum)` is NOT interchangeable with `StrEnum`: str() on a
+  # StrEnum member yields the value, on a (str, Enum) member the member name.
+  # Serialized payloads depend on the current behavior — don't auto-migrate.
+  "UP042",
+]
+
+[tool.ruff.lint.isort]
+# The workspace packages. Without this ruff sorts them in with PyPI deps
+# (``engine`` lands between ``alembic`` and ``sqlalchemy``), which makes the
+# local-vs-external split invisible at a glance.
+known-first-party = ["app", "broker", "engine", "trading_agents"]
 
 [tool.ruff.format]
 quote-style = "double"

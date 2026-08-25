@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from sqlalchemy import desc, func, select
@@ -70,14 +70,14 @@ def _parse_positions(rows: list[dict]) -> list[PortfolioPosition]:
 # ─────────────────────────────────────────────────────────────────────
 
 
-async def _breaker_state(session: "AsyncSession", uid: uuid.UUID) -> CircuitBreakerState | None:
+async def _breaker_state(session: AsyncSession, uid: uuid.UUID) -> CircuitBreakerState | None:
     stmt = select(CircuitBreakerState).where(CircuitBreakerState.user_id == uid)
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-async def _pdt_count_5d(session: "AsyncSession", uid: uuid.UUID) -> int:
+async def _pdt_count_5d(session: AsyncSession, uid: uuid.UUID) -> int:
     # Phase 0: 5 calendar days back. Phase 1.5: NY business days.
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=5)).date()
+    cutoff = (datetime.now(UTC) - timedelta(days=5)).date()
     stmt = (
         select(func.count())
         .select_from(PdtLedger)
@@ -89,7 +89,7 @@ async def _pdt_count_5d(session: "AsyncSession", uid: uuid.UUID) -> int:
 
 
 async def _recent_losing_closes(
-    session: "AsyncSession", uid: uuid.UUID
+    session: AsyncSession, uid: uuid.UUID
 ) -> tuple[ClosedTrade, ...]:
     # TODO(Phase 1.5): populate by joining orders + their open counterparts
     # to compute realized P&L per close, filtered to losses inside
@@ -100,10 +100,10 @@ async def _recent_losing_closes(
 
 
 async def _first_snapshot_equity_today(
-    session: "AsyncSession", uid: uuid.UUID
+    session: AsyncSession, uid: uuid.UUID
 ) -> float | None:
     today_start = datetime.combine(
-        datetime.now(timezone.utc).date(), datetime.min.time(), tzinfo=timezone.utc
+        datetime.now(UTC).date(), datetime.min.time(), tzinfo=UTC
     )
     stmt = (
         select(PositionsSnapshot)
@@ -137,7 +137,7 @@ class DbRiskState:
 
     drawdown_halted: bool = False
     drawdown_halt_reason: str | None = None
-    drawdown_halted_at: "date_type | None" = None
+    drawdown_halted_at: date_type | None = None
     day_trades_last_5d: int = 0
     recent_losing_closes: tuple[ClosedTrade, ...] = ()
     daily_pnl: float = 0.0
@@ -145,7 +145,7 @@ class DbRiskState:
 
 
 async def load_db_risk_state(
-    session_factory: "async_sessionmaker",
+    session_factory: async_sessionmaker,
     *,
     user_id: str | uuid.UUID,
     current_equity: float | None = None,
@@ -194,7 +194,7 @@ async def load_db_risk_state(
 class PostgresRiskContextProvider:
     """Async ``RiskContextProvider`` reading from the engine.db schema."""
 
-    session_factory: "async_sessionmaker"
+    session_factory: async_sessionmaker
 
     async def fetch(self, *, user_id: str | uuid.UUID | None = None) -> RiskContext:
         uid = _to_uuid(user_id)

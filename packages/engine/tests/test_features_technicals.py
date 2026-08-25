@@ -84,7 +84,8 @@ def test_dma200_is_none_below_200_bars() -> None:
 def test_volume_ratio_reflects_a_spike() -> None:
     closes = [100.0] * 100
     bars = _bars(closes)
-    spiked = bars[:-1] + [
+    spiked = [
+        *bars[:-1],
         DailyBar(
             day=bars[-1].day,
             open=100.0,
@@ -92,7 +93,7 @@ def test_volume_ratio_reflects_a_spike() -> None:
             low=99.5,
             close=100.0,
             volume=2000.0,  # 19 days at 100 + this → avg 195
-        )
+        ),
     ]
     t = compute_technicals(spiked)
     assert t["volume_ratio_20d"] == pytest.approx(2000.0 / 195.0, abs=0.01)

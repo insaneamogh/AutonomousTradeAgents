@@ -83,7 +83,7 @@ def _mcal_valid_days() -> tuple[frozenset[date], date, date] | None:
         days = frozenset(ts.date() for ts in idx)
         _MCAL_CACHE = (days, start, end)
         logger.info("market_calendar: using pandas_market_calendars XNYS (%d days cached)", len(days))
-    except Exception as exc:  # noqa: BLE001 — any failure → static fallback
+    except Exception as exc:  # any failure → static fallback
         logger.info("market_calendar: pandas_market_calendars unavailable (%s) — static table", exc)
         _MCAL_CACHE = None
     return _MCAL_CACHE  # type: ignore[return-value]

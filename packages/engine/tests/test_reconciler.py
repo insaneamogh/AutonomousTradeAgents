@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -19,15 +19,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from engine.reconciler import (
-    BreakerTransition,
     MockBrokerPoller,
-    RawAccountState,
     Reconciler,
     ReconcilerConfig,
 )
 from engine.reconciler.breaker import evaluate_breaker
 from engine.risk import PortfolioPosition
-
 
 # ─────────────────────────────────────────────────────────────────────
 # MockBrokerPoller
@@ -142,7 +139,7 @@ class _FakeSession:
         self.added: list[Any] = []
         self.committed = 0
 
-    async def __aenter__(self) -> "_FakeSession":
+    async def __aenter__(self) -> _FakeSession:
         return self
 
     async def __aexit__(self, *args: Any) -> None:
@@ -162,7 +159,7 @@ class _FakeSession:
     async def refresh(self, obj: Any) -> None:
         # Simulate captured_at being populated by the DB default.
         if not hasattr(obj, "captured_at") or obj.captured_at is None:
-            obj.captured_at = datetime.now(timezone.utc)
+            obj.captured_at = datetime.now(UTC)
 
 
 async def test_reconciler_run_forever_stops_cleanly() -> None:

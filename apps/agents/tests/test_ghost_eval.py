@@ -10,8 +10,9 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
-from engine.prices import SyntheticPriceProvider
 from scripts.ghost_eval import _entry_price, _ghost_pnl, _trading_day_offset
+
+from engine.prices import SyntheticPriceProvider
 
 
 def test_entry_price_prefers_limit() -> None:

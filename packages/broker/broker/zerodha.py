@@ -45,7 +45,7 @@ import hashlib
 import logging
 import os
 import re
-from datetime import datetime, time, timedelta, timezone
+from datetime import UTC, datetime, time, timedelta, timezone
 from typing import Any
 from urllib.parse import urlencode
 
@@ -143,14 +143,14 @@ def next_token_expiry(now: datetime | None = None) -> datetime:
 
     Returned in UTC so it slots straight into ``access_token_expires_at``.
     """
-    now_ist = (now or datetime.now(timezone.utc)).astimezone(IST)
+    now_ist = (now or datetime.now(UTC)).astimezone(IST)
     flush = now_ist.replace(
         hour=TOKEN_FLUSH_IST.hour, minute=TOKEN_FLUSH_IST.minute,
         second=0, microsecond=0,
     )
     if now_ist >= flush:
         flush += timedelta(days=1)
-    return flush.astimezone(timezone.utc)
+    return flush.astimezone(UTC)
 
 
 def _tag_from_client_order_id(client_order_id: str | None) -> str | None:
@@ -352,7 +352,7 @@ class ZerodhaBroker(BrokerInterface):
             try:
                 await self._request("DELETE", f"/orders/regular/{order_id}")
                 canceled += 1
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning("cancel_open_orders: %s failed — %s", order_id, exc)
         return canceled
 
@@ -473,7 +473,7 @@ class ZerodhaBroker(BrokerInterface):
         avg_price = float(raw.get("average_price", 0) or 0)
         submitted = (
             _parse_kite_ts(raw.get("order_timestamp"))
-            or datetime.now(timezone.utc)
+            or datetime.now(UTC)
         )
         status = _status_from_kite(str(raw.get("status", "")), filled_qty)
         return Order(

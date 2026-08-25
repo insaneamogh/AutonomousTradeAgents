@@ -25,8 +25,9 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any, Iterator
+from typing import Any
 
 logger = logging.getLogger("agents.tracing")
 
@@ -54,7 +55,7 @@ def _resolve_client() -> Any:
         host = os.environ.get("LANGFUSE_HOST", "https://cloud.langfuse.com").strip()
         _client = Langfuse(public_key=public, secret_key=secret, host=host)
         logger.info("Langfuse tracing ENABLED (host=%s)", host)
-    except Exception:  # noqa: BLE001 — any init failure → tracing off, council unaffected
+    except Exception:  # any init failure → tracing off, council unaffected
         logger.exception("Langfuse init failed — tracing disabled")
         _client = None
     return _client
@@ -93,7 +94,7 @@ class _Span:
     def set_output(self, *, output: Any = None, metadata: Any = None) -> None:
         try:
             self._span.update(output=output, metadata=metadata)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("span.update failed", exc_info=True)
 
 
@@ -113,7 +114,7 @@ class _Gen:
                 usage_details=usage,
                 cost_details=({"total": cost} if cost is not None else None),
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("generation.update failed", exc_info=True)
 
     def succeed(self, *, output: Any = None, usage: dict[str, int] | None = None,
@@ -155,7 +156,7 @@ def council_trace(
             input={"symbol": symbol, "horizon": horizon},
             metadata={"user_id": user_id, "decision_id": decision_id},
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.debug("council_trace start failed", exc_info=True)
         yield _NoopSpan()  # type: ignore[misc]
         return
@@ -178,7 +179,7 @@ def agent_generation(*, role: str, model: str, system: str, user: str) -> Iterat
             model=model.split("+", 1)[0],  # strip the "+mock" suffix
             input={"system": system[:2000], "user": user[:4000]},
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.debug("agent_generation start failed", exc_info=True)
         yield _NoopGen()  # type: ignore[misc]
         return
@@ -194,5 +195,5 @@ def flush() -> None:
         return
     try:
         client.flush()
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.debug("Langfuse flush failed", exc_info=True)

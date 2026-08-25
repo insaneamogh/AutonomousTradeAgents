@@ -27,8 +27,9 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from engine.features.bars import AlpacaDailyBarsProvider, BarsProvider
 from engine.features.macro import compute_macro
@@ -79,7 +80,7 @@ class RealFeatureProvider:
         if self.equity_resolver is not None:
             try:
                 equity = await self.equity_resolver()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("features: equity resolver failed — using fallback")
         if equity is None or equity <= 0:
             logger.warning(
@@ -103,7 +104,7 @@ class RealFeatureProvider:
         if self.fundamentals is not None:
             try:
                 fund = await self.fundamentals.fetch(sym)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("features: fundamentals fetch failed for %s", sym)
                 fund = None
             if fund:

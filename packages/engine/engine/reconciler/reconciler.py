@@ -18,6 +18,7 @@ Wiring options (see AGENTV1 §Next-session Step 4):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import uuid
 from dataclasses import dataclass
@@ -53,8 +54,8 @@ class Reconciler:
     def __init__(
         self,
         *,
-        poller: "BrokerPoller",
-        session_factory: "async_sessionmaker",
+        poller: BrokerPoller,
+        session_factory: async_sessionmaker,
         user_id: uuid.UUID,
         config: ReconcilerConfig | None = None,
     ) -> None:
@@ -102,15 +103,14 @@ class Reconciler:
                         result.transition.new_status,
                         result.transition.reason,
                     )
-            except Exception:  # noqa: BLE001
+            except Exception:
                 if self._config.swallow_errors:
                     logger.exception("reconciler tick failed — continuing")
                 else:
                     raise
-            try:
+            # Timeout is the normal path: it means "no stop signal, tick again".
+            with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._stop.wait(), timeout=self._config.interval_seconds)
-            except asyncio.TimeoutError:
-                pass
         logger.info("reconciler stopped")
 
     def start(self) -> None:
@@ -126,6 +126,6 @@ class Reconciler:
         if self._task is not None:
             try:
                 await self._task
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("reconciler task raised on shutdown")
         self._task = None

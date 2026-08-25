@@ -28,7 +28,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 
-from broker.types import OrderRequest, Side as BrokerSide
+from broker.types import OrderRequest
+from broker.types import Side as BrokerSide
 from engine.backtester.events import Bar
 from engine.backtester.portfolio import Portfolio
 from engine.risk import (

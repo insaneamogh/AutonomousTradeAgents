@@ -74,7 +74,7 @@ class AlpacaBrokerPoller:
     someone actually instantiates this class.
     """
 
-    broker: "AlpacaBroker"
+    broker: AlpacaBroker
     name: str = "alpaca"
 
     async def get_account_state(self) -> RawAccountState:

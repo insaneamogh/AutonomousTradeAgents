@@ -5,7 +5,7 @@ covered.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 from engine.risk import (
     ClosedTrade,
@@ -20,7 +20,7 @@ from engine.risk import (
 
 
 def _today() -> date:
-    return datetime.now(timezone.utc).date()
+    return datetime.now(UTC).date()
 
 
 def _ctx(**overrides: object) -> RiskContext:

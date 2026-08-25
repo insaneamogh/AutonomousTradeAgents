@@ -14,6 +14,7 @@ import json
 from typing import Any
 
 import pytest
+
 from engine.risk.rules.specialist_avg_score import min_specialist_avg_score
 from engine.risk.types import RiskCaps, SpecialistScore
 from trading_agents.llm import LLMResponse, Model

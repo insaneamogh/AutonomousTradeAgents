@@ -16,8 +16,10 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 # Register all models with Base.metadata.
-from engine.db import Base
-from engine.db import models  # noqa: F401  side-effect: register tables
+from engine.db import (
+    Base,
+    models,  # noqa: F401  side-effect: register tables
+)
 from engine.db.session import _coerce_to_async_dialect
 
 config = context.config

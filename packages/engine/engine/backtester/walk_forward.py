@@ -199,7 +199,7 @@ def _infer_strategy_name(factory: Callable[[], Strategy]) -> str:
     """Best-effort: instantiate once + read ``.name``, else fall back to repr."""
     try:
         instance = factory()
-    except Exception:  # noqa: BLE001
+    except Exception:
         return "strategy"
     name = getattr(instance, "name", None)
     if isinstance(name, str) and name:

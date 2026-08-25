@@ -9,7 +9,9 @@ session-token checksum exchange.
 from __future__ import annotations
 
 import hashlib
-from typing import Any, Callable
+from collections.abc import Callable
+from datetime import UTC
+from typing import Any
 from urllib.parse import parse_qs
 
 import httpx
@@ -79,16 +81,16 @@ def test_session_checksum_is_sha256_of_concat() -> None:
 
 
 def test_next_token_expiry_is_six_am_ist() -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     # 2026-06-10 12:00 UTC = 17:30 IST → next flush 2026-06-11 06:00 IST
-    now = datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
     expiry = next_token_expiry(now)
-    assert expiry == datetime(2026, 6, 11, 0, 30, tzinfo=timezone.utc)
+    assert expiry == datetime(2026, 6, 11, 0, 30, tzinfo=UTC)
 
     # 2026-06-10 23:00 UTC = 04:30 IST next day → flush same IST morning
-    now = datetime(2026, 6, 10, 23, 0, tzinfo=timezone.utc)
-    assert next_token_expiry(now) == datetime(2026, 6, 11, 0, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 10, 23, 0, tzinfo=UTC)
+    assert next_token_expiry(now) == datetime(2026, 6, 11, 0, 30, tzinfo=UTC)
 
 
 # ── Orders ───────────────────────────────────────────────────────────

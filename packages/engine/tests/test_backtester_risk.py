@@ -8,13 +8,12 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from broker.types import OrderRequest, OrderType
 from broker.types import Side as BrokerSide
 from engine.backtester import (
     Bar,
-    BarFeed,
     Engine,
     Portfolio,
     RiskGate,
@@ -22,14 +21,13 @@ from engine.backtester import (
 )
 from engine.risk import RiskCaps
 
-
 # ─────────────────────────────────────────────────────────────────────
 # Test fixtures — a one-symbol, fixed-price feed and a script-driven strategy
 # ─────────────────────────────────────────────────────────────────────
 
 
 def _bars(symbol: str = "AAPL", n: int = 5, price: float = 100.0) -> list[Bar]:
-    start = datetime(2025, 1, 2, 21, 0, tzinfo=timezone.utc)
+    start = datetime(2025, 1, 2, 21, 0, tzinfo=UTC)
     return [
         Bar(
             symbol=symbol,
@@ -185,7 +183,7 @@ def test_sma_crossover_with_atr_sizing() -> None:
 
     # Build a synthetic feed that crosses up then down so SMA fires both
     # a BUY and a matching SELL within ~120 bars (fast=10, slow=30).
-    start = datetime(2025, 1, 2, 21, 0, tzinfo=timezone.utc)
+    start = datetime(2025, 1, 2, 21, 0, tzinfo=UTC)
     bars: list[Bar] = []
     price = 100.0
     for i in range(120):

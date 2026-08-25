@@ -32,7 +32,7 @@ async def _main(symbol: str, horizon: str, force_fallback: bool) -> int:
     # smoke is to monkey-patch the flag here.
     if force_fallback:
         import trading_agents.graph as graph_mod
-        graph_mod._HAS_LANGGRAPH = False  # noqa: SLF001
+        graph_mod._HAS_LANGGRAPH = False
 
     result = await run_council(symbol=symbol, horizon=horizon, llm=llm)  # type: ignore[arg-type]
 

@@ -8,7 +8,7 @@ veto_rule: min_specialist_avg_score
 
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 from engine.risk.types import RiskCaps, RiskContext, RiskDecision, RiskProposal, SpecialistScore
 

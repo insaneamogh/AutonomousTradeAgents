@@ -8,7 +8,7 @@ reads priors when they're present.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -38,7 +38,7 @@ def _completed_decision(
     return DecisionEntry(
         symbol=symbol,
         horizon="short",
-        triggered_at=triggered_at or datetime.now(timezone.utc) - timedelta(hours=6),
+        triggered_at=triggered_at or datetime.now(UTC) - timedelta(hours=6),
         regime="bull",
         selected_strategy=strategy,
         selector_confidence=0.6,
@@ -65,7 +65,7 @@ async def test_reflection_marks_decisions_reviewed_and_applies_bounded_delta() -
     decision_log = InMemoryDecisionLog()
     confidence_store = InMemoryStrategyConfidenceStore()
 
-    seeded = await decision_log.record(_completed_decision(pnl=120.0))
+    await decision_log.record(_completed_decision(pnl=120.0))
     await decision_log.record(_completed_decision(symbol="AAPL", pnl=80.0))
     await decision_log.record(_completed_decision(symbol="META", pnl=-50.0))
 
@@ -104,7 +104,6 @@ async def test_reflection_marks_decisions_reviewed_and_applies_bounded_delta() -
     assert summary2["reviewed"] == 0
 
     after_second = await confidence_store.get("momentum")
-    after_first = (await confidence_store.all())[0]  # NOTE: store seeds in registry order
     # Same confidence — no second nudge.
     assert (
         after_second.confidence

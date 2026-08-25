@@ -20,15 +20,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Awaitable, Callable
+from collections.abc import Awaitable, Callable
 
+from engine.risk import RiskCaps
 from trading_agents.llm import LLM
-from trading_agents.progress import (
-    NodeName,
-    ProgressCallback,
-    ProgressEvent,
-    summarize_node,
-)
 from trading_agents.nodes import (
     drafter_node,
     fundamental_analyst_node,
@@ -38,7 +33,12 @@ from trading_agents.nodes import (
     selector_node,
     technical_analyst_node,
 )
-from engine.risk import RiskCaps
+from trading_agents.progress import (
+    NodeName,
+    ProgressCallback,
+    ProgressEvent,
+    summarize_node,
+)
 from trading_agents.state import CouncilState
 
 logger = logging.getLogger("agents.graph")

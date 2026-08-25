@@ -18,7 +18,6 @@ from __future__ import annotations
 import logging
 
 from engine.sizing import SizingInputs, atr_position_size
-
 from trading_agents.llm import LLM, Model, complete_json
 from trading_agents.nodes._guards import clamp_confidence, clamp_level
 from trading_agents.prompts import DRAFTER

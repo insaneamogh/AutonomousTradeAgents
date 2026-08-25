@@ -16,14 +16,13 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from engine.db import async_session_factory
 from engine.db.models import AgentDecision, StrategyConfidence
-
 from trading_agents.memory.decision_log import ALL_USERS, DecisionEntry
 from trading_agents.memory.strategy_confidence import (
     MAX_CONFIDENCE,
@@ -43,7 +42,7 @@ FIXTURE_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class _NoSuchTenant(Exception):
@@ -262,8 +261,8 @@ class PostgresDecisionLog:
 
         uid = uuid.UUID(user_id) if user_id else FIXTURE_USER_ID
         y, m, d = (int(p) for p in day_utc.split("-"))
-        day_start = datetime(y, m, d, tzinfo=timezone.utc)
-        day_end = datetime.combine(_date(y, m, d), datetime.max.time(), tzinfo=timezone.utc)
+        day_start = datetime(y, m, d, tzinfo=UTC)
+        day_end = datetime.combine(_date(y, m, d), datetime.max.time(), tzinfo=UTC)
         async with self._session_factory() as session:
             stmt = (
                 select(AgentDecision.id)

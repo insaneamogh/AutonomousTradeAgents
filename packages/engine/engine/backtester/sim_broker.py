@@ -15,9 +15,8 @@ from __future__ import annotations
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 
-from broker.types import Order, OrderRequest, OrderStatus, OrderType, Side
+from broker.types import Order, OrderRequest, OrderStatus, OrderType
 from engine.backtester.costs import SecFinraTafCosts, SlippageFn, fixed_bps_slippage
 from engine.backtester.events import Bar, FillEvent
 

@@ -12,8 +12,7 @@ change; the date-comparison logic will.
 from __future__ import annotations
 
 import uuid
-from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -28,10 +27,10 @@ if TYPE_CHECKING:
 
 
 async def write_snapshot(
-    session: "AsyncSession",
+    session: AsyncSession,
     *,
     user_id: uuid.UUID,
-    state: "RawAccountState",
+    state: RawAccountState,
     source: str,
 ) -> PositionsSnapshot:
     """Insert a new snapshot row and commit. Returns the row."""
@@ -65,7 +64,7 @@ async def write_snapshot(
 
 
 async def _daily_pnl(
-    session: "AsyncSession",
+    session: AsyncSession,
     *,
     user_id: uuid.UUID,
     current_equity: float,
@@ -74,7 +73,7 @@ async def _daily_pnl(
     Returns (0, 0) when no prior snapshot exists for today.
     """
     today_start = datetime.combine(
-        datetime.now(timezone.utc).date(), datetime.min.time(), tzinfo=timezone.utc
+        datetime.now(UTC).date(), datetime.min.time(), tzinfo=UTC
     )
     stmt = (
         select(PositionsSnapshot)

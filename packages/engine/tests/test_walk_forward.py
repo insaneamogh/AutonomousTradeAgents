@@ -6,7 +6,7 @@ already pinned by test_backtester_strategies.py.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from statistics import mean as _mean
 
 from engine.backtester import (
@@ -19,7 +19,7 @@ from engine.backtester import (
 
 def _bars(n: int, *, start_price: float = 100.0, drift: float = 0.5) -> list[Bar]:
     """Linearly trending bars, deterministic. Cheap to reason about in asserts."""
-    start = datetime(2024, 1, 2, 21, 0, tzinfo=timezone.utc)
+    start = datetime(2024, 1, 2, 21, 0, tzinfo=UTC)
     bars: list[Bar] = []
     price = start_price
     for i in range(n):

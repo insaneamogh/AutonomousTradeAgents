@@ -8,9 +8,10 @@ thesis — exactly what the mobile theater screen renders.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Literal
+from datetime import UTC, datetime
+from typing import Any, Literal
 
 NodeName = Literal[
     "router",
@@ -45,7 +46,7 @@ class ProgressEvent:
     seq: int
     node: NodeName
     status: NodeStatus
-    at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    at: datetime = field(default_factory=lambda: datetime.now(UTC))
     # Optional deterministic summary, shape depends on node:
     #   analysts     → {score, confidence, thesis}
     #   router       → {regime, analystSubset, thesis}

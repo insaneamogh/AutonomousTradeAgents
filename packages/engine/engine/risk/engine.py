@@ -29,8 +29,8 @@ matches what production should do.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import replace
-from typing import Iterable
 
 from engine.risk.rules import (
     correlation_cap,

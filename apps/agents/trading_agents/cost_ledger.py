@@ -23,9 +23,8 @@ from __future__ import annotations
 import os
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Protocol, runtime_checkable
-
 
 # ─────────────────────────────────────────────────────────────────────
 # Pricing table
@@ -124,7 +123,7 @@ class LedgerEntry:
     cache_creation_tokens: int = 0
     cost_usd: float = 0.0
     is_mock: bool = False
-    called_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    called_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 @runtime_checkable
@@ -150,7 +149,7 @@ class InMemoryCostLedger:
     async def sum_cost_since(
         self, since: timedelta, *, exclude_mock: bool = True
     ) -> tuple[float, int]:
-        cutoff = datetime.now(timezone.utc) - since
+        cutoff = datetime.now(UTC) - since
         rows = [
             r for r in self._rows
             if r.called_at >= cutoff and (not exclude_mock or not r.is_mock)

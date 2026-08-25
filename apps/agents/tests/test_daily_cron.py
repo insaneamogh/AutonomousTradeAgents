@@ -7,9 +7,8 @@ calls into a stubbed ``run_council``.
 
 from __future__ import annotations
 
-import asyncio
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -59,7 +58,7 @@ async def test_skip_when_already_decided_today(monkeypatch) -> None:
             user_id=user_id,
             symbol="NVDA",
             horizon="short",
-            triggered_at=datetime.now(timezone.utc),
+            triggered_at=datetime.now(UTC),
             selected_strategy="momentum",
             selector_confidence=0.6,
             final_action="BUY",
@@ -95,7 +94,7 @@ async def test_force_runs_even_when_already_decided(monkeypatch) -> None:
             user_id=user_id,
             symbol="AAPL",
             horizon="short",
-            triggered_at=datetime.now(timezone.utc),
+            triggered_at=datetime.now(UTC),
             selected_strategy="momentum",
             selector_confidence=0.6,
             final_action="BUY",
@@ -130,7 +129,7 @@ async def test_prior_day_does_not_block(monkeypatch) -> None:
             user_id=user_id,
             symbol="MSFT",
             horizon="short",
-            triggered_at=datetime.now(timezone.utc) - timedelta(days=2),
+            triggered_at=datetime.now(UTC) - timedelta(days=2),
             selected_strategy="momentum",
             selector_confidence=0.6,
             final_action="BUY",

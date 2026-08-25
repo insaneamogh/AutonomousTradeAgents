@@ -22,10 +22,11 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+from sqlalchemy import or_, select
+
 from engine.db import async_session_factory
 from engine.db.models import AgentDecision, GhostOutcome
 from engine.prices import get_price_provider
-from sqlalchemy import or_, select
 
 logger = logging.getLogger("agents.ghost_eval")
 

@@ -24,9 +24,8 @@ def _lot_size_for(tradingsymbol: str, caps: RiskCaps) -> int | None:
     """Longest-prefix match against the registry; None when unknown."""
     best: tuple[int, int] | None = None  # (prefix_len, lot)
     for underlying, lot in caps.lot_sizes:
-        if tradingsymbol.startswith(underlying):
-            if best is None or len(underlying) > best[0]:
-                best = (len(underlying), lot)
+        if tradingsymbol.startswith(underlying) and (best is None or len(underlying) > best[0]):
+            best = (len(underlying), lot)
     return best[1] if best else None
 
 

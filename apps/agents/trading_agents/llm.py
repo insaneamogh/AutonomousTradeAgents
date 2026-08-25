@@ -195,7 +195,7 @@ async def complete_json(
             data = LLM.parse_json(resp.text)
             gen.succeed(output=data, usage=_usage_of(resp), cost=_cost_of(resp))
             return data, False
-        except Exception as exc:  # noqa: BLE001 — malformed output, not a bug
+        except Exception as exc:  # malformed output, not a bug
             logger.warning("complete_json: parse failed (%s) — re-asking once", exc)
 
         retry_user = (
@@ -215,7 +215,7 @@ async def complete_json(
                 cost=_cost_of(resp),
             )
             return data, True
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.error("complete_json: retry also malformed (%s) — degraded", exc)
             gen.fail(status="both attempts returned unparseable JSON", usage=_usage_of(resp))
             return None, True
@@ -226,15 +226,15 @@ def _infer_role(system: str) -> str:
         from trading_agents.cost_ledger import infer_role_from_system_prompt
 
         return infer_role_from_system_prompt(system)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return "unknown"
 
 
-def _usage_of(resp: "LLMResponse") -> dict[str, int]:
+def _usage_of(resp: LLMResponse) -> dict[str, int]:
     return {"input": resp.input_tokens, "output": resp.output_tokens}
 
 
-def _cost_of(resp: "LLMResponse") -> float | None:
+def _cost_of(resp: LLMResponse) -> float | None:
     try:
         from trading_agents.cost_ledger import compute_cost_usd
 
@@ -245,7 +245,7 @@ def _cost_of(resp: "LLMResponse") -> float | None:
             cache_read_tokens=resp.cache_read_tokens,
             cache_creation_tokens=resp.cache_creation_tokens,
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -375,7 +375,7 @@ def _mock_response(*, system: str, user: str, model: str) -> LLMResponse:
 # ─────────────────────────────────────────────────────────────────────
 
 
-async def _record_to_ledger(system: str, resp: "LLMResponse", *, is_mock: bool) -> None:
+async def _record_to_ledger(system: str, resp: LLMResponse, *, is_mock: bool) -> None:
     try:
         from trading_agents.cost_ledger import (
             LedgerEntry,
@@ -403,5 +403,5 @@ async def _record_to_ledger(system: str, resp: "LLMResponse", *, is_mock: bool) 
                 is_mock=is_mock,
             )
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("cost ledger write failed (best-effort): %s", exc)

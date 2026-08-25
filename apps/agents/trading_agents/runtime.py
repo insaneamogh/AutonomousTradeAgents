@@ -20,9 +20,10 @@ import inspect
 import logging
 import os
 import uuid
-from datetime import datetime, time, timedelta, timezone
+from datetime import UTC, datetime, time, timedelta
 from typing import Any, Literal
 
+from engine.risk import RiskCaps
 from trading_agents.features import synthetic_features
 from trading_agents.graph import run_graph
 from trading_agents.llm import LLM
@@ -32,7 +33,6 @@ from trading_agents.memory import (
     StrategyConfidenceStore,
 )
 from trading_agents.progress import ProgressCallback
-from engine.risk import RiskCaps
 from trading_agents.state import CouncilState
 
 logger = logging.getLogger("agents.runtime")
@@ -50,7 +50,7 @@ def approval_expiry(now: datetime) -> datetime:
     override = os.environ.get("AGENT_APPROVAL_TTL_MINUTES", "").strip()
     if override:
         return now + timedelta(minutes=float(override))
-    candidate = datetime.combine(now.date(), _MARKET_DAY_END_UTC, tzinfo=timezone.utc)
+    candidate = datetime.combine(now.date(), _MARKET_DAY_END_UTC, tzinfo=UTC)
     if candidate <= now:
         candidate += timedelta(days=1)
     return candidate
@@ -93,7 +93,7 @@ async def run_council(
     state: CouncilState = {
         "symbol": symbol.upper(),
         "horizon": horizon,
-        "triggered_at": datetime.now(timezone.utc),
+        "triggered_at": datetime.now(UTC),
         "user_id": user_id,
         "context": context,
     }
@@ -108,7 +108,8 @@ async def run_council(
     # nests under it as a generation (router / technical / … / drafter), so
     # you can see what every agent did and whether it succeeded, ran
     # degraded, or failed. No-op when Langfuse keys are unset.
-    from trading_agents.tracing import council_trace, flush as _trace_flush
+    from trading_agents.tracing import council_trace
+    from trading_agents.tracing import flush as _trace_flush
 
     try:
         with council_trace(
@@ -173,7 +174,7 @@ def _to_proposal_dto(state: CouncilState) -> dict[str, Any] | None:
     p = state.get("proposal")
     if not p:
         return None
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return {
         "id": f"agent-{uuid.uuid4().hex[:12]}",
         "symbol": state["symbol"],
@@ -220,7 +221,7 @@ def _to_decision_entry(
         user_id=user_id,
         symbol=symbol,
         horizon=horizon,
-        triggered_at=final.get("triggered_at") or datetime.now(timezone.utc),
+        triggered_at=final.get("triggered_at") or datetime.now(UTC),
         regime=final.get("regime"),
         selected_strategy=final.get("selected_strategy"),
         selector_confidence=float(final.get("selector_confidence", 0.0)),
@@ -249,7 +250,7 @@ def _to_decision_entry(
         bear_case=internal_proposal.get("bear_case") or (proposal_dto or {}).get("bearCase"),
         risk_reason=str(final.get("risk_reason") or "") or None,
         token_usage=final.get("token_usage"),
-        completed_at=datetime.now(timezone.utc),
+        completed_at=datetime.now(UTC),
         degraded_nodes=list(final.get("degraded_nodes") or []) or None,
         proposal_dto=proposal_dto,
     )

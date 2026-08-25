@@ -37,10 +37,9 @@ from sqlalchemy import (
 )
 from sqlalchemy import false as text_false
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column
 
 from engine.db.base import Base
-
 
 # ─────────────────────────────────────────────────────────────────────
 # Users

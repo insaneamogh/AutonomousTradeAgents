@@ -15,15 +15,19 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import (
     OrderClass,
     OrderSide,
-    OrderStatus as _AlpacaStatus,
-    OrderType as _AlpacaType,
     QueryOrderStatus,
+)
+from alpaca.trading.enums import (
+    OrderStatus as _AlpacaStatus,
+)
+from alpaca.trading.enums import (
+    OrderType as _AlpacaType,
 )
 from alpaca.trading.enums import TimeInForce as _AlpacaTif
 from alpaca.trading.requests import (
@@ -219,7 +223,7 @@ class AlpacaBroker(BrokerInterface):
             try:
                 await asyncio.to_thread(self._client.cancel_order_by_id, order_id)
                 canceled += 1
-            except Exception as exc:  # noqa: BLE001 — already-filled races are fine
+            except Exception as exc:  # already-filled races are fine
                 logger.warning(
                     "cancel_open_orders: %s on %s failed — %s", order_id, symbol, exc
                 )
@@ -307,7 +311,7 @@ class AlpacaBroker(BrokerInterface):
         qty = int(float(getattr(raw, "qty", 0) or 0))
         filled_qty = int(float(getattr(raw, "filled_qty", 0) or 0))
         avg_price = getattr(raw, "filled_avg_price", None)
-        submitted = getattr(raw, "submitted_at", None) or datetime.now(timezone.utc)
+        submitted = getattr(raw, "submitted_at", None) or datetime.now(UTC)
         filled = getattr(raw, "filled_at", None)
         status = _status_from_alpaca(getattr(raw, "status", _AlpacaStatus.NEW))
 

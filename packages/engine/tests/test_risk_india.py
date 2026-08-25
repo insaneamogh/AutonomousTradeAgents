@@ -7,7 +7,7 @@ self-gate to US symbols only.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from engine.risk import RiskCaps, RiskContext, RiskProposal, Side, evaluate
 from engine.risk.markets import (
@@ -137,7 +137,7 @@ def test_derivative_notional_cap_ignores_equity_symbols() -> None:
 
 def _utc_for_ist(hour: int, minute: int) -> datetime:
     # IST = UTC+5:30 → 15:00 IST == 09:30 UTC.
-    return datetime(2026, 6, 10, hour, minute, tzinfo=timezone.utc)
+    return datetime(2026, 6, 10, hour, minute, tzinfo=UTC)
 
 
 def test_mis_blocked_after_cutoff() -> None:
@@ -190,7 +190,7 @@ def test_wash_sale_does_not_flag_india() -> None:
         recent_losing_closes=(
             ClosedTrade(
                 symbol="NSE:RELIANCE",
-                closed_at=datetime.now(timezone.utc).date(),
+                closed_at=datetime.now(UTC).date(),
                 realized_pnl=-500.0,
             ),
         )

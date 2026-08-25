@@ -19,9 +19,10 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
+from itertools import pairwise
 from statistics import mean, pstdev
 
-from engine.backtester.events import Bar, FillEvent
+from engine.backtester.events import FillEvent
 from engine.backtester.feed import BarFeed
 from engine.backtester.portfolio import Portfolio
 from engine.backtester.risk_gate import RiskGate, TrimEvent, VetoEvent
@@ -61,7 +62,7 @@ def _sharpe_daily(equity_curve: list[tuple[datetime, float]]) -> float:
     if len(equity_curve) < 3:
         return 0.0
     rets: list[float] = []
-    for (_, e0), (_, e1) in zip(equity_curve, equity_curve[1:]):
+    for (_, e0), (_, e1) in pairwise(equity_curve):
         if e0 == 0:
             continue
         rets.append((e1 - e0) / e0)

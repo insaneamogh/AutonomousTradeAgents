@@ -23,7 +23,7 @@ veto_rule (informational): wash_sale_warning
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from engine.risk.markets import market_of
 from engine.risk.types import RiskCaps, RiskContext, RiskDecision, RiskProposal, Side
@@ -42,7 +42,7 @@ def wash_sale(
     if not context.recent_losing_closes:
         return None
 
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=caps.wash_sale_lookback_days)).date()
+    cutoff = (datetime.now(UTC) - timedelta(days=caps.wash_sale_lookback_days)).date()
     matching = [
         c for c in context.recent_losing_closes
         if c.symbol == proposal.symbol

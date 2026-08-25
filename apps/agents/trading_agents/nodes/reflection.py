@@ -24,7 +24,6 @@ from datetime import timedelta
 from typing import Any
 
 from trading_agents.llm import LLM, Model, _cost_of, _usage_of
-from trading_agents.tracing import agent_generation
 from trading_agents.memory import (
     DecisionEntry,
     DecisionLog,
@@ -32,6 +31,7 @@ from trading_agents.memory import (
 )
 from trading_agents.memory.decision_log import ALL_USERS
 from trading_agents.prompts import REFLECTION
+from trading_agents.tracing import agent_generation
 
 logger = logging.getLogger("agents.node.reflection")
 
@@ -99,7 +99,7 @@ async def reflection_agent_run(
             try:
                 data = LLM.parse_json(resp.text)
                 gen.succeed(output=data, usage=_usage_of(resp), cost=_cost_of(resp))
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning(
                     "reflection: parse failed for %s — skipping (%s)",
                     strategy_id, exc,

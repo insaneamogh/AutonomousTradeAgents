@@ -17,7 +17,6 @@ import pytest
 from trading_agents.llm import LLM
 from trading_agents.runtime import run_council
 
-
 # ─────────────────────────────────────────────────────────────────────
 # Mock-LLM tests — always run
 # ─────────────────────────────────────────────────────────────────────

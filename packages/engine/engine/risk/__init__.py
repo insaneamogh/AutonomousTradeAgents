@@ -51,7 +51,6 @@ __all__ = [
     "MockRiskContextProvider",
     "PortfolioPosition",
     "PostgresRiskContextProvider",
-    "load_db_risk_state",
     "RiskCaps",
     "RiskContext",
     "RiskContextProvider",
@@ -62,6 +61,7 @@ __all__ = [
     "cluster_for",
     "evaluate",
     "is_derivative",
+    "load_db_risk_state",
     "market_of",
     "sector_for",
 ]

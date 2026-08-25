@@ -20,7 +20,7 @@ import json
 import logging
 import re
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from trading_agents.llm import LLM
 from trading_agents.memory import (
@@ -59,7 +59,7 @@ async def _seed_demo_decisions(log_: InMemoryDecisionLog) -> None:
     ``runtime.run_council``. The CLI seeds three trades for the demo: two
     momentum wins, one momentum loss, all flagged as fill-complete + PnL-known.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     for sym, action, pnl, regime, tech, fund, macro in [
         ("NVDA", "BUY", 312.50, "bull", 68.0, 60.0, 62.0),
         ("AAPL", "BUY", 188.00, "bull", 64.0, 58.0, 60.0),
