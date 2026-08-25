@@ -17,8 +17,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
+from app.core.singleton import LazyEnvSingleton
 from app.core.time import utc_now
-from engine.env import env_flag
 
 
 @dataclass
@@ -236,7 +236,15 @@ class MockAuthStore:
 # ─────────────────────────────────────────────────────────────────────
 
 
-_auth_store: AuthStore | None = None
+def _build_postgres_auth_store() -> AuthStore:
+    from app.services.auth.postgres_auth_store import PostgresAuthStore
+
+    return PostgresAuthStore()
+
+
+_auth_store: LazyEnvSingleton[AuthStore] = LazyEnvSingleton(
+    MockAuthStore, _build_postgres_auth_store
+)
 
 
 def get_auth_store() -> AuthStore:
@@ -245,18 +253,9 @@ def get_auth_store() -> AuthStore:
     When ``USE_POSTGRES=1``, returns ``PostgresAuthStore``. Otherwise
     ``MockAuthStore`` (default). Switching is env-driven + idempotent.
     """
-    global _auth_store
-    if _auth_store is None:
-        if env_flag("USE_POSTGRES"):
-            from app.services.auth.postgres_auth_store import PostgresAuthStore
-
-            _auth_store = PostgresAuthStore()
-        else:
-            _auth_store = MockAuthStore()
-    return _auth_store
+    return _auth_store.get()
 
 
 def reset_auth_store_for_tests() -> None:
     """Drop the singleton. Tests use this to start from a clean state."""
-    global _auth_store
-    _auth_store = None
+    _auth_store.reset()

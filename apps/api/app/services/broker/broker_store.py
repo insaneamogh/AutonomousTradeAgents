@@ -22,8 +22,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Protocol, runtime_checkable
 
+from app.core.singleton import LazyEnvSingleton
 from app.core.time import utc_now
-from engine.env import env_flag
 
 logger = logging.getLogger("api.broker_store")
 
@@ -225,20 +225,26 @@ class PendingOAuthCache:
 # ─────────────────────────────────────────────────────────────────────
 
 
-_broker_store: BrokerStore | None = None
+def _build_postgres_broker_store() -> BrokerStore:
+    from app.services.broker.postgres_broker_store import PostgresBrokerStore
+
+    return PostgresBrokerStore()
+
+
+_broker_store: LazyEnvSingleton[BrokerStore] = LazyEnvSingleton(
+    InMemoryBrokerStore, _build_postgres_broker_store
+)
+
+# PendingOAuthCache does NOT fit LazyEnvSingleton: it has no Postgres/Mock
+# split to switch on — it's the same in-memory implementation either way,
+# just constructed lazily. It stays a plain hand-rolled singleton, reset
+# alongside the store below since the two are bundled per the module
+# docstring above.
 _pending_oauth: PendingOAuthCache | None = None
 
 
 def get_broker_store() -> BrokerStore:
-    global _broker_store
-    if _broker_store is None:
-        if env_flag("USE_POSTGRES"):
-            from app.services.broker.postgres_broker_store import PostgresBrokerStore
-
-            _broker_store = PostgresBrokerStore()
-        else:
-            _broker_store = InMemoryBrokerStore()
-    return _broker_store
+    return _broker_store.get()
 
 
 def get_pending_oauth_cache() -> PendingOAuthCache:
@@ -249,6 +255,6 @@ def get_pending_oauth_cache() -> PendingOAuthCache:
 
 
 def reset_broker_store_for_tests() -> None:
-    global _broker_store, _pending_oauth
-    _broker_store = None
+    global _pending_oauth
+    _broker_store.reset()
     _pending_oauth = None

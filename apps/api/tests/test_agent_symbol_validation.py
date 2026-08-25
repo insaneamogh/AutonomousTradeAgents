@@ -103,6 +103,6 @@ def test_trimming_does_not_rescue_an_injection_payload() -> None:
 def test_symbol_matches_the_watchlist_rule() -> None:
     """One pattern, two entry points — they must not drift apart."""
     from app.schemas.agent import SYMBOL_PATTERN
-    from app.services.council.watchlist_store import SYMBOL_RE
+    from app.services.watchlist.watchlist_store import SYMBOL_RE
 
     assert SYMBOL_RE.pattern == SYMBOL_PATTERN

@@ -15,8 +15,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
+from app.core.singleton import LazyEnvSingleton
 from app.core.time import utc_now
-from engine.env import env_flag
 
 logger = logging.getLogger("api.watchlist_store")
 
@@ -153,15 +153,22 @@ class PostgresWatchlistStore:
         return bool(result.rowcount)
 
 
-_store: WatchlistStore | None = None
+_store: LazyEnvSingleton[WatchlistStore] = LazyEnvSingleton(
+    InMemoryWatchlistStore, PostgresWatchlistStore
+)
 
 
 def get_watchlist_store() -> WatchlistStore:
-    global _store
-    if _store is not None:
-        return _store
-    if env_flag("USE_POSTGRES"):
-        _store = PostgresWatchlistStore()
-    else:
-        _store = InMemoryWatchlistStore()
-    return _store
+    return _store.get()
+
+
+def reset_watchlist_store_for_tests() -> None:
+    """Drop the singleton. Tests use this to start from a clean state.
+
+    Added for parity with the other five stores in this refactor — nothing
+    currently calls it (no test exercises cross-test state for the
+    watchlist store yet), but every store should have the reset half of
+    the pair available so a future test doesn't have to add it under
+    time pressure.
+    """
+    _store.reset()

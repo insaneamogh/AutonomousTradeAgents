@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
+from app.core.singleton import LazyEnvSingleton
 from app.schemas.account import AccountResponse
 from app.schemas.activity import ActivityEntryDto
 from app.schemas.approvals import (
@@ -21,7 +22,6 @@ from app.schemas.approvals import (
     DecisionOutcome,
     DecisionResponse,
 )
-from engine.env import env_flag
 
 
 @runtime_checkable
@@ -45,27 +45,27 @@ class Store(Protocol):
     ) -> DecisionResponse | None: ...
 
 
+def _build_mock_store() -> Store:
+    from app.services.council.mock_store import MockStore
+
+    return MockStore()
+
+
+def _build_postgres_store() -> Store:
+    from app.services.council.postgres_store import PostgresStore
+
+    return PostgresStore()
+
+
 # Process-wide singleton — picked once at first call.
-_store: Store | None = None
+_store: LazyEnvSingleton[Store] = LazyEnvSingleton(_build_mock_store, _build_postgres_store)
 
 
 def get_store() -> Store:
     """Return the active store. Env-driven, idempotent across the process."""
-    global _store
-    if _store is not None:
-        return _store
-
-    if env_flag("USE_POSTGRES"):
-        from app.services.council.postgres_store import PostgresStore
-        _store = PostgresStore()
-    else:
-        from app.services.council.mock_store import MockStore
-        _store = MockStore()
-
-    return _store
+    return _store.get()
 
 
 def reset_store_for_tests() -> None:
     """Drop the singleton. Tests use this to re-pick after monkeypatching env."""
-    global _store
-    _store = None
+    _store.reset()

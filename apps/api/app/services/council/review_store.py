@@ -12,8 +12,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal, Protocol, runtime_checkable
 
+from app.core.singleton import LazyEnvSingleton
 from app.core.time import utc_now
-from engine.env import env_flag
 
 Grade = Literal["good", "bad", "skip"]
 """Operator's verdict on a completed decision.
@@ -253,20 +253,15 @@ class PostgresReviewStore:
 # ─────────────────────────────────────────────────────────────────────
 
 
-_review_store: ReviewStore | None = None
+_review_store: LazyEnvSingleton[ReviewStore] = LazyEnvSingleton(
+    InMemoryReviewStore, PostgresReviewStore
+)
 
 
 def get_review_store() -> ReviewStore:
     """Process singleton. Postgres when USE_POSTGRES=1, else in-memory."""
-    global _review_store
-    if _review_store is None:
-        if env_flag("USE_POSTGRES"):
-            _review_store = PostgresReviewStore()
-        else:
-            _review_store = InMemoryReviewStore()
-    return _review_store
+    return _review_store.get()
 
 
 def reset_review_store_for_tests() -> None:
-    global _review_store
-    _review_store = None
+    _review_store.reset()

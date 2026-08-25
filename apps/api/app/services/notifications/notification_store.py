@@ -11,8 +11,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal, Protocol, runtime_checkable
 
+from app.core.singleton import LazyEnvSingleton
 from app.core.time import utc_now
-from engine.env import env_flag
 
 Platform = Literal["ios", "android", "web"]
 
@@ -126,23 +126,22 @@ class InMemoryNotificationStore:
 # ─────────────────────────────────────────────────────────────────────
 
 
-_notification_store: NotificationStore | None = None
+def _build_postgres_notification_store() -> NotificationStore:
+    from app.services.notifications.postgres_notification_store import (
+        PostgresNotificationStore,
+    )
+
+    return PostgresNotificationStore()
+
+
+_notification_store: LazyEnvSingleton[NotificationStore] = LazyEnvSingleton(
+    InMemoryNotificationStore, _build_postgres_notification_store
+)
 
 
 def get_notification_store() -> NotificationStore:
-    global _notification_store
-    if _notification_store is None:
-        if env_flag("USE_POSTGRES"):
-            from app.services.notifications.postgres_notification_store import (
-                PostgresNotificationStore,
-            )
-
-            _notification_store = PostgresNotificationStore()
-        else:
-            _notification_store = InMemoryNotificationStore()
-    return _notification_store
+    return _notification_store.get()
 
 
 def reset_notification_store_for_tests() -> None:
-    global _notification_store
-    _notification_store = None
+    _notification_store.reset()
