@@ -185,6 +185,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "reconciler fleet started (interval=%ss, threshold=%s%%, mock_fallback=%s)",
             interval, threshold, not settings.is_production,
         )
+
+        # Scheduled council scans. Everything for an autonomous pass
+        # already existed (daily_cron walks the watchlist, notifies on
+        # each proposal) but nothing invoked it, so picks only appeared
+        # on a manual tap. Opt-in via COUNCIL_SCHEDULER_ENABLED — it
+        # spends LLM budget, so it must never arm itself by accident.
+        from app.services.council.scheduler import start_council_scheduler
+
+        start_council_scheduler()
     elif use_pg:
         logger.info("PostgresStore active but reconciler disabled (RECONCILER_ENABLED=0)")
     else:
@@ -193,6 +202,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        from app.services.council.scheduler import stop_council_scheduler
+
+        await stop_council_scheduler()
         if reconciler is not None:
             logger.info("stopping reconciler…")
             await reconciler.stop()

@@ -270,7 +270,7 @@ def _row_to_proposal_dto(row: AgentDecision) -> ApprovalProposalDto | None:
         return None
     try:
         return ApprovalProposalDto.model_validate(row.proposal)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("Could not parse proposal JSONB for row %s: %s", row.id, exc)
         return None
 

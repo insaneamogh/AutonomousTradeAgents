@@ -142,7 +142,7 @@ class PostgresReviewStore:
         self._session_factory = async_session_factory()
 
     @staticmethod
-    def _to_record(row) -> DecisionReviewRecord:  # noqa: ANN001 — SQLAlchemy row
+    def _to_record(row) -> DecisionReviewRecord:
         return DecisionReviewRecord(
             id=str(row.id),
             decision_id=str(row.decision_id),

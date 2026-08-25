@@ -61,13 +61,13 @@ async def build_strategies_performance(
 
     try:
         decisions = await decision_log.all_decisions(user_id=user_id)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("strategies_perf: decision-log read failed — %s", exc)
         decisions = []
 
     try:
         priors = {p.strategy_id: p for p in await confidence_store.all()}
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("strategies_perf: confidence-store read failed — %s", exc)
         priors = {}
 

@@ -14,9 +14,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-from typing import Any, Awaitable, Callable, Literal
+from datetime import UTC, datetime, timedelta
+from typing import Any, Literal
 
 from trading_agents.progress import ProgressEvent
 
@@ -37,7 +38,7 @@ class RunRecord:
     events: list[dict[str, Any]] = field(default_factory=list)
     result: dict[str, Any] | None = None
     error: str | None = None
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     task: asyncio.Task[None] | None = None
 
 
@@ -49,7 +50,7 @@ class AgentRunRegistry:
         self._starts_since_sweep = 0
 
     def _sweep(self) -> None:
-        cutoff = datetime.now(timezone.utc) - _TTL
+        cutoff = datetime.now(UTC) - _TTL
         stale = [rid for rid, r in self._runs.items() if r.created_at < cutoff]
         for rid in stale:
             rec = self._runs.pop(rid)
@@ -101,7 +102,7 @@ class AgentRunRegistry:
                 rec.status = "failed"
                 rec.error = "cancelled"
                 raise
-            except Exception as exc:  # noqa: BLE001 — surface to the client, never crash the loop
+            except Exception as exc:
                 logger.exception("council run %s failed", rec.run_id)
                 rec.status = "failed"
                 rec.error = str(exc)
