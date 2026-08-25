@@ -294,7 +294,85 @@ Recommendation: don't reach for Temporal yet. A single worker process owning all
 
 ## Entries
 
-### 2026-08-25 — web UI wired onto the Railway domain (no commit hash yet — see next entry after push)
+### 2026-08-25 — `a6a771a7` + `9aec5e66` + `7b74bfd6`: apps/api cleanup — the backlog the refactor pass parked
+
+The refactor pass two entries below this one explicitly scoped `apps/api`
+out ("out of scope here... apps/api is 17,697 lines — more than the other
+three combined") and left a ranked backlog. This closes most of it, in the
+same "verify against the real code, not the filename" spirit as that pass.
+
+**`a6a771a7` — collapsed the duplicated helpers.** Not 13 copies of the
+truthy-env check as originally estimated — **18**, once the local
+`_postgres_active()` wrappers and one `_require_postgres()` were counted
+alongside the `_is_truthy`/`_truthy` family. All 18 now call
+`engine.env.env_flag` (the same helper the agents/engine/broker pass
+already centralized) instead of reimplementing the check. Also collapsed:
+8+ copies of `datetime.now(timezone.utc)` as a local `_now()` into a new
+`app/core/time.py::utc_now`, and 3 copies of a UUID-parse helper into
+`app/core/ids.py::to_uuid`. Along the way, added the missing `py.typed`
+marker to `engine`/`broker`/`trading_agents` — mypy had been silently
+skipping type-checking through all three; invisible until routing 18 new
+call sites through `engine.env` made mypy start reporting them as
+returning `Any` instead of `bool`. One real bug shipped and caught by the
+test suite mid-pass, not by review: a `replace_all` matched inside a
+`utc_now()` call this same pass had already inserted, producing
+`utcutc_now()` — fixed, then the whole suite re-run clean.
+
+**`9aec5e66` — dead files.** `apps/mobile/src/hooks/useRunAgent.ts`
+(superseded by the async start+poll "council theater" pattern —
+`useCouncilRun` — with zero remaining callers; the synchronous backend
+endpoint it used stays, since 5 test files and the smoke script still
+exercise it directly) and `packages/ui/src/PnLBadge.tsx` (exported,
+documented in two other components' docstrings, never actually used by
+any screen — `PnLPill` is what shipped instead). Also: `expo-haptics`,
+`react-native-gesture-handler`, `react-native-reanimated` were imported
+directly by three components in `packages/ui` but never declared as
+dependencies of that package — only worked by accident of pnpm's hoisted
+linker. Added as `peerDependencies`. README.md moved to `docs/README.md`
+(the `.dockerignore` carve-out for it turned out to be unused anyway —
+nothing ever copied it into any build stage).
+
+**`7b74bfd6` — the big one: `app/services/` split into six subpackages**
+(`auth/`, `broker/`, `orders/`, `council/`, `notifications/`, `platform/`),
+closing the #1 item on the parked backlog (38-file flat directory → the
+biggest readability win left). Grouped by actual import coupling, verified
+via grep rather than assumed from filenames — two files landed somewhere
+non-obvious: `crypto.py` went to `broker/` (its only importers are
+broker-domain) rather than a generic "platform" bucket, and
+`watchlist_store.py` went to `council/` as the closest fit despite having
+no real coupling to anything — flagged as a judgment call in the commit,
+not a clean fit.
+
+The mechanical rewrite (61 files reference `app.services` somewhere) was
+scripted rather than hand-edited, and the script broke twice before
+landing — both times from the same root cause: the "auth" bucket shares
+its name with the "auth" module (same for "notifications"), so a
+substitution pass that inserts a bucket prefix and then runs ANOTHER pass
+afterward will match the prefix it just inserted, doubling it
+(`app.services.auth.auth.auth_store`). A single combined-regex pass over
+the *original* text — never re-scanning its own output — was the actual
+fix. Both breaks were caught immediately by the test suite failing at
+collection (`ModuleNotFoundError`), never by review, and both times the
+change was still fully uncommitted, so recovery was a clean `git reset
+--hard` back to the prior commit rather than an unwind.
+
+**Verified once, at the end of all three:** full Python suite (`apps/api`
++ `apps/agents` + `packages/engine` + `packages/broker`) still 378 passed
+/ 8 skipped throughout — same number the refactor pass below reported
+before this backlog existed. `ruff --select F,I` (the rule families this
+project actually enables) clean. `mypy apps/api/app`: identical 64
+pre-existing errors, same files, only the paths changed — zero new
+findings from either the dedup or the file moves. Not fixed (flagged, not
+this session's scope): 3 pre-existing, `assert`-guarded, Postgres-only
+mypy nits in `postgres_auth_store.py` that the `py.typed` fix made visible
+for the first time; the still-broken repo-wide `eslint`/`jest` JS tooling
+(flagged in an earlier entry, unrelated to this pass); the 6-module
+in-memory-vs-Postgres singleton-selector duplication and the mixed
+concerns inside `executor.py`/`order_store.py` that the refactor-pass
+backlog also named — both real, both lower-confidence-of-a-clean-collapse
+per the investigation that found them, left for a dedicated pass.
+
+### 2026-08-25 — web UI wired onto the Railway domain
 
 User report: visiting the Railway domain showed the raw FastAPI 404
 (`{"detail":"Not Found"}`) instead of the app. Root cause: the API has
