@@ -49,13 +49,12 @@ from app.services.broker.broker_use import (
     with_broker_client,
 )
 from app.services.council.store import Store, get_store
-from app.services.orders.order_store import (
+from app.services.orders.execution_claim import (
     claim_decision_for_execution,
     finalize_execution_claim,
-    persist_order_result,
-    persist_order_submit,
     release_execution_claim,
 )
+from app.services.orders.order_store import persist_order_result, persist_order_submit
 from app.services.orders.paper_broker import get_paper_store, trading_mode
 
 # ``broker.types`` is pure-stdlib + dataclasses — safe to import at module
@@ -687,7 +686,7 @@ async def load_risk_inputs(
     actually goes to the broker, and the confidence floor was checked
     against ``conviction/5`` rather than the number the council emitted.
     """
-    from app.services.orders.order_store import had_same_day_entry, load_decision_risk_row
+    from app.services.orders.decision_risk import had_same_day_entry, load_decision_risk_row
 
     row = await load_decision_risk_row(proposal_id=proposal.id, user_id=user_id)
     stored = row.proposal if row is not None else {}

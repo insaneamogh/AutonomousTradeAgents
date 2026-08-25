@@ -32,8 +32,8 @@ from app.schemas.approvals import ApprovalProposalDto
 from app.services.broker.broker_store import BrokerConnectionRecord
 from app.services.council.mock_store import MockStore
 from app.services.orders import executor as executor_mod
+from app.services.orders.execution_claim import reset_execution_claims_for_tests
 from app.services.orders.executor import RiskInputs, execute_proposal
-from app.services.orders.order_store import reset_execution_claims_for_tests
 from engine.risk import (
     DbRiskState,
     PortfolioPosition,
