@@ -13,14 +13,21 @@ Flow inside ``execute_proposal``:
   4. Fetch a fresh ``RiskContext`` (account equity, open positions, halt
      state) — proposals can age between draft and approval, so we
      re-evaluate against the latest snapshot.
-  5. Call ``engine.risk.evaluate`` again. If the answer changed since the
-     council drafted (drawdown tripped, new same-day day-trade, etc.) we
-     refuse here. The deterministic chain is the last line of defense.
-  6. Call ``place_order``. ``client_order_id`` is derived from the
+  5. Call ``engine.risk.evaluate`` again with the SAME inputs the council
+     used — its confidence, its specialist scores, and the intraday flags
+     (see ``load_risk_inputs``). Without them ``pdt_block``,
+     ``mis_square_off_block`` and ``min_specialist_avg_score`` cannot fire
+     at the one moment that matters. The deterministic chain is the last
+     line of defense, so it must not be weaker here than at drafting.
+  6. Claim the decision row (``user_response`` NULL → 'executing', a
+     compare-and-swap). Exactly one concurrent approval may place an
+     order; the loser is refused by name.
+  7. Call ``place_order``. ``client_order_id`` is derived from the
      proposal id so retries are idempotent — natively at Alpaca's side
      (~24h dedupe), tag-emulated within the day at Zerodha's.
-  7. Persist the ``Order`` (with link to the originating agent_decision)
-     + return the camelCase DTO.
+  8. Persist the ``Order`` (with link to the originating agent_decision),
+     convert the claim into the final 'approved' state, and return the
+     camelCase DTO.
 
 Out of scope this round:
   - Fill polling / partial-fill reconciliation (Phase 4 hardening).
@@ -33,7 +40,7 @@ from __future__ import annotations
 
 import logging
 import os
-import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -49,6 +56,7 @@ from engine.risk import (
     RiskContext,
     RiskProposal,
     Side as RiskSide,
+    SpecialistScore,
     evaluate,
     load_db_risk_state,
     market_of,
@@ -63,8 +71,11 @@ from app.services.broker_use import (
 )
 from app.services.broker_store import BrokerConnectionRecord
 from app.services.order_store import (
+    claim_decision_for_execution,
+    finalize_execution_claim,
     persist_order_result,
     persist_order_submit,
+    release_execution_claim,
 )
 from app.services.paper_broker import get_paper_store, trading_mode
 from app.services.store import Store, get_store
@@ -187,7 +198,8 @@ async def _execute_via_broker(
         # 1. Re-evaluate risk against the BROKER's view of the world,
         # merged with OUR halt/PDT state. Fails closed if state is unreadable.
         risk_ctx = await _build_risk_context(broker, user_id=user_id)
-        risk_decision = _re_run_risk(proposal, risk_ctx, risk_caps)
+        risk_inputs = await load_risk_inputs(proposal, user_id=user_id)
+        risk_decision = _re_run_risk(proposal, risk_ctx, risk_caps, risk_inputs)
 
         if not risk_decision.approved:
             logger.info(
@@ -208,7 +220,71 @@ async def _execute_via_broker(
             else proposal.qty
         )
 
-        # 2. Persist intent FIRST (audit chain: decision → order), then place.
+        # 2. Bracket legs: agent-managed BUYs carry the user-approved exit
+        # plan to the broker (OCO stop + target survive our downtime). GTC
+        # so the children outlive the entry day — this is a swing product.
+        use_bracket = (
+            exit_mode == "agent"
+            and proposal.side == "BUY"
+            and proposal.stop_loss is not None
+            and proposal.target_price is not None
+        )
+        if exit_mode == "agent" and proposal.side == "BUY" and not use_bracket:
+            if not conn.is_paper:
+                # Real money: REFUSE rather than silently demote. Without
+                # broker-side legs the position manager's time-stop is the
+                # only exit, and it dies with our process — the approval
+                # card promised a stop the broker would honor.
+                logger.warning(
+                    "executor: live agent-mode BUY %s BLOCKED — no "
+                    "stop_loss/target_price to bracket with.",
+                    proposal.symbol,
+                )
+                return ExecuteResponse(
+                    order=None,
+                    risk_blocked=True,
+                    risk_reason=(
+                        "Agent-managed entry has no stop-loss/target to place "
+                        "as broker-side protective legs. Live orders are not "
+                        "placed unprotected — re-run the council, or approve "
+                        "with exit_mode='manual' to own the close yourself."
+                    ),
+                    risk_veto_rule="bracket_legs_required",
+                    informational_flags=list(risk_decision.informational_flags),
+                )
+            # Paper: warn only, so demos on an incomplete proposal still run.
+            logger.warning(
+                "executor[paper]: agent-mode BUY %s placed WITHOUT a bracket "
+                "(missing stop_loss/target_price) — broker-side protection "
+                "absent; relying on the time-stop only.",
+                proposal.symbol,
+            )
+
+        # 3. Claim the proposal BEFORE touching the broker. Two concurrent
+        # approvals both found it pending; exactly one may place an order.
+        # The loser used to fall through, get order_row_id=None from the
+        # ON CONFLICT DO NOTHING insert, skip persist_order_result, and
+        # return a fabricated order id matching no row anywhere.
+        if not await claim_decision_for_execution(
+            user_id=user_id, proposal_id=proposal_id
+        ):
+            logger.warning(
+                "executor: concurrent execution claim lost for proposal=%s "
+                "user=%s — refusing the duplicate approval",
+                proposal_id, user_id,
+            )
+            return ExecuteResponse(
+                order=None,
+                risk_blocked=True,
+                risk_reason=(
+                    "Another approval for this proposal is already executing. "
+                    "No second order was placed."
+                ),
+                risk_veto_rule="concurrent_execution_claim",
+                informational_flags=[],
+            )
+
+        # 4. Persist intent (audit chain: decision → order), then place.
         # The client_order_id is the proposal id — Alpaca de-dupes on it for
         # ~24h, so a retry of this whole function won't double-submit, and
         # the DB insert is ON CONFLICT DO NOTHING on the same key.
@@ -223,32 +299,14 @@ async def _execute_via_broker(
                 is_paper=conn.is_paper,
             )
         except ExecutorError:
+            await release_execution_claim(user_id=user_id, proposal_id=proposal_id)
             raise
         except Exception as exc:  # noqa: BLE001 — unrecorded order = audit break
+            await release_execution_claim(user_id=user_id, proposal_id=proposal_id)
             raise ExecutorError(
                 "Execution blocked: order could not be recorded before "
                 "submission — failing closed. See server logs."
             ) from exc
-
-        # Bracket legs: agent-managed BUYs carry the user-approved exit plan
-        # to the broker (OCO stop + target survive our downtime). GTC so
-        # the children outlive the entry day — this is a swing product.
-        use_bracket = (
-            exit_mode == "agent"
-            and proposal.side == "BUY"
-            and proposal.stop_loss is not None
-            and proposal.target_price is not None
-        )
-        if exit_mode == "agent" and proposal.side == "BUY" and not use_bracket:
-            # Don't silently demote to an unprotected entry — the position
-            # manager's time-stop becomes the ONLY exit, with no broker-side
-            # stop/target. Surface it loudly so it shows in Sentry/logs.
-            logger.warning(
-                "executor: agent-mode BUY %s placed WITHOUT a bracket "
-                "(missing stop_loss/target_price) — broker-side protection "
-                "absent; relying on the time-stop only.",
-                proposal.symbol,
-            )
 
         try:
             order = await broker.place_order(
@@ -270,6 +328,8 @@ async def _execute_via_broker(
             # the existing broker order if one was actually accepted, and the
             # order poller reconciles true broker-side rejections into
             # status='rejected'. Marking rejected here would kill the retry.
+            # Release the claim for the same reason.
+            await release_execution_claim(user_id=user_id, proposal_id=proposal_id)
             logger.exception(
                 "executor: broker.place_order failed for %s — row %s stays pending",
                 proposal_id, order_row_id,
@@ -291,10 +351,20 @@ async def _execute_via_broker(
         adjusted_qty, proposal.qty, order.broker_order_id,
     )
 
-    # 3. Best-effort: mark the proposal "approved" so it leaves the pending
+    # 5. Best-effort: mark the proposal "approved" so it leaves the pending
     # list, carrying the user's exit-mode choice onto the decision row.
+    # ``finalize_execution_claim`` converts the 'executing' claim we hold;
+    # ``Store.decide`` only matches user_response IS NULL, so it is the
+    # right call only when no decision row was claimed (MockStore mode).
     try:
-        await s.decide(proposal_id, "approved", user_id=user_id, exit_mode=exit_mode)
+        finalized = await finalize_execution_claim(
+            user_id=user_id,
+            proposal_id=proposal_id,
+            outcome="approved",
+            exit_mode=exit_mode,
+        )
+        if not finalized:
+            await s.decide(proposal_id, "approved", user_id=user_id, exit_mode=exit_mode)
     except Exception as exc:  # noqa: BLE001
         # The order is already placed — don't fail the route just because
         # the proposal-state write hiccupped. Reconciler will catch up.
@@ -302,7 +372,10 @@ async def _execute_via_broker(
 
     return ExecuteResponse(
         order=OrderResponse(
-            id=str(order_row_id) if order_row_id is not None else str(uuid.uuid4()),
+            # No DB row means Postgres is inactive (dev). Use the
+            # client_order_id — a real, stable identifier the broker also
+            # knows — instead of a fabricated UUID that matches nothing.
+            id=str(order_row_id) if order_row_id is not None else client_order_id,
             proposal_id=proposal_id,
             broker_order_id=order.broker_order_id,
             client_order_id=order.client_order_id or _client_order_id_for(proposal.id),
@@ -379,7 +452,8 @@ async def _execute_paper(
         drawdown_halt_reason=db_state.drawdown_halt_reason,
         drawdown_halted_at=db_state.drawdown_halted_at,
     )
-    risk_decision = _re_run_risk(proposal, risk_ctx, risk_caps)
+    risk_inputs = await load_risk_inputs(proposal, user_id=user_id)
+    risk_decision = _re_run_risk(proposal, risk_ctx, risk_caps, risk_inputs)
 
     if not risk_decision.approved:
         logger.info(
@@ -401,6 +475,26 @@ async def _execute_paper(
     )
     fill_price = proposal.limit_price or last_price
 
+    # Same one-winner claim as the broker path — the simulator books a real
+    # position, so a double-approve here double-fills the paper portfolio.
+    if not await claim_decision_for_execution(
+        user_id=user_id, proposal_id=proposal.id
+    ):
+        logger.warning(
+            "executor[paper]: concurrent execution claim lost for proposal=%s",
+            proposal.id,
+        )
+        return ExecuteResponse(
+            order=None,
+            risk_blocked=True,
+            risk_reason=(
+                "Another approval for this proposal is already executing. "
+                "No second fill was booked."
+            ),
+            risk_veto_rule="concurrent_execution_claim",
+            informational_flags=["paper_mode"],
+        )
+
     fill = pf.fill(
         symbol=proposal.symbol,
         side=proposal.side,
@@ -416,7 +510,16 @@ async def _execute_paper(
     )
 
     try:
-        await store.decide(proposal.id, "approved", user_id=user_id, exit_mode=exit_mode)
+        finalized = await finalize_execution_claim(
+            user_id=user_id,
+            proposal_id=proposal.id,
+            outcome="approved",
+            exit_mode=exit_mode,
+        )
+        if not finalized:
+            await store.decide(
+                proposal.id, "approved", user_id=user_id, exit_mode=exit_mode
+            )
     except Exception as exc:  # noqa: BLE001 — fill already booked; don't fail the route
         logger.warning("executor[paper]: post-fill decide() failed — %s", exc)
 
@@ -434,7 +537,10 @@ async def _execute_paper(
 
     return ExecuteResponse(
         order=OrderResponse(
-            id=str(uuid.uuid4()),
+            # The simulated book's fill id IS the order's identity here —
+            # there is no orders row to point at, and a random UUID would
+            # match nothing on either side.
+            id=fill.id,
             proposal_id=proposal.id,
             broker_order_id=fill.id,
             client_order_id=fill.client_order_id or _client_order_id_for(proposal.id),
@@ -553,26 +659,117 @@ async def _build_risk_context(broker: "BrokerInterface", *, user_id: str) -> Ris
     )
 
 
+@dataclass(frozen=True)
+class RiskInputs:
+    """Everything the risk chain needs that the DTO doesn't carry.
+
+    Assembled by ``load_risk_inputs`` from the originating
+    ``agent_decisions`` row + the orders table. Defaults are the
+    conservative "we know nothing" position, not a permissive one: an
+    absent council confidence falls back to conviction (logged), and the
+    intraday flags stay False only when nothing says otherwise.
+    """
+
+    council_confidence: float | None = None
+    specialists: tuple[SpecialistScore, ...] = ()
+    closes_intraday_position: bool = False
+    is_intraday: bool = False
+
+
+def _flag_from(source: dict[str, object], *names: str) -> bool | None:
+    for name in names:
+        if name in source:
+            return bool(source[name])
+    return None
+
+
+async def load_risk_inputs(
+    proposal: ApprovalProposalDto, *, user_id: str
+) -> RiskInputs:
+    """Rebuild the council's risk inputs for the execution-time re-run.
+
+    Without this the executor's re-check was strictly WEAKER than the
+    council's: ``pdt_block`` (FINRA), ``mis_square_off_block`` and
+    ``min_specialist_avg_score`` could never fire at the moment an order
+    actually goes to the broker, and the confidence floor was checked
+    against ``conviction/5`` rather than the number the council emitted.
+    """
+    from app.services.order_store import had_same_day_entry, load_decision_risk_row
+
+    row = await load_decision_risk_row(proposal_id=proposal.id, user_id=user_id)
+    stored = row.proposal if row is not None else {}
+
+    confidence = row.council_confidence if row is not None else None
+    if confidence is None and row is not None:
+        confidence = row.judge_confidence
+    if confidence is None:
+        logger.warning(
+            "executor: no council confidence recorded for proposal=%s — "
+            "falling back to conviction_level/5. The confidence floor is "
+            "being checked against a different quantity than at drafting.",
+            proposal.id,
+        )
+
+    specialists = tuple(
+        SpecialistScore(name=name, score=score, confidence=conf)
+        for name, score, conf in (row.specialists if row is not None else ())
+    )
+
+    # Explicit flags on the stored proposal win; otherwise derive. A SELL of
+    # a name we bought earlier in the same NY session IS a day trade.
+    closes_intraday = _flag_from(
+        stored, "closesIntradayPosition", "closes_intraday_position"
+    )
+    if closes_intraday is None:
+        closes_intraday = proposal.side == "SELL" and await had_same_day_entry(
+            user_id=user_id, symbol=proposal.symbol
+        )
+
+    is_intraday = _flag_from(stored, "isIntraday", "is_intraday") or False
+
+    return RiskInputs(
+        council_confidence=confidence,
+        specialists=specialists,
+        closes_intraday_position=bool(closes_intraday),
+        is_intraday=bool(is_intraday),
+    )
+
+
 def _re_run_risk(
     proposal: ApprovalProposalDto,
     context: RiskContext,
     caps: RiskCaps | None,
+    inputs: RiskInputs | None = None,
 ) -> "RiskDecisionLike":
     """Translate ApprovalProposalDto → RiskProposal + call evaluate.
 
-    The mapping is lossy on purpose — risk engine doesn't care about
-    bull/bear narrative, just the trade shape.
+    The mapping is lossy on purpose — the risk engine doesn't care about
+    bull/bear narrative, just the trade shape — but it must not be lossy
+    about anything a RULE reads. ``inputs`` carries the council fields the
+    DTO drops (confidence, specialist scores) and the intraday flags the
+    regulatory rules gate on.
     """
+    inputs = inputs or RiskInputs()
     last_price = proposal.estimated_notional / max(proposal.qty, 1)
+    confidence = (
+        inputs.council_confidence
+        if inputs.council_confidence is not None
+        # Conviction (1-5, "how big a bet") is NOT the council's confidence
+        # ("how likely to work") — the drafter emits them separately. Legacy
+        # rows predate persisting the real value; load_risk_inputs logs it.
+        else proposal.conviction_level / 5.0
+    )
     risk_proposal = RiskProposal(
         symbol=proposal.symbol,
         side=RiskSide(proposal.side),
         qty=proposal.qty,
         estimated_notional=proposal.estimated_notional,
         last_price=last_price,
-        confidence=proposal.conviction_level / 5.0,  # 1-5 → 0..1
+        confidence=confidence,
+        closes_intraday_position=inputs.closes_intraday_position,
+        is_intraday=inputs.is_intraday,
     )
-    return evaluate(risk_proposal, context, caps)
+    return evaluate(risk_proposal, context, caps, specialists=inputs.specialists)
 
 
 def _client_order_id_for(proposal_id: str) -> str:
