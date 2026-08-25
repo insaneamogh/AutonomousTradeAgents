@@ -294,6 +294,57 @@ Recommendation: don't reach for Temporal yet. A single worker process owning all
 
 ## Entries
 
+### 2026-08-25 — `4729a13f` + `37e4a4ac`: desktop-on-first-load bug + magic-link verify loop/race
+
+User-reported: Railway showed a bare `{"detail":"Not Found"}`, and locally
+they saw "account failed and everything." The Railway 404 is tracked
+separately (no web build has ever been wired to that service — see the
+next entry). Locally, ran the real stack (`DEV_AUTH_BYPASS=1` API +
+`expo start --web`) and reproduced two real bugs by driving the actual
+login flow in a browser rather than guessing from the code.
+
+**`4729a13f` — desktop view stuck on mobile UI on first load.** Confirmed
+via direct instrumentation (temporary `console.log`, removed before
+committing) that `useWindowDimensions()` reports `width: 0` on a brand-new
+tab's first paint and never self-corrects — there's no resize event to
+prompt a re-read when the viewport was already at its final size before
+the bundle ran. `DesktopShell` trusted that value, so a first-time visitor
+on a laptop got the phone UI; a plain reload of the same tab "fixed" it,
+which is exactly the kind of bug a developer testing via repeated reloads
+would never see. Fix reads `window.innerWidth` directly on web (native
+untouched). Verified on a brand-new tab's very first load, repeatedly, in
+both directions (< 1024px and >= 1024px), both before and after login.
+
+**`37e4a4ac` — magic-link verify could loop and silently sign the user
+back out.** Two compounding bugs on `/auth/verify`, found by watching the
+network tab through a real dev-token login rather than reading the code
+in isolation:
+- The verify effect re-firing with the same (email, token) pair 401'd on
+  the second POST (tokens are one-shot) — observed as high as 6 repeated
+  attempts before the API's own rate limiter started returning 429 and
+  cutting it off. A `useRef` guard does not survive a remount, so a first
+  attempt at fixing this (still `useRef`-based) did not actually hold;
+  moved to module-level state, which does.
+- Separately, `AuthBootstrap` unconditionally calls `restore()` on every
+  mount, including when landing directly on `/auth/verify` with a token —
+  firing an independent `/auth/refresh` against whatever old refresh
+  token happened to already be in storage. When that resolved *after* the
+  verify screen's own `signIn()` had already established the new session,
+  its failure handler wiped the session and dropped status back to
+  `unauthenticated` — reproduced directly: verify returned 200, but the
+  screen sat on "Signing you in…" forever while an unrelated refresh
+  401'd in the background, no error shown anywhere. Fixed by skipping
+  `restore()` when the active route is `/auth/verify` with both params
+  present — that flow is authoritative for the session in that case.
+- Verified clean (exactly one verify + one refresh call, correct landing
+  screen) with fresh dev-token logins on both mobile and desktop widths,
+  after restarting the API to rule out my own testing's rate-limit noise
+  as a confound.
+
+`tsc --noEmit` clean after each change. Not yet re-run against a real
+Alpaca-connected account or the production Railway build — this was a
+local, `MockStore` + `DEV_AUTH_BYPASS=1` repro.
+
 ### 2026-08-25 — `f2156171` + `9e5604f9`: Platinum Glass desktop UI (documented + verified retroactively)
 
 **Process note, stated plainly:** neither commit got a build-log entry when it landed, and
