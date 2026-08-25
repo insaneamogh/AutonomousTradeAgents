@@ -1,8 +1,9 @@
 """Per-strategy performance aggregator.
 
 Reads:
-  - ``DecisionLog.all_decisions()`` (or filters by user_id once we have
-    a per-user view; in-memory is single-user)
+  - ``DecisionLog.all_decisions(user_id=...)`` — scoped to the caller.
+    Strategy priors are global (one Reflection loop grades the shared
+    strategy registry) but the per-window trade stats are the user's own.
   - ``StrategyConfidenceStore.all()``  for the priors
 
 Aggregates a rolling 30-day (configurable) window per ``selected_strategy``:
@@ -49,15 +50,21 @@ class _Aggregate:
 
 async def build_strategies_performance(
     *,
+    user_id: str,
     window_days: int = 30,
 ) -> StrategiesPerformanceResponse:
+    """Aggregate ``user_id``'s decisions in the window, one row per strategy.
+
+    ``user_id`` is required — an unscoped build leaked every tenant's
+    win/loss counts and realized P&L through /strategies/performance.
+    """
     decision_log = get_decision_log()
     confidence_store = get_confidence_store()
 
     cutoff = _now() - timedelta(days=window_days)
 
     try:
-        decisions = await decision_log.all_decisions()
+        decisions = await decision_log.all_decisions(user_id=user_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning("strategies_perf: decision-log read failed — %s", exc)
         decisions = []

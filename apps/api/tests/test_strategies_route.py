@@ -26,6 +26,7 @@ from trading_agents.memory import (  # noqa: E402
     get_decision_log,
     reset_memory_stores_for_tests,
 )
+from trading_agents.memory.decision_log import ALL_USERS
 
 
 @pytest.fixture(autouse=True)
@@ -127,7 +128,7 @@ async def test_aggregates_completed_trades_and_sorts_by_confidence() -> None:
     # Call the service directly to avoid TestClient + a separate auth path.
     from app.services.strategies_perf import build_strategies_performance
 
-    resp = await build_strategies_performance()
+    resp = await build_strategies_performance(user_id=ALL_USERS)
 
     # Sort = confidence DESC. sma_crossover was nudged to 0.58.
     assert resp.strategies[0].strategy_id == "sma_crossover"
@@ -170,6 +171,6 @@ async def test_window_days_filters_older_decisions() -> None:
 
     from app.services.strategies_perf import build_strategies_performance
 
-    resp = await build_strategies_performance(window_days=30)
+    resp = await build_strategies_performance(user_id=ALL_USERS, window_days=30)
     momentum = next(s for s in resp.strategies if s.strategy_id == "momentum")
     assert momentum.decisions_in_window == 0

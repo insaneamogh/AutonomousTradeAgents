@@ -27,7 +27,10 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("DEV_AUTH_BYPASS", "1")
 
 from app.main import app  # noqa: E402
-from app.services.auth_store import reset_auth_store_for_tests  # noqa: E402
+from app.services.auth_store import (  # noqa: E402
+    FIXTURE_USER_ID,
+    reset_auth_store_for_tests,
+)
 from app.services.review_store import reset_review_store_for_tests  # noqa: E402
 from trading_agents.memory import (  # noqa: E402
     DecisionEntry,
@@ -55,10 +58,17 @@ def client() -> Iterator[TestClient]:
         yield c
 
 
-def _seed_completed(symbol: str, strategy: str, pnl: float) -> DecisionEntry:
-    """Record one completed decision into the in-memory log."""
+def _seed_completed(
+    symbol: str, strategy: str, pnl: float, *, user_id: str = FIXTURE_USER_ID
+) -> DecisionEntry:
+    """Record one completed decision into the in-memory log.
+
+    Decisions are tenant-scoped, so a seed needs an owner — default is the
+    DEV_AUTH_BYPASS fixture user, i.e. whoever these tests authenticate as.
+    """
     log = get_decision_log()
     entry = DecisionEntry(
+        user_id=user_id,
         symbol=symbol,
         horizon="short",
         triggered_at=datetime.now(timezone.utc),
@@ -81,10 +91,11 @@ def _seed_completed(symbol: str, strategy: str, pnl: float) -> DecisionEntry:
     return entry
 
 
-def _seed_open(symbol: str) -> DecisionEntry:
+def _seed_open(symbol: str, *, user_id: str = FIXTURE_USER_ID) -> DecisionEntry:
     """Record one open decision (no realized_pnl)."""
     log = get_decision_log()
     entry = DecisionEntry(
+        user_id=user_id,
         symbol=symbol,
         horizon="short",
         triggered_at=datetime.now(timezone.utc),

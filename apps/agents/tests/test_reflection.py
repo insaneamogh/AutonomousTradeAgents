@@ -18,6 +18,7 @@ from trading_agents.memory import (
     InMemoryDecisionLog,
     InMemoryStrategyConfidenceStore,
 )
+from trading_agents.memory.decision_log import ALL_USERS
 from trading_agents.memory.strategy_confidence import (
     MAX_CONFIDENCE,
     MAX_CONFIDENCE_DELTA_PER_CYCLE,
@@ -91,7 +92,7 @@ async def test_reflection_marks_decisions_reviewed_and_applies_bounded_delta() -
     assert per["confidence_after"] > per["confidence_before"]
 
     # All 3 decisions marked reviewed.
-    all_decisions = await decision_log.all_decisions()
+    all_decisions = await decision_log.all_decisions(user_id=ALL_USERS)
     assert all(d.reviewed_at is not None for d in all_decisions)
 
     # Second run: no pending decisions → no-op (and no double-application).
@@ -199,7 +200,7 @@ async def test_run_council_writes_decision_when_log_provided() -> None:
     )
 
     assert result["decision_id"] is not None
-    all_d = await decision_log.all_decisions()
+    all_d = await decision_log.all_decisions(user_id=ALL_USERS)
     assert len(all_d) == 1
     recorded = all_d[0]
     assert recorded.symbol == "NVDA"

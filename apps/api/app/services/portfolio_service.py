@@ -162,7 +162,7 @@ async def _realized_by_market(user_id: str, window_days: int) -> dict[str, dict[
         "IN": dict(_EMPTY_REALIZED),
     }
     try:
-        decisions = await get_decision_log().all_decisions()
+        decisions = await get_decision_log().all_decisions(user_id=user_id)
     except Exception as exc:  # noqa: BLE001 — telemetry read must not break the route
         logger.warning("portfolio: decision log read failed — %s", exc)
         return buckets

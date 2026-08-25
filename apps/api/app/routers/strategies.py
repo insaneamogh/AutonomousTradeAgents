@@ -27,5 +27,6 @@ async def performance(
     window_days: int = Query(default=30, ge=1, le=365, alias="windowDays"),
     user: AuthedUser = Depends(get_current_user),
 ) -> StrategiesPerformanceResponse:
-    _ = user  # Per-user filter when DecisionLog learns user_id
-    return await build_strategies_performance(window_days=window_days)
+    return await build_strategies_performance(
+        user_id=user.id, window_days=window_days,
+    )

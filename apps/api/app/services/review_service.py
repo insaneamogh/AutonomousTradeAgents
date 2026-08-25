@@ -15,6 +15,13 @@ Three operations the router orchestrates:
      reflection nudge direction (sign of (current_confidence - 0.5)) and
      bucket. Compute agreement_pct. Used by the Home strip's "calibration"
      widget so the operator sees whether Reflection tracks their view.
+
+Every decision-log read here is scoped to ``operator_user_id``. These
+functions used to call ``all_decisions()`` unscoped, which meant the
+queue, agreement and scorecard endpoints returned every tenant's symbols,
+bull/bear text, fill prices and realized P&L to whoever asked. The scope
+also makes ``apply_grade`` reject another user's decision id (404) rather
+than letting one operator grade someone else's trade.
 """
 
 from __future__ import annotations
@@ -65,7 +72,7 @@ async def build_queue(
     log = get_decision_log()
     cutoff = _now() - timedelta(days=window_days)
 
-    all_decisions = await log.all_decisions()
+    all_decisions = await log.all_decisions(user_id=operator_user_id)
     in_window_completed = [
         d for d in all_decisions
         if d.triggered_at >= cutoff
@@ -138,7 +145,7 @@ async def apply_grade(
 
     # Confirm the decision actually exists + is reviewable (has a fill).
     log = get_decision_log()
-    decisions = await log.all_decisions()
+    decisions = await log.all_decisions(user_id=operator_user_id)
     target = next((d for d in decisions if d.id == decision_id), None)
     if target is None:
         raise DecisionNotReviewable(f"no decision with id={decision_id!r}")
@@ -177,7 +184,7 @@ async def build_agreement(
 
     # Index decisions by id for fast strategy lookup.
     log = get_decision_log()
-    decisions_by_id = {d.id: d for d in await log.all_decisions()}
+    decisions_by_id = {d.id: d for d in await log.all_decisions(user_id=operator_user_id)}
 
     confidence_store = get_confidence_store()
     priors_by_strategy = {row.strategy_id: row.confidence for row in await confidence_store.all()}
@@ -280,7 +287,7 @@ async def build_scorecard(
     ]
 
     log = get_decision_log()
-    decisions_by_id = {d.id: d for d in await log.all_decisions()}
+    decisions_by_id = {d.id: d for d in await log.all_decisions(user_id=operator_user_id)}
     confidence_store = get_confidence_store()
     priors_by_strategy = {row.strategy_id: row.confidence for row in await confidence_store.all()}
 

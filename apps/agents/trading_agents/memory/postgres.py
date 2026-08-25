@@ -24,7 +24,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from engine.db import async_session_factory
 from engine.db.models import AgentDecision, StrategyConfidence
 
-from trading_agents.memory.decision_log import DecisionEntry
+from trading_agents.memory.decision_log import ALL_USERS, DecisionEntry
 from trading_agents.memory.strategy_confidence import (
     MAX_CONFIDENCE,
     MAX_CONFIDENCE_DELTA_PER_CYCLE,
@@ -44,6 +44,24 @@ FIXTURE_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+class _NoSuchTenant(Exception):
+    """``user_id`` wasn't a UUID, so it can't match any row."""
+
+
+def _tenant_uuid(user_id: str) -> uuid.UUID | None:
+    """UUID to filter ``AgentDecision.user_id`` on, or None for ALL_USERS.
+
+    A malformed id raises rather than silently widening the query — an
+    unparseable tenant must never degrade into "return everything".
+    """
+    if user_id == ALL_USERS:
+        return None
+    try:
+        return uuid.UUID(user_id)
+    except (ValueError, TypeError) as exc:
+        raise _NoSuchTenant(user_id) from exc
 
 
 def _row_to_entry(r: AgentDecision) -> DecisionEntry:
@@ -142,23 +160,32 @@ class PostgresDecisionLog:
     async def list_pending_reflection(
         self,
         *,
+        user_id: str,
         since: timedelta = timedelta(hours=24),
         limit: int = 200,
     ) -> list[DecisionEntry]:
         """Pulls rows where ``realized_pnl IS NOT NULL AND reviewed_at IS NULL``
-        within the window. Uses the partial index from migration 0003
-        (``ix_agent_decisions_pending_reflection``) — the WHERE clause
-        below is byte-equal to the index predicate.
+        within the window, scoped to ``user_id`` (or every tenant when the
+        caller passes ``ALL_USERS``). Uses the partial index from migration
+        0003 (``ix_agent_decisions_pending_reflection``) — the trailing
+        WHERE clauses are byte-equal to the index predicate.
         """
+        try:
+            tenant = _tenant_uuid(user_id)
+        except _NoSuchTenant:
+            return []
         cutoff = _now() - since
+        conditions = [
+            AgentDecision.triggered_at >= cutoff,
+            AgentDecision.realized_pnl.is_not(None),
+            AgentDecision.reviewed_at.is_(None),
+        ]
+        if tenant is not None:
+            conditions.append(AgentDecision.user_id == tenant)
         async with self._session_factory() as session:
             stmt = (
                 select(AgentDecision)
-                .where(
-                    AgentDecision.triggered_at >= cutoff,
-                    AgentDecision.realized_pnl.is_not(None),
-                    AgentDecision.reviewed_at.is_(None),
-                )
+                .where(*conditions)
                 .order_by(AgentDecision.triggered_at.asc())
                 .limit(limit)
             )
@@ -206,10 +233,23 @@ class PostgresDecisionLog:
             )
             await session.commit()
 
-    async def all_decisions(self) -> list[DecisionEntry]:
-        """Debug / testing only — full snapshot."""
+    async def all_decisions(self, *, user_id: str) -> list[DecisionEntry]:
+        """Every decision for ``user_id`` — or the whole book under ALL_USERS.
+
+        Filters on the indexed ``agent_decisions.user_id`` column so the
+        API's aggregate reads can never see another tenant's rows.
+        """
+        try:
+            tenant = _tenant_uuid(user_id)
+        except _NoSuchTenant:
+            return []
+        conditions = [] if tenant is None else [AgentDecision.user_id == tenant]
         async with self._session_factory() as session:
-            stmt = select(AgentDecision).order_by(AgentDecision.triggered_at.desc())
+            stmt = (
+                select(AgentDecision)
+                .where(*conditions)
+                .order_by(AgentDecision.triggered_at.desc())
+            )
             rows = (await session.execute(stmt)).scalars().all()
         return [_row_to_entry(r) for r in rows]
 

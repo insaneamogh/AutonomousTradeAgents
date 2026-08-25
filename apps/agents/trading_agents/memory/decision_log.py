@@ -15,7 +15,21 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Final, Protocol, runtime_checkable
+
+ALL_USERS: Final[str] = "__ALL_USERS__"
+"""Sentinel for the ``user_id`` argument of the cross-user read methods.
+
+Passing it returns rows for EVERY tenant. It exists for scheduled jobs
+only — the reflection pass, the ghost-P&L marker, the daily cron — which
+grade the whole book and have no requesting user. It must NEVER be
+derived from request data, and no HTTP handler may pass it: a router
+always has an authenticated ``user.id`` to scope on.
+
+The read methods take ``user_id`` as a REQUIRED argument (no ``None``
+default) precisely so mypy forces every call site to state which of the
+two it is.
+"""
 
 
 @dataclass
@@ -74,6 +88,18 @@ class DecisionEntry:
     reviewed_at: datetime | None = None
 
 
+def _visible_to(entry: DecisionEntry, user_id: str) -> bool:
+    """Tenant predicate shared by the in-memory reads.
+
+    A row with ``user_id is None`` (an unattributed CLI/smoke run) belongs
+    to no tenant and is therefore invisible to every real user — only the
+    ``ALL_USERS`` sentinel sees it.
+    """
+    if user_id == ALL_USERS:
+        return True
+    return entry.user_id == user_id
+
+
 @runtime_checkable
 class DecisionLog(Protocol):
     """Backend contract for the agent decision log.
@@ -87,9 +113,17 @@ class DecisionLog(Protocol):
     async def list_pending_reflection(
         self,
         *,
+        user_id: str,
         since: timedelta = timedelta(hours=24),
         limit: int = 200,
-    ) -> list[DecisionEntry]: ...
+    ) -> list[DecisionEntry]:
+        """Closed-but-ungraded decisions for ``user_id``.
+
+        Cross-user by nature, so ``user_id`` is required: the EOD
+        reflection job passes ``ALL_USERS``; anything request-scoped
+        passes the authenticated user's id.
+        """
+        ...
 
     async def mark_reviewed(self, decision_id: str) -> None: ...
 
@@ -102,8 +136,14 @@ class DecisionLog(Protocol):
         realized_pnl: float | None = None,
     ) -> None: ...
 
-    async def all_decisions(self) -> list[DecisionEntry]:
-        """Debug / testing only — full snapshot. Don't call in the hot path."""
+    async def all_decisions(self, *, user_id: str) -> list[DecisionEntry]:
+        """Every decision belonging to ``user_id``. Not for the hot path.
+
+        ``user_id`` is required — this method used to return every
+        tenant's rows and the API leaked them straight to whoever asked.
+        Scheduled jobs that really do grade the whole book pass
+        ``ALL_USERS`` explicitly.
+        """
         ...
 
     async def has_decision_today(
@@ -133,13 +173,15 @@ class InMemoryDecisionLog:
     async def list_pending_reflection(
         self,
         *,
+        user_id: str,
         since: timedelta = timedelta(hours=24),
         limit: int = 200,
     ) -> list[DecisionEntry]:
         cutoff = datetime.now(timezone.utc) - since
         pending = [
             r for r in self._rows
-            if r.triggered_at >= cutoff
+            if _visible_to(r, user_id)
+            and r.triggered_at >= cutoff
             and r.realized_pnl is not None
             and r.reviewed_at is None
         ]
@@ -169,8 +211,8 @@ class InMemoryDecisionLog:
                     r.realized_pnl = realized_pnl
                 return
 
-    async def all_decisions(self) -> list[DecisionEntry]:
-        return list(self._rows)
+    async def all_decisions(self, *, user_id: str) -> list[DecisionEntry]:
+        return [r for r in self._rows if _visible_to(r, user_id)]
 
     async def has_decision_today(
         self, *, user_id: str | None, symbol: str, day_utc: str

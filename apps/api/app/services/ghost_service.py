@@ -3,16 +3,42 @@
 Reads ``ghost_outcomes`` (joined to ``agent_decisions``) and reduces to
 the two headline numbers — "the risk engine saved you $X" and "your
 passes cost you $Y" — plus the per-rule veto scorecard.
+
+Both builders take a REQUIRED ``user_id`` and filter on the indexed
+``agent_decisions.user_id``. They previously aggregated the whole table,
+so /ghost/summary and /risk/vetoes reported other tenants' blocked
+notional and ghost P&L as the caller's own numbers.
 """
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from engine.db import async_session_factory
 from engine.db.models import AgentDecision, GhostOutcome
 from sqlalchemy import select
+from sqlalchemy.sql.elements import ColumnElement
+from trading_agents.memory.decision_log import ALL_USERS
+
+
+class _NoSuchTenant(Exception):
+    """``user_id`` wasn't a UUID, so it can't match any decision row."""
+
+
+def _tenant_filters(user_id: str) -> list[ColumnElement[bool]]:
+    """WHERE fragment scoping a query to ``user_id``.
+
+    Empty only for the ``ALL_USERS`` sentinel. A malformed id raises —
+    an unparseable tenant must never widen into "every row".
+    """
+    if user_id == ALL_USERS:
+        return []
+    try:
+        return [AgentDecision.user_id == uuid.UUID(user_id)]
+    except (ValueError, TypeError) as exc:
+        raise _NoSuchTenant(user_id) from exc
 
 
 @dataclass
@@ -50,8 +76,26 @@ class VetoLedger:
     rules: list[VetoRuleRow]
 
 
-async def build_ghost_summary(window_days: int = 30) -> GhostSummary:
+def _empty_summary(window_days: int) -> GhostSummary:
+    """Zeroed summary — what an unknown tenant sees."""
+    empty = GhostBucket(count=0, ghost_pnl=0.0, pending_count=0)
+    return GhostSummary(
+        window_days=window_days,
+        as_of=datetime.now(UTC),
+        vetoed=empty,
+        declined=empty,
+        saved_usd=0.0,
+        missed_usd=0.0,
+    )
+
+
+async def build_ghost_summary(window_days: int = 30, *, user_id: str) -> GhostSummary:
+    """Vetoed/declined ghost P&L for ``user_id`` over the window."""
     cutoff = datetime.now(UTC) - timedelta(days=window_days)
+    try:
+        tenant = _tenant_filters(user_id)
+    except _NoSuchTenant:
+        return _empty_summary(window_days)
     session_factory = async_session_factory()
     async with session_factory() as session:
         rows = (
@@ -59,7 +103,7 @@ async def build_ghost_summary(window_days: int = 30) -> GhostSummary:
                 await session.execute(
                     select(GhostOutcome, AgentDecision.triggered_at)
                     .join(AgentDecision, AgentDecision.id == GhostOutcome.decision_id)
-                    .where(AgentDecision.triggered_at >= cutoff)
+                    .where(AgentDecision.triggered_at >= cutoff, *tenant)
                 )
             )
             .all()
@@ -88,8 +132,18 @@ async def build_ghost_summary(window_days: int = 30) -> GhostSummary:
     )
 
 
-async def build_veto_ledger(window_days: int = 30) -> VetoLedger:
+async def build_veto_ledger(window_days: int = 30, *, user_id: str) -> VetoLedger:
+    """Per-rule veto scorecard for ``user_id`` over the window."""
     cutoff = datetime.now(UTC) - timedelta(days=window_days)
+    try:
+        tenant = _tenant_filters(user_id)
+    except _NoSuchTenant:
+        return VetoLedger(
+            window_days=window_days,
+            total_vetoes=0,
+            total_blocked_notional=0.0,
+            rules=[],
+        )
     session_factory = async_session_factory()
     async with session_factory() as session:
         rows = (
@@ -100,6 +154,7 @@ async def build_veto_ledger(window_days: int = 30) -> VetoLedger:
                     .where(
                         AgentDecision.risk_approved.is_(False),
                         AgentDecision.triggered_at >= cutoff,
+                        *tenant,
                     )
                 )
             )

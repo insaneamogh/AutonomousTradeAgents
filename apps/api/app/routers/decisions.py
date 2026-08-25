@@ -32,14 +32,15 @@ async def timeline(
     decision_id: str,
     user: AuthedUser = Depends(get_current_user),
 ) -> DecisionTimelineResponse:
-    _ = user  # Phase-0 single-user store; auth gate only.
     if not _postgres_active():
         raise HTTPException(
             status_code=404,
             detail="decision timelines require the Postgres store (USE_POSTGRES=1)",
         )
-    bio = await build_biography(decision_id)
+    bio = await build_biography(decision_id, user_id=user.id)
     if bio is None:
+        # Same 404 for "no such decision" and "not yours" — the response
+        # must not tell the caller which of the two it was.
         raise HTTPException(status_code=404, detail="decision not found")
     return DecisionTimelineResponse(
         decision_id=bio.decision_id,

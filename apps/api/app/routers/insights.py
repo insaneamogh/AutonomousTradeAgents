@@ -66,9 +66,8 @@ async def ghost_summary(
     window_days: int = Query(default=30, ge=1, le=365, alias="windowDays"),
     user: AuthedUser = Depends(get_current_user),
 ) -> GhostSummaryResponse:
-    _ = user
     _require_postgres()
-    s = await build_ghost_summary(window_days)
+    s = await build_ghost_summary(window_days, user_id=user.id)
     return GhostSummaryResponse(
         window_days=s.window_days,
         as_of=s.as_of.isoformat(),
@@ -90,9 +89,8 @@ async def veto_ledger(
     window_days: int = Query(default=30, ge=1, le=365, alias="windowDays"),
     user: AuthedUser = Depends(get_current_user),
 ) -> VetoLedgerResponse:
-    _ = user
     _require_postgres()
-    ledger = await build_veto_ledger(window_days)
+    ledger = await build_veto_ledger(window_days, user_id=user.id)
     return VetoLedgerResponse(
         window_days=ledger.window_days,
         total_vetoes=ledger.total_vetoes,

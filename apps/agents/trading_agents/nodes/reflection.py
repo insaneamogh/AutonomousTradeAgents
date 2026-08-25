@@ -30,6 +30,7 @@ from trading_agents.memory import (
     DecisionLog,
     StrategyConfidenceStore,
 )
+from trading_agents.memory.decision_log import ALL_USERS
 from trading_agents.prompts import REFLECTION
 
 logger = logging.getLogger("agents.node.reflection")
@@ -42,8 +43,14 @@ async def reflection_agent_run(
     confidence_store: StrategyConfidenceStore,
     since: timedelta = timedelta(hours=24),
     limit: int = 200,
+    user_id: str = ALL_USERS,
 ) -> dict[str, Any]:
     """Reflect on the last ``since`` window. One LLM call per strategy id.
+
+    ``user_id`` defaults to ``ALL_USERS`` because reflection is a
+    scheduled job: strategy priors are global, so the EOD pass grades
+    every tenant's closed trades in one sweep. Pass a real id to reflect
+    on a single user's book (the CLI's ``--user-id``).
 
     Returns a summary dict suitable for logging / CLI output:
 
@@ -59,7 +66,9 @@ async def reflection_agent_run(
           }
         }
     """
-    pending = await decision_log.list_pending_reflection(since=since, limit=limit)
+    pending = await decision_log.list_pending_reflection(
+        user_id=user_id, since=since, limit=limit
+    )
     if not pending:
         logger.info("reflection: no pending decisions in last %s", since)
         return {"reviewed": 0, "per_strategy": {}}

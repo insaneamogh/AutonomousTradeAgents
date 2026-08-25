@@ -17,6 +17,7 @@ from typing import Any
 from engine.db import async_session_factory
 from engine.db.models import AgentDecision, DecisionReview, Order, OrderFill
 from sqlalchemy import select
+from trading_agents.memory.decision_log import ALL_USERS
 
 
 @dataclass
@@ -58,6 +59,17 @@ def _analyst_summaries(row: AgentDecision) -> list[dict[str, Any]]:
     return out
 
 
+def _owned_by(row: AgentDecision, user_id: str) -> bool:
+    """Whether ``user_id`` may read this decision.
+
+    String-compares the stringified UUID so a malformed caller id simply
+    fails to match instead of raising.
+    """
+    if user_id == ALL_USERS:
+        return True
+    return row.user_id is not None and str(row.user_id) == user_id
+
+
 def _status_of(row: AgentDecision) -> str:
     if not row.risk_approved:
         return "vetoed"
@@ -70,7 +82,15 @@ def _status_of(row: AgentDecision) -> str:
     return "pending"
 
 
-async def build_biography(decision_id: str) -> Biography | None:
+async def build_biography(decision_id: str, *, user_id: str) -> Biography | None:
+    """The decision's timeline, or None when ``user_id`` doesn't own it.
+
+    Ownership is checked before anything else is read. Returning None for
+    "not yours" (the router turns it into a 404, same as "no such row")
+    keeps the endpoint from confirming that a decision id exists — this
+    used to be a plain IDOR where any authenticated user could pull any
+    decision's full council timeline.
+    """
     try:
         did = uuid.UUID(decision_id)
     except (ValueError, TypeError):
@@ -80,6 +100,8 @@ async def build_biography(decision_id: str) -> Biography | None:
     async with session_factory() as session:
         row = await session.get(AgentDecision, did)
         if row is None:
+            return None
+        if not _owned_by(row, user_id):
             return None
 
         orders = (
