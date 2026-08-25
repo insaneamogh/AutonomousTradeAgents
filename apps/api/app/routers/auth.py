@@ -136,9 +136,28 @@ async def request_login(
 )
 async def verify(
     body: VerifyMagicLinkRequest,
+    request: Request,
     store: AuthStore = Depends(get_auth_store),
 ) -> IssuedTokensResponse:
+    """Consume a magic-link token and issue the access + refresh pair.
+
+    Rate-limited: 10/hour/email + 40/hour/IP. Verification costs one
+    scrypt per outstanding link for that email, so an unthrottled endpoint
+    is an unauthenticated CPU amplifier — the hashing itself runs off the
+    event loop in ``verify_magic_link``.
+    """
     settings = get_settings()
+
+    from app.services.rate_limit import check_verify_rate
+
+    client_ip = request.client.host if request.client else None
+    if not check_verify_rate(body.email, client_ip):
+        logger.warning("auth: rate limit hit for verify (email/ip window)")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many verification attempts — wait a bit and try again.",
+        )
+
     try:
         issued = await auth_verify_magic_link(
             email=body.email,
@@ -210,9 +229,12 @@ async def logout(
 
     Two paths:
       - ``refreshToken`` in the body: revoke that session id directly.
-      - No body: revoke the session embedded in the access token's claims.
+      - No body: revoke the session embedded in the access token's claims
+        (``AuthedUser.session_id``, verified by the auth middleware).
 
     Both end up at ``store.revoke_session``; idempotent on already-revoked.
+    The body is optional — a client that only holds an access token (or
+    that already dropped its refresh token) still gets a real logout.
     """
     settings = get_settings()
     session_id: str | None = None
@@ -236,12 +258,16 @@ async def logout(
             return LogoutResponse(revoked=False)
 
     if session_id is None:
-        # Pull from the access token. We re-verify so a tampered claim
-        # doesn't get to call revoke_session against an arbitrary id.
-        from fastapi import Request as _Req  # noqa — local for clarity
-        # We already have the AuthedUser; the access-token sid would be
-        # needed but isn't on AuthedUser. Phase 3.1 keeps logout body-driven.
-        # (Mobile sends the refresh token explicitly on logout anyway.)
+        # Fall back to the access token's own session. ``session_id`` comes
+        # from claims the middleware already verified (signature + session
+        # not revoked/expired), so no tampered claim can reach
+        # revoke_session with an id that isn't the caller's.
+        session_id = user.session_id
+
+    if session_id is None:
+        # Legacy access token minted before tokens carried ``sid`` — nothing
+        # to revoke by id; it ages out within its 15-minute TTL.
+        logger.info("auth: logout with no resolvable session id (user=%s)", user.email)
         return LogoutResponse(revoked=False)
 
     await store.revoke_session(session_id)

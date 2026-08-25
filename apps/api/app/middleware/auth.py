@@ -10,11 +10,11 @@ Two facts shape this module:
 2. We can't ship a "no-auth-everywhere" default — that would let the auth
    middleware look correct in code but be effectively bypassed forever.
 
-Compromise: ``DEV_AUTH_BYPASS=1`` (default-on in local dev) resolves
-``get_current_user`` to the fixture user when no Bearer token is present.
-A real Bearer token is ALWAYS validated; bypass only kicks in when the
-header is missing AND the env switch is on. Once mobile auth ships, set
-``DEV_AUTH_BYPASS=0`` and the older path 401s.
+Compromise: ``DEV_AUTH_BYPASS=1`` — **explicit opt-in, off by default in
+every environment** — resolves ``get_current_user`` to the fixture user
+when no Bearer token is present. A real Bearer token is ALWAYS validated;
+bypass only kicks in when the header is missing AND the env switch is
+explicitly on. Set it in a local ``.env`` only; never on a deployed box.
 
 For routes that MUST never bypass (e.g. /auth/logout, /auth/me — they only
 make sense with a real session), use ``require_real_auth`` instead.
@@ -49,19 +49,25 @@ def _is_truthy(v: str | None) -> bool:
 def _dev_bypass_enabled() -> bool:
     """Whether the no-Bearer fixture-user fallback is allowed.
 
+    Default OFF everywhere — opt in explicitly with ``DEV_AUTH_BYPASS=1``.
+    It used to default ON outside production, and ``_PRODUCTION_ENVS``
+    doesn't include "staging", so a staging box resolved every
+    unauthenticated request to the fixture user. Any environment that is
+    not a developer's laptop must never depend on a default.
+
     FORCE-OFF in production regardless of the env var — a prod deploy that
     forgets to set DEV_AUTH_BYPASS=0 must NEVER silently accept
-    unauthenticated requests. Default ON only in non-production for local
-    dev ergonomics.
+    unauthenticated requests.
     """
+    requested = _is_truthy(os.environ.get("DEV_AUTH_BYPASS"))
     if get_settings().is_production:
-        if _is_truthy(os.environ.get("DEV_AUTH_BYPASS")):
+        if requested:
             logger.warning(
                 "DEV_AUTH_BYPASS is set truthy but ENV is production — "
                 "IGNORING it. Unauthenticated access is never allowed in prod."
             )
         return False
-    return _is_truthy(os.environ.get("DEV_AUTH_BYPASS", "1"))
+    return requested
 
 
 @dataclass(frozen=True)
@@ -75,6 +81,12 @@ class AuthedUser:
     """True when this user came in via DEV_AUTH_BYPASS (no Bearer header).
     Routes that must refuse the bypass path can check this flag (or use
     ``require_real_auth``).
+    """
+    session_id: str | None = None
+    """``sid`` from the access token's claims — already verified above
+    (signature + session-not-revoked). Logout revokes by this id, so a
+    caller can end their session without handing back a refresh token.
+    None for dev-bypass callers and for pre-``sid`` legacy tokens.
     """
 
 
@@ -147,6 +159,7 @@ async def get_current_user(
             email=user.email,
             auth_method=user.auth_method,
             is_dev_bypass=False,
+            session_id=claims.sid,
         )
 
     if _dev_bypass_enabled():

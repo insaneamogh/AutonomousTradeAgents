@@ -15,12 +15,20 @@ Token shape (compact JWS):
     base64url(header_json) + "." + base64url(payload_json) + "." + base64url(signature)
     header_json = {"alg": "HS256", "typ": "JWT"}
 
+Key rotation: ``JWT_SECRET_PREVIOUS`` (comma-separated for a multi-step
+rotation) is accepted for **verification only**. Signing always uses the
+current ``secret`` passed by the caller. Rotating without it would
+invalidate every live session at once; with it, the operator moves the old
+value to ``JWT_SECRET_PREVIOUS``, sets a new ``JWT_SECRET``, and drops the
+previous value after the 30-day refresh TTL has drained.
+
 DO NOT:
   - Lower the algorithm to "none" via header overrides — we always
     compare against ``_HEADER_BYTES`` byte-for-byte. Algorithm-confusion
     attacks (alg=none, alg=HS256-via-RSA-public-key) are closed.
   - Use this for asymmetric signing (RSA/ECDSA). Asymmetric is python-jose
     territory; if we need that, that's the trigger to flip the dep.
+  - Sign with a previous secret. Verify-only, always.
 """
 
 from __future__ import annotations
@@ -29,10 +37,14 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
+import os
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
+
+logger = logging.getLogger("api.jwt")
 
 
 class TokenError(Exception):
@@ -64,6 +76,17 @@ _HEADER_BYTES = _header_bytes()
 def _sign(secret: str, signing_input: bytes) -> str:
     mac = hmac.new(secret.encode("utf-8"), signing_input, hashlib.sha256)
     return _b64u_encode(mac.digest())
+
+
+def previous_secrets() -> list[str]:
+    """Retired signing keys still accepted for VERIFICATION.
+
+    Read from ``JWT_SECRET_PREVIOUS`` (comma-separated) at call time so a
+    rotation takes effect on restart without a code change. Never used to
+    sign — ``mint`` only ever takes the caller's current secret.
+    """
+    raw = os.environ.get("JWT_SECRET_PREVIOUS", "")
+    return [s.strip() for s in raw.split(",") if s.strip()]
 
 
 @dataclass(frozen=True)
@@ -126,6 +149,11 @@ def verify(*, secret: str, token: str, expected_typ: str) -> Claims:
     ``expected_typ`` MUST match the token's ``typ`` claim — this prevents an
     access token from being accepted where a refresh is required (and vice
     versa). It also closes the "use my long-lived refresh as an access" hole.
+
+    Signatures are checked against ``secret`` first, then against each
+    ``JWT_SECRET_PREVIOUS`` entry so an in-flight rotation doesn't log every
+    user out. Every comparison is ``hmac.compare_digest`` and the header is
+    still locked byte-for-byte to HS256.
     """
     try:
         header_b64, payload_b64, sig_b64 = token.split(".")
@@ -138,9 +166,23 @@ def verify(*, secret: str, token: str, expected_typ: str) -> Claims:
         raise TokenError("unexpected header (algorithm-confusion guard)")
 
     signing_input = header_b64.encode() + b"." + payload_b64.encode()
-    expected_sig = _sign(secret, signing_input)
-    if not hmac.compare_digest(expected_sig, sig_b64):
-        raise TokenError("bad signature")
+    if not hmac.compare_digest(_sign(secret, signing_input), sig_b64):
+        # Rotation window: accept a signature from a retired key, but never
+        # mint with one. Constant-time compare per candidate.
+        rotated = next(
+            (
+                prev
+                for prev in previous_secrets()
+                if hmac.compare_digest(_sign(prev, signing_input), sig_b64)
+            ),
+            None,
+        )
+        if rotated is None:
+            raise TokenError("bad signature")
+        logger.info(
+            "jwt: token verified with a JWT_SECRET_PREVIOUS key — "
+            "rotation in progress, this session pre-dates the current secret"
+        )
 
     try:
         payload = json.loads(_b64u_decode(payload_b64))

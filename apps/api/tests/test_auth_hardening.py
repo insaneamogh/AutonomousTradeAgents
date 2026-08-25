@@ -55,9 +55,22 @@ def test_dev_bypass_forced_off_in_production(monkeypatch: pytest.MonkeyPatch) ->
     assert _dev_bypass_enabled() is False
 
 
-def test_dev_bypass_on_by_default_in_local(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dev_bypass_off_by_default_everywhere(monkeypatch: pytest.MonkeyPatch) -> None:
+    """F3: the bypass is explicit opt-in. It used to default ON outside
+    production, and "staging" is not in _PRODUCTION_ENVS — so a staging box
+    resolved every unauthenticated request to the fixture user."""
+    for env in ("local", "staging", "dev"):
+        monkeypatch.setenv("ENV", env)
+        monkeypatch.delenv("DEV_AUTH_BYPASS", raising=False)
+        get_settings.cache_clear()
+        assert _dev_bypass_enabled() is False, env
+
+
+def test_dev_bypass_explicit_opt_in_still_works_locally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("ENV", "local")
-    monkeypatch.delenv("DEV_AUTH_BYPASS", raising=False)
+    monkeypatch.setenv("DEV_AUTH_BYPASS", "1")
     get_settings.cache_clear()
     assert _dev_bypass_enabled() is True
 

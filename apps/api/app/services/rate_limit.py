@@ -22,6 +22,13 @@ WINDOW_SECONDS = 3600
 # is generous headroom while still capping a stolen-token flood.
 REFRESH_IP_LIMIT = 60
 
+# Verify: each attempt costs a scrypt(n=2**14) per outstanding magic-link for
+# the email, so an unthrottled endpoint is a CPU amplifier. A real user needs
+# one verify per login (two or three with fat fingers); 10/hour/email and
+# 40/hour/IP leave room for a shared NAT without leaving the amplifier open.
+VERIFY_EMAIL_LIMIT = 10
+VERIFY_IP_LIMIT = 40
+
 
 class SlidingWindowLimiter:
     def __init__(self) -> None:
@@ -58,6 +65,24 @@ def check_login_rate(email: str, ip: str | None) -> bool:
         ip_ok = _limiter.allow(f"ip:{ip or 'unknown'}", limit=IP_LIMIT)
         return email_ok and ip_ok
     except Exception:  # noqa: BLE001 — never lock users out on a limiter bug
+        return True
+
+
+def check_verify_rate(email: str, ip: str | None) -> bool:
+    """True if this magic-link verification attempt is allowed.
+
+    Charges both the email and IP windows (both must pass), like
+    ``check_login_rate`` — verification is the expensive half of the flow
+    (one scrypt per outstanding link) so it needs its own cap.
+    """
+    try:
+        email_ok = _limiter.allow(
+            f"verify-email:{email.lower().strip()}", limit=VERIFY_EMAIL_LIMIT
+        )
+        ip_ok = _limiter.allow(f"verify-ip:{ip or 'unknown'}", limit=VERIFY_IP_LIMIT)
+        return email_ok and ip_ok
+    except Exception:
+        # Never lock users out on a limiter bug.
         return True
 
 

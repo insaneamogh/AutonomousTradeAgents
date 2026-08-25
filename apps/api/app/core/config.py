@@ -109,6 +109,22 @@ def production_config_problems(settings: Settings) -> list[str]:
             "(anyone with the default can forge tokens for any user)."
         )
 
+    # Verify-only rotation keys (JWT_SECRET_PREVIOUS). A retired key that is
+    # the known-default — or the same value as the current secret, which
+    # means the rotation never actually happened — buys nothing and keeps a
+    # forgeable key alive.
+    previous = [
+        s.strip()
+        for s in os.environ.get("JWT_SECRET_PREVIOUS", "").split(",")
+        if s.strip()
+    ]
+    if any(p in (_DEFAULT_JWT_SECRET, secret) for p in previous):
+        problems.append(
+            "JWT_SECRET_PREVIOUS contains the default secret or repeats "
+            "JWT_SECRET — remove it (it is accepted for verification, so it "
+            "keeps a forgeable key alive)."
+        )
+
     # Broker OAuth tokens are Fernet-encrypted with this key; the dev fallback
     # is public in the repo, so real tokens would be trivially decryptable.
     if not os.environ.get("BROKER_TOKEN_ENCRYPTION_KEY", "").strip():

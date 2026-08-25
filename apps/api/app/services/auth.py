@@ -26,11 +26,13 @@ session id (router-level, not in this file).
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from app.services.auth_store import AuthStore, SessionRecord, UserRecord
+from app.services.auth_store import AuthStore, MagicLinkRecord, SessionRecord, UserRecord
 from app.services.jwt_service import (
     REFRESH_TOKEN_TTL,
     Claims,
@@ -54,6 +56,20 @@ MAGIC_LINK_TTL: timedelta = timedelta(minutes=15)
 
 class AuthError(Exception):
     """User-visible auth failure. Routers translate to 4xx."""
+
+
+def _match_candidate(
+    token: str, candidates: Sequence[MagicLinkRecord]
+) -> MagicLinkRecord | None:
+    """Find the magic-link record whose stored hash matches ``token``.
+
+    Pure CPU (one scrypt per candidate) — always call this via
+    ``asyncio.to_thread`` so the event loop keeps serving other requests.
+    """
+    for cand in candidates:
+        if verify_token_hash(token, stored=cand.token_hash):
+            return cand
+    return None
 
 
 @dataclass(frozen=True)
@@ -145,17 +161,18 @@ async def verify_magic_link(
     "which one matched". If any token matches, we lock it (single-use)
     and proceed; the rest stay open but will hit the same path on a
     legitimate retry.
+
+    The comparison loop runs in a worker thread: each candidate costs one
+    scrypt(n=2**14) ≈ 16MB/50ms, and this endpoint is unauthenticated —
+    on the event loop it would stall every other in-flight request (an
+    unauthenticated CPU-amplification DoS). The router also rate-limits it.
     """
     email = email.strip().lower()
     candidates = await store.find_unused_magic_link(email=email)
     if not candidates:
         raise AuthError("no pending magic-link for that email")
 
-    match = None
-    for cand in candidates:
-        if verify_token_hash(token, stored=cand.token_hash):
-            match = cand
-            break
+    match = await asyncio.to_thread(_match_candidate, token, candidates)
     if match is None:
         raise AuthError("invalid or expired magic-link token")
 
@@ -210,7 +227,10 @@ async def refresh(
         raise AuthError("session revoked")
     if session.expires_at < datetime.now(timezone.utc):
         raise AuthError("session expired")
-    if not verify_token_hash(refresh_token, stored=session.refresh_token_hash):
+    hash_ok = await asyncio.to_thread(
+        verify_token_hash, refresh_token, stored=session.refresh_token_hash
+    )
+    if not hash_ok:
         # Replay detection — somebody used an OLD refresh after a rotation.
         # Revoke the session entirely so the attacker can't continue.
         logger.warning(
