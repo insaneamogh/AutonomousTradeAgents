@@ -6,7 +6,7 @@
  * up — without this the app looks sloppy.
  *
  * Use this primitive for ANY user-facing number that represents money or a
- * share count. For percentages, use ``PnLBadge``.
+ * share count. For percentages, use ``PnLPill``.
  */
 
 import { Text } from 'react-native';

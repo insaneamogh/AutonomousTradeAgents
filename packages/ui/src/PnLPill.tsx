@@ -1,9 +1,8 @@
 /**
  * PnLPill — small filled pill that surfaces a realized P&L value.
  *
- * Differs from `PnLBadge` (which is a soft chip with a percent number)
- * in that it carries the FULL signed dollar value + a colored background
- * for at-a-glance scanability in dense lists (Review tab, Activity feed).
+ * Carries the FULL signed dollar value + a colored background for
+ * at-a-glance scanability in dense lists (Review tab, Activity feed).
  *
  * Sizes: sm (chip-density rows) and md (review-card hero).
  */

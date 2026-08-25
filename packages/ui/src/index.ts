@@ -1,6 +1,6 @@
 // @app/ui — design tokens + React Native primitives.
 //
-// Phase 0 ships: tokens, Button, Card, PriceDisplay, PnLBadge, HapticPressable,
+// Phase 0 ships: tokens, Button, Card, PriceDisplay, PnLPill, HapticPressable,
 // EmptyState, ErrorState, SkeletonLoader, ApprovalCard.
 // Phase 3 adds: BottomSheet, Input, NumberInput, Chart.
 
@@ -9,7 +9,6 @@ export * from './utils';
 export * from './Button';
 export * from './Card';
 export * from './PriceDisplay';
-export * from './PnLBadge';
 export * from './HapticPressable';
 export * from './EmptyState';
 export * from './ErrorState';

@@ -35,15 +35,6 @@ export function formatUsd(value: number, fractionDigits: number = 2): string {
 }
 
 /**
- * Format a signed percentage with two decimals and an explicit + or − sign.
- * Returns the bare string — colour is the caller's job.
- */
-export function formatPct(value: number, fractionDigits: number = 2): string {
-  const sign = value > 0 ? '+' : value < 0 ? '−' : '';
-  return `${sign}${Math.abs(value).toFixed(fractionDigits)}%`;
-}
-
-/**
  * Convert a duration in seconds into mm:ss. Used by the ApprovalCard countdown.
  */
 export function formatMmSs(totalSeconds: number): string {
