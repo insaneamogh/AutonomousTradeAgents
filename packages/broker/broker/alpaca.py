@@ -16,6 +16,7 @@ import asyncio
 import logging
 import os
 from datetime import UTC, datetime
+from typing import NamedTuple
 
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import (
@@ -345,3 +346,50 @@ class AlpacaBroker(BrokerInterface):
                 for k, v in (getattr(raw, "model_dump", lambda: {})() or {}).items()
             },
         )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Symbol validation
+#
+# The ticker regex accepts any 1-10 uppercase-ish string, so "APPLE"
+# and "BANANA" pass it — they're well-formed, they just don't exist.
+# Sending one into the council burns six LLM calls before Alpaca
+# rejects the order at the very end. Ask the broker first.
+# ─────────────────────────────────────────────────────────────────────
+
+
+class AssetInfo(NamedTuple):
+    """What the broker knows about a symbol."""
+
+    symbol: str
+    name: str
+    tradable: bool
+    fractionable: bool
+
+
+async def lookup_asset(symbol: str, *, api_key: str, secret_key: str) -> AssetInfo | None:
+    """Alpaca's record for ``symbol``, or None when it isn't a US equity.
+
+    Returns None for both "no such symbol" and "not tradable here" — the
+    caller only needs to know whether it can act on it.
+    """
+    from alpaca.trading.client import TradingClient
+    from alpaca.trading.requests import GetAssetsRequest
+
+    def _fetch() -> AssetInfo | None:
+        client = TradingClient(api_key=api_key, secret_key=secret_key, paper=True)
+        try:
+            a = client.get_asset(symbol.upper())
+        except Exception:
+            return None
+        if a is None:
+            return None
+        return AssetInfo(
+            symbol=str(a.symbol),
+            name=str(getattr(a, "name", "") or ""),
+            tradable=bool(getattr(a, "tradable", False)),
+            fractionable=bool(getattr(a, "fractionable", False)),
+        )
+
+    _ = GetAssetsRequest  # imported for callers that want to list; keep the dep explicit
+    return await asyncio.to_thread(_fetch)

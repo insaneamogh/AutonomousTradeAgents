@@ -208,8 +208,20 @@ export function DashboardScreen() {
                 ) : null
               }
             />
-            {pending.isLoading || !pending.data || pending.data.length === 0 ? (
+            {pending.isLoading || !pending.data ? (
               <RadarSkeleton />
+            ) : pending.data.length === 0 ? (
+              /* Empty is NOT loading. The house rule is "skeleton, never
+                 'No data'" for data that is *on its way*; a genuinely
+                 empty inbox is a state, and shimmering at it forever
+                 reads as a hung request. */
+              <div className="pg-empty">
+                <p className="pg-empty-title">Inbox clear</p>
+                <p className="pg-empty-body">
+                  Every proposal has been actioned. The next scheduled scan will
+                  surface new candidates, or run the council on a ticker yourself.
+                </p>
+              </div>
             ) : (
               <table className="pg-table">
                 <thead>

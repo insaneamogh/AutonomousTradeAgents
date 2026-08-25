@@ -418,6 +418,17 @@ export const PLATINUM_CSS = `
 }
 
 /* ── Tables ───────────────────────────────────────────────────────── */
+/* Empty state — a settled "nothing here", distinct from a shimmer.
+   Shimmering at an empty result reads as a hung request. */
+.pg-empty { padding: 28px 8px 24px; text-align: center; }
+.pg-empty-title {
+  font-size: 16px; font-weight: 500; letter-spacing: -0.01em;
+  color: var(--pg-on-surface); margin: 0 0 6px;
+}
+.pg-empty-body {
+  font-size: 13px; line-height: 1.6; color: var(--pg-outline);
+  margin: 0 auto; max-width: 46ch;
+}
 .pg-table { width: 100%; border-collapse: collapse; }
 .pg-table th {
   text-align: left; padding: 0 10px 10px;
