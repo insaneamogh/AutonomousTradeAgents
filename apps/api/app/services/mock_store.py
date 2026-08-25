@@ -11,8 +11,9 @@ deployments are fine; Phase 1's real DB makes multi-replica safe.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
+from app.core.time import utc_now
 from app.schemas.account import AccountResponse
 from app.schemas.activity import ActivityEntryDto
 from app.schemas.approvals import (
@@ -22,12 +23,8 @@ from app.schemas.approvals import (
 )
 
 
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
 def _minutes_ago(n: int) -> datetime:
-    return _now() - timedelta(minutes=n)
+    return utc_now() - timedelta(minutes=n)
 
 
 class MockStore:
@@ -91,7 +88,7 @@ class MockStore:
     async def list_pending(self, user_id: str | None = None) -> list[ApprovalProposalDto]:
         _ = user_id
         async with self._lock:
-            now = _now()
+            now = utc_now()
             # Auto-expire stale proposals.
             self._pending = [p for p in self._pending if (p.expires_at is None or p.expires_at > now)]
             return list(self._pending)
@@ -116,7 +113,7 @@ class MockStore:
             decision = DecisionResponse(
                 proposal_id=proposal_id,
                 outcome=outcome,
-                decided_at=_now(),
+                decided_at=utc_now(),
             )
             self._decisions[proposal_id] = decision
 
@@ -156,7 +153,7 @@ class MockStore:
 
     @staticmethod
     def _seed_pending() -> list[ApprovalProposalDto]:
-        now = _now()
+        now = utc_now()
         return [
             ApprovalProposalDto(
                 id="pending-1",

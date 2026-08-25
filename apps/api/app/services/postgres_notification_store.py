@@ -9,21 +9,17 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone
 from typing import cast
 
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from app.core.time import utc_now
 from app.services.notification_store import DeviceTokenRecord, Platform
 from engine.db import async_session_factory
 from engine.db.models import DeviceToken
 
 logger = logging.getLogger("api.notification_store.postgres")
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def _row_to_record(r: DeviceToken) -> DeviceTokenRecord:
@@ -52,7 +48,7 @@ class PostgresNotificationStore:
         label: str | None = None,
     ) -> DeviceTokenRecord:
         uid = uuid.UUID(user_id)
-        now = _now()
+        now = utc_now()
 
         async with self._session_factory() as session:
             # ON CONFLICT (user_id, expo_push_token) DO UPDATE:
@@ -129,7 +125,7 @@ class PostgresNotificationStore:
             result = await session.execute(
                 update(DeviceToken)
                 .where(DeviceToken.id == did, DeviceToken.revoked_at.is_(None))
-                .values(revoked_at=_now())
+                .values(revoked_at=utc_now())
             )
             await session.commit()
         return bool(result.rowcount)
@@ -142,6 +138,6 @@ class PostgresNotificationStore:
                     DeviceToken.expo_push_token == expo_push_token,
                     DeviceToken.revoked_at.is_(None),
                 )
-                .values(revoked_at=_now())
+                .values(revoked_at=utc_now())
             )
             await session.commit()

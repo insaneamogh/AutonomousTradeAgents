@@ -19,13 +19,13 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone
 from typing import Any, cast
 
 from sqlalchemy import desc, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.time import utc_now
 from app.schemas.account import AccountResponse
 from app.schemas.activity import ActivityEntryDto
 from app.schemas.approvals import (
@@ -43,10 +43,6 @@ logger = logging.getLogger("api.store.postgres")
 # with auth-derived user ids. Hardcoded so re-runs are idempotent.
 DEFAULT_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 DEFAULT_USER_EMAIL = "demo@local.dev"
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def _uid(user_id: str | None) -> uuid.UUID:
@@ -177,7 +173,7 @@ class PostgresStore:
             rows = (await session.execute(stmt)).scalars().all()
 
         out: list[ApprovalProposalDto] = []
-        now = _now()
+        now = utc_now()
         for row in rows:
             dto = _row_to_proposal_dto(row)
             if dto is None:
@@ -220,7 +216,7 @@ class PostgresStore:
         user_id: str | None = None,
         exit_mode: str | None = None,
     ) -> DecisionResponse | None:
-        now = _now()
+        now = utc_now()
         uid = _uid(user_id)
         async with self._session_factory() as session:
             await self._ensure_seed(session)

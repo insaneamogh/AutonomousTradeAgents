@@ -13,29 +13,18 @@ returns [] (there is no position ledger).
 from __future__ import annotations
 
 import logging
-import os
-import uuid
 
+from engine.env import env_flag
+
+from app.core.ids import to_uuid as _to_uuid
 from app.schemas.positions import OpenPositionDto
 
 logger = logging.getLogger("api.positions")
 
 
-def _postgres_active() -> bool:
-    v = os.environ.get("USE_POSTGRES")
-    return v is not None and v.strip().lower() in ("1", "true", "yes", "on")
-
-
-def _to_uuid(value: str) -> uuid.UUID | None:
-    try:
-        return uuid.UUID(value)
-    except (ValueError, AttributeError, TypeError):
-        return None
-
-
 async def list_open_positions(user_id: str) -> list[OpenPositionDto]:
     """Open agent positions for the user, newest first, with live marks."""
-    if not _postgres_active():
+    if not env_flag("USE_POSTGRES"):
         return []
     uid = _to_uuid(user_id)
     if uid is None:

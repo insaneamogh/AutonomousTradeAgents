@@ -13,20 +13,17 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from app.core.time import utc_now
 from app.services.broker_store import BrokerConnectionRecord
 from engine.db import async_session_factory
 from engine.db.models import BrokerConnection
 
 logger = logging.getLogger("api.broker_store.postgres")
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def _row_to_record(b: BrokerConnection) -> BrokerConnectionRecord:
@@ -91,7 +88,7 @@ class PostgresBrokerStore:
                         encrypted_refresh_token=encrypted_refresh_token,
                         access_token_expires_at=access_token_expires_at,
                         status="active",
-                        updated_at=_now(),
+                        updated_at=utc_now(),
                     ),
                 )
                 .returning(BrokerConnection.id)
@@ -148,7 +145,7 @@ class PostgresBrokerStore:
                     status="revoked",
                     encrypted_access_token="",
                     encrypted_refresh_token=None,
-                    updated_at=_now(),
+                    updated_at=utc_now(),
                 )
             )
             await session.commit()
@@ -163,7 +160,7 @@ class PostgresBrokerStore:
             result = await session.execute(
                 update(BrokerConnection)
                 .where(BrokerConnection.id == cid, BrokerConnection.status == "active")
-                .values(live_trading_consent=enabled, updated_at=_now())
+                .values(live_trading_consent=enabled, updated_at=utc_now())
             )
             await session.commit()
         return bool(result.rowcount)

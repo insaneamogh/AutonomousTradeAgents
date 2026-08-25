@@ -27,11 +27,12 @@ than letting one operator grade someone else's trade.
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from typing import Literal, cast
 
 from trading_agents.memory import get_confidence_store, get_decision_log
 
+from app.core.time import utc_now
 from app.schemas.review import (
     AgreementBucket,
     AgreementResponse,
@@ -53,10 +54,6 @@ from app.services.review_store import (
 )
 
 
-def _now() -> datetime:
-    return datetime.now(UTC)
-
-
 # ─────────────────────────────────────────────────────────────────────
 # Queue
 # ─────────────────────────────────────────────────────────────────────
@@ -70,7 +67,7 @@ async def build_queue(
 ) -> ReviewQueueResponse:
     rs = review_store or get_review_store()
     log = get_decision_log()
-    cutoff = _now() - timedelta(days=window_days)
+    cutoff = utc_now() - timedelta(days=window_days)
 
     all_decisions = await log.all_decisions(user_id=operator_user_id)
     in_window_completed = [
@@ -175,7 +172,7 @@ async def build_agreement(
     review_store: ReviewStore | None = None,
 ) -> AgreementResponse:
     rs = review_store or get_review_store()
-    cutoff = _now() - timedelta(days=window_days)
+    cutoff = utc_now() - timedelta(days=window_days)
 
     reviews = [
         r for r in await rs.list_reviews_for_operator(operator_user_id)
@@ -279,7 +276,7 @@ async def build_scorecard(
     per-decision deltas need a reflection-events table (future).
     """
     rs = review_store or get_review_store()
-    cutoff = _now() - timedelta(days=window_days)
+    cutoff = utc_now() - timedelta(days=window_days)
 
     reviews = [
         r for r in await rs.list_reviews_for_operator(operator_user_id)

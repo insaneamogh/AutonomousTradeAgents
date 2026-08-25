@@ -17,11 +17,14 @@ deferred to a follow-on session.
 from __future__ import annotations
 
 import logging
-import os
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Protocol, runtime_checkable
+
+from engine.env import env_flag
+
+from app.core.time import utc_now
 
 logger = logging.getLogger("api.broker_store")
 
@@ -51,8 +54,8 @@ class BrokerConnectionRecord:
     """Per-connection real-money opt-in. A live order needs this AND the
     global LIVE_TRADING_ENABLED env. Default False — paper-safe."""
     last_used_at: datetime | None = None
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: utc_now())
+    updated_at: datetime = field(default_factory=lambda: utc_now())
 
 
 @runtime_checkable
@@ -113,7 +116,7 @@ class InMemoryBrokerStore:
             ),
             None,
         )
-        now = datetime.now(timezone.utc)
+        now = utc_now()
         if existing is not None:
             existing.account_number = account_number
             existing.encrypted_access_token = encrypted_access_token
@@ -161,7 +164,7 @@ class InMemoryBrokerStore:
         rec.status = "revoked"
         rec.encrypted_access_token = ""
         rec.encrypted_refresh_token = None
-        rec.updated_at = datetime.now(timezone.utc)
+        rec.updated_at = utc_now()
         return True
 
     async def set_live_consent(self, connection_id: str, *, enabled: bool) -> bool:
@@ -169,7 +172,7 @@ class InMemoryBrokerStore:
         if rec is None or rec.status == "revoked":
             return False
         rec.live_trading_consent = enabled
-        rec.updated_at = datetime.now(timezone.utc)
+        rec.updated_at = utc_now()
         return True
 
 
@@ -185,7 +188,7 @@ class PendingOAuth:
     code_verifier: str
     is_paper: bool
     redirect_uri: str
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: utc_now())
 
 
 class PendingOAuthCache:
@@ -212,7 +215,7 @@ class PendingOAuthCache:
         return self._rows.pop(state, None)
 
     def _evict(self) -> None:
-        cutoff = datetime.now(timezone.utc) - self._ttl
+        cutoff = utc_now() - self._ttl
         stale = [s for s, e in self._rows.items() if e.created_at < cutoff]
         for s in stale:
             del self._rows[s]
@@ -227,14 +230,10 @@ _broker_store: BrokerStore | None = None
 _pending_oauth: PendingOAuthCache | None = None
 
 
-def _is_truthy(v: str | None) -> bool:
-    return v is not None and v.strip().lower() in ("1", "true", "yes", "on")
-
-
 def get_broker_store() -> BrokerStore:
     global _broker_store
     if _broker_store is None:
-        if _is_truthy(os.environ.get("USE_POSTGRES")):
+        if env_flag("USE_POSTGRES"):
             from app.services.postgres_broker_store import PostgresBrokerStore
 
             _broker_store = PostgresBrokerStore()

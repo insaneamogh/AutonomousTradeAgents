@@ -118,8 +118,3 @@ def get_run_registry() -> AgentRunRegistry:
     if _registry is None:
         _registry = AgentRunRegistry()
     return _registry
-
-
-def reset_run_registry_for_tests() -> None:
-    global _registry
-    _registry = None

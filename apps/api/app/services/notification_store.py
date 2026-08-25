@@ -6,11 +6,14 @@ wired against migration 0005 ships in the Postgres-adapters follow-on.
 
 from __future__ import annotations
 
-import os
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Literal, Protocol, runtime_checkable
+
+from engine.env import env_flag
+
+from app.core.time import utc_now
 
 Platform = Literal["ios", "android", "web"]
 
@@ -22,8 +25,8 @@ class DeviceTokenRecord:
     expo_push_token: str
     platform: Platform
     label: str | None
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    last_seen_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: utc_now())
+    last_seen_at: datetime = field(default_factory=lambda: utc_now())
     revoked_at: datetime | None = None
 
 
@@ -75,7 +78,7 @@ class InMemoryNotificationStore:
             ),
             None,
         )
-        now = datetime.now(timezone.utc)
+        now = utc_now()
         if existing is not None:
             existing.last_seen_at = now
             existing.revoked_at = None
@@ -110,13 +113,13 @@ class InMemoryNotificationStore:
         rec = self._rows.get(device_id)
         if rec is None or rec.revoked_at is not None:
             return False
-        rec.revoked_at = datetime.now(timezone.utc)
+        rec.revoked_at = utc_now()
         return True
 
     async def revoke_by_token(self, expo_push_token: str) -> None:
         for r in self._rows.values():
             if r.expo_push_token == expo_push_token and r.revoked_at is None:
-                r.revoked_at = datetime.now(timezone.utc)
+                r.revoked_at = utc_now()
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -127,14 +130,10 @@ class InMemoryNotificationStore:
 _notification_store: NotificationStore | None = None
 
 
-def _is_truthy(v: str | None) -> bool:
-    return v is not None and v.strip().lower() in ("1", "true", "yes", "on")
-
-
 def get_notification_store() -> NotificationStore:
     global _notification_store
     if _notification_store is None:
-        if _is_truthy(os.environ.get("USE_POSTGRES")):
+        if env_flag("USE_POSTGRES"):
             from app.services.postgres_notification_store import PostgresNotificationStore
 
             _notification_store = PostgresNotificationStore()

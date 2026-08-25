@@ -12,11 +12,14 @@ raw token. Rotation generates a fresh token, hashes it, swaps the row's
 
 from __future__ import annotations
 
-import os
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Protocol, runtime_checkable
+
+from engine.env import env_flag
+
+from app.core.time import utc_now
 
 
 @dataclass
@@ -24,7 +27,7 @@ class UserRecord:
     id: str
     email: str
     auth_method: str = "magic_link"
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: utc_now())
     display_name: str | None = None
 
 
@@ -36,8 +39,8 @@ class SessionRecord:
     expires_at: datetime
     device_id: str | None = None
     device_label: str | None = None
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    last_seen_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: utc_now())
+    last_seen_at: datetime = field(default_factory=lambda: utc_now())
     revoked_at: datetime | None = None
 
 
@@ -47,7 +50,7 @@ class MagicLinkRecord:
     email: str
     token_hash: str
     expires_at: datetime
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: utc_now())
     used_at: datetime | None = None
 
 
@@ -166,7 +169,7 @@ class MockAuthStore:
         return m
 
     async def find_unused_magic_link(self, *, email: str) -> list[MagicLinkRecord]:
-        now = datetime.now(timezone.utc)
+        now = utc_now()
         return [
             m for m in self._magic_links.values()
             if m.email == email.lower() and m.used_at is None and m.expires_at > now
@@ -178,7 +181,7 @@ class MockAuthStore:
         m = self._magic_links.get(magic_link_id)
         if m is None or m.used_at is not None:
             return False
-        m.used_at = datetime.now(timezone.utc)
+        m.used_at = utc_now()
         return True
 
     # sessions --------------------------------------------------------
@@ -220,13 +223,13 @@ class MockAuthStore:
         if expected_current_hash is not None and s.refresh_token_hash != expected_current_hash:
             return None
         s.refresh_token_hash = new_refresh_token_hash
-        s.last_seen_at = datetime.now(timezone.utc)
+        s.last_seen_at = utc_now()
         return s
 
     async def revoke_session(self, session_id: str) -> None:
         s = self._sessions.get(session_id)
         if s is not None:
-            s.revoked_at = datetime.now(timezone.utc)
+            s.revoked_at = utc_now()
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -237,10 +240,6 @@ class MockAuthStore:
 _auth_store: AuthStore | None = None
 
 
-def _is_truthy(v: str | None) -> bool:
-    return v is not None and v.strip().lower() in ("1", "true", "yes", "on")
-
-
 def get_auth_store() -> AuthStore:
     """Return the active auth store. Singleton per process.
 
@@ -249,7 +248,7 @@ def get_auth_store() -> AuthStore:
     """
     global _auth_store
     if _auth_store is None:
-        if _is_truthy(os.environ.get("USE_POSTGRES")):
+        if env_flag("USE_POSTGRES"):
             from app.services.postgres_auth_store import PostgresAuthStore
 
             _auth_store = PostgresAuthStore()

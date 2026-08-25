@@ -10,8 +10,7 @@ GET /api/v1/risk/vetoes?windowDays=30
 
 from __future__ import annotations
 
-import os
-
+from engine.env import env_flag
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import Field
 
@@ -23,8 +22,7 @@ router = APIRouter(tags=["insights"])
 
 
 def _require_postgres() -> None:
-    v = os.environ.get("USE_POSTGRES")
-    if not (v is not None and v.strip().lower() in ("1", "true", "yes", "on")):
+    if not env_flag("USE_POSTGRES"):
         raise HTTPException(
             status_code=404, detail="insights require the Postgres store (USE_POSTGRES=1)"
         )

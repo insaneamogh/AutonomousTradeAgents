@@ -12,8 +12,9 @@ runnable without infrastructure.
 
 from __future__ import annotations
 
-import os
 from typing import Protocol, runtime_checkable
+
+from engine.env import env_flag
 
 from app.schemas.account import AccountResponse
 from app.schemas.activity import ActivityEntryDto
@@ -49,17 +50,13 @@ class Store(Protocol):
 _store: Store | None = None
 
 
-def _is_truthy(v: str | None) -> bool:
-    return v is not None and v.strip().lower() in ("1", "true", "yes", "on")
-
-
 def get_store() -> Store:
     """Return the active store. Env-driven, idempotent across the process."""
     global _store
     if _store is not None:
         return _store
 
-    if _is_truthy(os.environ.get("USE_POSTGRES")):
+    if env_flag("USE_POSTGRES"):
         from app.services.postgres_store import PostgresStore
         _store = PostgresStore()
     else:

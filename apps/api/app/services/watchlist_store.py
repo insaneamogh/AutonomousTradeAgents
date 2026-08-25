@@ -9,12 +9,15 @@ options can slot in later without a schema rework.
 from __future__ import annotations
 
 import logging
-import os
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Protocol, runtime_checkable
+
+from engine.env import env_flag
+
+from app.core.time import utc_now
 
 logger = logging.getLogger("api.watchlist_store")
 
@@ -59,7 +62,7 @@ class InMemoryWatchlistStore:
             symbol=symbol.upper(),
             asset_class="equity",
             active=True,
-            created_at=datetime.now(UTC),
+            created_at=utc_now(),
         )
         self._items[key] = item
         return item
@@ -151,21 +154,12 @@ class PostgresWatchlistStore:
 _store: WatchlistStore | None = None
 
 
-def _is_truthy(v: str | None) -> bool:
-    return v is not None and v.strip().lower() in ("1", "true", "yes", "on")
-
-
 def get_watchlist_store() -> WatchlistStore:
     global _store
     if _store is not None:
         return _store
-    if _is_truthy(os.environ.get("USE_POSTGRES")):
+    if env_flag("USE_POSTGRES"):
         _store = PostgresWatchlistStore()
     else:
         _store = InMemoryWatchlistStore()
     return _store
-
-
-def reset_watchlist_store_for_tests() -> None:
-    global _store
-    _store = None

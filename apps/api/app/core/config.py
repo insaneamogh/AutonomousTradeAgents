@@ -18,6 +18,7 @@ import os
 from functools import lru_cache
 from typing import Annotated
 
+from engine.env import env_flag
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
@@ -139,17 +140,13 @@ def production_config_problems(settings: Settings) -> list[str]:
             "allow-list (every cross-origin request is denied otherwise)."
         )
 
-    if _truthy(os.environ.get("DEV_AUTH_BYPASS")):
+    if env_flag("DEV_AUTH_BYPASS"):
         problems.append(
             "DEV_AUTH_BYPASS is truthy in production — it is force-disabled at "
             "runtime, but unset it to avoid confusion."
         )
 
     return problems
-
-
-def _truthy(v: str | None) -> bool:
-    return v is not None and v.strip().lower() in ("1", "true", "yes", "on")
 
 
 def require_production_readiness() -> None:

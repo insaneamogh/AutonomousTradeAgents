@@ -39,9 +39,7 @@ Out of scope this round:
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 # ``broker.types`` is pure-stdlib + dataclasses — safe to import at module
@@ -49,6 +47,7 @@ from typing import TYPE_CHECKING
 # yet, so the AlpacaBroker reference is type-only here + via the lazy
 # import in app.services.broker_use.
 from broker.types import OrderRequest, OrderType, Side, TimeInForce
+from engine.env import env_flag
 from engine.risk import (
     DbRiskState,
     PortfolioPosition,
@@ -69,7 +68,6 @@ from app.services.broker_use import (
     BrokerUnavailableError,
     with_broker_client,
 )
-from app.services.broker_store import BrokerConnectionRecord
 from app.services.order_store import (
     claim_decision_for_execution,
     finalize_execution_claim,
@@ -88,9 +86,7 @@ logger = logging.getLogger("api.executor")
 
 def _live_trading_enabled() -> bool:
     """Single switch for real-money orders. Default OFF — paper only."""
-    return os.environ.get("LIVE_TRADING_ENABLED", "").strip().lower() in (
-        "1", "true", "yes", "on",
-    )
+    return env_flag("LIVE_TRADING_ENABLED")
 
 
 class ExecutorError(Exception):
@@ -584,11 +580,6 @@ async def _find_pending_proposal(
     return None
 
 
-def _postgres_active() -> bool:
-    v = os.environ.get("USE_POSTGRES")
-    return v is not None and v.strip().lower() in ("1", "true", "yes", "on")
-
-
 async def _load_db_state_or_fail(user_id: str, current_equity: float | None) -> DbRiskState:
     """Halt + PDT + daily-drawdown state from Postgres — FAIL CLOSED.
 
@@ -599,7 +590,7 @@ async def _load_db_state_or_fail(user_id: str, current_equity: float | None) -> 
     MockStore dev mode (USE_POSTGRES unset) has no halt/PDT tables at all —
     returns defaults with a loud log so a misconfigured prod box is visible.
     """
-    if not _postgres_active():
+    if not env_flag("USE_POSTGRES"):
         logger.warning(
             "executor: USE_POSTGRES is off — halt/PDT state unavailable, "
             "using permissive dev defaults. NEVER run live trading this way."

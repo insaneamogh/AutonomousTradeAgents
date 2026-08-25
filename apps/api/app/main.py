@@ -33,6 +33,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from engine.env import env_flag
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -94,10 +95,6 @@ _init_sentry()
 _DEFAULT_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 
-def _is_truthy(v: str | None) -> bool:
-    return v is not None and v.strip().lower() in ("1", "true", "yes", "on")
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Fail fast in production if critical secrets are missing/default. No-op
@@ -107,8 +104,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     require_production_readiness()
 
     reconciler = None
-    use_pg = _is_truthy(os.environ.get("USE_POSTGRES"))
-    enable_reconciler = _is_truthy(os.environ.get("RECONCILER_ENABLED", "1" if use_pg else "0"))
+    use_pg = env_flag("USE_POSTGRES")
+    enable_reconciler = env_flag("RECONCILER_ENABLED", default=use_pg)
 
     if use_pg and enable_reconciler:
         # Import lazily so MockStore code paths never pull these in.

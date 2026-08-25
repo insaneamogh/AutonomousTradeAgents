@@ -149,9 +149,9 @@ async def test_execution_fails_closed_when_db_state_unreadable(
 ) -> None:
     """Postgres active + risk-state read fails → ExecutorError, no order."""
     monkeypatch.setenv("TRADING_MODE", "live")
+    monkeypatch.setenv("USE_POSTGRES", "true")
     broker = _FakeBroker()
     _patch_broker(monkeypatch, broker)
-    monkeypatch.setattr(executor_mod, "_postgres_active", lambda: True)
 
     async def _boom(*_a: Any, **_kw: Any) -> DbRiskState:
         raise RuntimeError("db is down")

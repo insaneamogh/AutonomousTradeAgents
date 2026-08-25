@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.time import utc_now
 from app.services.auth_store import (
     FIXTURE_USER_EMAIL,
     FIXTURE_USER_ID,
@@ -28,10 +29,6 @@ from engine.db import async_session_factory
 from engine.db.models import MagicLinkToken, User, UserSession
 
 logger = logging.getLogger("api.auth_store.postgres")
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def _user_to_record(u: User) -> UserRecord:
@@ -158,7 +155,7 @@ class PostgresAuthStore:
     async def find_unused_magic_link(self, *, email: str) -> list[MagicLinkRecord]:
         async with self._session_factory() as session:
             await self._ensure_seed(session)
-            now = _now()
+            now = utc_now()
             stmt = select(MagicLinkToken).where(
                 MagicLinkToken.email == email.lower(),
                 MagicLinkToken.used_at.is_(None),
@@ -178,7 +175,7 @@ class PostgresAuthStore:
             result = await session.execute(
                 update(MagicLinkToken)
                 .where(MagicLinkToken.id == mid, MagicLinkToken.used_at.is_(None))
-                .values(used_at=_now())
+                .values(used_at=utc_now())
             )
             await session.commit()
         return bool(result.rowcount)
@@ -234,7 +231,7 @@ class PostgresAuthStore:
             if expected_current_hash is not None:
                 stmt = stmt.where(UserSession.refresh_token_hash == expected_current_hash)
             result = await session.execute(
-                stmt.values(refresh_token_hash=new_refresh_token_hash, last_seen_at=_now())
+                stmt.values(refresh_token_hash=new_refresh_token_hash, last_seen_at=utc_now())
             )
             await session.commit()
             if expected_current_hash is not None and not result.rowcount:
@@ -251,6 +248,6 @@ class PostgresAuthStore:
             await session.execute(
                 update(UserSession)
                 .where(UserSession.id == sid, UserSession.revoked_at.is_(None))
-                .values(revoked_at=_now())
+                .values(revoked_at=utc_now())
             )
             await session.commit()

@@ -32,7 +32,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.core.config import get_settings
-from app.middleware.auth import AuthedUser, get_current_user, require_real_auth
+from app.middleware.auth import AuthedUser, require_real_auth
 from app.schemas.auth import (
     IssuedTokensResponse,
     LogoutRequest,

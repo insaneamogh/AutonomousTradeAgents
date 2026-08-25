@@ -18,9 +18,9 @@ notification fans out.
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Awaitable, Callable
 
+from engine.env import env_flag
 from fastapi import APIRouter, Depends, HTTPException, status as http_status
 
 from app.core.config import get_settings
@@ -46,12 +46,6 @@ logger = logging.getLogger("api.router.agent")
 router = APIRouter(prefix="/agent", tags=["agent"])
 
 
-def _postgres_active() -> bool:
-    """Mirror of the store/memory factories' env switch."""
-    v = os.environ.get("USE_POSTGRES")
-    return v is not None and v.strip().lower() in ("1", "true", "yes", "on")
-
-
 def _equity_resolver(user_id: str):
     """Latest reconciler-snapshot equity for the caller (Postgres only).
 
@@ -61,7 +55,7 @@ def _equity_resolver(user_id: str):
     """
 
     async def _resolve() -> float | None:
-        if not _postgres_active():
+        if not env_flag("USE_POSTGRES"):
             return None
         import uuid as _uuid
 
@@ -125,7 +119,7 @@ async def _execute_council(
     if result["proposal"] is not None:
         # The runtime emits camelCase keys; populate_by_name=True lets Pydantic accept them.
         proposal_dto = ApprovalProposalDto.model_validate(result["proposal"])
-        if not _postgres_active():
+        if not env_flag("USE_POSTGRES"):
             # In-memory decision log (MockStore mode) — that row isn't
             # queryable by list_pending, so keep the legacy write.
             store = get_store()

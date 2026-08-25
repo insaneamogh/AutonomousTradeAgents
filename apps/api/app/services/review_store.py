@@ -7,11 +7,14 @@ pattern as the other Phase 3/4 stores: the API picks the impl via
 
 from __future__ import annotations
 
-import os
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Literal, Protocol, runtime_checkable
+
+from engine.env import env_flag
+
+from app.core.time import utc_now
 
 Grade = Literal["good", "bad", "skip"]
 """Operator's verdict on a completed decision.
@@ -30,7 +33,7 @@ class DecisionReviewRecord:
     operator_user_id: str
     grade: Grade
     notes: str | None = None
-    reviewed_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    reviewed_at: datetime = field(default_factory=lambda: utc_now())
 
 
 @runtime_checkable
@@ -87,7 +90,7 @@ class InMemoryReviewStore:
         notes: str | None = None,
     ) -> DecisionReviewRecord:
         existing = self._find(decision_id, operator_user_id)
-        now = datetime.now(timezone.utc)
+        now = utc_now()
         if existing is not None:
             existing.grade = grade
             existing.notes = notes
@@ -163,7 +166,7 @@ class PostgresReviewStore:
 
         from engine.db.models import DecisionReview
 
-        now = datetime.now(timezone.utc)
+        now = utc_now()
         async with self._session_factory() as session:
             stmt = (
                 pg_insert(DecisionReview)
@@ -254,15 +257,11 @@ class PostgresReviewStore:
 _review_store: ReviewStore | None = None
 
 
-def _is_truthy(v: str | None) -> bool:
-    return v is not None and v.strip().lower() in ("1", "true", "yes", "on")
-
-
 def get_review_store() -> ReviewStore:
     """Process singleton. Postgres when USE_POSTGRES=1, else in-memory."""
     global _review_store
     if _review_store is None:
-        if _is_truthy(os.environ.get("USE_POSTGRES")):
+        if env_flag("USE_POSTGRES"):
             _review_store = PostgresReviewStore()
         else:
             _review_store = InMemoryReviewStore()

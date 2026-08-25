@@ -31,7 +31,6 @@ that makes a double-approve safe (``claim_decision_for_execution``).
 from __future__ import annotations
 
 import logging
-import os
 import threading
 import uuid
 from dataclasses import dataclass
@@ -39,6 +38,11 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
+
+from engine.env import env_flag
+
+from app.core.ids import to_uuid as _to_uuid
+from app.core.time import utc_now
 
 if TYPE_CHECKING:
     from broker.types import Order as BrokerOrder
@@ -52,21 +56,9 @@ logger = logging.getLogger("api.order_store")
 _NY = ZoneInfo("America/New_York")
 
 
-def _postgres_active() -> bool:
-    v = os.environ.get("USE_POSTGRES")
-    return v is not None and v.strip().lower() in ("1", "true", "yes", "on")
-
-
-def _to_uuid(value: str) -> uuid.UUID | None:
-    try:
-        return uuid.UUID(value)
-    except (ValueError, AttributeError, TypeError):
-        return None
-
-
 async def resolve_decision_uuid(proposal_id: str) -> uuid.UUID | None:
     """agent_decisions row UUID for a proposal DTO id (``proposal->>'id'``)."""
-    if not _postgres_active():
+    if not env_flag("USE_POSTGRES"):
         return None
     from engine.db.models import AgentDecision
     from engine.db.session import async_session_factory
@@ -142,7 +134,7 @@ async def load_decision_risk_row(
     proposal, or another user's row. The caller degrades to the proposal
     DTO's own fields and logs that it did.
     """
-    if not _postgres_active():
+    if not env_flag("USE_POSTGRES"):
         return None
 
     uid = _to_uuid(user_id)
@@ -187,7 +179,7 @@ async def had_same_day_entry(*, user_id: str, symbol: str) -> bool:
     inactive — the caller treats that as "unknown", and the dev-mode
     warning about running blind already covers it.
     """
-    if not _postgres_active():
+    if not env_flag("USE_POSTGRES"):
         return False
 
     uid = _to_uuid(user_id)
@@ -270,7 +262,7 @@ async def claim_decision_for_execution(*, user_id: str, proposal_id: str) -> boo
     """
     if not _claim_in_memory(user_id, proposal_id):
         return False
-    if not _postgres_active():
+    if not env_flag("USE_POSTGRES"):
         return True
 
     uid = _to_uuid(user_id)
@@ -314,7 +306,7 @@ async def claim_decision_for_execution(*, user_id: str, proposal_id: str) -> boo
 async def release_execution_claim(*, user_id: str, proposal_id: str) -> None:
     """Undo a claim so a retry can proceed. Best-effort; never raises."""
     _release_in_memory(user_id, proposal_id)
-    if not _postgres_active():
+    if not env_flag("USE_POSTGRES"):
         return
 
     uid = _to_uuid(user_id)
@@ -357,7 +349,7 @@ async def finalize_execution_claim(
     NULL``, and the claim has already moved the row to 'executing'.
     """
     _release_in_memory(user_id, proposal_id)
-    if not _postgres_active():
+    if not env_flag("USE_POSTGRES"):
         return False
 
     uid = _to_uuid(user_id)
@@ -368,7 +360,7 @@ async def finalize_execution_claim(
     from engine.db.session import async_session_factory
     from sqlalchemy import update
 
-    now = datetime.now(UTC)
+    now = utc_now()
     values: dict[str, Any] = {
         "user_response": outcome,
         "user_responded_at": now,
@@ -411,7 +403,7 @@ async def persist_order_submit(
 
     Raises on DB failure — the executor treats that as fail-closed.
     """
-    if not _postgres_active():
+    if not env_flag("USE_POSTGRES"):
         return None
 
     uid = _to_uuid(user_id)
@@ -498,7 +490,7 @@ async def persist_linked_order_submit(
     """Pending ``orders`` row for an order that already knows its decision
     (the position manager's closes). Same idempotency + fail-closed
     semantics as ``persist_order_submit``."""
-    if not _postgres_active():
+    if not env_flag("USE_POSTGRES"):
         return None
 
     uid = _to_uuid(user_id)
@@ -548,7 +540,7 @@ async def persist_order_result(
     """Update the row with the broker's acknowledgement + propagate fills to
     the decision. Caller logs-and-continues on raise (order already placed;
     the order poller heals the row on its next pass)."""
-    if not _postgres_active():
+    if not env_flag("USE_POSTGRES"):
         return
 
     from engine.db.models import AgentDecision, Order
@@ -600,26 +592,3 @@ async def persist_order_result(
         "order_store: order %s updated — status=%s filled=%d",
         order_row_id, status, broker_order.filled_qty,
     )
-
-
-async def mark_order_rejected(*, order_row_id: uuid.UUID, reason: str) -> None:
-    """Record a broker rejection. Best-effort (caller logs on raise)."""
-    if not _postgres_active():
-        return
-
-    from engine.db.models import Order
-    from engine.db.session import async_session_factory
-    from sqlalchemy import update
-
-    factory = async_session_factory()
-    async with factory() as session:
-        await session.execute(
-            update(Order)
-            .where(Order.id == order_row_id)
-            .values(
-                status="rejected",
-                rejected_reason=reason[:2000],
-                canceled_at=datetime.now(UTC),
-            )
-        )
-        await session.commit()

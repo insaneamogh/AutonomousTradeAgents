@@ -7,8 +7,7 @@ GET /api/v1/decisions/{decision_id}/timeline
 
 from __future__ import annotations
 
-import os
-
+from engine.env import env_flag
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.middleware.auth import AuthedUser, get_current_user
@@ -16,11 +15,6 @@ from app.schemas.decisions import DecisionTimelineResponse, TimelineEventDto
 from app.services.biography_service import build_biography
 
 router = APIRouter(prefix="/decisions", tags=["decisions"])
-
-
-def _postgres_active() -> bool:
-    v = os.environ.get("USE_POSTGRES")
-    return v is not None and v.strip().lower() in ("1", "true", "yes", "on")
 
 
 @router.get(
@@ -32,7 +26,7 @@ async def timeline(
     decision_id: str,
     user: AuthedUser = Depends(get_current_user),
 ) -> DecisionTimelineResponse:
-    if not _postgres_active():
+    if not env_flag("USE_POSTGRES"):
         raise HTTPException(
             status_code=404,
             detail="decision timelines require the Postgres store (USE_POSTGRES=1)",

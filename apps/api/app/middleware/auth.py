@@ -23,13 +23,13 @@ make sense with a real session), use ``require_real_auth`` instead.
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
 
+from engine.env import env_flag
 from fastapi import Depends, HTTPException, Request, status
 
 from app.core.config import get_settings
+from app.core.time import utc_now
 from app.services.auth_store import (
     FIXTURE_USER_EMAIL,
     FIXTURE_USER_ID,
@@ -40,10 +40,6 @@ from app.services.auth_store import (
 from app.services.jwt_service import TokenError, verify_access
 
 logger = logging.getLogger("api.auth.middleware")
-
-
-def _is_truthy(v: str | None) -> bool:
-    return v is not None and v.strip().lower() in ("1", "true", "yes", "on")
 
 
 def _dev_bypass_enabled() -> bool:
@@ -59,7 +55,7 @@ def _dev_bypass_enabled() -> bool:
     forgets to set DEV_AUTH_BYPASS=0 must NEVER silently accept
     unauthenticated requests.
     """
-    requested = _is_truthy(os.environ.get("DEV_AUTH_BYPASS"))
+    requested = env_flag("DEV_AUTH_BYPASS")
     if get_settings().is_production:
         if requested:
             logger.warning(
@@ -146,7 +142,7 @@ async def get_current_user(
             if (
                 session is None
                 or session.revoked_at is not None
-                or session.expires_at < datetime.now(timezone.utc)
+                or session.expires_at < utc_now()
             ):
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,

@@ -25,8 +25,11 @@ data simply isn't there yet (fresh server, no council runs).
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
+from engine.env import env_flag
+
+from app.core.time import utc_now
 from app.schemas.health import ComponentHealth, HealthResponse
 from app.services.broker_store import BrokerStore, get_broker_store
 from app.services.store import Store, get_store
@@ -34,14 +37,10 @@ from app.services.store import Store, get_store
 logger = logging.getLogger("api.health")
 
 
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
 def _format_age(dt: datetime | None) -> str:
     if dt is None:
         return "never"
-    delta = _now() - dt
+    delta = utc_now() - dt
     if delta.total_seconds() < 60:
         return f"{int(delta.total_seconds())}s ago"
     if delta.total_seconds() < 3600:
@@ -71,11 +70,11 @@ async def _council_health(store: Store) -> ComponentHealth:
 
     last = activity[0]
     last_dt = last.timestamp
-    cutoff = _now() - timedelta(hours=24)
+    cutoff = utc_now() - timedelta(hours=24)
     today_count = sum(1 for a in activity if a.timestamp >= cutoff)
 
     # Stale if no run in the last 4 hours of business time (rough).
-    if last_dt < _now() - timedelta(hours=8):
+    if last_dt < utc_now() - timedelta(hours=8):
         status = "warning"
     else:
         status = "ok"
@@ -98,7 +97,7 @@ async def _approvals_health(store: Store) -> ComponentHealth:
         return ComponentHealth(status="ok", label="Inbox clear")
 
     oldest = min(pending, key=lambda p: p.proposed_at)
-    age_s = (_now() - oldest.proposed_at).total_seconds()
+    age_s = (utc_now() - oldest.proposed_at).total_seconds()
 
     # Approvals get stale fast — 15-min default expiry. Warn at 10m.
     if age_s > 600:
@@ -147,9 +146,7 @@ async def _reconciler_health() -> ComponentHealth:
     don't have a real tick to read; we return "unknown" so the UI shows
     a muted pill instead of a misleading green one.
     """
-    import os
-
-    if not _is_truthy(os.environ.get("USE_POSTGRES")):
+    if not env_flag("USE_POSTGRES"):
         return ComponentHealth(
             status="unknown",
             label="Reconciler runs only when USE_POSTGRES=1",
@@ -188,7 +185,7 @@ async def _reconciler_health() -> ComponentHealth:
         )
 
     # Reconciler default interval is 30s; warn if older than ~3 cycles.
-    age_s = (_now() - snap.captured_at).total_seconds()
+    age_s = (utc_now() - snap.captured_at).total_seconds()
     status = "ok" if age_s < 120 else "warning"
     return ComponentHealth(
         status=status,
@@ -250,10 +247,6 @@ async def _llm_cost_health() -> ComponentHealth:
     )
 
 
-def _is_truthy(v: str | None) -> bool:
-    return v is not None and v.strip().lower() in ("1", "true", "yes", "on")
-
-
 # ─────────────────────────────────────────────────────────────────────
 # Public
 # ─────────────────────────────────────────────────────────────────────
@@ -276,5 +269,5 @@ async def build_health_report(*, user_id: str) -> HealthResponse:
         broker=broker,
         reconciler=reconciler,
         llm_cost=llm_cost,
-        generated_at=_now(),
+        generated_at=utc_now(),
     )

@@ -15,10 +15,13 @@ Postgres-only — MockStore dev mode is never halted.
 from __future__ import annotations
 
 import logging
-import os
-import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
+
+from engine.env import env_flag
+
+from app.core.ids import to_uuid as _to_uuid
+from app.core.time import utc_now
 
 logger = logging.getLogger("api.circuit_breaker")
 
@@ -35,21 +38,9 @@ class CircuitBreakerStatus:
 _NORMAL = CircuitBreakerStatus(halted=False)
 
 
-def _postgres_active() -> bool:
-    v = os.environ.get("USE_POSTGRES")
-    return v is not None and v.strip().lower() in ("1", "true", "yes", "on")
-
-
-def _to_uuid(value: str) -> uuid.UUID | None:
-    try:
-        return uuid.UUID(value)
-    except (ValueError, AttributeError, TypeError):
-        return None
-
-
 async def get_status(user_id: str) -> CircuitBreakerStatus:
     """Current breaker state for the user. Halted only while status=='halted'."""
-    if not _postgres_active():
+    if not env_flag("USE_POSTGRES"):
         return _NORMAL
     uid = _to_uuid(user_id)
     if uid is None:
@@ -82,7 +73,7 @@ async def acknowledge(user_id: str) -> CircuitBreakerStatus:
     """User acknowledges the drawdown halt → flip to manual_override so new
     BUYs are allowed again, stamping who/when for the audit trail. Idempotent
     (no-op if not currently halted)."""
-    if not _postgres_active():
+    if not env_flag("USE_POSTGRES"):
         return _NORMAL
     uid = _to_uuid(user_id)
     if uid is None:
@@ -99,7 +90,7 @@ async def acknowledge(user_id: str) -> CircuitBreakerStatus:
             .where(CircuitBreakerState.user_id == uid, CircuitBreakerState.status == "halted")
             .values(
                 status="manual_override",
-                acknowledged_at=datetime.now(timezone.utc),
+                acknowledged_at=utc_now(),
                 acknowledged_by_user_id=uid,
             )
         )

@@ -23,18 +23,15 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from trading_agents.memory import get_confidence_store, get_decision_log
 from trading_agents.strategies import STRATEGY_REGISTRY
 
+from app.core.time import utc_now
 from app.schemas.strategies import StrategiesPerformanceResponse, StrategyPerformanceDto
 
 logger = logging.getLogger("api.strategies_perf")
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 @dataclass
@@ -61,7 +58,7 @@ async def build_strategies_performance(
     decision_log = get_decision_log()
     confidence_store = get_confidence_store()
 
-    cutoff = _now() - timedelta(days=window_days)
+    cutoff = utc_now() - timedelta(days=window_days)
 
     try:
         decisions = await decision_log.all_decisions(user_id=user_id)
@@ -131,5 +128,5 @@ async def build_strategies_performance(
     return StrategiesPerformanceResponse(
         window_days=window_days,
         strategies=rows,
-        generated_at=_now(),
+        generated_at=utc_now(),
     )
