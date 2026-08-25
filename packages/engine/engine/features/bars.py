@@ -56,15 +56,28 @@ class AlpacaDailyBarsProvider:
         if cached is not None:
             return cached
 
+        from alpaca.data.enums import DataFeed
         from alpaca.data.requests import StockBarsRequest
         from alpaca.data.timeframe import TimeFrame
 
         start = today - timedelta(days=lookback_days)
+        # ``feed=IEX`` is required, not cosmetic: without it alpaca-py asks
+        # for the SIP consolidated tape, which a free/paper data plan
+        # rejects outright ("subscription does not permit querying recent
+        # SIP data") — the whole council then 500s. IEX is the free tier's
+        # entitled feed and is more than adequate for daily bars.
+        #
+        # ``end`` is yesterday for the same reason: SIP-vs-IEX aside,
+        # free plans embargo the most recent 15 minutes, and asking for
+        # today's partial (still-forming) daily bar is both restricted and
+        # wrong for swing signals — a half-day candle would skew every
+        # moving average and ATR the analysts read.
         req = StockBarsRequest(
             symbol_or_symbols=sym,
             timeframe=TimeFrame.Day,
             start=datetime.combine(start, time.min, tzinfo=UTC),
-            end=datetime.combine(today, time.max, tzinfo=UTC),
+            end=datetime.combine(today - timedelta(days=1), time.max, tzinfo=UTC),
+            feed=DataFeed.IEX,
         )
         raw = await asyncio.to_thread(self._get_client().get_stock_bars, req)
         data = raw.data.get(sym, [])

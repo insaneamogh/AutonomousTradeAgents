@@ -32,14 +32,20 @@ class AlpacaPriceProvider:
         return self._client
 
     async def daily_closes(self, symbol: str, start: date, end: date) -> list[DailyClose]:
+        from alpaca.data.enums import DataFeed
         from alpaca.data.requests import StockBarsRequest
         from alpaca.data.timeframe import TimeFrame
 
+        # feed=IEX is mandatory on the free/paper data plan — the default
+        # (SIP consolidated tape) is rejected with "subscription does not
+        # permit querying recent SIP data". Ghost marks are daily closes,
+        # so IEX resolution is fine.
         req = StockBarsRequest(
             symbol_or_symbols=symbol.upper(),
             timeframe=TimeFrame.Day,
             start=datetime.combine(start, time.min, tzinfo=UTC),
             end=datetime.combine(end, time.max, tzinfo=UTC),
+            feed=DataFeed.IEX,
         )
         # alpaca-py is sync — run in a thread so the evaluator stays async.
         bars = await asyncio.to_thread(self._get_client().get_stock_bars, req)
