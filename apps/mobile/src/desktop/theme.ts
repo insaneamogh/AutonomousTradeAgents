@@ -429,6 +429,34 @@ export const PLATINUM_CSS = `
   font-size: 13px; line-height: 1.6; color: var(--pg-outline);
   margin: 0 auto; max-width: 46ch;
 }
+/* Ticker typeahead — floats over the card, so it needs its own
+   surface rather than inheriting the transparent glass fill. */
+.pg-typeahead {
+  position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 40;
+  margin: 0; padding: 4px; list-style: none;
+  max-height: 268px; overflow-y: auto;
+  background: var(--pg-surface-low);
+  border: 1px solid var(--pg-card-border);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+}
+.pg-typeahead-row {
+  display: flex; align-items: baseline; gap: 10px;
+  width: 100%; padding: 9px 10px;
+  background: transparent; border: 0; border-radius: 8px;
+  text-align: left; cursor: pointer; color: inherit;
+}
+.pg-typeahead-row.is-active { background: var(--pg-surface-high); }
+.pg-typeahead-row:focus-visible { outline: 2px solid var(--pg-primary); outline-offset: -2px; }
+.pg-typeahead-sym {
+  font-family: 'Space Grotesk', ui-monospace, monospace;
+  font-size: 13px; font-weight: 600; letter-spacing: 0.02em;
+  color: var(--pg-on-surface); flex: 0 0 auto; min-width: 52px;
+}
+.pg-typeahead-name {
+  font-size: 12px; color: var(--pg-outline);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .pg-table { width: 100%; border-collapse: collapse; }
 .pg-table th {
   text-align: left; padding: 0 10px 10px;

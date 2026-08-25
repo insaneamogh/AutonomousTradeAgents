@@ -393,3 +393,33 @@ async def lookup_asset(symbol: str, *, api_key: str, secret_key: str) -> AssetIn
 
     _ = GetAssetsRequest  # imported for callers that want to list; keep the dep explicit
     return await asyncio.to_thread(_fetch)
+
+
+async def list_tradable_assets(*, api_key: str, secret_key: str) -> list[AssetInfo]:
+    """Every active, tradable US equity/ETF the broker will accept.
+
+    ~13.4k rows, ~2s over the wire. Callers are expected to cache this —
+    the set changes on listing/delisting, i.e. daily at most, so hitting
+    Alpaca per keystroke would be absurd.
+    """
+    from alpaca.trading.client import TradingClient
+    from alpaca.trading.enums import AssetClass, AssetStatus
+    from alpaca.trading.requests import GetAssetsRequest
+
+    def _fetch() -> list[AssetInfo]:
+        client = TradingClient(api_key=api_key, secret_key=secret_key, paper=True)
+        assets = client.get_all_assets(
+            GetAssetsRequest(status=AssetStatus.ACTIVE, asset_class=AssetClass.US_EQUITY)
+        )
+        return [
+            AssetInfo(
+                symbol=str(a.symbol),
+                name=str(getattr(a, "name", "") or ""),
+                tradable=True,
+                fractionable=bool(getattr(a, "fractionable", False)),
+            )
+            for a in assets
+            if getattr(a, "tradable", False)
+        ]
+
+    return await asyncio.to_thread(_fetch)

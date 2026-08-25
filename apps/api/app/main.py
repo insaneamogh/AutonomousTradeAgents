@@ -55,6 +55,7 @@ from app.routers import (
     portfolio,
     positions,
     review,
+    symbols,
 )
 from app.routers import (
     health as health_router,
@@ -167,6 +168,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 "env broker bootstrap: %d/%d users linked to Alpaca paper",
                 created, len(user_ids),
             )
+
+        # Warm the ticker universe so the first typeahead keystroke isn't
+        # a 6s wait. Best-effort: search degrades to empty, never 500s.
+        from app.services.broker.symbol_search import warm_symbol_cache
+
+        try:
+            n = await warm_symbol_cache()
+            if n:
+                logger.info("symbol search ready: %d tradable tickers", n)
+        except Exception:
+            logger.exception("symbol cache warm failed — search will lazy-load")
 
         # Per-user reconciliation against the REAL broker. The mock-poller
         # fallback only exists off-production so a local box with no broker
@@ -364,6 +376,7 @@ app.include_router(circuit_breaker.router, prefix="/api/v1")
 app.include_router(health_router.router, prefix="/api/v1")
 app.include_router(strategies_router.router, prefix="/api/v1")
 app.include_router(review.router, prefix="/api/v1")
+app.include_router(symbols.router, prefix="/api/v1")
 app.include_router(decisions.router, prefix="/api/v1")
 app.include_router(insights.router, prefix="/api/v1")
 app.include_router(watchlist_router.router, prefix="/api/v1")

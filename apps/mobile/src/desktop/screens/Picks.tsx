@@ -5,10 +5,11 @@
  * `useWatchlist` / `useStartCouncilRun` hooks. Nothing new is fetched.
  */
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 
 import { usePendingApprovals } from '@/hooks/useApprovals';
 import { useStartCouncilRun } from '@/hooks/useCouncilRun';
+import { useSymbolSearch } from '@/hooks/useSymbolSearch';
 import { useWatchlist } from '@/hooks/useWatchlist';
 import type { ApprovalProposalDto } from '@app/shared-types';
 
@@ -160,14 +161,41 @@ function CouncilLauncher() {
   const start = useStartCouncilRun();
   const { go } = useNav();
   const [symbol, setSymbol] = useState('');
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Typeahead over the broker's tradable universe. Picking from real
+  // symbols is what stops "apple" ever reaching the council.
+  const results = useSymbolSearch(symbol, { limit: 8 });
+  const hits = results.data ?? [];
 
   const run = (raw: string) => {
     const ticker = raw.trim().toUpperCase();
     if (!ticker) return;
+    setOpen(false);
     start.mutate(
       { symbol: ticker, horizon: 'short' },
       { onSuccess: (res) => go({ name: 'council', runId: res.runId, symbol: res.symbol }) },
     );
+  };
+
+  /** Arrow/Enter/Escape over the suggestion list. */
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!open || hits.length === 0) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setActive((i) => (i + 1) % hits.length);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setActive((i) => (i - 1 + hits.length) % hits.length);
+    } else if (e.key === 'Enter') {
+      // Enter commits the highlighted suggestion rather than the raw text.
+      e.preventDefault();
+      run(hits[active].symbol);
+    } else if (e.key === 'Escape') {
+      setOpen(false);
+    }
   };
 
   return (
@@ -192,15 +220,55 @@ function CouncilLauncher() {
         }}
         style={{ display: 'flex', gap: 8 }}
       >
-        <input
-          className="pg-input"
-          style={{ flex: 1, minWidth: 0 }}
-          value={symbol}
-          onChange={(e) => setSymbol(e.target.value)}
-          placeholder="Ticker, e.g. NVDA"
-          aria-label="Ticker to run the council on"
-          maxLength={8}
-        />
+        <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
+          <input
+            className="pg-input"
+            style={{ width: '100%' }}
+            value={symbol}
+            onChange={(e) => {
+              setSymbol(e.target.value);
+              setActive(0);
+              setOpen(true);
+            }}
+            onFocus={() => setOpen(true)}
+            onBlur={() => {
+              // Delay so a mousedown on a suggestion lands before the
+              // list unmounts.
+              blurTimer.current = setTimeout(() => setOpen(false), 120);
+            }}
+            onKeyDown={onKeyDown}
+            placeholder="Search ticker or company"
+            aria-label="Search for a ticker or company to run the council on"
+            role="combobox"
+            aria-expanded={open && hits.length > 0}
+            aria-autocomplete="list"
+            aria-controls="symbol-suggestions"
+            autoComplete="off"
+            maxLength={40}
+          />
+          {open && hits.length > 0 ? (
+            <ul id="symbol-suggestions" role="listbox" className="pg-typeahead">
+              {hits.map((h, i) => (
+                <li key={h.symbol} role="option" aria-selected={i === active}>
+                  <button
+                    type="button"
+                    className={`pg-typeahead-row${i === active ? ' is-active' : ''}`}
+                    onMouseEnter={() => setActive(i)}
+                    onMouseDown={(e) => {
+                      // mousedown, not click: fires before blur.
+                      e.preventDefault();
+                      if (blurTimer.current) clearTimeout(blurTimer.current);
+                      run(h.symbol);
+                    }}
+                  >
+                    <span className="pg-typeahead-sym">{h.symbol}</span>
+                    <span className="pg-typeahead-name">{h.name}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
         <Button kind="primary" type="submit" disabled={start.isPending || symbol.trim().length === 0} ariaLabel="Start council run">
           {start.isPending ? 'Starting…' : 'Run'}
         </Button>
