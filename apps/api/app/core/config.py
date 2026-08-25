@@ -18,10 +18,10 @@ import os
 from functools import lru_cache
 from typing import Annotated
 
-from engine.env import env_flag
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from engine.env import env_flag
 
 _PRODUCTION_ENVS: set[str] = {"prod", "production", "live"}
 

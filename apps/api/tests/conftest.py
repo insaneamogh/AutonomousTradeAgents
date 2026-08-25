@@ -14,7 +14,7 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _reset_login_rate_limit() -> None:
-    from app.services.rate_limit import reset_rate_limit_for_tests
+    from app.services.auth.rate_limit import reset_rate_limit_for_tests
 
     reset_rate_limit_for_tests()
     yield

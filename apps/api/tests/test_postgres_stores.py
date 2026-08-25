@@ -50,7 +50,7 @@ pytestmark = pytest.mark.skipif(
 
 
 async def test_postgres_auth_store_upsert_and_get() -> None:
-    from app.services.postgres_auth_store import PostgresAuthStore
+    from app.services.auth.postgres_auth_store import PostgresAuthStore
 
     store = PostgresAuthStore()
     email = f"auth-{secrets.token_hex(4)}@example.com"
@@ -70,7 +70,7 @@ async def test_postgres_auth_store_upsert_and_get() -> None:
 
 
 async def test_postgres_auth_store_session_rotate_then_revoke() -> None:
-    from app.services.postgres_auth_store import PostgresAuthStore
+    from app.services.auth.postgres_auth_store import PostgresAuthStore
 
     store = PostgresAuthStore()
     user = await store.upsert_user(f"session-{secrets.token_hex(4)}@example.com")
@@ -97,7 +97,7 @@ async def test_postgres_auth_store_session_rotate_then_revoke() -> None:
 
 
 async def test_postgres_auth_store_magic_link_single_use() -> None:
-    from app.services.postgres_auth_store import PostgresAuthStore
+    from app.services.auth.postgres_auth_store import PostgresAuthStore
 
     store = PostgresAuthStore()
     email = f"magic-{secrets.token_hex(4)}@example.com"
@@ -120,8 +120,8 @@ async def test_postgres_auth_store_magic_link_single_use() -> None:
 
 
 async def test_postgres_broker_store_upsert_list_revoke() -> None:
-    from app.services.postgres_auth_store import PostgresAuthStore
-    from app.services.postgres_broker_store import PostgresBrokerStore
+    from app.services.auth.postgres_auth_store import PostgresAuthStore
+    from app.services.broker.postgres_broker_store import PostgresBrokerStore
 
     auth = PostgresAuthStore()
     user = await auth.upsert_user(f"broker-{secrets.token_hex(4)}@example.com")
@@ -166,8 +166,8 @@ async def test_postgres_broker_store_upsert_list_revoke() -> None:
 
 
 async def test_postgres_notification_store_register_idempotent_and_revoke_by_token() -> None:
-    from app.services.postgres_auth_store import PostgresAuthStore
-    from app.services.postgres_notification_store import PostgresNotificationStore
+    from app.services.auth.postgres_auth_store import PostgresAuthStore
+    from app.services.notifications.postgres_notification_store import PostgresNotificationStore
 
     auth = PostgresAuthStore()
     user = await auth.upsert_user(f"push-{secrets.token_hex(4)}@example.com")

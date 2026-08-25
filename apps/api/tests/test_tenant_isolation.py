@@ -27,8 +27,8 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("DEV_AUTH_BYPASS", "1")
 
 from app.main import app
-from app.services.auth_store import reset_auth_store_for_tests
-from app.services.review_store import reset_review_store_for_tests
+from app.services.auth.auth_store import reset_auth_store_for_tests
+from app.services.council.review_store import reset_review_store_for_tests
 from trading_agents.memory import (
     DecisionEntry,
     get_decision_log,
@@ -285,7 +285,8 @@ def test_ghost_builders_filter_on_user_id(
 ) -> None:
     """The emitted SQL must constrain agent_decisions.user_id."""
     import anyio
-    from app.services import ghost_service
+
+    from app.services.council import ghost_service
 
     session = _CapturingSession()
     monkeypatch.setattr(ghost_service, "async_session_factory", lambda: lambda: session)
@@ -302,7 +303,8 @@ def test_ghost_builders_return_empty_for_unknown_tenant(
 ) -> None:
     """A malformed user id must degrade to "no rows", never to "every row"."""
     import anyio
-    from app.services import ghost_service
+
+    from app.services.council import ghost_service
 
     session = _CapturingSession()
     monkeypatch.setattr(ghost_service, "async_session_factory", lambda: lambda: session)
@@ -322,7 +324,8 @@ def test_biography_refuses_a_row_owned_by_another_user(
     import uuid as _uuid
 
     import anyio
-    from app.services import biography_service
+
+    from app.services.council import biography_service
 
     owner = _uuid.UUID("11111111-1111-1111-1111-111111111111")
     intruder = "22222222-2222-2222-2222-222222222222"
@@ -347,6 +350,7 @@ def test_biography_refuses_a_row_owned_by_another_user(
 
 def test_biography_rejects_malformed_decision_id() -> None:
     import anyio
-    from app.services.biography_service import build_biography
+
+    from app.services.council.biography_service import build_biography
 
     assert anyio.run(lambda: build_biography("../../etc/passwd", user_id="whoever")) is None

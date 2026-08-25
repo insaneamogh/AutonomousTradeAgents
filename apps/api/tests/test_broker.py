@@ -22,11 +22,10 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("DEV_AUTH_BYPASS", "1")
 
 from app.main import app  # noqa: E402
-from app.services import alpaca_oauth, crypto  # noqa: E402
-from app.services.auth_store import reset_auth_store_for_tests  # noqa: E402
-from app.services.broker_store import reset_broker_store_for_tests  # noqa: E402
-from app.services.jwt_service import mint_access  # noqa: E402
-
+from app.services.auth.auth_store import reset_auth_store_for_tests  # noqa: E402
+from app.services.auth.jwt_service import mint_access  # noqa: E402
+from app.services.broker import alpaca_oauth, crypto  # noqa: E402
+from app.services.broker.broker_store import reset_broker_store_for_tests  # noqa: E402
 
 # ─────────────────────────────────────────────────────────────────────
 # Test plumbing

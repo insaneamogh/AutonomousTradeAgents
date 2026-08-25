@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends
 
 from app.middleware.auth import AuthedUser, get_current_user
 from app.schemas.health import HealthResponse
-from app.services.health import build_health_report
+from app.services.platform.health import build_health_report
 
 router = APIRouter(prefix="/health", tags=["health"])
 

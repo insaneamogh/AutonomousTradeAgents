@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.middleware.auth import AuthedUser, get_current_user, require_real_auth
 from app.schemas.positions import ClosePositionResponse, OpenPositionDto
-from app.services.positions_service import list_open_positions
+from app.services.orders.positions_service import list_open_positions
 
 logger = logging.getLogger("api.router.positions")
 
@@ -53,9 +53,8 @@ async def close_position(
 ) -> ClosePositionResponse:
     """Flatten the position behind ``decision_id`` now. Idempotent-ish: a
     close already in flight returns 409 rather than double-submitting."""
+    from app.services.orders.position_manager import close_position_now
     from engine.db.session import async_session_factory
-
-    from app.services.position_manager import close_position_now
 
     result = await close_position_now(
         user_id=user.id,

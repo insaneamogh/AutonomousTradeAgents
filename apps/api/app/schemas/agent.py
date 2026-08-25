@@ -8,7 +8,7 @@ from pydantic import Field, field_validator
 
 from app.schemas.approvals import ApprovalProposalDto
 from app.schemas.base import CamelCaseModel
-from app.services.watchlist_store import SYMBOL_RE
+from app.services.council.watchlist_store import SYMBOL_RE
 
 # Same shape the watchlist route already enforces — a US equity/ETF ticker
 # and nothing else. Reused verbatim so the two entry points can't drift.

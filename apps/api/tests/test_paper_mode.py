@@ -20,15 +20,15 @@ os.environ.setdefault("DEV_AUTH_BYPASS", "1")
 
 from app.main import app  # noqa: E402
 from app.schemas.approvals import ApprovalProposalDto  # noqa: E402
-from app.services.auth_store import reset_auth_store_for_tests  # noqa: E402
-from app.services.broker_store import reset_broker_store_for_tests  # noqa: E402
-from app.services.executor import execute_proposal  # noqa: E402
-from app.services.paper_broker import (  # noqa: E402
+from app.services.auth.auth_store import reset_auth_store_for_tests  # noqa: E402
+from app.services.broker.broker_store import reset_broker_store_for_tests  # noqa: E402
+from app.services.council.store import get_store, reset_store_for_tests  # noqa: E402
+from app.services.orders.executor import execute_proposal  # noqa: E402
+from app.services.orders.paper_broker import (  # noqa: E402
     get_paper_store,
     reset_paper_store_for_tests,
     trading_mode,
 )
-from app.services.store import get_store, reset_store_for_tests  # noqa: E402
 
 USER = "00000000-0000-0000-0000-000000000001"
 

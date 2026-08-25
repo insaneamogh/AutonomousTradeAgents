@@ -19,14 +19,14 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.middleware.auth import AuthedUser, require_real_auth
 from app.schemas.orders import ExecuteResponse
-from app.services.broker_use import BrokerUnavailableError
-from app.services.crypto import is_available as crypto_available
-from app.services.executor import (
+from app.services.broker.broker_use import BrokerUnavailableError
+from app.services.broker.crypto import is_available as crypto_available
+from app.services.orders.executor import (
     ExecutorError,
     ProposalNotFound,
     execute_proposal,
 )
-from app.services.paper_broker import trading_mode
+from app.services.orders.paper_broker import trading_mode
 
 logger = logging.getLogger("api.router.orders")
 

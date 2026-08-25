@@ -28,10 +28,10 @@ import pytest
 os.environ.setdefault("DEV_AUTH_BYPASS", "1")
 
 from app.schemas.approvals import ApprovalProposalDto
-from app.services import executor as executor_mod
-from app.services.broker_store import BrokerConnectionRecord
-from app.services.executor import ExecutorError, execute_proposal
-from app.services.mock_store import MockStore
+from app.services.broker.broker_store import BrokerConnectionRecord
+from app.services.council.mock_store import MockStore
+from app.services.orders import executor as executor_mod
+from app.services.orders.executor import ExecutorError, execute_proposal
 from engine.risk import DbRiskState
 
 USER_ID = "00000000-0000-0000-0000-000000000001"

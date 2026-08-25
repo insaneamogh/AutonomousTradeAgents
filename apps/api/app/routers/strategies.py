@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, Query
 
 from app.middleware.auth import AuthedUser, get_current_user
 from app.schemas.strategies import StrategiesPerformanceResponse
-from app.services.strategies_perf import build_strategies_performance
+from app.services.council.strategies_perf import build_strategies_performance
 
 router = APIRouter(prefix="/strategies", tags=["strategies"])
 

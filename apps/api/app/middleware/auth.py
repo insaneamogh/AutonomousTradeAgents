@@ -25,19 +25,19 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from engine.env import env_flag
 from fastapi import Depends, HTTPException, Request, status
 
 from app.core.config import get_settings
 from app.core.time import utc_now
-from app.services.auth_store import (
+from app.services.auth.auth_store import (
     FIXTURE_USER_EMAIL,
     FIXTURE_USER_ID,
     AuthStore,
     UserRecord,
     get_auth_store,
 )
-from app.services.jwt_service import TokenError, verify_access
+from app.services.auth.jwt_service import TokenError, verify_access
+from engine.env import env_flag
 
 logger = logging.getLogger("api.auth.middleware")
 

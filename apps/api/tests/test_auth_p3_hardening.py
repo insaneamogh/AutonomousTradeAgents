@@ -25,9 +25,9 @@ from datetime import UTC
 
 from app.core.config import get_settings
 from app.main import app
-from app.services.auth_store import reset_auth_store_for_tests
-from app.services.jwt_service import mint_access, verify_access
-from app.services.rate_limit import (
+from app.services.auth.auth_store import reset_auth_store_for_tests
+from app.services.auth.jwt_service import mint_access, verify_access
+from app.services.auth.rate_limit import (
     VERIFY_EMAIL_LIMIT,
     reset_rate_limit_for_tests,
 )
@@ -88,9 +88,9 @@ async def test_magic_link_hashing_runs_off_the_event_loop(
     import threading
     from datetime import datetime, timedelta
 
-    from app.services import auth as auth_svc
-    from app.services.auth_store import MockAuthStore
-    from app.services.jwt_service import hash_token, new_opaque_token
+    from app.services.auth import auth as auth_svc
+    from app.services.auth.auth_store import MockAuthStore
+    from app.services.auth.jwt_service import hash_token, new_opaque_token
 
     loop_thread = threading.get_ident()
     hashing_threads: list[int] = []
@@ -170,7 +170,7 @@ def test_previous_secret_verifies_but_never_signs(
 
     # Without the rotation env, the old token is dead.
     monkeypatch.delenv("JWT_SECRET_PREVIOUS", raising=False)
-    from app.services.jwt_service import TokenError
+    from app.services.auth.jwt_service import TokenError
 
     with pytest.raises(TokenError):
         verify_access(secret=new, token=token)
@@ -191,7 +191,7 @@ def test_rotation_still_rejects_garbage_signatures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("JWT_SECRET_PREVIOUS", "old-secret,older-secret")
-    from app.services.jwt_service import TokenError
+    from app.services.auth.jwt_service import TokenError
 
     good = mint_access(secret="current-secret", user_id="u-2")
     tampered = good.rsplit(".", 1)[0] + ".AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"

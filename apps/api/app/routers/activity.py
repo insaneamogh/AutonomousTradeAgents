@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Query
 
 from app.middleware.auth import AuthedUser, get_current_user
 from app.schemas.activity import ActivityEntryDto
-from app.services.store import get_store
+from app.services.council.store import get_store
 
 router = APIRouter(prefix="/activity", tags=["activity"])
 

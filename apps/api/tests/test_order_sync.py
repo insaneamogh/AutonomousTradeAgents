@@ -19,7 +19,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-from app.services.order_sync import _apply_decision_lifecycle
+from app.services.orders.order_sync import _apply_decision_lifecycle
 
 
 def _decision(**overrides: Any) -> SimpleNamespace:

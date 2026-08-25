@@ -22,7 +22,7 @@ os.environ.setdefault("DEV_AUTH_BYPASS", "1")
 from app.core.config import get_settings, production_config_problems  # noqa: E402
 from app.main import app  # noqa: E402
 from app.middleware.auth import _dev_bypass_enabled  # noqa: E402
-from app.services.auth_store import reset_auth_store_for_tests  # noqa: E402
+from app.services.auth.auth_store import reset_auth_store_for_tests  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -163,7 +163,7 @@ def test_logout_ignores_foreign_refresh_token(client: TestClient) -> None:
 async def test_rotate_session_is_compare_and_swap() -> None:
     from datetime import datetime, timedelta, timezone
 
-    from app.services.auth_store import MockAuthStore
+    from app.services.auth.auth_store import MockAuthStore
 
     store = MockAuthStore()
     sess = await store.create_session(
@@ -190,7 +190,7 @@ async def test_rotate_session_is_compare_and_swap() -> None:
 async def test_mark_magic_link_used_claims_once() -> None:
     from datetime import datetime, timedelta, timezone
 
-    from app.services.auth_store import MockAuthStore
+    from app.services.auth.auth_store import MockAuthStore
 
     store = MockAuthStore()
     link = await store.create_magic_link(

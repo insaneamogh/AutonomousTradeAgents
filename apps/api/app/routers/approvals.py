@@ -21,13 +21,13 @@ from app.schemas.approvals import (
     DecisionRequest,
     DecisionResponse,
 )
-from app.services.broker_use import BrokerUnavailableError
-from app.services.executor import (
+from app.services.broker.broker_use import BrokerUnavailableError
+from app.services.council.store import get_store
+from app.services.orders.executor import (
     ExecutorError,
     ProposalNotFound,
     execute_proposal,
 )
-from app.services.store import get_store
 
 logger = logging.getLogger("api.router.approvals")
 

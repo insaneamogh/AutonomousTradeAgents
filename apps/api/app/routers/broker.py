@@ -41,12 +41,12 @@ from app.schemas.broker import (
     StartZerodhaResponse,
     ZerodhaCallbackRequest,
 )
+
 # Module import (not from-import) so tests can monkeypatch
 # ``alpaca_oauth.exchange_code_for_tokens`` and have the router see it.
-from app.services import alpaca_oauth
-from app.services import zerodha_connect
-from app.services.alpaca_oauth import TokenExchangeError
-from app.services.broker_store import (
+from app.services.broker import alpaca_oauth, zerodha_connect
+from app.services.broker.alpaca_oauth import TokenExchangeError
+from app.services.broker.broker_store import (
     BrokerConnectionRecord,
     BrokerStore,
     PendingOAuth,
@@ -54,11 +54,13 @@ from app.services.broker_store import (
     get_broker_store,
     get_pending_oauth_cache,
 )
-from app.services.crypto import (
+from app.services.broker.crypto import (
     CryptoUnavailableError,
     encrypt_for_storage,
-    is_available as crypto_available,
     is_dev_key_in_use,
+)
+from app.services.broker.crypto import (
+    is_available as crypto_available,
 )
 
 logger = logging.getLogger("api.router.broker")

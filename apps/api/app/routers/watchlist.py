@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.middleware.auth import AuthedUser, get_current_user
 from app.schemas.watchlist import AddWatchlistRequest, WatchlistItemDto
-from app.services.watchlist_store import SYMBOL_RE, get_watchlist_store
+from app.services.council.watchlist_store import SYMBOL_RE, get_watchlist_store
 
 logger = logging.getLogger("api.router.watchlist")
 

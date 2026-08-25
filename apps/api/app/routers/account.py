@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends
 
 from app.middleware.auth import AuthedUser, get_current_user
 from app.schemas.account import AccountResponse
-from app.services.store import get_store
+from app.services.council.store import get_store
 
 router = APIRouter(prefix="/account", tags=["account"])
 

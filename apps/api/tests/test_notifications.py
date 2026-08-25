@@ -21,11 +21,11 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("DEV_AUTH_BYPASS", "1")
 
 from app.main import app  # noqa: E402
-from app.services import expo_push  # noqa: E402
-from app.services.auth_store import reset_auth_store_for_tests  # noqa: E402
-from app.services.notification_store import (  # noqa: E402
-    reset_notification_store_for_tests,
+from app.services.auth.auth_store import reset_auth_store_for_tests  # noqa: E402
+from app.services.notifications import expo_push  # noqa: E402
+from app.services.notifications.notification_store import (  # noqa: E402
     get_notification_store,
+    reset_notification_store_for_tests,
 )
 
 
@@ -263,7 +263,7 @@ def test_agent_run_schedules_push_to_registered_devices(
         return expo_push.PushResult(sent=len(messages), revoked_tokens=[], other_errors=[])
 
     # Patch the symbol the notifications service imported.
-    from app.services import notifications as notif_mod
+    from app.services.notifications import notifications as notif_mod
 
     monkeypatch.setattr(notif_mod, "send_push", fake_send_push)
 
@@ -311,7 +311,7 @@ def test_agent_run_with_no_devices_is_silent(client: TestClient, monkeypatch) ->
         called = True
         return expo_push.PushResult(sent=0, revoked_tokens=[], other_errors=[])
 
-    from app.services import notifications as notif_mod
+    from app.services.notifications import notifications as notif_mod
 
     monkeypatch.setattr(notif_mod, "send_push", fake_send_push)
 

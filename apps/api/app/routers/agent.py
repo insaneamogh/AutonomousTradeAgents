@@ -20,8 +20,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Awaitable, Callable
 
-from engine.env import env_flag
-from fastapi import APIRouter, Depends, HTTPException, status as http_status
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi import status as http_status
 
 from app.core.config import get_settings
 from app.middleware.auth import AuthedUser, get_current_user
@@ -33,9 +33,10 @@ from app.schemas.agent import (
     CouncilProgressResponse,
 )
 from app.schemas.approvals import ApprovalProposalDto
-from app.services.agent_runs import get_run_registry
-from app.services.notifications import schedule_proposal_pending_notification
-from app.services.store import get_store
+from app.services.council.agent_runs import get_run_registry
+from app.services.council.store import get_store
+from app.services.notifications.notifications import schedule_proposal_pending_notification
+from engine.env import env_flag
 from trading_agents.features import resolve_feature_provider
 from trading_agents.memory import get_confidence_store, get_decision_log
 from trading_agents.progress import ProgressEvent

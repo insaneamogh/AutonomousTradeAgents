@@ -10,13 +10,13 @@ GET /api/v1/risk/vetoes?windowDays=30
 
 from __future__ import annotations
 
-from engine.env import env_flag
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import Field
 
 from app.middleware.auth import AuthedUser, get_current_user
 from app.schemas.base import CamelCaseModel
-from app.services.ghost_service import build_ghost_summary, build_veto_ledger
+from app.services.council.ghost_service import build_ghost_summary, build_veto_ledger
+from engine.env import env_flag
 
 router = APIRouter(tags=["insights"])
 

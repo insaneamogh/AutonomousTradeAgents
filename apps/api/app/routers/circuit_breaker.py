@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends
 
 from app.middleware.auth import AuthedUser, get_current_user, require_real_auth
 from app.schemas.circuit_breaker import CircuitBreakerResponse
-from app.services import circuit_breaker_service as cb
+from app.services.platform import circuit_breaker_service as cb
 
 router = APIRouter(prefix="/circuit-breaker", tags=["circuit-breaker"])
 

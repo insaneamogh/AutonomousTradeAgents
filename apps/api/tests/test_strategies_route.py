@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("DEV_AUTH_BYPASS", "1")
 
 from app.main import app  # noqa: E402
-from app.services.auth_store import reset_auth_store_for_tests  # noqa: E402
+from app.services.auth.auth_store import reset_auth_store_for_tests  # noqa: E402
 from trading_agents.memory import (  # noqa: E402
     DecisionEntry,
     get_confidence_store,
@@ -126,7 +126,7 @@ async def test_aggregates_completed_trades_and_sorts_by_confidence() -> None:
     await store.apply_delta("sma_crossover", confidence_delta=0.08)
 
     # Call the service directly to avoid TestClient + a separate auth path.
-    from app.services.strategies_perf import build_strategies_performance
+    from app.services.council.strategies_perf import build_strategies_performance
 
     resp = await build_strategies_performance(user_id=ALL_USERS)
 
@@ -169,7 +169,7 @@ async def test_window_days_filters_older_decisions() -> None:
         )
     )
 
-    from app.services.strategies_perf import build_strategies_performance
+    from app.services.council.strategies_perf import build_strategies_performance
 
     resp = await build_strategies_performance(user_id=ALL_USERS, window_days=30)
     momentum = next(s for s in resp.strategies if s.strategy_id == "momentum")

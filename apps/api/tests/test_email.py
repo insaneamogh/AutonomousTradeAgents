@@ -14,9 +14,9 @@ import pytest
 
 os.environ.setdefault("DEV_AUTH_BYPASS", "1")
 
-from app.services import auth as auth_service  # noqa: E402
-from app.services import email as email_mod  # noqa: E402
-from app.services.auth_store import MockAuthStore  # noqa: E402
+from app.services.auth import auth as auth_service  # noqa: E402
+from app.services.auth.auth_store import MockAuthStore  # noqa: E402
+from app.services.notifications import email as email_mod  # noqa: E402
 
 
 def test_email_disabled_without_provider(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -47,7 +47,7 @@ async def test_request_login_sends_email_when_configured(
         return True
 
     monkeypatch.setattr(email_mod, "email_enabled", lambda: True)
-    monkeypatch.setattr("app.services.email.send_magic_link", fake_send)
+    monkeypatch.setattr("app.services.notifications.email.send_magic_link", fake_send)
 
     store = MockAuthStore()
     challenge = await auth_service.request_login(

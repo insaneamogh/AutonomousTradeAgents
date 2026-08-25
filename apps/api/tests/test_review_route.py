@@ -27,18 +27,17 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("DEV_AUTH_BYPASS", "1")
 
 from app.main import app  # noqa: E402
-from app.services.auth_store import (  # noqa: E402
+from app.services.auth.auth_store import (  # noqa: E402
     FIXTURE_USER_ID,
     reset_auth_store_for_tests,
 )
-from app.services.review_store import reset_review_store_for_tests  # noqa: E402
+from app.services.council.review_store import reset_review_store_for_tests  # noqa: E402
 from trading_agents.memory import (  # noqa: E402
     DecisionEntry,
     get_confidence_store,
     get_decision_log,
     reset_memory_stores_for_tests,
 )
-
 
 # ─────────────────────────────────────────────────────────────────────
 # Fixtures

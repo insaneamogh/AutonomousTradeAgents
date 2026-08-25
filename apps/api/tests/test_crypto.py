@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.services import crypto
+from app.services.broker import crypto
 
 if not crypto.is_available():
     pytest.skip(

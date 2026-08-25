@@ -43,15 +43,21 @@ from app.schemas.auth import (
     RequestLoginResponse,
     VerifyMagicLinkRequest,
 )
-from app.services.auth import (
+from app.services.auth.auth import (
     AuthError,
     IssuedTokens,
+)
+from app.services.auth.auth import (
     refresh as auth_refresh,
+)
+from app.services.auth.auth import (
     request_login as auth_request_login,
+)
+from app.services.auth.auth import (
     verify_magic_link as auth_verify_magic_link,
 )
-from app.services.auth_store import AuthStore, get_auth_store
-from app.services.jwt_service import (
+from app.services.auth.auth_store import AuthStore, get_auth_store
+from app.services.auth.jwt_service import (
     ACCESS_TOKEN_TTL,
     REFRESH_TOKEN_TTL,
     TokenError,
@@ -100,7 +106,7 @@ async def request_login(
     # token in the response body under ENV=live (account takeover).
     is_prod = settings.is_production
 
-    from app.services.rate_limit import check_login_rate
+    from app.services.auth.rate_limit import check_login_rate
 
     client_ip = request.client.host if request.client else None
     if not check_login_rate(body.email, client_ip):
@@ -148,7 +154,7 @@ async def verify(
     """
     settings = get_settings()
 
-    from app.services.rate_limit import check_verify_rate
+    from app.services.auth.rate_limit import check_verify_rate
 
     client_ip = request.client.host if request.client else None
     if not check_verify_rate(body.email, client_ip):
@@ -190,7 +196,7 @@ async def refresh(
 ) -> IssuedTokensResponse:
     settings = get_settings()
 
-    from app.services.rate_limit import check_refresh_rate
+    from app.services.auth.rate_limit import check_refresh_rate
 
     client_ip = request.client.host if request.client else None
     if not check_refresh_rate(client_ip):
@@ -241,7 +247,7 @@ async def logout(
 
     if body is not None and body.refresh_token:
         try:
-            from app.services.jwt_service import verify_refresh
+            from app.services.auth.jwt_service import verify_refresh
 
             claims = verify_refresh(secret=settings.jwt_secret, token=body.refresh_token)
             # Ownership: a caller may only revoke their OWN session. Without

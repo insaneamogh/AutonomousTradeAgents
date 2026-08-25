@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
-from app.services.position_manager import _exit_reason, _has_in_flight_close
+from app.services.orders.position_manager import _exit_reason, _has_in_flight_close
 
 NOW = datetime(2026, 6, 12, 15, 0, tzinfo=UTC)
 

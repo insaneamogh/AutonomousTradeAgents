@@ -27,7 +27,7 @@ from app.schemas.notifications import (
     DeviceTokenResponse,
     RegisterDeviceRequest,
 )
-from app.services.notification_store import (
+from app.services.notifications.notification_store import (
     DeviceTokenRecord,
     NotificationStore,
     get_notification_store,

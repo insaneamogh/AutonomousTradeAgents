@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("DEV_AUTH_BYPASS", "1")
 
 from app.main import app  # noqa: E402
-from app.services.auth_store import reset_auth_store_for_tests  # noqa: E402
+from app.services.auth.auth_store import reset_auth_store_for_tests  # noqa: E402
 
 
 @pytest.fixture(autouse=True)

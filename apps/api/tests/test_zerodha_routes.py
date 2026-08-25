@@ -19,10 +19,9 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("DEV_AUTH_BYPASS", "1")
 
 from app.main import app  # noqa: E402
-from app.services import crypto, zerodha_connect  # noqa: E402
-from app.services.auth_store import reset_auth_store_for_tests  # noqa: E402
-from app.services.broker_store import reset_broker_store_for_tests  # noqa: E402
-
+from app.services.auth.auth_store import reset_auth_store_for_tests  # noqa: E402
+from app.services.broker import crypto, zerodha_connect  # noqa: E402
+from app.services.broker.broker_store import reset_broker_store_for_tests  # noqa: E402
 
 # ─────────────────────────────────────────────────────────────────────
 # Test plumbing

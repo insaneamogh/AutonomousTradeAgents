@@ -14,17 +14,19 @@ import pytest
 
 os.environ.setdefault("DEV_AUTH_BYPASS", "1")
 
-from app.services import expo_push  # noqa: E402
-from app.services import notifications as notif_mod  # noqa: E402
-from app.services.broker_store import (  # noqa: E402
+from app.services.broker.broker_store import (  # noqa: E402
     get_broker_store,
     reset_broker_store_for_tests,
 )
-from app.services.notification_store import (  # noqa: E402
+from app.services.notifications import expo_push  # noqa: E402
+from app.services.notifications import notifications as notif_mod  # noqa: E402
+from app.services.notifications.notification_store import (  # noqa: E402
     get_notification_store,
     reset_notification_store_for_tests,
 )
-from app.services.notifications import send_zerodha_reconnect_notification  # noqa: E402
+from app.services.notifications.notifications import (
+    send_zerodha_reconnect_notification,  # noqa: E402
+)
 
 USER = "00000000-0000-0000-0000-000000000001"
 

@@ -25,8 +25,8 @@ os.environ.setdefault("DEV_AUTH_BYPASS", "1")
 
 from app.core.config import get_settings  # noqa: E402
 from app.main import app  # noqa: E402
-from app.services.auth_store import reset_auth_store_for_tests  # noqa: E402
-from app.services.jwt_service import mint, mint_access  # noqa: E402
+from app.services.auth.auth_store import reset_auth_store_for_tests  # noqa: E402
+from app.services.auth.jwt_service import mint, mint_access  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -245,7 +245,7 @@ def test_tampered_header_is_rejected() -> None:
     ).rstrip(b"=").decode()
     tampered = f"{none_header}.{parts[1]}.{parts[2]}"
 
-    from app.services.jwt_service import TokenError, verify_access
+    from app.services.auth.jwt_service import TokenError, verify_access
 
     with pytest.raises(TokenError):
         verify_access(secret=settings.jwt_secret, token=tampered)

@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, Query
 
 from app.middleware.auth import AuthedUser, get_current_user
 from app.schemas.portfolio import PortfolioSummaryResponse
-from app.services.portfolio_service import build_portfolio_summary
+from app.services.orders.portfolio_service import build_portfolio_summary
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 

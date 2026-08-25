@@ -33,7 +33,6 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from engine.env import env_flag
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -48,18 +47,25 @@ from app.routers import (
     approvals,
     auth,
     broker,
-    decisions,
-    health as health_router,
-    insights,
     circuit_breaker,
+    decisions,
+    insights,
     notifications,
     orders,
     portfolio,
     positions,
     review,
+)
+from app.routers import (
+    health as health_router,
+)
+from app.routers import (
     strategies as strategies_router,
+)
+from app.routers import (
     watchlist as watchlist_router,
 )
+from engine.env import env_flag
 
 settings = get_settings()
 logging.basicConfig(level=settings.log_level)
@@ -109,10 +115,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     if use_pg and enable_reconciler:
         # Import lazily so MockStore code paths never pull these in.
+        from app.services.broker.broker_store import get_broker_store
+        from app.services.orders.reconciler_fleet import FleetConfig, ReconcilerFleet
         from engine.db.session import async_session_factory
-
-        from app.services.broker_store import get_broker_store
-        from app.services.reconciler_fleet import FleetConfig, ReconcilerFleet
 
         interval = float(os.environ.get("RECONCILER_INTERVAL_SECONDS", "30"))
         threshold = float(os.environ.get("DRAWDOWN_HALT_THRESHOLD_PCT", "-3.0"))
@@ -123,8 +128,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # store's lazy ensure_seed() only fires on an API request, and a
         # cold-boot reconciler tick would otherwise hit the FK on
         # positions_snapshot.user_id.
-        from engine.db.models import User
         from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        from engine.db.models import User
 
         async with session_factory() as session:
             await session.execute(

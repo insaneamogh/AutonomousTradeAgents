@@ -23,7 +23,7 @@ os.environ.setdefault("DEV_AUTH_BYPASS", "1")
 
 from app.main import app
 from app.schemas.agent import AgentRunRequest
-from app.services.auth_store import reset_auth_store_for_tests
+from app.services.auth.auth_store import reset_auth_store_for_tests
 
 
 @pytest.fixture(autouse=True)
@@ -103,6 +103,6 @@ def test_trimming_does_not_rescue_an_injection_payload() -> None:
 def test_symbol_matches_the_watchlist_rule() -> None:
     """One pattern, two entry points — they must not drift apart."""
     from app.schemas.agent import SYMBOL_PATTERN
-    from app.services.watchlist_store import SYMBOL_RE
+    from app.services.council.watchlist_store import SYMBOL_RE
 
     assert SYMBOL_RE.pattern == SYMBOL_PATTERN

@@ -27,7 +27,7 @@ from app.schemas.review import (
     ReviewQueueResponse,
     ScorecardResponse,
 )
-from app.services.review_service import (
+from app.services.council.review_service import (
     DecisionNotReviewable,
     apply_grade,
     build_agreement,

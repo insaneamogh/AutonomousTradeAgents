@@ -31,8 +31,8 @@ import asyncio
 import logging
 import sys
 
-from app.services.broker_store import get_broker_store
-from app.services.notifications import send_zerodha_reconnect_notification
+from app.services.broker.broker_store import get_broker_store
+from app.services.notifications.notifications import send_zerodha_reconnect_notification
 
 logging.basicConfig(
     level=logging.INFO,

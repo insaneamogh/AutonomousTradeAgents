@@ -18,8 +18,8 @@ import pytest
 os.environ.setdefault("DEV_AUTH_BYPASS", "1")
 
 from app.schemas.approvals import ApprovalProposalDto, DecisionResponse  # noqa: E402
-from app.services.executor import execute_proposal  # noqa: E402
-from app.services.postgres_store import _uid, DEFAULT_USER_ID  # noqa: E402
+from app.services.council.postgres_store import DEFAULT_USER_ID, _uid  # noqa: E402
+from app.services.orders.executor import execute_proposal  # noqa: E402
 
 USER_A = "11111111-1111-1111-1111-111111111111"
 
