@@ -26,7 +26,7 @@ import * as Linking from 'expo-linking';
 import * as Notifications from 'expo-notifications';
 
 import { BiometricGate } from '@/components/BiometricGate';
-import { DesktopShell } from '@/components/DesktopShell';
+import { DesktopShell, useIsDesktopSurface } from '@/components/DesktopShell';
 import { completeAlpacaOAuth, brokerConnectionsKey } from '@/hooks/useBrokerConnections';
 import { usePushRegistration } from '@/hooks/usePushRegistration';
 import { registerAuthSnapshot } from '@/lib/api';
@@ -75,11 +75,7 @@ export default function RootLayout() {
     <QueryClientProvider client={queryClient}>
       <SafeAreaProvider>
         <StatusBar style="auto" />
-        {/* Frames the phone-width UI on desktop browsers; passthrough on
-            native and on narrow viewports. */}
-        <DesktopShell>
-          <RootGate />
-        </DesktopShell>
+        <RootGate />
       </SafeAreaProvider>
     </QueryClientProvider>
   );
@@ -107,7 +103,14 @@ function RootGate() {
       <PushTapHandler />
       <AuthRouteGuard>
         <BiometricGate enabled={isAuthed}>
-          <Slot />
+          {/* Wide web + a live session → the Platinum Glass desktop tree
+              REPLACES the router subtree. Everything else (native, narrow
+              web, the auth screens) renders `<Slot />` untouched. The
+              switch sits here — inside AuthBootstrap — so the session
+              still restores on the desktop path. */}
+          <DesktopShell>
+            <Slot />
+          </DesktopShell>
         </BiometricGate>
       </AuthRouteGuard>
     </AuthBootstrap>
@@ -141,8 +144,12 @@ function AuthRouteGuard({ children }: { children: React.ReactNode }) {
   // Navigating before the root navigator mounts throws on web (native
   // happens to mount earlier). Gate on the navigation state's key.
   const rootNavigationState = useRootNavigationState();
+  // On the desktop surface the router subtree isn't rendered at all
+  // (DesktopShell replaces it), so there is nothing to redirect into.
+  const isDesktop = useIsDesktopSurface();
 
   useEffect(() => {
+    if (isDesktop) return;
     if (!rootNavigationState?.key) return;
     const inAuthGroup = segments[0] === 'auth';
 
@@ -151,7 +158,7 @@ function AuthRouteGuard({ children }: { children: React.ReactNode }) {
     } else if (status === 'authenticated' && inAuthGroup) {
       router.replace('/');
     }
-  }, [status, segments, router, rootNavigationState?.key]);
+  }, [status, segments, router, rootNavigationState?.key, isDesktop]);
 
   return <>{children}</>;
 }

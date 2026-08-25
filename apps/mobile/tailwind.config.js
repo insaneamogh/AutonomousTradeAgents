@@ -96,6 +96,40 @@ module.exports = {
         'danger-dark':           '#DC2626',
         'info':                  '#1E40AF',
         'info-dark':             '#60A5FA',
+
+        // ── Platinum Glass (DESKTOP ONLY) ─────────────────────────
+        // Mirror of `src/desktop/theme.ts`, which is where the desktop
+        // tree actually consumes them (as `--pg-*` CSS custom
+        // properties — plain CSS is required for backdrop-filter, grid
+        // and focus-visible, none of which NativeWind can express).
+        // Registered here so the config stays the one token registry:
+        // NOTHING in either tree may hard-code one of these hexes.
+        // `-pgd-` = Platinum Glass dark, `-pgl-` = Refined Daylight.
+        'pgd-surface':           '#131314',
+        'pgd-surface-lowest':    '#0E0E0F',
+        'pgd-surface-low':       '#1C1B1C',
+        'pgd-surface-high':      '#2A2A2B',
+        'pgd-on-surface':        '#E5E2E3',
+        'pgd-outline':           '#909094',
+        'pgd-primary':           '#F1F0F4',
+        'pgd-bull':              '#00E383',
+        'pgd-bear':              '#FFB2B8',
+        'pgd-error':             '#FFB4AB',
+        'pgl-surface':           '#E8EDF5',
+        'pgl-surface-lowest':    '#FFFFFF',
+        'pgl-on-surface':        '#191C1E',
+        'pgl-outline':           '#73787B',
+        'pgl-primary':           '#50616B',
+        'pgl-bull':              '#006E2D',
+        'pgl-bear':              '#BF0715',
+        'pgl-error':             '#BA1A1A',
+        // Mode-locked 5-band score palette (STITCH §2.5) — identical
+        // hex in light and dark by design.
+        'band-very-bullish':     '#00E383',
+        'band-bullish':          '#006E2D',
+        'band-neutral':          '#A1A1AA',
+        'band-cautious':         '#FFB2B8',
+        'band-bearish':          '#BF0715',
       },
       borderRadius: {
         sm: '6px',
