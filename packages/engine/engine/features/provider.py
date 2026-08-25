@@ -8,6 +8,10 @@ and prompts don't change:
 
 Sources:
   - technicals + last_price : Alpaca IEX daily bars → ``compute_technicals``
+  - quant                   : the same bars + SPY → ``compute_quant``
+                              (realized/Parkinson/Garman-Klass vol, Sharpe,
+                              Sortino, max drawdown, beta + correlation to
+                              SPY, skew/kurtosis, standardized price z-score)
   - macro                   : FRED (VIX / 10y / dollar) + SPY relative strength
   - portfolio_equity        : injected ``equity_resolver`` (latest reconciler
                               snapshot in production); falls back to the
@@ -33,11 +37,15 @@ from typing import Any, Protocol, runtime_checkable
 
 from engine.features.bars import AlpacaDailyBarsProvider, BarsProvider
 from engine.features.macro import compute_macro
+from engine.features.quant import compute_quant
 from engine.features.technicals import InsufficientBarsError, compute_technicals
 
 logger = logging.getLogger("engine.features.provider")
 
 DEFAULT_EQUITY_FALLBACK = 100_000.0
+
+# Benchmark history pulled for the quant block's beta/correlation.
+SPY_LOOKBACK_DAYS = 320
 
 
 @runtime_checkable
@@ -69,9 +77,15 @@ class RealFeatureProvider:
         bars = await self.bars.daily_bars(sym)
         if not bars:
             raise InsufficientBarsError(f"no daily bars available for {sym}")
-        spy_bars = await self.bars.daily_bars("SPY", lookback_days=60)
+        # 320 days (~220 trading bars), not 60: the quant block regresses
+        # this symbol against SPY over a 63-day window and z-scores ATR
+        # against a year of its own history. A 60-day SPY pull would leave
+        # beta/correlation permanently None. Provider-cached, so the longer
+        # window costs one request per process, not one per symbol.
+        spy_bars = await self.bars.daily_bars("SPY", lookback_days=SPY_LOOKBACK_DAYS)
 
         technicals = compute_technicals(bars)
+        quant = compute_quant(bars, benchmark_bars=spy_bars)
         macro = await compute_macro(
             fred_api_key=self.fred_api_key, symbol_bars=bars, spy_bars=spy_bars
         )
@@ -97,6 +111,7 @@ class RealFeatureProvider:
             "last_price": bars[-1].close,
             "portfolio_equity": equity,
             "technicals": technicals,
+            "quant": quant.as_dict(),
             "macro": macro,
             "feature_source": "alpaca",
         }

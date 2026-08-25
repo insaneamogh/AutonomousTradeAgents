@@ -20,6 +20,13 @@ from engine.features.provider import (
     RealFeatureProvider,
     feature_provider_from_env,
 )
+from engine.features.quant import (
+    DEFAULT_LOOKBACK,
+    MIN_QUANT_BARS,
+    QuantFeatures,
+    compute_quant,
+    relative_strength_ranks,
+)
 from engine.features.technicals import (
     MIN_BARS,
     DailyBar,
@@ -29,19 +36,24 @@ from engine.features.technicals import (
 
 __all__ = [
     "DEFAULT_EQUITY_FALLBACK",
+    "DEFAULT_LOOKBACK",
     "MIN_BARS",
+    "MIN_QUANT_BARS",
     "US_MARKET_HOLIDAYS",
     "AlpacaDailyBarsProvider",
     "BarsProvider",
     "DailyBar",
     "FundamentalsProvider",
     "InsufficientBarsError",
+    "QuantFeatures",
     "RealFeatureProvider",
     "compute_macro",
+    "compute_quant",
     "compute_technicals",
     "feature_provider_from_env",
     "fred_latest",
     "is_us_trading_day",
+    "relative_strength_ranks",
     "reset_fred_cache",
     "sector_relative_strength",
 ]
