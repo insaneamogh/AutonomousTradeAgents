@@ -1,6 +1,6 @@
 """One-shot CLI for the Reflection Agent.
 
-    uv run python -m trading_agents.reflection_cli --since 24h
+    uv run python -m trading_agents.cli.reflection --since 24h
 
 Runs the Reflection loop over a synthetic seed of decisions for a demo.
 The real wiring (production reflection job over PostgresDecisionLog) lands

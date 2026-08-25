@@ -24,7 +24,7 @@ Usage:
 
     PYTHONPATH=apps/agents:packages/engine:packages/broker:apps/api \\
     USE_POSTGRES=1 \\
-    uv run python -m apps.agents.scripts.daily_cron \\
+    uv run python -m trading_agents.jobs.daily_cron \\
         --user-id 00000000-0000-0000-0000-000000000001 \\
         --watchlist SPY,QQQ,AAPL,NVDA,MSFT,GOOG,AMZN,META,TSLA,JPM
 """
@@ -241,7 +241,7 @@ async def main(
     # Postgres only (the ghost_outcomes table); failure never fails cron.
     if not skip_ghost_eval and env_flag("USE_POSTGRES"):
         try:
-            from scripts.ghost_eval import evaluate_ghosts
+            from trading_agents.jobs.ghost_eval import evaluate_ghosts
 
             await evaluate_ghosts()
         except Exception:

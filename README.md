@@ -132,7 +132,8 @@ apps/
       runtime.py  run_council() — the public entry point
       llm.py      Anthropic wrapper (prompt caching, MOCK fallback)
       tracing.py  Langfuse — one trace/run, one generation/agent
-    scripts/      daily_cron.py, ghost_eval.py
+    trading_agents/cli/    council.py, reflection.py   (run by hand)
+    trading_agents/jobs/   daily_cron.py, ghost_eval.py (run by cron)
   api/        FastAPI gateway (deployed to Railway)
     app/routers/   agent, approvals, decisions, insights, review, auth, health
     app/services/  executor, stores, biography, ghost, review services
@@ -178,7 +179,7 @@ make infra-up && make migrate && make dev-api-postgres
 Run the council headlessly:
 
 ```bash
-uv run --package agents python -m scripts.daily_cron --force
+uv run --package agents python -m trading_agents.jobs.daily_cron --force
 ```
 
 ---

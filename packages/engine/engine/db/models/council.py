@@ -280,7 +280,7 @@ class GhostOutcome(Base):
     """Hypothetical outcome of a vetoed / declined / expired decision.
 
     Separate from ``agent_decisions`` so the audit anchor stays immutable;
-    the daily evaluator (``apps/agents/scripts/ghost_eval.py``) appends a
+    the daily evaluator (``trading_agents.jobs.ghost_eval``) appends a
     close-price mark per trading day until ``horizon_days`` elapse, then
     finalizes ``ghost_pnl``. Deterministic Python only.
     """

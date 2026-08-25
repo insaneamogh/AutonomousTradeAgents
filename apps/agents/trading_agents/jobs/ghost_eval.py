@@ -8,9 +8,9 @@ stored proposal, marks each against daily closes, and finalizes
 Deterministic Python over close prices — no LLM in this path. Idempotent
 per day: re-running upserts the same marks.
 
-Invoked from ``daily_cron.py`` (after the council loop) or standalone:
+Invoked from ``daily_cron`` (after the council loop) or standalone:
 
-    uv run --package agents python -m scripts.ghost_eval
+    uv run --package agents python -m trading_agents.jobs.ghost_eval
 """
 
 from __future__ import annotations

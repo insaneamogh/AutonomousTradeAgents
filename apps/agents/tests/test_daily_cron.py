@@ -7,15 +7,9 @@ calls into a stubbed ``run_council``.
 
 from __future__ import annotations
 
-import sys
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 import pytest
-
-# Add the cron script's parent dir to the path so we can import it as a module.
-SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
-sys.path.insert(0, str(SCRIPTS_DIR))
 
 
 @pytest.fixture(autouse=True)
@@ -45,8 +39,7 @@ def _force_trading_day(monkeypatch: pytest.MonkeyPatch) -> None:
 
 async def test_skip_when_already_decided_today(monkeypatch) -> None:
     """Second call for (user, NVDA) on the same day must skip."""
-    import daily_cron
-
+    from trading_agents.jobs import daily_cron
     from trading_agents.memory import DecisionEntry, get_decision_log
 
     user_id = "00000000-0000-0000-0000-000000000001"
@@ -82,8 +75,7 @@ async def test_skip_when_already_decided_today(monkeypatch) -> None:
 
 async def test_force_runs_even_when_already_decided(monkeypatch) -> None:
     """--force overrides the idempotency check."""
-    import daily_cron
-
+    from trading_agents.jobs import daily_cron
     from trading_agents.memory import DecisionEntry, get_decision_log
 
     user_id = "00000000-0000-0000-0000-000000000001"
@@ -117,8 +109,7 @@ async def test_force_runs_even_when_already_decided(monkeypatch) -> None:
 
 async def test_prior_day_does_not_block(monkeypatch) -> None:
     """A decision from yesterday should NOT block today's run."""
-    import daily_cron
-
+    from trading_agents.jobs import daily_cron
     from trading_agents.memory import DecisionEntry, get_decision_log
 
     user_id = "00000000-0000-0000-0000-000000000001"
@@ -152,7 +143,7 @@ async def test_prior_day_does_not_block(monkeypatch) -> None:
 
 async def test_continues_past_per_symbol_failures(monkeypatch, caplog) -> None:
     """One symbol throwing must NOT stop the rest of the watchlist."""
-    import daily_cron
+    from trading_agents.jobs import daily_cron
 
     user_id = "00000000-0000-0000-0000-000000000001"
 
