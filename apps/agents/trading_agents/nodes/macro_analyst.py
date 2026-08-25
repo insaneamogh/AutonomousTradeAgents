@@ -14,50 +14,36 @@ And the Router's ``regime`` if already set on state.
 
 from __future__ import annotations
 
-import logging
-
-from trading_agents.llm import LLM, Model, complete_json
-from trading_agents.nodes._guards import clamp_confidence, clamp_score
+from trading_agents.llm import LLM, Model
+from trading_agents.nodes._specialist import render_features, run_specialist
 from trading_agents.prompts import MACRO_ANALYST
 from trading_agents.state import CouncilState
 
-logger = logging.getLogger("agents.node.macro")
+FEATURES = (
+    "vix_level",
+    "ten_year_yield_pct",
+    "dxy_index",
+    "sector_relative_strength",
+)
 
 
 async def macro_analyst_node(state: CouncilState, llm: LLM) -> CouncilState:
-    macro = state.get("context", {}).get("macro", {})
-    user = (
-        f"Ticker: {state['symbol']}\n"
-        f"Horizon: {state.get('horizon', 'short')}\n"
-        f"Regime (from Router): {state.get('regime', 'unknown')}\n\n"
-        "Macro features:\n"
-        f"  vix_level:                  {macro.get('vix_level', 'n/a')}\n"
-        f"  ten_year_yield_pct:         {macro.get('ten_year_yield_pct', 'n/a')}\n"
-        f"  dxy_index:                  {macro.get('dxy_index', 'n/a')}\n"
-        f"  sector_relative_strength:   {macro.get('sector_relative_strength', 'n/a')}\n"
-    )
-
-    data, degraded = await complete_json(
+    """Score macro fit for the symbol 0-100 from ``context["macro"]``."""
+    return await run_specialist(
+        state,
         llm,
-        system=MACRO_ANALYST, user=user, model=Model.SONNET, max_tokens=500
+        name="macro",
+        system=MACRO_ANALYST,
+        model=Model.SONNET,
+        header=(
+            f"Ticker: {state['symbol']}\n"
+            f"Horizon: {state.get('horizon', 'short')}\n"
+            f"Regime (from Router): {state.get('regime', 'unknown')}\n\n"
+            "Macro features:\n"
+        ),
+        # Wider labels than the other two analysts: sector_relative_strength
+        # is the longest feature name in the council.
+        body=render_features(
+            state.get("context", {}).get("macro", {}), FEATURES, label_width=28
+        ),
     )
-    if data is None:
-        logger.warning("macro degraded — neutral default")
-        data = {"score": 50.0, "confidence": 0.2, "thesis": "Parse error — neutral default.", "citations": []}
-
-    degraded_nodes = list(state.get("degraded_nodes") or [])
-    if degraded:
-        degraded_nodes.append("macro")
-
-    return {
-        **state,
-        "macro": {
-            "score": clamp_score(data.get("score", 50.0), field="macro.score"),
-            "confidence": clamp_confidence(
-                data.get("confidence", 0.0), field="macro.confidence"
-            ),
-            "thesis": str(data.get("thesis", "")),
-            "citations": list(data.get("citations", [])),
-        },
-        "degraded_nodes": degraded_nodes,
-    }
