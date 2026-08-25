@@ -13,7 +13,7 @@ import logging
 import uuid
 from datetime import datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import CursorResult, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -120,6 +120,7 @@ class PostgresAuthStore:
             inserted_id = (await session.execute(stmt)).scalar_one_or_none()
             await session.commit()
 
+            row: User | None
             if inserted_id is None:
                 # Existed already — fetch.
                 row = (
@@ -178,6 +179,10 @@ class PostgresAuthStore:
                 .values(used_at=utc_now())
             )
             await session.commit()
+            # A Core UPDATE with no .returning() always comes back as a
+            # CursorResult (the DBAPI cursor's rowcount is what's checked
+            # below) — Result[Any] is just the generic base the stub gives it.
+            assert isinstance(result, CursorResult)
         return bool(result.rowcount)
 
     # ── sessions ─────────────────────────────────────────────────────
@@ -234,6 +239,9 @@ class PostgresAuthStore:
                 stmt.values(refresh_token_hash=new_refresh_token_hash, last_seen_at=utc_now())
             )
             await session.commit()
+            # Same reasoning as mark_magic_link_used: a Core UPDATE with no
+            # .returning() is always a CursorResult at runtime.
+            assert isinstance(result, CursorResult)
             if expected_current_hash is not None and not result.rowcount:
                 return None  # CAS miss — another rotation won
             row = await session.get(UserSession, sid)
