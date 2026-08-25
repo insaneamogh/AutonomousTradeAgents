@@ -267,6 +267,67 @@ Recommendation: don't reach for Temporal yet. A single worker process owning all
 
 ---
 
+## Technical debt & follow-ups (as of the 2026-08-25 session)
+
+Everything below was found and *deliberately not fixed* during today's Railway/
+bug-fix/cleanup session (full narrative in the Entries below) — flagged rather
+than done, either because it's out of this session's scope or because the
+investigation that found it came back lower-confidence-of-a-clean-fix. Listed
+here once, in one place, instead of only as inline asides inside each entry.
+
+1. **`eslint` and `jest` are declared but non-functional, repo-wide.**
+   `pnpm lint`'s JS half fails outright — root `package.json` pins
+   `eslint@^9` (flat-config only) but no `eslint.config.js` exists anywhere.
+   `pnpm --filter @app/mobile test` fails the same way — the script runs
+   `jest`, but `jest` isn't installed as a dependency anywhere in the
+   workspace and there's no `jest.config.*`. Pre-existing, unrelated to
+   anything touched this session; means JS lint/test have been giving zero
+   signal on every recent change, this session's included.
+2. **3 mypy nits in `apps/api/app/services/auth/postgres_auth_store.py`**
+   (lines ~129, 181, 237) — a `User | None` assigned into a
+   narrower-inferred `User` slot across two branches, and `.rowcount` read
+   off a `Result[Any]`. Runtime-safe (guarded by an `assert`/the calling
+   code's own handling), not bugs — just newly *visible* after this
+   session added the missing `py.typed` marker to `engine`/`broker`/
+   `trading_agents`, which had been silently hiding them.
+3. **Store-selector duplication not collapsed.** Six modules under
+   `apps/api/app/services/*/` (`auth_store`, `broker_store`,
+   `notification_store`, `review_store`, `store`, `watchlist_store`) each
+   hand-roll the identical in-memory-vs-Postgres singleton-selector
+   pattern. A shared factory-based helper would collapse it, but
+   `broker_store.py` also bundles a second singleton (`PendingOAuthCache`)
+   that would need its own wrapper — not a perfectly clean 1:1 collapse,
+   so left as a flagged finding rather than a forced fix.
+4. **`executor.py` and `order_store.py` still mix concerns internally.**
+   Moving them into `services/orders/` (this session) didn't touch their
+   insides. `executor.py` has five separable jobs in one file (live-trading
+   gate, risk re-evaluation, broker placement, a second parallel
+   paper-mode execution path, response-DTO assembly). `order_store.py` has
+   four (generic utils, a risk-input read path that's arguably
+   risk-domain not persistence, a compare-and-swap concurrency primitive,
+   and the order-row CRUD the filename actually promises). Splitting
+   either is a deeper behavior-preserving refactor than a file move —
+   real, but higher risk, left for a dedicated pass.
+5. **`watchlist_store.py`'s new home (`services/council/`) is a judgment
+   call, not a clean fit** — it has no real coupling to anything else in
+   that bucket or any other. Worth revisiting if a better home suggests
+   itself.
+6. **Product-level open questions are unchanged** — see §8 above
+   (Zerodha in/out, auto-window semantics, when to flip cron to
+   real-LLM/real-data, wash-sale promotion). Still the user's calls, not
+   touched this session.
+7. **`docs/architecture/`, `docs/reference/`, `docs/runbooks/` are still
+   empty** (`.gitkeep` only) — harmless scaffolding, not a problem, just
+   noting they exist unused.
+8. **Process note, not a code issue:** this session's 10 commits carry
+   `Co-Authored-By: Claude Fable 5` — the wrong model name (the assistant
+   is Sonnet 5). Caught by the user mid-session; left uncorrected in
+   already-pushed history per their choice (fixing forward, not rewriting
+   `main`). Future commits in this repo should say `Claude Sonnet 5`
+   unless whichever model is running at the time is actually different.
+
+---
+
 # Build log
 
 > Everything below the audit (§1–§8) is the running history of what's been built on top of it. **Per CLAUDE.md: every commit appends an entry here** so the next agent can resume without re-deriving context. Newest first. Don't edit the audit above; append here.
