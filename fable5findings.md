@@ -481,6 +481,123 @@ Fourth of four items delegated to parallel subagents (Opus, given the safety-cri
 - Verified independently on `main` after cherry-picking both code commits (docs commit re-authored by hand instead of cherry-picked, to avoid another `## Entries` insertion conflict like the one above): `apps/api` suite 209 passed / 7 skipped; cross-package suite 169 passed / 1 skipped; `ruff check apps/api --select F,I` clean; `mypy apps/api/app` 60 errors, down from the 61-error baseline left by the store-selector entry above — the expected `-1`, zero new findings.
 - Follow-up left open: the three concerns still inside `executor.py` (risk-reeval orchestration, broker placement/bracket-leg logic, the paper-execution engine) are fair game for a future pass, but only alongside updating the tests' monkeypatch targets in the *same* change — not as a "just move the code" step, for the reasons above.
 
+### 2026-08-25 — `938821c2` fix(tooling): get eslint and jest actually running across the JS workspace
+
+Closes debt item #1 above: both were declared but non-functional
+repo-wide, confirmed before touching anything (no `eslint.config.js`
+anywhere; `jest` installed nowhere in the workspace, no
+`jest.config.*`) rather than assumed from the earlier flag.
+
+**ESLint** — one root `eslint.config.mjs` (flat config resolves upward
+from any package directory, so a single file covers `apps/mobile`,
+`packages/ui`, `packages/shared-types`). Checked `airbnb-typescript`'s
+actual state first rather than reaching for it by habit: last published
+2024-03 on top of `eslint-config-airbnb` (last published 2021-12),
+never gained flat-config support, predates ESLint 9's flat-config-only
+requirement entirely — not viable. Used `typescript-eslint`'s
+`recommendedTypeChecked` (via `projectService`, the monorepo-friendly
+per-file tsconfig auto-discovery — no manual `project: [...]` globs)
+plus current flat presets from `eslint-plugin-react`,
+`eslint-plugin-react-hooks`, `eslint-plugin-jsx-a11y`, and
+`eslint-config-prettier`. `eslint-plugin-react-native` ships no flat
+preset as of 5.0.0, so its rules are hand-picked rather than spread
+from `configs.all` — including `no-color-literals`, a direct
+enforcement of CLAUDE.md's "tokens only, no raw hex" rule.
+
+Two tunings, both found by actually running it, not assumed:
+- `eslint-plugin-react-hooks` v7's `recommended` folded in the full
+  React Compiler readiness rule set (`immutability`, `purity`,
+  ref-access timing, compiler config/gating). This repo doesn't use the
+  Compiler — not on CLAUDE.md's locked stack — and several fired on
+  ordinary, correct RN code (`useRef(new Animated.Value(x)).current`,
+  a standard lazy-init pattern, flagged by `refs`). Turned those off;
+  kept `rules-of-hooks` / `exhaustive-deps` / `set-state-in-effect` /
+  `set-state-in-render` / `error-boundaries`, which catch real bugs
+  independent of the compiler.
+- `react-native/no-raw-text` doesn't see through custom
+  `<Text>`-wrapping components, and `apps/mobile/src/desktop/**` turned
+  out to be a deliberately separate, web-only DOM tree (plain
+  `div`/`span`/`button` styled via `CSSProperties`, not RN's
+  `View`/`Text` model — confirmed from `primitives.tsx`'s own header
+  comment, not guessed) that the RN-specific rules don't apply to at
+  all. Excluding `desktop/**` from the `react-native` plugin and adding
+  the app's own Text wrappers (`TileLabel`, `TileValue`, `HeroHeadline`,
+  `HeroSub`, `SectionLabel`) to `no-raw-text`'s skip list took the first
+  real run from 439 problems to 34 in `apps/mobile` — the rest were
+  genuine.
+
+Fixed what was cheap and mechanical: JSX entity escaping, one useless
+regex escape, `consistent-type-imports`/`no-unnecessary-type-assertion`
+autofix, one stray unused import in `desktop/Shell.tsx`, and
+eslint-disable comments that either named an already-renamed rule
+(`no-var-requires` → `no-require-imports`) or — twice, my own mistake,
+caught by re-running rather than assumed fixed — were one line off from
+the code they were meant to cover. Left as reported findings, not
+fixed: `apps/mobile` ends at 34 problems (31 errors, 3 warnings) —
+~10 `no-floating-promises` and ~15 `no-unsafe-*`/`no-base-to-string`
+across the hooks and `api.ts` (need call-site judgment: await vs. void
+vs. `.catch`, not mechanical) — and `packages/ui` ends at 6 (3 errors,
+3 warnings) — `no-color-literals`/`no-inline-styles` on
+`SwipeDeck.tsx`/`Toggle.tsx`/`ConfidenceBar.tsx`'s shadow styles and one
+`set-state-in-effect` in `ApprovalCard.tsx` (design/behavior calls, not
+one-liners). `packages/shared-types` is clean. Matches the brief's bar
+for this pass: a working setup, not a zero-warnings codebase.
+
+**Jest** — `jest-expo` for `apps/mobile`, version-matched to this app's
+actual `expo@~54.0.0` (`jest-expo`'s major tracks the Expo SDK number —
+confirmed against the npm registry, not assumed) rather than its own
+`latest` dist-tag (57.x, a newer SDK line). Its own dependency graph
+pins `babel-jest`/`jest-snapshot`/`@jest/globals` to `^29.2.1`, so
+top-level `jest` is pinned to `^29.7.0` rather than the unrelated
+`jest@30` — running them together would be an unverified combination
+jest-expo's own manifest argues against. Its preset also auto-derives
+`moduleNameMapper` from `tsconfig.json`'s `paths` (confirmed by reading
+`jest-preset.js`, not assumed), so the `@/*` and `@app/*` aliases used
+throughout `src/` and `app/` resolve with zero extra jest config. Added
+one smoke test — `api.ts`'s `ApiError`/`TradingLockedError`/trading-lock
+state — deliberately not a component render, which would hit
+jest-expo's bundled `react-test-renderer@19.1.0` against the app's
+pinned `react@19.1.4` (React requires those two to match exactly).
+
+`packages/ui` gets plain `ts-jest` instead — it has no Expo dependency
+of its own, RN is only a peer dep, so `jest-expo`'s preset would be
+pulling in Expo-specific mocking for a package that never touches Expo.
+Added a `lint` script (previously missing) and a smoke test for
+`utils.ts`'s pure helpers (`cn`/`formatUsd`/`formatMmSs`/
+`formatRelative`/`secondsUntil`). `packages/shared-types` gets the
+`lint` script only — it's type-only declarations, nothing to unit test.
+
+**Prettier** was a devDependency with no config and no script before
+this — added `.prettierrc.json` + `.prettierignore` (excludes the
+Python side, the hand-authored root docs, and `infra/`/`scripts/` — not
+this pass's concern) + root `format`/`format:check` scripts. Ran
+`format:check`, not `format --write`, across the pre-existing codebase
+— confirmed it runs (77 files would need formatting) without
+unilaterally reformatting everything as a side effect of wiring the
+script.
+
+**Independently re-verified on `main` after cherry-picking, not just
+taken on the subagent's word** — including re-deriving, not just
+re-running, the riskiest-looking part: the diff touches 31 files at
+191/190/104 changed lines apiece in `login.tsx`/`verify.tsx`/`Council.tsx`,
+which reads alarmingly large for a pass billed as "mechanical." Diffed
+every large file against its parent with whitespace ignored (`git diff
+-w`) to isolate the real changes from Prettier reflow: every file
+reduced to either JSX entity escapes, the `no-unnecessary-type-assertion`
+autofix (verified safe by hand for the `typeof`/`in`-narrowing cases,
+and for `desktop/Shell.tsx`'s `{ name: item.id } as DesktopRoute` →
+`{ name: item.id }` — a discriminated-union case worth not trusting by
+eyeball — by letting `tsc` itself be the authority instead of
+hand-simulating the checker), or the useless-regex-escape fix in
+`watchlist.tsx`. Then ran `pnpm install --frozen-lockfile` (confirms the
+committed lockfile is internally consistent) and independently: `tsc
+--noEmit` clean on all three packages, `apps/mobile` test 4/4 and
+`packages/ui` test 13/13 pass, and lint reproduces the exact counts
+claimed — `apps/mobile` 34 problems (31 errors/3 warnings),
+`packages/ui` 6 (3 errors/3 warnings), `packages/shared-types` clean.
+- Docs commit re-authored by hand instead of cherry-picked (same
+  `## Entries` insertion-point conflict as the two entries above).
+
 ### 2026-08-25 — `a6a771a7` + `9aec5e66` + `7b74bfd6`: apps/api cleanup — the backlog the refactor pass parked
 
 The refactor pass two entries below this one explicitly scoped `apps/api`
