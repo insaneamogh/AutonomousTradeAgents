@@ -3,7 +3,8 @@
 // Hero portfolio numeral · stat tiles (open positions / pending picks)
 // · agent-activity tile · ONE platinum CTA ("Review N picks").
 // Health + calibration strips stay — they collapse to nothing when
-// there's no signal.
+// there's no signal. Scanner is the one exception: it always renders,
+// because the whole point is making an off-by-default feature visible.
 
 import { Pressable, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -12,7 +13,7 @@ import { useRouter } from 'expo-router';
 import type { ActivityEntryDto } from '@app/shared-types';
 import { ErrorState, Skeleton, StatusPill, cn, formatRelative } from '@app/ui';
 
-import { BentoCTA, Tile, TileLabel, TileValue } from '@/components/bento';
+import { BentoCTA, DirectionPill, Tile, TileLabel, TileValue } from '@/components/bento';
 import { CircuitBreakerBanner } from '@/components/CircuitBreakerBanner';
 import { useAccount } from '@/hooks/useAccount';
 import { useActivity } from '@/hooks/useActivity';
@@ -21,6 +22,8 @@ import type { ComponentHealth, ComponentStatus } from '@/hooks/useHealthFull';
 import { useHealthFull } from '@/hooks/useHealthFull';
 import { useGhostSummary, useVetoLedger } from '@/hooks/useInsights';
 import { useReviewAgreement } from '@/hooks/useReview';
+import type { ScanSignalDto } from '@/hooks/useScannerStatus';
+import { useScannerStatus } from '@/hooks/useScannerStatus';
 
 export default function HomeScreen() {
   return (
@@ -34,6 +37,7 @@ export default function HomeScreen() {
         <RegretTiles />
         <AgreementTile />
         <HealthTile />
+        <ScannerTile />
       </ScrollView>
     </SafeAreaView>
   );
@@ -346,4 +350,72 @@ function _toneFromStatus(s: ComponentStatus): 'ok' | 'warning' | 'danger' | 'mut
     default:
       return 'muted';
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Scanner tile — the deterministic trigger loop (engine.scanner).
+//
+// Unlike the tiles above, this one never self-hides: SCANNER_ENABLED
+// defaults to off, and the point of this tile is making that visible,
+// not hiding it further. All four states (scheduler off / not armed /
+// armed-clean / armed-with-signals) render something.
+// ─────────────────────────────────────────────────────────────────────
+
+function ScannerTile() {
+  const { data, isLoading } = useScannerStatus();
+
+  return (
+    <Tile className="gap-2">
+      <TileLabel>Scanner</TileLabel>
+      {isLoading || !data ? (
+        <View className="gap-2">
+          <Skeleton className="h-4 w-2/3" />
+          <Skeleton className="h-4 w-1/2" />
+        </View>
+      ) : !data.schedulerEnabled ? (
+        <Text className="text-[12px] text-text-tertiary dark:text-text-tertiary-dark">
+          Off · set COUNCIL_SCHEDULER_ENABLED=1 to arm the scheduler.
+        </Text>
+      ) : !data.triggerLoopArmed ? (
+        <Text className="text-[12px] text-text-tertiary dark:text-text-tertiary-dark">
+          {data.scannerEnabledFlag
+            ? 'SCANNER_ENABLED=1 but Alpaca data keys are missing — not started.'
+            : 'Baseline sweep only · set SCANNER_ENABLED=1 to scan between sweeps.'}
+        </Text>
+      ) : data.signals.length === 0 ? (
+        <Text className="text-[12px] text-text-secondary dark:text-text-secondary-dark">
+          Watching {data.watchlistSize} symbol{data.watchlistSize === 1 ? '' : 's'} · no triggers right
+          now.
+        </Text>
+      ) : (
+        <View className="gap-1.5">
+          {data.signals.slice(0, 4).map((s: ScanSignalDto, i: number) => (
+            <View key={`${s.symbol}-${s.rule}-${i}`} className="flex-row items-center gap-2">
+              <Text
+                className="w-12 text-[13px] font-medium text-text-primary dark:text-text-primary-dark"
+                style={{ fontVariant: ['tabular-nums'] }}
+              >
+                {s.symbol}
+              </Text>
+              <DirectionPill
+                label={s.direction === 'bullish' ? 'BULL' : 'BEAR'}
+                tone={s.direction === 'bullish' ? 'mint' : 'rose'}
+              />
+              <Text
+                className="flex-1 text-[12px] text-text-secondary dark:text-text-secondary-dark"
+                numberOfLines={1}
+              >
+                {s.rule.replace(/_/g, ' ')}
+              </Text>
+            </View>
+          ))}
+          {data.signals.length > 4 && (
+            <Text className="text-[11px] text-text-tertiary dark:text-text-tertiary-dark">
+              +{data.signals.length - 4} more
+            </Text>
+          )}
+        </View>
+      )}
+    </Tile>
+  );
 }

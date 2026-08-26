@@ -4,6 +4,7 @@
  *   hero equity (col-8)          ·  pulse rail (col-4)
  *   4-up stat cards
  *   Opportunity Radar (col-7)    ·  Agent Activity (col-5)
+ *   Scanner (col-12)
  *   Ghost P&L (col-5)            ·  Veto ledger (col-7)
  *   System health (col-12)
  *
@@ -18,6 +19,8 @@ import { useHealthFull } from '@/hooks/useHealthFull';
 import type { ComponentHealth, ComponentStatus } from '@/hooks/useHealthFull';
 import { useGhostSummary, useVetoLedger } from '@/hooks/useInsights';
 import { useOpenPositions } from '@/hooks/usePositions';
+import { useScannerStatus } from '@/hooks/useScannerStatus';
+import type { ScanSignalDto } from '@/hooks/useScannerStatus';
 
 import { ago, ruleLabel, signedPct, signedUsd, tone, usd } from '../format';
 import { useNav } from '../nav';
@@ -48,6 +51,7 @@ export function DashboardScreen() {
   const health = useHealthFull();
   const ghost = useGhostSummary(30);
   const vetoes = useVetoLedger(30);
+  const scanner = useScannerStatus();
   const regime = useRegime();
   const { go } = useNav();
 
@@ -323,6 +327,104 @@ export function DashboardScreen() {
                   </Row>
                 ))}
               </Stack>
+            )}
+          </Card>
+        </Cell>
+
+        {/* ── Scanner (engine.scanner trigger loop) ───────────── */}
+        <Cell span={12}>
+          <Card>
+            <CardHead
+              label="Scanner"
+              right={
+                scanner.data?.lastScanAt ? (
+                  <span className="pg-caption">last scan {ago(scanner.data.lastScanAt)}</span>
+                ) : null
+              }
+            />
+            {scanner.isLoading || !scanner.data ? (
+              <SkelRows rows={3} />
+            ) : !scanner.data.schedulerEnabled ? (
+              <div className="pg-empty">
+                <p className="pg-empty-title">Scheduler off</p>
+                <p className="pg-empty-body">
+                  The council scheduler isn't running, so nothing scans the watchlist on its own.
+                  Set <span className="pg-num">COUNCIL_SCHEDULER_ENABLED=1</span> and restart the API to
+                  arm it.
+                </p>
+              </div>
+            ) : !scanner.data.triggerLoopArmed ? (
+              <div className="pg-empty">
+                <p className="pg-empty-title">
+                  {scanner.data.scannerEnabledFlag ? 'Armed but unavailable' : 'Trigger loop off'}
+                </p>
+                <p className="pg-empty-body">
+                  {scanner.data.scannerEnabledFlag ? (
+                    <>
+                      <span className="pg-num">SCANNER_ENABLED=1</span> but Alpaca data keys are missing
+                      — the trigger loop did not start. Set{' '}
+                      <span className="pg-num">ALPACA_API_KEY</span> /{' '}
+                      <span className="pg-num">ALPACA_SECRET_KEY</span>.
+                    </>
+                  ) : (
+                    <>
+                      The daily baseline sweep is running, but the continuous scan between sweeps is
+                      off. Set <span className="pg-num">SCANNER_ENABLED=1</span> to watch the list every
+                      few minutes for a named trigger.
+                    </>
+                  )}
+                </p>
+              </div>
+            ) : scanner.data.signals.length === 0 ? (
+              <div className="pg-empty">
+                <p className="pg-empty-title">Clean — no triggers</p>
+                <p className="pg-empty-body">
+                  Watching {scanner.data.watchlistSize} symbol{scanner.data.watchlistSize === 1 ? '' : 's'}{' '}
+                  every {scanner.data.scanIntervalMinutes ?? '—'} min.
+                  {scanner.data.suppressedCount > 0
+                    ? ` ${scanner.data.suppressedCount} signal${scanner.data.suppressedCount === 1 ? '' : 's'} on cooldown this scan.`
+                    : ' No rule fired on the last scan.'}
+                </p>
+              </div>
+            ) : (
+              <table className="pg-table">
+                <thead>
+                  <tr>
+                    <th>Ticker</th>
+                    <th>Rule</th>
+                    <th>Direction</th>
+                    <th>Detail</th>
+                    <th className="pg-num-right">Observed</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {scanner.data.signals.map((s: ScanSignalDto, i: number) => (
+                    <tr key={`${s.symbol}-${s.rule}-${i}`}>
+                      <td>
+                        <Numeral size={15} weight={600}>
+                          {s.symbol}
+                        </Numeral>
+                      </td>
+                      <td>
+                        <span className="pg-num" style={{ fontSize: 13 }}>
+                          {ruleLabel(s.rule)}
+                        </span>
+                      </td>
+                      <td>
+                        <Pill tone={s.direction === 'bullish' ? 'bull' : 'bear'}>
+                          {s.direction.toUpperCase()}
+                        </Pill>
+                      </td>
+                      <td>
+                        <span className="pg-body-sm pg-truncate" title={s.detail}>
+                          {s.detail}
+                        </span>
+                      </td>
+                      <td className="pg-num-right pg-dim">{ago(s.observedAt)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             )}
           </Card>
         </Cell>
