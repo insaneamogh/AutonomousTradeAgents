@@ -55,6 +55,7 @@ from app.routers import (
     portfolio,
     positions,
     review,
+    scanner,
     symbols,
 )
 from app.routers import (
@@ -374,6 +375,7 @@ app.include_router(portfolio.router, prefix="/api/v1")
 app.include_router(positions.router, prefix="/api/v1")
 app.include_router(circuit_breaker.router, prefix="/api/v1")
 app.include_router(health_router.router, prefix="/api/v1")
+app.include_router(scanner.router, prefix="/api/v1")
 app.include_router(strategies_router.router, prefix="/api/v1")
 app.include_router(review.router, prefix="/api/v1")
 app.include_router(symbols.router, prefix="/api/v1")
