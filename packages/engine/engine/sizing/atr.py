@@ -12,10 +12,20 @@ Math:
                          / last_price
     qty                = floor(qty_pre_floor)
 
-Stop + target prices:
+Stop + target prices — the geometry INVERTS with the opening side:
 
-    stop_price   = last_price - stop_atr_mult * atr_14            (for BUY)
-    target_price = last_price + stop_atr_mult * atr_14 * R       (for BUY)
+    BUY  (long)   stop_price   = last_price - stop_atr_mult * atr_14
+                  target_price = last_price + stop_atr_mult * atr_14 * R
+    SELL (short)  stop_price   = last_price + stop_atr_mult * atr_14
+                  target_price = last_price - stop_atr_mult * atr_14 * R
+
+A short loses money when price rises, so its protective stop sits ABOVE
+the entry and its take-profit BELOW. Handing a broker the long geometry on
+a short order places a stop that is already through the market — it fills
+the instant the bracket goes live, at whatever the book will pay. That is
+why ``SizingInputs.side`` is an explicit input and why every price this
+module returns is derived from ``_sign`` rather than from a hard-coded
+minus sign.
 
 A 4%-ATR name gets a smaller qty than a 1.5%-ATR name for the same dollar
 risk. That's the whole point.
@@ -30,7 +40,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from engine.sizing.types import SizingDecision, SizingInputs
+from engine.sizing.types import SizingDecision, SizingInputs, SizingSide
 
 
 @dataclass(frozen=True)
@@ -51,6 +61,16 @@ class AtrSizingConfig:
     min_qty: int = 1
 
 
+def _sign(side: SizingSide) -> int:
+    """+1 for a long, -1 for a short.
+
+    Every stop/target in this module is ``entry - sign * distance`` /
+    ``entry + sign * distance``. One helper means one place to be wrong,
+    and the short-geometry tests pin it.
+    """
+    return -1 if side == "SELL" else 1
+
+
 def atr_position_size(
     inputs: SizingInputs,
     config: AtrSizingConfig | None = None,
@@ -67,6 +87,7 @@ def atr_position_size(
             target_price=inputs.last_price,
             method="atr" if (inputs.atr_14 and inputs.atr_14 > 0) else "fallback_pct",
             notes="confidence=0 → no trade",
+            side=inputs.side,
         )
 
     if inputs.last_price <= 0 or inputs.account_equity <= 0:
@@ -77,6 +98,7 @@ def atr_position_size(
             target_price=inputs.last_price,
             method="atr",
             notes="non-positive price or equity → no trade",
+            side=inputs.side,
         )
 
     atr = inputs.atr_14 if (inputs.atr_14 and inputs.atr_14 > 0) else None
@@ -92,6 +114,7 @@ def _vol_targeted(
     confidence: float,
     atr: float,
 ) -> SizingDecision:
+    sign = _sign(inputs.side)
     risk_dollars = (config.risk_per_trade_pct / 100.0) * inputs.account_equity * confidence
     stop_distance = config.stop_atr_mult * atr
     qty_unclamped = risk_dollars / stop_distance
@@ -107,16 +130,17 @@ def _vol_targeted(
         return SizingDecision(
             qty=0,
             target_notional=0.0,
-            stop_price=inputs.last_price - stop_distance,
-            target_price=inputs.last_price + stop_distance * config.target_r_multiple,
+            stop_price=inputs.last_price - sign * stop_distance,
+            target_price=inputs.last_price + sign * stop_distance * config.target_r_multiple,
             method="atr",
             notes=f"qty rounded to 0 (notional ${notional_clamped:.2f}, price ${inputs.last_price:.2f})",
+            side=inputs.side,
         )
 
     target_notional = qty * inputs.last_price
-    stop_price = round(inputs.last_price - stop_distance, 4)
+    stop_price = round(inputs.last_price - sign * stop_distance, 4)
     target_price = round(
-        inputs.last_price + stop_distance * config.target_r_multiple, 4
+        inputs.last_price + sign * stop_distance * config.target_r_multiple, 4
     )
     pct_of_equity = (target_notional / inputs.account_equity) * 100.0
 
@@ -127,9 +151,14 @@ def _vol_targeted(
         target_price=target_price,
         method="atr",
         notes=(
-            f"ATR-sized: risk_dollars=${risk_dollars:.2f} stop=${stop_distance:.2f}/share "
-            f"qty={qty} notional=${target_notional:.2f} ({pct_of_equity:.2f}% of equity)"
+            f"{'SHORT' if inputs.side == 'SELL' else 'LONG'} ATR-sized: "
+            f"risk_dollars=${risk_dollars:.2f} stop=${stop_distance:.2f}/share "
+            f"({config.stop_atr_mult:.1f}x ATR {atr:.4f}) qty={qty} "
+            f"notional=${target_notional:.2f} ({pct_of_equity:.2f}% of equity) "
+            f"stop=${stop_price:.2f} target=${target_price:.2f} "
+            f"R={config.target_r_multiple:.1f}"
         ),
+        side=inputs.side,
     )
 
 
@@ -139,6 +168,7 @@ def _fallback_pct(
     confidence: float,
 ) -> SizingDecision:
     """ATR missing → plain % of equity, scaled by confidence."""
+    sign = _sign(inputs.side)
     notional_target = (
         (config.fallback_position_pct / 100.0) * inputs.account_equity * confidence
     )
@@ -155,15 +185,16 @@ def _fallback_pct(
             target_price=inputs.last_price,
             method="fallback_pct",
             notes=f"qty rounded to 0 in fallback path (notional ${notional_clamped:.2f})",
+            side=inputs.side,
         )
 
     target_notional = qty * inputs.last_price
     # Without ATR we have no principled stop — use a flat 4% as a placeholder.
     flat_stop_pct = 4.0
     stop_distance = inputs.last_price * (flat_stop_pct / 100.0)
-    stop_price = round(inputs.last_price - stop_distance, 4)
+    stop_price = round(inputs.last_price - sign * stop_distance, 4)
     target_price = round(
-        inputs.last_price + stop_distance * config.target_r_multiple, 4
+        inputs.last_price + sign * stop_distance * config.target_r_multiple, 4
     )
 
     return SizingDecision(
@@ -172,5 +203,10 @@ def _fallback_pct(
         stop_price=stop_price,
         target_price=target_price,
         method="fallback_pct",
-        notes=f"No ATR — fallback to {config.fallback_position_pct}% of equity",
+        notes=(
+            f"No ATR — fallback to {config.fallback_position_pct}% of equity "
+            f"({'SHORT' if inputs.side == 'SELL' else 'LONG'}: stop=${stop_price:.2f} "
+            f"target=${target_price:.2f})"
+        ),
+        side=inputs.side,
     )

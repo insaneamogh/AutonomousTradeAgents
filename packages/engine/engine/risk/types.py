@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import Enum
 
+from engine.env import env_flag
+
 
 class Side(str, Enum):
     BUY = "BUY"
@@ -56,8 +58,48 @@ class RiskCaps:
     min_council_confidence: float = 0.50
     min_specialist_avg_score: float = 45.0
 
-    # Long-only in Phase 0/1 — shorting requires margin + borrow handling.
+    # Long-only unless explicitly opted in. See ``RiskCaps.from_env`` —
+    # ALLOW_SHORTS=1 flips this, and nothing else does.
     forbid_short_phase_0: bool = True
+
+    # ── Short-side caps (only read when shorts are enabled) ──────────
+    max_short_position_pct: float = 2.0
+    """Notional ceiling for a single SHORT, as a % of equity.
+
+    Deliberately 2.5x tighter than ``max_position_pct`` (5%), and the ratio
+    is the whole argument. A long's loss is bounded: the stock goes to zero
+    and you lose 100% of the notional, so a 5% position caps the damage at
+    -5% of equity. A short's loss is unbounded — the position grows against
+    you as it moves, which is the opposite of a long, where the position
+    shrinks as it loses.
+
+    We size the cap off the adverse move a stop cannot protect against: an
+    overnight or halt-reopen gap. Single-name squeezes that gap +100-150%
+    through any resting stop are not hypothetical (VW 2008, GME 2021, and
+    a long tail of small-cap borrow squeezes). Take +150% as the planning
+    scenario — a 2.5x move against the entry:
+
+        worst-case loss = notional x 1.5
+        cap the loss at the SAME -5% of equity a long can produce
+        =>  notional_pct x 1.5 <= 5%   =>  notional_pct <= 3.33%
+
+    3.33% is the break-even; 2.0% is that with a margin of safety, and it
+    also keeps the maintenance-margin call one gap further away. The
+    ``short_unbounded_loss_cap`` rule trims to this number rather than
+    rejecting — a smaller short is still a valid expression of the thesis.
+    """
+
+    max_short_gross_pct: float = 10.0
+    """Ceiling on TOTAL short notional across the book, as a % of equity.
+
+    Five 2%-shorts that all gap together is one 10% loss event, and
+    correlated squeezes are exactly how short books die. Enforced by the
+    same rule, after the per-position trim."""
+
+    require_stop_on_short: bool = True
+    """No short opens without a protective stop leg. Non-negotiable while
+    shorts are enabled; exposed as a cap so a backtest that models its own
+    exits can turn it off explicitly rather than by accident."""
 
     # Wash-sale (US tax informational warning)
     wash_sale_lookback_days: int = 30
@@ -88,6 +130,27 @@ class RiskCaps:
     mis_entry_cutoff_minute_ist: int = 0
     """Indian brokers force-square-off MIS (intraday) positions ~15:20 IST.
     New intraday entries after this cutoff have no time to work — blocked."""
+
+    @classmethod
+    def from_env(cls, **overrides: object) -> RiskCaps:
+        """Default caps with the environment-configurable switches applied.
+
+        Only ONE switch is environment-driven today: ``ALLOW_SHORTS``.
+        Everything else stays a code-level default that a caller overrides
+        explicitly, because a risk cap that can be widened by an env var
+        nobody reviews is not a risk cap.
+
+        Shorts are **off unless ALLOW_SHORTS is truthy**. An unset, empty,
+        or typo'd value leaves ``forbid_short_phase_0=True`` — ``env_flag``
+        fails closed on anything it doesn't recognise, which is the
+        direction that cannot lose money by accident.
+        """
+        return cls(forbid_short_phase_0=not env_flag("ALLOW_SHORTS"), **overrides)  # type: ignore[arg-type]
+
+    @property
+    def shorts_enabled(self) -> bool:
+        """Readable inverse of ``forbid_short_phase_0`` for call sites and logs."""
+        return not self.forbid_short_phase_0
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -171,6 +234,19 @@ class RiskProposal:
     # (Zerodha MIS) — read by the square-off-window rule.
     is_intraday: bool = False
 
+    # ── Short-side inputs ────────────────────────────────────────────
+    stop_price: float | None = None
+    """The protective stop the proposal ships with. ``short_requires_stop``
+    reads it; for a short the stop must sit ABOVE the entry."""
+
+    shortable: bool | None = None
+    """Broker's ``shortable`` flag for the asset. ``None`` = unknown, which
+    the short rules treat as a veto — an unverified borrow is not a borrow."""
+
+    easy_to_borrow: bool | None = None
+    """Broker's ``easy_to_borrow`` (ETB) flag. Hard-to-borrow names carry
+    borrow fees and recall risk that this system does not model."""
+
 
 @dataclass(frozen=True)
 class SpecialistScore:
@@ -198,3 +274,13 @@ class RiskDecision:
     veto_rule: str | None = None
     adjusted_qty: int | None = None
     informational_flags: tuple[str, ...] = field(default_factory=tuple)
+    checks_passed: tuple[str, ...] = field(default_factory=tuple)
+    """Named rules that ran and did NOT block, in evaluation order.
+
+    The veto name alone tells a user why a trade was refused but says
+    nothing about what an approved trade actually cleared. Recording the
+    passes turns "the risk engine approved it" into an enumerable list a
+    UI can render and an auditor can check — the same reason ``veto_rule``
+    exists at all. Rules that self-gate out (an India rule on a US symbol)
+    are not listed: they did not run, so they did not pass.
+    """

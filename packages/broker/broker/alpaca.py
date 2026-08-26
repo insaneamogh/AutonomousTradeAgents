@@ -358,13 +358,38 @@ class AlpacaBroker(BrokerInterface):
 # ─────────────────────────────────────────────────────────────────────
 
 
+def _opt_bool(value: object) -> bool | None:
+    """Coerce a broker flag to a tri-state bool.
+
+    ``None`` must survive as ``None`` rather than collapsing to False:
+    "the broker says this is not shortable" and "we never learned whether
+    it is" produce the same veto today, but they are different facts and
+    the audit log should be able to tell them apart.
+    """
+    if value is None:
+        return None
+    return bool(value)
+
+
 class AssetInfo(NamedTuple):
-    """What the broker knows about a symbol."""
+    """What the broker knows about a symbol.
+
+    ``shortable`` / ``easy_to_borrow`` are the borrow side of the record and
+    exist for the risk engine's ``shortable_check``. Both are ``None`` when
+    the broker did not report them — the rule treats unknown as "do not
+    short", because an unverified borrow is not a borrow.
+    """
 
     symbol: str
     name: str
     tradable: bool
     fractionable: bool
+    shortable: bool | None = None
+    """Broker accepts short-sale orders in this name at all."""
+    easy_to_borrow: bool | None = None
+    """On the ETB list: locate is automatic and the borrow is effectively
+    free. Off it (HTB) the borrow accrues a daily fee and the lender can
+    force a buy-in — neither is modelled by the sizer."""
 
 
 async def lookup_asset(symbol: str, *, api_key: str, secret_key: str) -> AssetInfo | None:
@@ -389,6 +414,8 @@ async def lookup_asset(symbol: str, *, api_key: str, secret_key: str) -> AssetIn
             name=str(getattr(a, "name", "") or ""),
             tradable=bool(getattr(a, "tradable", False)),
             fractionable=bool(getattr(a, "fractionable", False)),
+            shortable=_opt_bool(getattr(a, "shortable", None)),
+            easy_to_borrow=_opt_bool(getattr(a, "easy_to_borrow", None)),
         )
 
     _ = GetAssetsRequest  # imported for callers that want to list; keep the dep explicit
@@ -417,6 +444,8 @@ async def list_tradable_assets(*, api_key: str, secret_key: str) -> list[AssetIn
                 name=str(getattr(a, "name", "") or ""),
                 tradable=True,
                 fractionable=bool(getattr(a, "fractionable", False)),
+                shortable=_opt_bool(getattr(a, "shortable", None)),
+                easy_to_borrow=_opt_bool(getattr(a, "easy_to_borrow", None)),
             )
             for a in assets
             if getattr(a, "tradable", False)
