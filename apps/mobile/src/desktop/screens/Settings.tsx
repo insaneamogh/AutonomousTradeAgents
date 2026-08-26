@@ -1,6 +1,6 @@
 /** Settings — broker connections, watchlist, appearance, session. */
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useColorScheme } from 'nativewind';
 
 import {
@@ -10,6 +10,7 @@ import {
 } from '@/hooks/useBrokerConnections';
 import { useAddWatchlistSymbol, useRemoveWatchlistSymbol, useWatchlist } from '@/hooks/useWatchlist';
 import { useHealthFull } from '@/hooks/useHealthFull';
+import { useTickerCombobox } from '@/hooks/useTickerCombobox';
 import { useAuthStore } from '@/stores/authStore';
 import { useThemeStore } from '@/stores/themeStore';
 import type { ThemePreference } from '@/stores/themeStore';
@@ -36,6 +37,20 @@ const THEMES: { id: ThemePreference; label: string }[] = [
   { id: 'dark', label: 'Platinum Glass' },
 ];
 
+/**
+ * Surface the server's own explanation for a failed watchlist add.
+ *
+ * Mirrors `runErrorMessage` in Picks.tsx: a 422/409 here already names the
+ * exact problem (untradable ticker, watchlist cap) — showing a generic
+ * "something went wrong" would throw that away.
+ */
+function addSymbolErrorMessage(err: unknown): string {
+  const e = err as { status?: number; body?: { detail?: string } } | null;
+  const detail = e?.body?.detail;
+  if (typeof detail === 'string' && detail) return detail;
+  return "Couldn't add the symbol — try again.";
+}
+
 export function SettingsScreen() {
   const connections = useBrokerConnections();
   const revoke = useRevokeBrokerConnection();
@@ -49,7 +64,10 @@ export function SettingsScreen() {
   const email = useAuthStore((s) => s.user?.email ?? '');
   const signOut = useAuthStore((s) => s.signOut);
 
-  const [ticker, setTicker] = useState('');
+  const combobox = useTickerCombobox(8);
+  const { query, setQuery, open, close, setOpen, activeIndex, moveActive, hits, selectIndex, selectActive, reset } =
+    combobox;
+  const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [connectError, setConnectError] = useState<string | null>(null);
 
   const connect = async () => {
@@ -59,6 +77,40 @@ export function SettingsScreen() {
       window.location.assign(res.authorizeUrl);
     } catch {
       setConnectError('Could not start the Alpaca connection.');
+    }
+  };
+
+  /**
+   * Commit an add attempt — either the raw typed text or a picked
+   * suggestion. The query is updated to exactly what's being attempted
+   * (so a failure shows the right text next to the error) and the list
+   * closes immediately, matching CouncilLauncher; only a SUCCESSFUL add
+   * clears the field, via `reset()` in the mutation's `onSuccess`.
+   */
+  const commitSymbol = (raw: string) => {
+    const value = raw.trim().toUpperCase();
+    if (!value) return;
+    setQuery(value);
+    close();
+    addSymbol.mutate(value, { onSuccess: () => reset() });
+  };
+
+  /** Arrow/Enter/Escape over the suggestion list — lifted from CouncilLauncher. */
+  const onTickerKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!open || hits.length === 0) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      moveActive(1);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      moveActive(-1);
+    } else if (e.key === 'Enter') {
+      // Enter commits the highlighted suggestion rather than the raw text.
+      e.preventDefault();
+      const hit = selectActive();
+      if (hit) commitSymbol(hit.symbol);
+    } else if (e.key === 'Escape') {
+      close();
     }
   };
 
@@ -177,26 +229,67 @@ export function SettingsScreen() {
             <form
               onSubmit={(e) => {
                 e.preventDefault();
-                const value = ticker.trim().toUpperCase();
-                if (!value) return;
-                addSymbol.mutate(value);
-                setTicker('');
+                commitSymbol(query);
               }}
               style={{ display: 'flex', gap: 8 }}
             >
-              <input
-                className="pg-input"
-                style={{ flex: 1, minWidth: 0 }}
-                value={ticker}
-                onChange={(e) => setTicker(e.target.value)}
-                placeholder="Add a ticker"
-                aria-label="Add a ticker to the watchlist"
-                maxLength={8}
-              />
-              <Button kind="primary" type="submit" disabled={addSymbol.isPending} ariaLabel="Add ticker">
-                Add
+              <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
+                <input
+                  className="pg-input"
+                  style={{ width: '100%' }}
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  onFocus={() => setOpen(true)}
+                  onBlur={() => {
+                    // Delay so a mousedown on a suggestion lands before the
+                    // list unmounts.
+                    blurTimer.current = setTimeout(() => close(), 120);
+                  }}
+                  onKeyDown={onTickerKeyDown}
+                  placeholder="Search ticker or company"
+                  aria-label="Search for a ticker or company to add to the watchlist"
+                  role="combobox"
+                  aria-expanded={open && hits.length > 0}
+                  aria-autocomplete="list"
+                  aria-controls="watchlist-symbol-suggestions"
+                  autoComplete="off"
+                  maxLength={40}
+                />
+                {open && hits.length > 0 ? (
+                  <ul id="watchlist-symbol-suggestions" role="listbox" className="pg-typeahead">
+                    {hits.map((h, i) => (
+                      <li key={h.symbol} role="option" aria-selected={i === activeIndex}>
+                        <button
+                          type="button"
+                          className={`pg-typeahead-row${i === activeIndex ? ' is-active' : ''}`}
+                          onMouseDown={(e) => {
+                            // mousedown, not click: fires before blur.
+                            e.preventDefault();
+                            if (blurTimer.current) clearTimeout(blurTimer.current);
+                            const hit = selectIndex(i);
+                            if (hit) commitSymbol(hit.symbol);
+                          }}
+                        >
+                          <span className="pg-typeahead-sym">{h.symbol}</span>
+                          <span className="pg-typeahead-name">{h.name}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+              <Button
+                kind="primary"
+                type="submit"
+                disabled={addSymbol.isPending || query.trim().length === 0}
+                ariaLabel="Add ticker"
+              >
+                {addSymbol.isPending ? 'Adding…' : 'Add'}
               </Button>
             </form>
+            {addSymbol.isError ? (
+              <span className="pg-body-sm pg-bear">{addSymbolErrorMessage(addSymbol.error)}</span>
+            ) : null}
             {watchlist.isLoading ? (
               <SkelRows rows={2} h={30} />
             ) : (
