@@ -18,7 +18,6 @@ notification fans out.
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -35,6 +34,7 @@ from app.schemas.agent import (
     CouncilProgressResponse,
 )
 from app.schemas.approvals import ApprovalProposalDto
+from app.services.broker.symbol_search import assert_tradable
 from app.services.council.agent_runs import get_run_registry
 from app.services.council.store import get_store
 from app.services.notifications.notifications import schedule_proposal_pending_notification
@@ -81,46 +81,6 @@ def _equity_resolver(user_id: str):
     return _resolve
 
 
-async def _assert_tradable(symbol: str) -> None:
-    """Reject a well-formed-but-nonexistent ticker before it costs anything.
-
-    ``SYMBOL_RE`` only proves the *shape* is right — "APPLE" and "BANANA"
-    pass it. Without this check the council spends six LLM calls building
-    a proposal for a symbol the broker will refuse at the very last step,
-    and the user sees a generic failure minutes later instead of an
-    instant, specific one.
-
-    Skipped when the data keys aren't configured (dev / MOCK), where the
-    synthetic provider happily invents bars for any ticker anyway.
-    """
-    api_key = os.environ.get("ALPACA_API_KEY", "").strip()
-    secret = os.environ.get("ALPACA_SECRET_KEY", "").strip()
-    if not api_key or not secret:
-        return
-
-    from broker.alpaca import lookup_asset
-
-    try:
-        asset = await lookup_asset(symbol, api_key=api_key, secret_key=secret)
-    except Exception:
-        logger.warning("symbol lookup failed for %s — allowing the run", symbol)
-        return
-
-    if asset is None:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"{symbol} is not a tradable US equity or ETF on this broker. "
-                "Use the ticker rather than the company name (AAPL, not Apple)."
-            ),
-        )
-    if not asset.tradable:
-        raise HTTPException(
-            status_code=422,
-            detail=f"{symbol} ({asset.name}) is not currently tradable on this broker.",
-        )
-
-
 async def _execute_council(
     body: AgentRunRequest,
     user: AuthedUser,
@@ -140,7 +100,7 @@ async def _execute_council(
     DEV_AUTH_BYPASS the authed user IS the fixture user, so dev/mock stays
     single-bucket.
     """
-    await _assert_tradable(body.symbol)
+    await assert_tradable(body.symbol)
 
     # Same provider resolution as the daily cron: real Alpaca bars + FRED
     # macro when data keys exist, synthetic otherwise (dev/CI). Without

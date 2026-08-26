@@ -126,3 +126,43 @@ async def search_symbols(query: str, *, limit: int = 10) -> list[SymbolHit]:
 async def warm_symbol_cache() -> int:
     """Populate the cache at startup so the first search isn't slow."""
     return len(await _universe())
+
+
+async def assert_tradable(symbol: str) -> None:
+    """Raise 422 unless ``symbol`` is a tradable US equity/ETF at the broker.
+
+    Shared by every entry point that accepts a ticker. ``SYMBOL_RE`` only
+    proves the SHAPE is right — "APPLE" and "BANANA" pass it — so without
+    this a bad ticker reaches a council pass (six LLM calls) or sits in a
+    watchlist failing every scheduled sweep.
+
+    No-ops when data keys are absent (dev/MOCK), and allows the symbol
+    through on a lookup outage: a broker hiccup must not block trading.
+    """
+    from fastapi import HTTPException
+
+    creds = _keys()
+    if creds is None:
+        return
+
+    from broker.alpaca import lookup_asset
+
+    try:
+        asset = await lookup_asset(symbol, api_key=creds[0], secret_key=creds[1])
+    except Exception:  # noqa: BLE001
+        logger.warning("symbol lookup failed for %s — allowing it through", symbol)
+        return
+
+    if asset is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{symbol} is not a tradable US equity or ETF on this broker. "
+                "Use the ticker rather than the company name (AAPL, not Apple)."
+            ),
+        )
+    if not asset.tradable:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{symbol} ({asset.name}) is not currently tradable on this broker.",
+        )

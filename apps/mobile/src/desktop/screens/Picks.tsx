@@ -155,6 +155,22 @@ function PlanStat({ label, value }: { label: string; value: string }) {
   );
 }
 
+/**
+ * Turn a failed run into something true.
+ *
+ * A 422 is the server telling us exactly what is wrong with the ticker —
+ * showing "the agent server may be cold" for it sent the user chasing
+ * infrastructure when the real problem was the symbol they picked.
+ */
+function runErrorMessage(err: unknown): string {
+  const e = err as { status?: number; body?: { detail?: string } } | null;
+  const detail = e?.body?.detail;
+  if (e?.status === 422 && typeof detail === 'string') return detail;
+  if (e?.status === 429) return 'Daily council budget reached. Try again tomorrow.';
+  if (typeof detail === 'string' && detail) return detail;
+  return 'Couldn\u2019t start the run. The agent server may be cold.';
+}
+
 /** Kicks off a council run and drops the user straight into the theater. */
 function CouncilLauncher() {
   const watchlist = useWatchlist();
@@ -275,7 +291,7 @@ function CouncilLauncher() {
       </form>
 
       {start.isError ? (
-        <span className="pg-body-sm pg-bear">Couldn’t start the run. The agent server may be cold.</span>
+        <span className="pg-body-sm pg-bear">{runErrorMessage(start.error)}</span>
       ) : null}
 
       <Stack gap={8}>

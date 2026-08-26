@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.middleware.auth import AuthedUser, get_current_user
 from app.schemas.watchlist import AddWatchlistRequest, WatchlistItemDto
+from app.services.broker.symbol_search import assert_tradable
 from app.services.watchlist.watchlist_store import SYMBOL_RE, get_watchlist_store
 
 logger = logging.getLogger("api.router.watchlist")
@@ -60,6 +61,11 @@ async def add_symbol(
                 "v1 tracks stocks and ETFs only — options and futures are out of scope."
             ),
         )
+
+    # Shape is not existence. Without this the watchlist happily stored
+    # "APPLE", which then failed every scheduled sweep and every manual
+    # run against it.
+    await assert_tradable(symbol)
 
     store = get_watchlist_store()
     existing = await store.list_items(user.id)
