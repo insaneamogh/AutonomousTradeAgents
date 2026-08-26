@@ -24,6 +24,18 @@ interface RequestLoginResponse {
   devToken: string | null;
 }
 
+/**
+ * Hides the browser's scrollbar chrome while keeping the ScrollView fully
+ * scrollable — `scrollbarWidth` is a react-native-web extension (not in
+ * core RN's style types, hence the cast) that RN-Web's own ScrollView
+ * implementation special-cases: setting it to `'none'` emits BOTH the
+ * Firefox-standard `scrollbar-width: none` AND an auto-generated
+ * `::-webkit-scrollbar { display: none }` rule, so no separate global
+ * CSS is needed. Web-only — native has no browser scrollbar to hide.
+ */
+const webHideScrollbarStyle =
+  Platform.OS === 'web' ? ({ scrollbarWidth: 'none' } as Record<string, string>) : undefined;
+
 export default function LoginScreen() {
   const [email, setEmail] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -106,6 +118,7 @@ export default function LoginScreen() {
         <ScrollView
           contentContainerClassName="px-6 pt-16 pb-8 gap-6"
           keyboardShouldPersistTaps="handled"
+          style={webHideScrollbarStyle}
         >
           <View className="gap-2">
             <Text className="text-[28px] font-bold text-text-primary dark:text-text-primary-dark">
