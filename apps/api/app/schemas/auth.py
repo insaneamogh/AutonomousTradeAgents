@@ -76,6 +76,18 @@ class GoogleLoginRequest(_Base):
     device_label: str | None = None
 
 
+class GoogleExchangeRequest(_Base):
+    """Server-side fallback leg: the mobile app sends its PKCE authorization
+    code + verifier here instead of exchanging directly with Google, for a
+    Google OAuth client type whose platform policy is confidential."""
+
+    code: str = Field(min_length=1)
+    code_verifier: str = Field(min_length=1)
+    redirect_uri: str = Field(min_length=1)
+    device_id: str | None = None
+    device_label: str | None = None
+
+
 # ─────────────────────────────────────────────────────────────────────
 # refresh
 # ─────────────────────────────────────────────────────────────────────

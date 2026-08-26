@@ -39,11 +39,26 @@ cheapest, most attacker-hostile checks first:
   5. ``email_verified`` must be literally ``True`` — required, not
      optional. An unverified email claim must never create or link an
      account.
+
+There is a SECOND, optional leg in this module: ``exchange_code_for_id_token``.
+The primary mobile flow exchanges its PKCE authorization code directly with
+Google, client-side, with no client secret — that's what PKCE (RFC 7636)
+buys a public/native client. But Google's platform policy on SOME OAuth
+client types (typically "Web application") treats the client as
+confidential and refuses that exchange without a client secret, which the
+mobile app must never hold. ``exchange_code_for_id_token`` is the server-side
+fallback for exactly that case: it holds the one secret the mobile app
+can't, mirroring ``app.services.broker.alpaca_oauth.exchange_code_for_tokens``'s
+shape. Its output (a bare ``id_token``) still flows through the SAME
+``verify_google_id_token`` above — there is only one place that ever
+decides "is this identity real".
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -53,11 +68,16 @@ import httpx
 from jose import jwt as jose_jwt
 from jose.exceptions import JWTError
 
+logger = logging.getLogger("api.google_oauth")
+
 # Google's published JWKS for ID-token verification. Not env-overridable —
 # tests inject a mocked ``client`` instead of pointing at a different URL
 # (see apps/api/tests/test_auth_google.py), so there's no operational need
 # for an env var here the way ALPACA_TOKEN_URL exists for staging swaps.
 GOOGLE_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs"
+
+# Google's token endpoint — used only by the server-side exchange fallback.
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
 # Google documents BOTH forms as valid ``iss`` values. jose's own issuer
 # check only accepts a single expected string, so we verify this ourselves.
@@ -79,6 +99,13 @@ class GoogleJWKSFetchError(Exception):
     """We could not reach or parse Google's JWKS endpoint. NOT the caller's
     fault — router translates this to 503 so a client knows to retry rather
     than treating its token as bad."""
+
+
+class GoogleExchangeError(Exception):
+    """The server-side authorization-code exchange itself failed (network,
+    misconfiguration, or Google rejected the code/verifier/redirect_uri).
+    Router translates this to 502 — same treatment as
+    ``alpaca_oauth.TokenExchangeError``."""
 
 
 @dataclass(frozen=True)
@@ -272,3 +299,103 @@ async def verify_google_id_token(
         sub=sub,
         name=name if isinstance(name, str) else None,
     )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Server-side exchange fallback
+#
+# Only reached when a client-side PKCE exchange isn't possible for the
+# configured Google OAuth client type. Holds the ONE secret the mobile app
+# must never see; everything else about "is this identity real" still
+# funnels through ``verify_google_id_token`` above.
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _env(name: str) -> str:
+    return os.environ.get(name, "").strip()
+
+
+def web_client_id() -> str:
+    """The confidential ('Web application'-type) Google OAuth client id
+    used ONLY for the server-side exchange fallback. Deliberately separate
+    from ``Settings.google_oauth_client_ids`` (the ID-token ``aud``
+    allow-list): a native iOS/Android client id has no secret to pair with
+    and exchanges directly on-device, so it never reaches this function —
+    only a Web-type client, which DOES have a secret, needs this path.
+    """
+    return _env("GOOGLE_OAUTH_WEB_CLIENT_ID")
+
+
+def client_secret() -> str:
+    return _env("GOOGLE_OAUTH_CLIENT_SECRET")
+
+
+async def exchange_code_for_id_token(
+    *,
+    code: str,
+    code_verifier: str,
+    redirect_uri: str,
+    client: httpx.AsyncClient | None = None,
+) -> str:
+    """Exchange an authorization code (from the PKCE flow the mobile app
+    already ran) for an ID token, using OUR web client id + secret rather
+    than anything the caller supplies — never trust the client to name
+    which client_id/secret pair to spend.
+
+    Returns the bare ``id_token`` string; the caller still has to run it
+    through ``verify_google_id_token`` — this function proves nothing on
+    its own about the token's aud/iss/email_verified.
+
+    ``client`` is injectable — same testable-via-``httpx.MockTransport``
+    convention as ``alpaca_oauth.exchange_code_for_tokens``.
+    """
+    web_id = web_client_id()
+    secret = client_secret()
+    if not web_id or not secret:
+        raise GoogleExchangeError(
+            "GOOGLE_OAUTH_WEB_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET not configured "
+            "— the server-side Google exchange fallback is unavailable"
+        )
+
+    body = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": redirect_uri,
+        "client_id": web_id,
+        "client_secret": secret,
+        "code_verifier": code_verifier,
+    }
+    headers = {
+        "content-type": "application/x-www-form-urlencoded",
+        "accept": "application/json",
+    }
+
+    owned = False
+    if client is None:
+        client = httpx.AsyncClient(timeout=10.0)
+        owned = True
+
+    try:
+        resp = await client.post(GOOGLE_TOKEN_URL, data=body, headers=headers)
+    except httpx.HTTPError as exc:
+        raise GoogleExchangeError(f"network error reaching Google token endpoint: {exc}") from exc
+    finally:
+        if owned:
+            await client.aclose()
+
+    if resp.status_code >= 400:
+        # Don't log the body — it can echo back request params. Status +
+        # truncated message is enough for triage (same policy as alpaca_oauth).
+        snippet = resp.text[:200]
+        logger.warning("google code exchange failed: %s — %s", resp.status_code, snippet)
+        raise GoogleExchangeError(f"token endpoint returned {resp.status_code}")
+
+    try:
+        data = resp.json()
+    except ValueError as exc:
+        raise GoogleExchangeError("token endpoint returned invalid JSON") from exc
+
+    id_token = data.get("id_token") if isinstance(data, dict) else None
+    if not isinstance(id_token, str) or not id_token:
+        raise GoogleExchangeError("token endpoint response had no id_token")
+    return id_token

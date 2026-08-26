@@ -171,6 +171,21 @@ def _bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _patch_google_exchange(monkeypatch: pytest.MonkeyPatch, handler) -> None:  # noqa: ANN001
+    """Same monkeypatch-the-module-attribute technique as
+    ``_patch_google_verify``, for the token-exchange leg."""
+    real_exchange = google_oauth.exchange_code_for_id_token
+    transport = httpx.MockTransport(handler)
+
+    async def patched(*, code, code_verifier, redirect_uri, client=None):  # noqa: ANN001
+        async with httpx.AsyncClient(transport=transport) as c:
+            return await real_exchange(
+                code=code, code_verifier=code_verifier, redirect_uri=redirect_uri, client=c
+            )
+
+    monkeypatch.setattr(google_oauth, "exchange_code_for_id_token", patched)
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Happy path
 # ─────────────────────────────────────────────────────────────────────
@@ -376,3 +391,92 @@ def test_google_login_survives_key_rotation(
     r2 = client.post("/api/v1/auth/google", json={"idToken": token_b})
     assert r2.status_code == 200, r2.text
     assert jwks_server.call_count == 2, "unknown kid should force exactly one refetch"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# /auth/google/exchange — server-side fallback for a confidential
+# ("Web application") Google OAuth client type
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_google_exchange_happy_path_issues_tokens(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, jwks_server: _JWKSServer
+) -> None:
+    monkeypatch.setenv("GOOGLE_OAUTH_WEB_CLIENT_ID", "web-client.apps.googleusercontent.com")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "web-client-secret")
+
+    private_pem, pub = _new_rsa_keypair()
+    jwks_server.add_key("kid-1", pub)
+    _patch_google_verify(monkeypatch, jwks_server)
+
+    id_token = _sign_google_token(private_pem, kid="kid-1", email="exchange@example.com")
+
+    def token_handler(request: httpx.Request) -> httpx.Response:
+        from urllib.parse import parse_qs
+
+        form = parse_qs(request.content.decode("utf-8"))
+        assert form["grant_type"] == ["authorization_code"]
+        assert form["code"] == ["auth-code-from-google"]
+        assert form["code_verifier"] == ["pkce-verifier"]
+        assert form["client_secret"] == ["web-client-secret"]
+        return httpx.Response(200, json={"id_token": id_token})
+
+    _patch_google_exchange(monkeypatch, token_handler)
+
+    r = client.post(
+        "/api/v1/auth/google/exchange",
+        json={
+            "code": "auth-code-from-google",
+            "codeVerifier": "pkce-verifier",
+            "redirectUri": "autotrader://auth/google/callback",
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["email"] == "exchange@example.com"
+    assert body["accessToken"]
+
+    me = client.get("/api/v1/auth/me", headers=_bearer(body["accessToken"]))
+    assert me.json()["authMethod"] == "google"
+
+
+def test_google_exchange_unconfigured_web_client_is_502(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No GOOGLE_OAUTH_WEB_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET configured
+    — fails before any network call, cleanly, as a gateway error (this is
+    OUR config gap, not the caller's bad request)."""
+    monkeypatch.delenv("GOOGLE_OAUTH_WEB_CLIENT_ID", raising=False)
+    monkeypatch.delenv("GOOGLE_OAUTH_CLIENT_SECRET", raising=False)
+
+    r = client.post(
+        "/api/v1/auth/google/exchange",
+        json={
+            "code": "auth-code-from-google",
+            "codeVerifier": "pkce-verifier",
+            "redirectUri": "autotrader://auth/google/callback",
+        },
+    )
+    assert r.status_code == 502
+
+
+def test_google_exchange_token_endpoint_failure_is_502(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GOOGLE_OAUTH_WEB_CLIENT_ID", "web-client.apps.googleusercontent.com")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "web-client-secret")
+
+    def failing_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": "invalid_grant"})
+
+    _patch_google_exchange(monkeypatch, failing_handler)
+
+    r = client.post(
+        "/api/v1/auth/google/exchange",
+        json={
+            "code": "bad-code",
+            "codeVerifier": "pkce-verifier",
+            "redirectUri": "autotrader://auth/google/callback",
+        },
+    )
+    assert r.status_code == 502

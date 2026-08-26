@@ -34,6 +34,15 @@ Phase 3 auth foundation. Flow:
        session shape ``/auth/verify`` produces. Verifies the Google ID
        token (``app.services.auth.google_oauth``) before ever touching
        user/session state.
+
+    7. POST /auth/google/exchange { code, codeVerifier, redirectUri, ... }
+       → 200 { ... same shape as /auth/google ... }
+       Fallback leg for a Google OAuth client type whose platform policy
+       is confidential (typically "Web application") — exchanges the PKCE
+       authorization code server-side (we hold the client secret; the
+       mobile app never does), then runs the SAME verify+issue path as
+       #6. Not needed for a public/native (iOS/Android) client type, which
+       exchanges directly against Google with no secret at all.
 """
 
 from __future__ import annotations
@@ -43,9 +52,10 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.middleware.auth import AuthedUser, require_real_auth
 from app.schemas.auth import (
+    GoogleExchangeRequest,
     GoogleLoginRequest,
     IssuedTokensResponse,
     LogoutRequest,
@@ -321,37 +331,19 @@ async def me(user: AuthedUser = Depends(require_real_auth)) -> MeResponse:
     )
 
 
-@router.post(
-    "/google",
-    response_model=IssuedTokensResponse,
-    response_model_by_alias=True,
-    status_code=status.HTTP_200_OK,
-)
-async def google_login(
-    body: GoogleLoginRequest,
-    request: Request,
-    store: AuthStore = Depends(get_auth_store),
+async def _verify_and_login_with_google(
+    id_token: str,
+    *,
+    settings: Settings,
+    store: AuthStore,
+    device_id: str | None,
+    device_label: str | None,
 ) -> IssuedTokensResponse:
-    """"Continue with Google" — verify the ID token, then issue the exact
-    same session shape ``/auth/verify`` does. Magic-link stays untouched
-    and remains a fully valid login path on its own.
-
-    Rate-limited: 30/hour/IP. Unlike ``/verify`` there's no caller-supplied
-    email to key on before the token verifies, so this is IP-only (see
-    ``check_google_rate``).
+    """Shared tail for both Google routes: verify the ID token, then issue
+    the exact same session shape ``/auth/verify`` does. Kept in one place
+    so #6 (direct) and #7 (exchange fallback) can never drift apart on
+    what counts as "verified".
     """
-    settings = get_settings()
-
-    from app.services.auth.rate_limit import check_google_rate
-
-    client_ip = request.client.host if request.client else None
-    if not check_google_rate(client_ip):
-        logger.warning("auth: rate limit hit for google login (ip window)")
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many Google sign-in attempts — wait a bit and try again.",
-        )
-
     if not settings.google_oauth_client_ids:
         # Deliberately NOT part of production_config_problems()'s hard-fail
         # boot check — magic-link alone must remain a valid production
@@ -369,7 +361,7 @@ async def google_login(
 
     try:
         identity = await google_oauth.verify_google_id_token(
-            body.id_token,
+            id_token,
             audience=settings.google_oauth_client_ids,
         )
     except google_oauth.GoogleJWKSFetchError as exc:
@@ -390,13 +382,109 @@ async def google_login(
         email=identity.email,
         store=store,
         secret=settings.jwt_secret,
-        device_id=body.device_id,
-        device_label=body.device_label,
+        device_id=device_id,
+        device_label=device_label,
     )
     logger.info(
         "auth: google sign-in for %s — session=%s", issued.user.email, issued.session.id
     )
     return _to_issued_response(issued)
+
+
+@router.post(
+    "/google",
+    response_model=IssuedTokensResponse,
+    response_model_by_alias=True,
+    status_code=status.HTTP_200_OK,
+)
+async def google_login(
+    body: GoogleLoginRequest,
+    request: Request,
+    store: AuthStore = Depends(get_auth_store),
+) -> IssuedTokensResponse:
+    """"Continue with Google" — the primary path: the mobile app already
+    exchanged its PKCE authorization code directly with Google (no client
+    secret needed for a public/native client type) and hands us the
+    resulting ID token. Magic-link stays untouched and remains a fully
+    valid login path on its own.
+
+    Rate-limited: 30/hour/IP. Unlike ``/verify`` there's no caller-supplied
+    email to key on before the token verifies, so this is IP-only (see
+    ``check_google_rate``).
+    """
+    settings = get_settings()
+
+    from app.services.auth.rate_limit import check_google_rate
+
+    client_ip = request.client.host if request.client else None
+    if not check_google_rate(client_ip):
+        logger.warning("auth: rate limit hit for google login (ip window)")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many Google sign-in attempts — wait a bit and try again.",
+        )
+
+    return await _verify_and_login_with_google(
+        body.id_token,
+        settings=settings,
+        store=store,
+        device_id=body.device_id,
+        device_label=body.device_label,
+    )
+
+
+@router.post(
+    "/google/exchange",
+    response_model=IssuedTokensResponse,
+    response_model_by_alias=True,
+    status_code=status.HTTP_200_OK,
+)
+async def google_exchange(
+    body: GoogleExchangeRequest,
+    request: Request,
+    store: AuthStore = Depends(get_auth_store),
+) -> IssuedTokensResponse:
+    """Fallback leg: exchange the authorization code server-side (holding
+    the client secret the mobile app never sees), then run the exact same
+    verify+issue path as ``/google``. Only needed when the configured
+    Google OAuth client type is confidential (typically "Web application")
+    and refuses a client-side PKCE exchange with no secret.
+
+    Rate-limited the same as ``/google`` — same abuse shape, same bucket.
+    """
+    settings = get_settings()
+
+    from app.services.auth.rate_limit import check_google_rate
+
+    client_ip = request.client.host if request.client else None
+    if not check_google_rate(client_ip):
+        logger.warning("auth: rate limit hit for google exchange (ip window)")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many Google sign-in attempts — wait a bit and try again.",
+        )
+
+    from app.services.auth import google_oauth
+
+    try:
+        id_token = await google_oauth.exchange_code_for_id_token(
+            code=body.code,
+            code_verifier=body.code_verifier,
+            redirect_uri=body.redirect_uri,
+        )
+    except google_oauth.GoogleExchangeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Google code exchange failed: {exc}",
+        ) from exc
+
+    return await _verify_and_login_with_google(
+        id_token,
+        settings=settings,
+        store=store,
+        device_id=body.device_id,
+        device_label=body.device_label,
+    )
 
 
 # Quiet unused-import lint on the convenience re-export.
