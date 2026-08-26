@@ -71,10 +71,21 @@ export interface ApprovalProposalDto {
   id: string;
   symbol: string;
   side: Side;
+  /** "long" for a BUY-to-open, "short" for a SELL-to-open. Defaults to
+   * "long" on the wire when absent (pre-short-support rows). */
+  direction?: 'long' | 'short';
+  /** True when `side` is a SELL that opens or extends a short position
+   * (as opposed to a SELL that closes a held long). */
+  opensShort?: boolean;
   qty: number;
   orderType: 'MARKET' | 'LIMIT';
   limitPrice?: number;
   estimatedNotional: number;
+  /** Broker's shortable/easy-to-borrow flags for the asset. Only meaningful
+   * when `opensShort` is true; null/undefined means "never verified" —
+   * the risk engine treats that as a veto, not as false. */
+  shortable?: boolean | null;
+  easyToBorrow?: boolean | null;
   /** Initial stop price. Derived from ATR by `engine.sizing.atr_position_size`. */
   stopLoss?: number;
   /** Take-profit price (entry + stop_distance × R-multiple). */
@@ -174,6 +185,10 @@ export interface OpenPositionDto {
   decisionId: string;
   symbol: string;
   side: Side;
+  /** "long" or "short" — derived server-side from the entry proposal's
+   * direction (or `side === 'SELL'` as a fallback for older rows). Always
+   * populated by the backend. */
+  direction: 'long' | 'short';
   qty: number;
   avgEntryPrice: number | null;
   /** Live mark from the latest reconciler snapshot, when available. */

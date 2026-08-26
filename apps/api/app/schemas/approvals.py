@@ -20,6 +20,17 @@ class ApprovalProposalDto(CamelCaseModel):
     id: str
     symbol: str
     side: Side
+    # ── Short-side facts (all optional so existing partial-kwarg call
+    # sites, tests included, keep constructing this DTO unchanged) ────
+    # "long" is the correct default: every pre-short-support caller is
+    # implicitly long, and the drafter always sets this explicitly now.
+    direction: Literal["long", "short"] = "long"
+    opens_short: bool = False
+    # Broker borrow flags off state["context"]["asset"] — None means
+    # "never verified," which the risk engine's shortable_check treats as
+    # a veto, not as False. Never populated by the LLM.
+    shortable: bool | None = None
+    easy_to_borrow: bool | None = None
     qty: int
     order_type: Literal["MARKET", "LIMIT"]
     limit_price: float | None = None

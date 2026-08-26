@@ -17,6 +17,10 @@ class OpenPositionDto(CamelCaseModel):
     decision_id: str
     symbol: str
     side: Literal["BUY", "SELL"]
+    # Derived from the entry proposal's own "direction", falling back to
+    # side == "SELL" for rows that predate that field. Always populated —
+    # never optional — so the mobile/desktop direction badges never guess.
+    direction: Literal["long", "short"]
     qty: int
     avg_entry_price: float | None = None
     # Live mark from the latest reconciler snapshot, when available.

@@ -178,10 +178,17 @@ def _to_proposal_dto(state: CouncilState) -> dict[str, Any] | None:
     if not p:
         return None
     now = datetime.now(UTC)
+    # Short-side facts. ``direction``/``opens_short`` come from the Drafter
+    # (state["proposal"]); ``shortable``/``easy_to_borrow`` are the broker's
+    # asset flags, carried on the feature dict the same way risk_officer_node
+    # reads them — never from the LLM.
+    asset = (state.get("context", {}) or {}).get("asset") or {}
     return {
         "id": f"agent-{uuid.uuid4().hex[:12]}",
         "symbol": state["symbol"],
         "side": p["side"],
+        "direction": p.get("direction", "long"),
+        "opensShort": bool(p.get("opens_short", False)),
         "qty": int(p["qty"]),
         "orderType": p.get("order_type", "MARKET"),
         "limitPrice": p.get("limit_price"),
@@ -196,6 +203,8 @@ def _to_proposal_dto(state: CouncilState) -> dict[str, Any] | None:
         "bearCase": p.get("bear_case", ""),
         "riskLevel": int(p.get("risk_level", 3)),
         "convictionLevel": int(p.get("conviction_level", 3)),
+        "shortable": asset.get("shortable"),
+        "easyToBorrow": asset.get("easy_to_borrow"),
         "proposedAt": now.isoformat(),
         "expiresAt": approval_expiry(now).isoformat(),
     }
