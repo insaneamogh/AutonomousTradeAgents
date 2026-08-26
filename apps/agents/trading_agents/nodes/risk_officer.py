@@ -13,6 +13,13 @@ This node:
 Architecture rule honored: NO LLM here. Risk vetoes are pure Python with
 named ``veto_rule`` strings. The PLAN.md §5.1 "Opus refinement" of risk
 reasoning is a future, additive layer — it can explain, never override.
+
+Short-side inputs come from the FEATURE dict, not from the model: the
+proposal's stop price (computed by the sizer) and the broker's
+``shortable`` / ``easy_to_borrow`` flags (fetched by the feature provider's
+asset block). If the asset block is missing, both flags arrive as None and
+``shortable_check`` vetoes — which is the correct behaviour, because a
+short with no verified borrow is not a trade.
 """
 
 from __future__ import annotations
@@ -56,7 +63,9 @@ async def risk_officer_node(
     *,
     context_provider: RiskContextProvider | None = None,
 ) -> CouncilState:
-    caps = caps or RiskCaps()
+    # from_env, not RiskCaps(): this is the call site that decides whether
+    # ALLOW_SHORTS is honored at all. Defaults to long-only when unset.
+    caps = caps or RiskCaps.from_env()
     provider = context_provider or _default_provider(state)
 
     proposal = state.get("proposal")
@@ -68,6 +77,7 @@ async def risk_officer_node(
             "risk_veto_rule": None,
         }
 
+    asset = (state.get("context", {}) or {}).get("asset") or {}
     risk_proposal = RiskProposal(
         symbol=str(state["symbol"]),
         side=Side(str(proposal.get("side", "BUY")).upper()),
@@ -76,6 +86,10 @@ async def risk_officer_node(
         last_price=float(state.get("context", {}).get("last_price", 0.0) or 0.0),
         confidence=float(proposal.get("confidence", 0.0)),
         closes_intraday_position=False,  # Phase 0: agents only open new swings
+        # Short-side inputs. ``stop_price`` is the sizer's, never the LLM's.
+        stop_price=_opt_float(proposal.get("stop_loss")),
+        shortable=_opt_bool(asset.get("shortable")),
+        easy_to_borrow=_opt_bool(asset.get("easy_to_borrow")),
     )
 
     context = await provider.fetch(user_id=state.get("user_id"))
@@ -86,6 +100,9 @@ async def risk_officer_node(
         "risk_approved": decision.approved,
         "risk_reason": decision.reason,
         "risk_veto_rule": decision.veto_rule,
+        # Named rules that ran and did not block. A veto explains a refusal;
+        # this explains an approval, which is what the user actually sees.
+        "risk_checks_passed": list(decision.checks_passed),
     }
 
     if not decision.approved:
@@ -125,6 +142,22 @@ async def risk_officer_node(
         out["proposal"] = new_proposal
 
     return out
+
+
+def _opt_float(v: object) -> float | None:
+    try:
+        return float(v)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _opt_bool(v: object) -> bool | None:
+    """Preserve the tri-state. ``None`` must NOT collapse to False here —
+    ``shortable_check`` distinguishes "broker says no" from "we never
+    asked", and flattening them would erase that in the audit log."""
+    if v is None:
+        return None
+    return bool(v)
 
 
 def _default_provider(state: CouncilState) -> RiskContextProvider:

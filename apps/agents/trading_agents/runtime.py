@@ -163,8 +163,11 @@ async def run_council(
         # Selector surface — useful for the mobile reasoning panel and for the
         # Reflection Agent that will score Selector decisions against outcomes.
         "selected_strategy": final.get("selected_strategy"),
+        "selected_direction": final.get("selected_direction"),
         "selector_confidence": float(final.get("selector_confidence", 0.0)),
         "selector_rationale": str(final.get("selector_rationale", "")),
+        "strategy_fit": final.get("strategy_fit"),
+        "risk_checks_passed": list(final.get("risk_checks_passed") or []),
         "llm_mock": llm.mock,
         "decision_id": decision_id,
     }
@@ -196,6 +199,30 @@ def _to_proposal_dto(state: CouncilState) -> dict[str, Any] | None:
         "proposedAt": now.isoformat(),
         "expiresAt": approval_expiry(now).isoformat(),
     }
+
+
+# Feature blocks worth keeping on the decision row. The full context is
+# large and mostly redundant with the analyst theses; these four are the
+# ones the thesis view actually renders and the ones a post-mortem needs to
+# reconstruct what the machine was looking at.
+_SNAPSHOT_BLOCKS = ("technicals", "quant", "news", "events", "liquidity", "asset")
+
+
+def _feature_snapshot(context: dict[str, Any]) -> dict[str, Any]:
+    """The slice of the feature dict worth persisting alongside a decision.
+
+    Not the whole context: it carries 200+ bars' worth of derived numbers
+    per symbol and would bloat every audit row. These blocks are the ones a
+    reader needs to check the machine's homework.
+    """
+    snap: dict[str, Any] = {
+        k: context[k] for k in _SNAPSHOT_BLOCKS if isinstance(context.get(k), dict)
+    }
+    if context.get("last_price") is not None:
+        snap["last_price"] = context["last_price"]
+    if context.get("portfolio_equity") is not None:
+        snap["portfolio_equity"] = context["portfolio_equity"]
+    return snap
 
 
 def _to_decision_entry(
@@ -240,6 +267,17 @@ def _to_decision_entry(
             # Non-empty when any node ran on a parse-retry or neutral
             # fallback — calibration/reflection exclude these runs.
             "degraded_nodes": list(final.get("degraded_nodes") or []),
+            # ── The reasoning surface the thesis view reads ─────────
+            # Everything here is deterministic output, not model prose:
+            # which strategy fit and by which named checks, which risk
+            # rules passed, why the scanner woke this symbol, and the
+            # sizing arithmetic behind the qty/stop/target.
+            "strategy_fit": final.get("strategy_fit"),
+            "selected_direction": final.get("selected_direction"),
+            "risk_checks_passed": list(final.get("risk_checks_passed") or []),
+            "router_rationale": final.get("router_rationale"),
+            "scan_triggers": (final.get("context") or {}).get("scan_triggers"),
+            "feature_snapshot": _feature_snapshot(final.get("context") or {}),
         },
         # Full audit surface (WP0) — dedicated columns in Postgres.
         technical=tech or None,

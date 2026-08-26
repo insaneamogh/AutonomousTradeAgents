@@ -10,7 +10,7 @@ from trading_agents.nodes.macro_analyst import macro_analyst_node
 from trading_agents.nodes.reflection import reflection_agent_run
 from trading_agents.nodes.risk_officer import risk_officer_node
 from trading_agents.nodes.router import router_node
-from trading_agents.nodes.selector import selector_node
+from trading_agents.nodes.strategy_fit import strategy_fit_node
 from trading_agents.nodes.technical_analyst import technical_analyst_node
 
 __all__ = [
@@ -20,6 +20,6 @@ __all__ = [
     "reflection_agent_run",
     "risk_officer_node",
     "router_node",
-    "selector_node",
+    "strategy_fit_node",
     "technical_analyst_node",
 ]

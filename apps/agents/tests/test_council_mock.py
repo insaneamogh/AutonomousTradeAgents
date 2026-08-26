@@ -47,143 +47,141 @@ async def test_mock_council_proposal_carries_sizing_metadata() -> None:
         assert isinstance(result["proposal"]["informationalFlags"], list)
 
 
-async def test_mock_council_selector_and_drafter_both_fire() -> None:
-    """Selector picks a strategy id; Drafter turns it into a proposal.
+async def test_strategy_fit_and_drafter_both_fire() -> None:
+    """The deterministic fit node picks a strategy; the Drafter turns it
+    into a proposal.
 
-    The mock Selector returns ``strategy='momentum'`` with confidence ~0.58
-    and the mock Drafter then emits BUY. Both surfaces should land on the
-    runtime result dict — they're the contract the Reflection Agent will
-    score later.
+    The pick is no longer an LLM's: ``selected_strategy`` comes from the
+    precondition scorers and ``selector_rationale`` is a NAMED reason of
+    the form ``<strategy>_<direction>:<component>+<component>``. Both
+    surfaces land on the runtime result — they are the contract the
+    Reflection Agent scores later.
     """
     llm = LLM(api_key=None)
     result = await run_council(symbol="NVDA", llm=llm)
 
-    # Selector ran and surfaced its pick.
-    assert result["selected_strategy"] == "momentum"
-    assert 0.0 < result["selector_confidence"] <= 1.0
-    assert result["selector_rationale"]  # non-empty
-    assert "momentum" in result["selector_rationale"].lower() or "MOCK" in result["selector_rationale"]
+    from trading_agents.strategies import STRATEGY_REGISTRY
 
-    # Drafter ran and surfaced a proposal (subject to risk-officer approval).
-    # If risk approves, proposal is non-None; otherwise we still have evidence
-    # the drafter fired by inspecting final_action.
+    assert result["selected_strategy"] in STRATEGY_REGISTRY
+    assert result["selected_direction"] in ("long", "short")
+    assert 0.0 < result["selector_confidence"] <= 1.0
+    # The named-reason shape, not model prose.
+    assert result["selector_rationale"].startswith(result["selected_strategy"])
+    assert result["selected_direction"] in result["selector_rationale"]
+
+    # The full fit block is carried for the audit row + thesis view.
+    fit = result["strategy_fit"]
+    assert fit["winner"]["strategy_id"] == result["selected_strategy"]
+    assert fit["winner"]["components"], "components explain WHY it fit"
+    assert fit["ranked"], "the alternatives that lost are kept too"
+
     if result["proposal"] is not None:
         assert result["proposal"]["side"] in ("BUY", "SELL")
-        # Drafter inherits the Selector's strategy id verbatim.
-        # Strategy id isn't on the camelCase DTO — verify via final_action only here.
         assert result["proposal"]["bullCase"]
         assert result["proposal"]["bearCase"]
 
 
-async def test_selector_null_strategy_emits_hold() -> None:
-    """Direct unit test: when the Selector LLM returns ``strategy: null``,
-    the node must return a HOLD state — no selected_strategy, no proposal,
-    final_action="HOLD". This is the contract the graph leans on to skip
-    the Drafter entirely.
+async def test_no_strategy_fit_holds_without_spending_an_llm_call() -> None:
+    """The cost win, pinned: a symbol whose setup fits nothing must HOLD
+    with ZERO calls to the LLM — not five.
+
+    We count every ``complete`` invocation rather than asserting on the
+    result alone, because "returns HOLD" was already true before; what is
+    new is that it costs nothing.
     """
-    import json
+    calls: list[str] = []
 
-    from trading_agents.llm import LLMResponse
-    from trading_agents.nodes import selector_node
-
-    class _FakeHoldLLM:
+    class _CountingLLM:
         mock = True
 
-        async def complete(self, **kwargs):
-            return LLMResponse(
-                text=json.dumps(
-                    {
-                        "strategy": None,
-                        "confidence": 0.0,
-                        "rationale": "MOCK-HOLD: regime ambiguous, no strategy fits.",
-                    }
-                ),
-                model="haiku+mock",
-            )
+        async def complete(self, *, system, user, **_kw):
+            calls.append(system[:40])
+            raise AssertionError("no LLM call may happen on a no-fit symbol")
 
-    state = {
-        "symbol": "TSLA",
-        "horizon": "short",
-        "regime": "choppy",
-        "technical": {"score": 40, "confidence": 0.3, "thesis": "weak"},
-    }
-    result = await selector_node(state, _FakeHoldLLM())
+    def _featureless(symbol: str, horizon: str = "short") -> dict:
+        # Every precondition maximally unsatisfied: no trend, mid-channel,
+        # no momentum, exploded vol, perfectly correlated to the index.
+        return {
+            "symbol": symbol,
+            "horizon": horizon,
+            "last_price": 100.0,
+            "portfolio_equity": 100_000.0,
+            "technicals": {
+                "trend_regime": "choppy",
+                "dma20_pct": -0.05,
+                "dma50_pct": -0.05,
+                "rsi_14": 50.0,
+                "atr_14": 2.0,
+                "volume_ratio_20d": 0.5,
+            },
+            "quant": {
+                "ret_252d_pct": -0.2,
+                "ret_63d_pct": -0.3,
+                "ret_21d_pct": -0.4,
+                "sharpe": -0.4,
+                "atr_zscore": 3.0,
+                "realized_vol_pct": 85.0,
+                "corr_benchmark": 0.99,
+                "price_zscore_20": 0.0,
+                "donchian_pct": 50.0,
+            },
+        }
 
+    result = await run_council(
+        symbol="NOFIT", llm=_CountingLLM(), feature_provider=_featureless
+    )
+
+    assert calls == [], f"expected zero LLM calls, got {calls}"
+    assert result["final_action"] == "HOLD"
     assert result["selected_strategy"] is None
     assert result["proposal"] is None
-    assert result["final_action"] == "HOLD"
-    assert "MOCK-HOLD" in result["selector_rationale"]
+    assert "clears the fit floor" in result["selector_rationale"]
 
 
-async def test_selector_unknown_strategy_falls_back_to_momentum() -> None:
-    """If the Selector hallucinates a strategy id not in STRATEGY_REGISTRY,
-    it must fall back to ``momentum`` with capped confidence — not crash
-    the council on a bad id.
+async def test_fit_only_ever_returns_registry_ids() -> None:
+    """A whole class of bug is gone: the old LLM Selector could hallucinate
+    a strategy id and needed a fallback path. The scorers are keyed off the
+    registry itself, so an unknown id is unrepresentable.
     """
-    import json
+    from trading_agents.strategies import STRATEGY_REGISTRY, rank_strategies
+    from trading_agents.strategies.fit import _SCORERS
 
-    from trading_agents.llm import LLMResponse
-    from trading_agents.nodes import selector_node
-
-    class _FakeUnknownLLM:
-        mock = True
-
-        async def complete(self, **kwargs):
-            return LLMResponse(
-                text=json.dumps(
-                    {
-                        "strategy": "pairs_arb_v2",  # not in registry
-                        "confidence": 0.95,
-                        "rationale": "MOCK: tried to pick a strategy that doesn't exist.",
-                    }
-                ),
-                model="haiku+mock",
-            )
-
-    state = {
-        "symbol": "AAPL",
-        "horizon": "short",
-        "regime": "bull",
-        "technical": {"score": 64, "confidence": 0.6, "thesis": "ok"},
-    }
-    result = await selector_node(state, _FakeUnknownLLM())
-
-    assert result["selected_strategy"] == "momentum"
-    # Confidence got capped at 0.3 — the LLM's overconfident 0.95 is gone.
-    assert result["selector_confidence"] <= 0.3
-    assert "fallback" in result["selector_rationale"].lower()
+    assert set(_SCORERS) == set(STRATEGY_REGISTRY)
+    ranked = rank_strategies({"technicals": {"trend_regime": "uptrend"}}, allow_shorts=True)
+    assert {r.strategy_id for r in ranked} <= set(STRATEGY_REGISTRY)
 
 
-async def test_drafter_skipped_when_selector_holds() -> None:
-    """Integration test: HOLD from the Selector must skip the Drafter even
-    when the rest of the council ran. We swap the selector_node to a
-    deterministic HOLD-returning function and confirm proposal=None,
-    final_action=HOLD.
+async def test_drafter_skipped_when_fit_holds() -> None:
+    """Integration: a HOLD from the deterministic fit node must skip the
+    Router, every analyst, and the Drafter — the whole rest of the graph.
     """
     from trading_agents import graph as graph_mod
 
-    async def _hold_selector(state, _llm):
+    async def _hold_fit(state):
         return {
             **state,
             "selected_strategy": None,
+            "selected_direction": None,
             "selector_confidence": 0.0,
             "selector_rationale": "STUB-HOLD: forced HOLD from test.",
             "proposal": None,
             "final_action": "HOLD",
         }
 
-    original = graph_mod.selector_node
-    graph_mod.selector_node = _hold_selector  # type: ignore[assignment]
+    original = graph_mod.strategy_fit_node
+    graph_mod.strategy_fit_node = _hold_fit  # type: ignore[assignment]
     try:
         llm = LLM(api_key=None)
         result = await run_council(symbol="META", llm=llm)
     finally:
-        graph_mod.selector_node = original  # type: ignore[assignment]
+        graph_mod.strategy_fit_node = original  # type: ignore[assignment]
 
     assert result["selected_strategy"] is None
     assert result["proposal"] is None
     assert result["final_action"] == "HOLD"
     assert "STUB-HOLD" in result["selector_rationale"]
+    # The Router never ran, so there is no regime.
+    assert result["regime"] is None
 
 
 # ─────────────────────────────────────────────────────────────────────

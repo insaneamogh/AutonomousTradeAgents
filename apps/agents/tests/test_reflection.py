@@ -203,9 +203,13 @@ async def test_run_council_writes_decision_when_log_provided() -> None:
     assert len(all_d) == 1
     recorded = all_d[0]
     assert recorded.symbol == "NVDA"
-    # The mock Selector picks momentum at 0.58; the runtime captures it.
-    assert recorded.selected_strategy == "momentum"
-    assert recorded.selector_confidence == pytest.approx(0.58)
+    # The strategy pick is deterministic now, so the assertion is on the
+    # CONTRACT (a real registry id + a real score) rather than on whatever
+    # the mock happened to say.
+    from trading_agents.strategies import STRATEGY_REGISTRY
+
+    assert recorded.selected_strategy in STRATEGY_REGISTRY
+    assert 0.0 < recorded.selector_confidence <= 1.0
     assert recorded.final_action in ("BUY", "SELL", "HOLD", "VETOED")
 
 
@@ -216,38 +220,57 @@ async def test_run_council_omits_decision_when_log_not_provided() -> None:
     assert result["decision_id"] is None
 
 
-async def test_selector_prompt_includes_priors_when_present(monkeypatch) -> None:
-    """When the runtime injects strategy_priors, the Selector node must surface
-    them in its user prompt — otherwise the LLM can't weigh them.
+async def test_reflection_priors_still_steer_the_deterministic_pick() -> None:
+    """The Reflection loop must keep mattering after the Selector LLM died.
 
-    We intercept the LLM ``complete`` call to capture the user prompt then
-    assert on its content.
+    Priors are no longer rendered into a prompt for a model to weigh — they
+    are a bounded multiplier on the deterministic fit. This pins BOTH
+    halves of that contract:
+      1. a soured prior demotes a strategy that would otherwise win, and
+      2. it cannot invent a setup that the preconditions do not support.
     """
-    captured: dict[str, str] = {}
+    from trading_agents.strategies import rank_strategies, score_strategy
+    from trading_agents.strategies.fit import PRIOR_CEILING, PRIOR_FLOOR
 
-    real_complete = LLM.complete
+    # A clean uptrend with strong risk-adjusted momentum: momentum wins.
+    features = {
+        "technicals": {"trend_regime": "uptrend", "dma20_pct": 3.0, "dma50_pct": 6.0,
+                       "rsi_14": 58.0, "volume_ratio_20d": 1.3},
+        "quant": {"ret_252d_pct": 40.0, "ret_63d_pct": 18.0, "ret_21d_pct": 6.0,
+                  "sharpe": 2.0, "atr_zscore": 0.1, "realized_vol_pct": 22.0,
+                  "corr_benchmark": 0.5, "price_zscore_20": 0.4, "donchian_pct": 85.0},
+    }
+    assert rank_strategies(features)[0].strategy_id == "momentum"
 
-    async def _spy_complete(self, *, system, user, model, max_tokens, cache_system=True):
-        if "you are the strategy selector" in system[:120].lower():
-            captured["user"] = user
-        return await real_complete(self, system=system, user=user, model=model,
-                                   max_tokens=max_tokens, cache_system=cache_system)
+    # Reflection has soured on momentum. Its score must fall, and by the
+    # bounded amount — not to zero, and not below the floor multiplier.
+    neutral = score_strategy("momentum", features, direction="long")
+    soured = score_strategy("momentum", features, direction="long", priors={"momentum": 0.0})
+    assert soured.prior_multiplier == pytest.approx(PRIOR_FLOOR)
+    assert soured.score < neutral.score
+    assert soured.fit == neutral.fit, "the prior must not rewrite the raw fit"
 
-    monkeypatch.setattr(LLM, "complete", _spy_complete)
+    # And a maxed-out prior cannot conjure a setup out of nothing: the raw
+    # fit is still the thing being multiplied.
+    flat = {"technicals": {"trend_regime": "choppy"},
+            "quant": {"ret_252d_pct": -0.1, "ret_63d_pct": -0.1, "ret_21d_pct": -0.1,
+                      "sharpe": -1.0, "corr_benchmark": 0.99, "realized_vol_pct": 90.0,
+                      "atr_zscore": 3.0, "donchian_pct": 50.0, "price_zscore_20": 0.0}}
+    boosted = score_strategy("momentum", flat, direction="long", priors={"momentum": 1.0})
+    assert boosted.prior_multiplier == pytest.approx(PRIOR_CEILING)
+    assert not boosted.tradable, "a prior may tilt a close call, never fabricate a setup"
 
+
+async def test_priors_reach_the_fit_node_through_the_runtime() -> None:
+    """End-to-end: a confidence-store delta must show up in the fit block
+    the council persists. This is the wire the Reflection loop rides."""
     llm = LLM(api_key=None)
-    decision_log = InMemoryDecisionLog()
     confidence_store = InMemoryStrategyConfidenceStore()
-    # Nudge one strategy so the priors render with non-uniform values.
     await confidence_store.apply_delta("momentum", confidence_delta=0.08)
 
-    await run_council(
-        symbol="NVDA",
-        llm=llm,
-        decision_log=decision_log,
-        confidence_store=confidence_store,
+    result = await run_council(
+        symbol="NVDA", llm=llm, confidence_store=confidence_store
     )
 
-    assert "user" in captured, "Selector LLM call was never made."
-    assert "Strategy priors" in captured["user"]
-    assert "momentum:" in captured["user"]
+    applied = result["strategy_fit"]["priors_applied"]
+    assert applied["momentum"] == pytest.approx(0.58)

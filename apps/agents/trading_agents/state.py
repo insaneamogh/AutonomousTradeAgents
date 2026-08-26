@@ -35,14 +35,24 @@ class CouncilState(TypedDict, total=False):
     The Selector prepends this to its prompt; missing/empty means the LLM
     picks without a prior nudge (Phase 2 cold-start behavior)."""
 
-    # ── Selector output ──────────────────────────────────────────────
+    # ── Strategy-fit output (deterministic; keys kept from the old
+    #     LLM Selector so the DB columns + Reflection loop are unchanged) ──
     selected_strategy: str | None
-    """Strategy id chosen by the Selector node (one of STRATEGY_REGISTRY keys),
-    or None when Selector returns HOLD. Drafter is skipped when None."""
+    """Strategy id chosen by ``strategy_fit_node`` (one of STRATEGY_REGISTRY
+    keys), or None when nothing cleared the fit floor. When None the whole
+    rest of the graph is skipped — including every LLM call."""
     selector_confidence: float
-    """0..1 — how confident the Selector is in its pick (separate from the
-    Drafter's per-trade confidence)."""
+    """0..1 — the prior-adjusted fit score. Deterministic, not a model's
+    self-report, and separate from the Drafter's per-trade confidence."""
     selector_rationale: str
+    """Named reason, e.g. ``momentum_short:trailing_3m_return+risk_adjusted``."""
+    selected_direction: str | None
+    """"long" | "short". Fixed deterministically BEFORE the Drafter runs, so
+    the Drafter cannot invent a direction the preconditions don't support."""
+    strategy_fit: dict[str, Any]
+    """Full fit block — winner, per-component checks, the ranked
+    alternatives, and the priors applied. Persisted for the audit row and
+    rendered by the thesis view."""
 
     # ── Drafter output ───────────────────────────────────────────────
     proposal: dict[str, Any] | None
@@ -51,6 +61,8 @@ class CouncilState(TypedDict, total=False):
     risk_approved: bool
     risk_reason: str
     risk_veto_rule: str | None
+    risk_checks_passed: list[str]
+    """Named rules that ran and did not block, in evaluation order."""
 
     # ── Final ────────────────────────────────────────────────────────
     final_action: Literal["BUY", "SELL", "HOLD", "VETOED"]

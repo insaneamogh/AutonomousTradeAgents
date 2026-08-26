@@ -49,6 +49,19 @@ def synthetic_features(symbol: str, horizon: str = "short") -> dict[str, Any]:
             "shareholder_returns": round(30.0 + seed * 50.0, 1),
             "piotroski_f_score": int(3 + seed * 6),
         },
+        # Borrow eligibility. Synthetic, and labelled as such by
+        # ``feature_source`` — but PRESENT, because its absence is not
+        # neutral: ``shortable_check`` vetoes on unknown borrow, so a
+        # missing block would make every short un-testable offline rather
+        # than merely un-verified.
+        "asset": {
+            "tradable": True,
+            "fractionable": True,
+            "shortable": True,
+            "easy_to_borrow": True,
+            "name": f"{symbol} (synthetic)",
+        },
+        "feature_source": "synthetic",
         # Phase 1: macro values are constant-per-day for a real ingest from FRED.
         # Phase 0 synthesizes a plausible spread per-symbol so the Macro Analyst
         # has something to chew on. Phase 2 swaps in the real feature-store call.

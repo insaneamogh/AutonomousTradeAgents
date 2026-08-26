@@ -88,8 +88,16 @@ def evaluate(
 ) -> RiskDecision:
     """Run every rule in order. Return the first veto, or ``approved=True``
     (potentially with an adjusted_qty) if every rule passes.
+
+    ``caps=None`` resolves to ``RiskCaps.from_env()``, NOT bare
+    ``RiskCaps()``. This matters end-to-end: the executor re-runs this
+    function at order-placement time and passes ``caps=None``, so a bare
+    default would veto — with ``forbid_short_phase_0`` — a short the
+    council had already approved under ALLOW_SHORTS. One switch, honored
+    at every call site, is the only version of this that cannot half-apply.
+    ``from_env`` still fails closed on an unset or unrecognised value.
     """
-    caps = caps or RiskCaps()
+    caps = caps or RiskCaps.from_env()
     informational: list[str] = []
     passed: list[str] = []
     working = proposal

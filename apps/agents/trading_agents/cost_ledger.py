@@ -179,6 +179,9 @@ def infer_role_from_system_prompt(system: str) -> str:
         return "fundamental"
     if "you are the macro analyst" in line:
         return "macro"
+    # NOTE: "strategy selector" is retained only so historical ledger rows
+    # written before the Selector became deterministic still resolve to a
+    # role. No live call produces it any more.
     if "you are the strategy selector" in line:
         return "selector"
     if "you are the proposal drafter" in line:

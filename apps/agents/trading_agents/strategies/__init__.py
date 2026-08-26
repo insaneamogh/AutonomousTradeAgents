@@ -7,12 +7,42 @@ strategy implementations live in ``packages/engine/engine/backtester/strategies/
 
 Strategy ids are the only contract between the council and the backtester.
 Don't import backtester modules here — keep the two concerns decoupled.
+
+``fit`` holds the deterministic precondition scorers — each strategy grades
+its own setup against the feature dict, in Python, before any LLM call.
+See that module for why the Selector LLM node no longer exists.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Literal
+
+from trading_agents.strategies.fit import (
+    MIN_FIT_TO_TRADE,
+    Direction,
+    FitComponent,
+    StrategyFit,
+    best_strategy,
+    prior_multiplier,
+    rank_strategies,
+    score_strategy,
+)
+
+__all__ = [
+    "MIN_FIT_TO_TRADE",
+    "STRATEGY_REGISTRY",
+    "Direction",
+    "FitComponent",
+    "Horizon",
+    "StrategyFit",
+    "StrategyMetadata",
+    "best_strategy",
+    "prior_multiplier",
+    "rank_strategies",
+    "resolve_strategy",
+    "score_strategy",
+]
 
 Horizon = Literal["intraday", "short", "mid", "long"]
 

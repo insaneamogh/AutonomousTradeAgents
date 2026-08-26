@@ -1,16 +1,34 @@
 """Drafter node — builds the proposal narrative + delegates sizing (Sonnet-tier).
 
-PLAN.md §5.1 splits Strategy Selector from Proposal Drafter. The Selector
-already picked an id; the Drafter:
-  1. Reads ``state['selected_strategy']`` + analyst outputs + context.
+The deterministic strategy-fit node already picked the strategy AND the
+direction. The Drafter:
+  1. Reads ``state['selected_strategy']`` / ``['selected_direction']`` +
+     analyst outputs + context.
   2. Calls DRAFTER on Sonnet for verdict + bull/bear cases + risk/conviction.
   3. Hands sizing to ``engine.sizing.atr_position_size`` — the LLM's qty,
      stop, target are NEVER trusted. PLAN.md §6.3: "Never percent-of-account
      fixed; vol-target everything."
 
-If Drafter says HOLD (post-Selector), final_action becomes HOLD and no
-proposal is built. If the sizer returns qty<1, ditto — the Risk Officer
-never sees a proposal it can't act on.
+**The verdict is constrained, not trusted.** The direction came from
+deterministic preconditions, so the model's only legitimate verdicts are
+"the side the fit chose" or HOLD. A BUY on a short setup (or vice versa)
+is not a disagreement worth honoring — it is the model contradicting the
+arithmetic that selected the strategy in the first place — so it is
+downgraded to HOLD in Python and logged. The model can veto; it cannot
+flip.
+
+**SELL means two different things** and conflating them is how a "close my
+long" becomes an accidental short:
+  - ``direction == "short"`` → SELL-TO-OPEN. Needs an inverted bracket
+    (stop ABOVE entry), needs borrow, and the risk engine's short rules
+    apply. Only reachable when ALLOW_SHORTS is on, because the fit node
+    does not score short directions otherwise.
+  - a SELL against a held long → a close. Not produced here; the position
+    manager owns exits.
+
+If Drafter says HOLD, final_action becomes HOLD and no proposal is built.
+If the sizer returns qty<1, ditto — the Risk Officer never sees a proposal
+it can't act on.
 """
 
 from __future__ import annotations
@@ -45,6 +63,8 @@ async def drafter_node(state: CouncilState, llm: LLM) -> CouncilState:
         return {**state, "proposal": None, "final_action": "HOLD"}
 
     strategy_meta = resolve_strategy(strategy_id)
+    direction = str(state.get("selected_direction") or "long")
+    required_side = "SELL" if direction == "short" else "BUY"
 
     ctx = state.get("context", {})
     tech = state.get("technical")
@@ -55,8 +75,10 @@ async def drafter_node(state: CouncilState, llm: LLM) -> CouncilState:
         f"Ticker: {state['symbol']}",
         f"Chosen strategy id: {strategy_id} ({strategy_meta.display})",
         f"Strategy description: {strategy_meta.description}",
-        f"Selector confidence: {state.get('selector_confidence', 0.0):.2f}",
-        f"Selector rationale: {state.get('selector_rationale', '')}",
+        f"DIRECTION (fixed deterministically — you may only agree or HOLD): "
+        f"{direction.upper()} → the only non-HOLD verdict allowed is {required_side}",
+        f"Strategy fit score: {state.get('selector_confidence', 0.0):.2f}",
+        f"Fit reason: {state.get('selector_rationale', '')}",
         f"Horizon: {state.get('horizon', 'short')}",
         f"Regime: {state.get('regime', 'unknown')}",
         f"Last price: {ctx.get('last_price', 'n/a')}",
@@ -94,6 +116,16 @@ async def drafter_node(state: CouncilState, llm: LLM) -> CouncilState:
     if verdict not in ("BUY", "SELL", "HOLD"):
         verdict = "HOLD"
 
+    # Deterministic constraint, not a suggestion: the fit node chose the
+    # side from the preconditions. A contradicting verdict is downgraded.
+    if verdict != "HOLD" and verdict != required_side:
+        logger.warning(
+            "drafter proposed %s on %s but the deterministic fit selected a "
+            "%s setup (%s) — downgrading to HOLD rather than flipping either one",
+            verdict, state["symbol"], direction, strategy_id,
+        )
+        verdict = "HOLD"
+
     if verdict == "HOLD":
         return {**state, "proposal": None, "final_action": "HOLD"}
 
@@ -111,6 +143,10 @@ async def drafter_node(state: CouncilState, llm: LLM) -> CouncilState:
             atr_14=float(atr_14) if atr_14 is not None else None,
             account_equity=equity,
             confidence=confidence,
+            # Drives the bracket geometry. On a short this puts the stop
+            # ABOVE entry and the target below; the alternative fills the
+            # stop the moment the order is live.
+            side="SELL" if direction == "short" else "BUY",
         )
     )
 
@@ -129,17 +165,22 @@ async def drafter_node(state: CouncilState, llm: LLM) -> CouncilState:
     # mirrors the ghost evaluator's horizon mapping so executed and
     # non-executed picks are graded over the same window.
     time_stop_days = _TIME_STOP_BY_HORIZON.get(str(state.get("horizon", "short")), 5)
+    # R is a RATIO of distances, so it must be computed from absolute
+    # distances — signing it off (entry - stop) yields a negative R on a
+    # short, where the stop is legitimately above the entry.
     r_multiple: float | None = None
     if sizing.stop_price is not None and sizing.target_price is not None:
-        risk_per_share = last_price - sizing.stop_price
+        risk_per_share = abs(last_price - sizing.stop_price)
         if risk_per_share > 0:
-            r_multiple = round((sizing.target_price - last_price) / risk_per_share, 2)
+            r_multiple = round(abs(sizing.target_price - last_price) / risk_per_share, 2)
 
     return {
         **state,
         "proposal": {
             "strategy": strategy_id,
             "side": verdict,
+            "direction": direction,
+            "opens_short": direction == "short",
             "qty": sizing.qty,
             "order_type": "MARKET",
             "estimated_notional": sizing.target_notional,
@@ -156,6 +197,29 @@ async def drafter_node(state: CouncilState, llm: LLM) -> CouncilState:
             ),
             "confidence": confidence,
             "sizing_method": sizing.method,
+            # The sizing math, kept whole so the thesis view can show WHY
+            # this qty / this stop / this target rather than re-deriving it.
+            "sizing": {
+                "method": sizing.method,
+                "side": sizing.side,
+                "entry_price": last_price,
+                "atr_14": float(atr_14) if atr_14 is not None else None,
+                "account_equity": equity,
+                "confidence": confidence,
+                "qty": sizing.qty,
+                "stop_price": sizing.stop_price,
+                "target_price": sizing.target_price,
+                "risk_per_share": round(abs(last_price - sizing.stop_price), 4),
+                "risk_dollars": round(
+                    abs(last_price - sizing.stop_price) * sizing.qty, 2
+                ),
+                "notional": sizing.target_notional,
+                "pct_of_equity": round(
+                    (sizing.target_notional / equity) * 100.0, 3
+                ) if equity > 0 else None,
+                "r_multiple": r_multiple,
+                "notes": sizing.notes,
+            },
         },
         "final_action": verdict,
     }

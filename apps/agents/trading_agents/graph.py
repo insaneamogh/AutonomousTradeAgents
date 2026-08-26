@@ -10,10 +10,19 @@ Both code paths invoke the exact same node coroutines. Adding a new node
 means: write the node in ``trading_agents.nodes``, then add it in BOTH
 branches below.
 
-Phase 2 update: Strategy Selector is now split into ``selector_node`` (Haiku,
-picks a strategy id or HOLDs) and ``drafter_node`` (Sonnet, builds the
-proposal narrative + delegates sizing). Selector HOLD short-circuits the
-graph — Drafter is skipped and final_action="HOLD".
+**Node order, and why the first one is not an LLM.** The graph now opens
+with ``strategy_fit_node`` — deterministic, no LLM, no I/O. It scores every
+strategy's preconditions against the feature dict and either names a
+winner or HOLDs. A HOLD there short-circuits the entire graph before the
+Router has been asked anything, which means a symbol that is not a setup
+costs **zero** LLM calls rather than five. On a watchlist sweep that is
+most symbols on most days, so it is the dominant term in the bill.
+
+The old Haiku Selector node is gone; ``trading_agents.nodes.strategy_fit``
+explains why it was removed rather than demoted to an explainer.
+
+Live sequence:
+    strategy_fit → (HOLD, 0 calls) | router → analysts → drafter → risk
 """
 
 from __future__ import annotations
@@ -30,7 +39,7 @@ from trading_agents.nodes import (
     macro_analyst_node,
     risk_officer_node,
     router_node,
-    selector_node,
+    strategy_fit_node,
     technical_analyst_node,
 )
 from trading_agents.progress import (
@@ -86,6 +95,16 @@ async def _run_linear(
         if progress_cb is not None and pacing_seconds > 0:
             await asyncio.sleep(pacing_seconds)
 
+    # Deterministic gate FIRST. A HOLD here has cost nothing.
+    await _emit("selector", "started")
+    state = await strategy_fit_node(state)
+    await _pace()
+    await _emit("selector", "completed", with_summary=True)
+    if state.get("selected_strategy") is None:
+        for skipped in ("router", "technical", "fundamental", "macro", "drafter", "risk_officer"):
+            await _emit(skipped, "skipped")  # type: ignore[arg-type]
+        return state
+
     await _emit("router", "started")
     state = await router_node(state, llm)
     await _pace()
@@ -104,17 +123,6 @@ async def _run_linear(
             await _emit(analyst, "completed", with_summary=True)  # type: ignore[arg-type]
         else:
             await _emit(analyst, "skipped")  # type: ignore[arg-type]
-
-    await _emit("selector", "started")
-    state = await selector_node(state, llm)
-    await _pace()
-    await _emit("selector", "completed", with_summary=True)
-    # Selector HOLD short-circuits the council — final_action is already set
-    # and there is no proposal to draft or risk-check.
-    if state.get("selected_strategy") is None:
-        await _emit("drafter", "skipped")
-        await _emit("risk_officer", "skipped")
-        return state
 
     await _emit("drafter", "started")
     state = await drafter_node(state, llm)
@@ -153,8 +161,8 @@ def _build_langgraph(llm: LLM, risk_caps: RiskCaps) -> Callable[[CouncilState], 
     async def _macro(state: CouncilState) -> CouncilState:
         return await macro_analyst_node(state, llm)
 
-    async def _selector(state: CouncilState) -> CouncilState:
-        return await selector_node(state, llm)
+    async def _strategy_fit(state: CouncilState) -> CouncilState:
+        return await strategy_fit_node(state)
 
     async def _drafter(state: CouncilState) -> CouncilState:
         return await drafter_node(state, llm)
@@ -165,20 +173,30 @@ def _build_langgraph(llm: LLM, risk_caps: RiskCaps) -> Callable[[CouncilState], 
             state["final_action"] = state.get("proposal", {}).get("side", "HOLD")  # type: ignore[union-attr]
         return state
 
+    g.add_node("strategy_fit", _strategy_fit)
     g.add_node("router", _router)
     g.add_node("technical", _tech)
     g.add_node("fundamental", _fund)
     g.add_node("macro", _macro)
-    g.add_node("selector", _selector)
     g.add_node("drafter", _drafter)
     g.add_node("risk_officer", _risk)
 
-    g.set_entry_point("router")
+    g.set_entry_point("strategy_fit")
+
+    # Deterministic HOLD short-circuit — nothing downstream has run yet, so
+    # this is the branch that makes a non-setup symbol free.
+    def _after_strategy_fit(state: CouncilState) -> str:
+        return "router" if state.get("selected_strategy") else END
+
+    g.add_conditional_edges("strategy_fit", _after_strategy_fit, {
+        "router": "router",
+        END: END,
+    })
 
     # Conditional fan-in: route through technical → fundamental → macro →
-    # selector → (drafter | END) → risk_officer, skipping any analysts that
-    # aren't in the Router's analyst_subset. Phase 2 swaps the serial analyst
-    # path for parallel fan-out via a join node.
+    # drafter → risk_officer, skipping any analysts that aren't in the
+    # Router's analyst_subset. Phase 2 swaps the serial analyst path for
+    # parallel fan-out via a join node.
 
     def _route_after_router(state: CouncilState) -> str:
         subset = state.get("analyst_subset", ["technical"])
@@ -188,13 +206,13 @@ def _build_langgraph(llm: LLM, risk_caps: RiskCaps) -> Callable[[CouncilState], 
             return "fundamental"
         if "macro" in subset:
             return "macro"
-        return "selector"
+        return "drafter"
 
     g.add_conditional_edges("router", _route_after_router, {
         "technical": "technical",
         "fundamental": "fundamental",
         "macro": "macro",
-        "selector": "selector",
+        "drafter": "drafter",
     })
 
     def _after_technical(state: CouncilState) -> str:
@@ -203,33 +221,23 @@ def _build_langgraph(llm: LLM, risk_caps: RiskCaps) -> Callable[[CouncilState], 
             return "fundamental"
         if "macro" in subset:
             return "macro"
-        return "selector"
+        return "drafter"
 
     g.add_conditional_edges("technical", _after_technical, {
         "fundamental": "fundamental",
         "macro": "macro",
-        "selector": "selector",
+        "drafter": "drafter",
     })
 
     def _after_fundamental(state: CouncilState) -> str:
-        return "macro" if "macro" in state.get("analyst_subset", []) else "selector"
+        return "macro" if "macro" in state.get("analyst_subset", []) else "drafter"
 
     g.add_conditional_edges("fundamental", _after_fundamental, {
         "macro": "macro",
-        "selector": "selector",
-    })
-
-    g.add_edge("macro", "selector")
-
-    # Selector → (drafter | END). HOLD from the Selector short-circuits the
-    # graph; final_action is already set, and there is no proposal to draft.
-    def _after_selector(state: CouncilState) -> str:
-        return "drafter" if state.get("selected_strategy") else END
-
-    g.add_conditional_edges("selector", _after_selector, {
         "drafter": "drafter",
-        END: END,
     })
+
+    g.add_edge("macro", "drafter")
 
     g.add_edge("drafter", "risk_officer")
     g.add_edge("risk_officer", END)
@@ -258,7 +266,7 @@ async def run_graph(
     (module docstring guarantee), and instrumenting one path beats
     surgically wrapping LangGraph internals.
     """
-    caps = risk_caps or RiskCaps()
+    caps = risk_caps or RiskCaps.from_env()
     if progress_cb is not None:
         return await _run_linear(
             state, llm, caps, progress_cb=progress_cb, pacing_seconds=pacing_seconds

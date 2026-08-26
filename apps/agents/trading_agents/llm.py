@@ -251,6 +251,18 @@ def _cost_of(resp: LLMResponse) -> float | None:
 # ─────────────────────────────────────────────────────────────────────
 
 
+def _extract_required_side(user: str) -> str:
+    """The side the deterministic fit node fixed for this pass.
+
+    The Drafter prompt states it explicitly, and the real Drafter node
+    downgrades any contradicting verdict to HOLD. A mock that always says
+    BUY would therefore make every short setup un-exercisable offline —
+    the mock has to read the same constraint the model is given.
+    """
+    m = re.search(r"only non-HOLD verdict allowed is (BUY|SELL)", user)
+    return m.group(1) if m else "BUY"
+
+
 def _extract_symbol(user: str) -> str:
     """Pull a ticker out of the user prompt so the mock response feels grounded."""
     match = re.search(r"Ticker:\s*([A-Z][A-Z0-9.\-]{0,9})", user)
@@ -322,23 +334,35 @@ def _mock_response(*, system: str, user: str, model: str) -> LLMResponse:
             ),
         }
     elif "you are the proposal drafter" in role_line:
+        side = _extract_required_side(user)
+        short = side == "SELL"
         body = {
-            "verdict": "BUY",
+            "verdict": side,
             "confidence": 0.58,
+            # A short's risk_level is higher for the same evidence — the
+            # loss is unbounded. The mock mirrors that so the offline path
+            # exercises the same shape the real prompt asks for.
+            "risk_level": 4 if short else 2,
+            "conviction_level": 3,
             "rationale": (
-                f"MOCK: Council leans positive on {sym}. Strategy fits the regime; entering at "
-                "market with ATR-driven stop."
+                f"MOCK: Council leans {'negative' if short else 'positive'} on {sym}. "
+                f"Strategy fits the regime; {'shorting' if short else 'entering'} at market with an "
+                "ATR-driven stop."
             ),
             "bull_case": (
-                f"Technical setup constructive on {sym}; momentum cluster aligns with sector strength. "
+                f"MOCK: the case FOR the short on {sym} — trend broken, price below both moving "
+                "averages, momentum negative on a risk-adjusted basis."
+                if short
+                else f"Technical setup constructive on {sym}; momentum cluster aligns with sector strength. "
                 "Pullback to 50-DMA already absorbed; volume confirms accumulation."
             ),
             "bear_case": (
-                f"If broader risk-off resumes, {sym} compresses fast. Insider activity flat, no insider tailwind. "
+                f"MOCK: what would squeeze the {sym} short — a sharp risk-on reversal, a short-interest "
+                "squeeze, or an unmodelled catalyst. Borrow can be recalled."
+                if short
+                else f"If broader risk-off resumes, {sym} compresses fast. Insider activity flat, no insider tailwind. "
                 "Earnings in two weeks add binary risk."
             ),
-            "risk_level": 2,
-            "conviction_level": 3,
         }
     elif "you are the reflection agent" in role_line:
         # Mock review — small positive nudge with a generic lesson. The

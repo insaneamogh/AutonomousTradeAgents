@@ -14,11 +14,15 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 NodeName = Literal[
+    # "selector" is the WIRE name for the deterministic strategy-fit node.
+    # The node behind it is no longer an LLM call (see nodes/strategy_fit),
+    # but the mobile theater screen keys its lane off this string, so the
+    # identifier is kept stable rather than renamed for tidiness.
+    "selector",
     "router",
     "technical",
     "fundamental",
     "macro",
-    "selector",
     "drafter",
     "risk_officer",
 ]
@@ -27,11 +31,13 @@ NodeStatus = Literal["started", "completed", "skipped"]
 
 # Display order for clients — the canonical run sequence.
 NODE_ORDER: tuple[NodeName, ...] = (
+    # Strategy fit runs FIRST now and is deterministic — a HOLD here ends
+    # the run before any model is called.
+    "selector",
     "router",
     "technical",
     "fundamental",
     "macro",
-    "selector",
     "drafter",
     "risk_officer",
 )
@@ -50,7 +56,7 @@ class ProgressEvent:
     # Optional deterministic summary, shape depends on node:
     #   analysts     → {score, confidence, thesis}
     #   router       → {regime, analystSubset, thesis}
-    #   selector     → {strategy, confidence, thesis}
+    #   selector     → {strategy, confidence, thesis, direction, deterministic}
     #   drafter      → {side, qty, notional, thesis}
     #   risk_officer → {approved, vetoRule, thesis}
     summary: dict[str, Any] | None = None
@@ -93,6 +99,8 @@ def summarize_node(node: NodeName, state: dict[str, Any]) -> dict[str, Any] | No
             "strategy": state.get("selected_strategy"),
             "confidence": state.get("selector_confidence"),
             "thesis": _clip(state.get("selector_rationale")),
+            "direction": state.get("selected_direction"),
+            "deterministic": True,
         }
     if node == "drafter":
         p = state.get("proposal") or {}

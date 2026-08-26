@@ -7,7 +7,6 @@ from trading_agents.prompts.fundamental_analyst import FUNDAMENTAL_ANALYST
 from trading_agents.prompts.macro_analyst import MACRO_ANALYST
 from trading_agents.prompts.reflection import REFLECTION
 from trading_agents.prompts.router import ROUTER
-from trading_agents.prompts.selector import SELECTOR
 from trading_agents.prompts.technical_analyst import TECHNICAL_ANALYST
 
 __all__ = [
@@ -16,6 +15,5 @@ __all__ = [
     "MACRO_ANALYST",
     "REFLECTION",
     "ROUTER",
-    "SELECTOR",
     "TECHNICAL_ANALYST",
 ]
