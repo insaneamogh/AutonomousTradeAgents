@@ -64,17 +64,34 @@ async def list_open_positions(user_id: str) -> list[OpenPositionDto]:
             sym = str(pos.get("symbol", "")).upper()
             qty = int(pos.get("qty", 0) or 0)
             mv = float(pos.get("market_value", 0) or 0)
-            if sym and qty > 0 and mv > 0:
-                marks[sym] = round(mv / qty, 4)
+            # Alpaca reports both qty and market_value negative for a short,
+            # so the two always share a sign — abs() on both keeps this a
+            # positive price for a long OR a short instead of silently
+            # dropping every short position from ever getting a live mark.
+            if sym and qty != 0 and mv != 0:
+                marks[sym] = round(abs(mv) / abs(qty), 4)
 
     out: list[OpenPositionDto] = []
     for d in decisions:
         proposal = d.proposal or {}
+        # The entry proposal's own direction, falling back to side == "SELL"
+        # for rows that predate the "direction" field (item 1).
+        raw_direction = proposal.get("direction")
+        side = str(proposal.get("side", "BUY"))
+        direction = raw_direction if raw_direction in ("long", "short") else (
+            "short" if side == "SELL" else "long"
+        )
+        is_short = direction == "short"
+
         entry = float(d.fill_avg_price) if d.fill_avg_price is not None else None
         last = marks.get(d.symbol.upper())
         qty = int(d.fill_qty or 0)
+        # fill_qty is always a non-negative share COUNT (an order's filled
+        # quantity, not a signed position) — a short's unrealized P&L is
+        # the mirror of a long's: it gains when price FALLS, so the sign
+        # flips on direction rather than on the sign of qty.
         unrealized = (
-            round((last - entry) * qty, 2)
+            round((-1.0 if is_short else 1.0) * (last - entry) * qty, 2)
             if (last is not None and entry is not None and qty)
             else None
         )
@@ -82,7 +99,8 @@ async def list_open_positions(user_id: str) -> list[OpenPositionDto]:
             OpenPositionDto(
                 decision_id=str(d.id),
                 symbol=d.symbol,
-                side=str(proposal.get("side", "BUY")),
+                side=side,  # type: ignore[arg-type]
+                direction=direction,  # type: ignore[arg-type]
                 qty=qty,
                 avg_entry_price=entry,
                 last_price=last,

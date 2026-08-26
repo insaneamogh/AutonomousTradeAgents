@@ -104,9 +104,14 @@ export function PositionsScreen() {
                     >
                       <td>
                         <Stack gap={2}>
-                          <Numeral size={15} weight={600}>
-                            {p.symbol}
-                          </Numeral>
+                          <Row gap={8}>
+                            <Numeral size={15} weight={600}>
+                              {p.symbol}
+                            </Numeral>
+                            <Pill tone={p.direction === 'short' ? 'bear' : 'bull'}>
+                              {p.direction.toUpperCase()}
+                            </Pill>
+                          </Row>
                           <span className="pg-caption">opened {ago(p.openedAt)}</span>
                         </Stack>
                       </td>

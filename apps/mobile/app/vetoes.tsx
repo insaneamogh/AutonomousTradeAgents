@@ -19,7 +19,11 @@ import { useVetoLedger } from '@/hooks/useInsights';
 // fall back to the raw identifier (audit beats prettiness).
 const RULE_LABEL: Record<string, string> = {
   drawdown_halt: 'Daily drawdown circuit breaker',
-  forbid_short: 'Short selling blocked (Phase 0)',
+  forbid_short_phase_0: 'Short selling blocked (Phase 0)',
+  shortable_check: 'Not shortable / borrow unverified',
+  short_requires_stop: 'Short had no protective stop',
+  short_unbounded_loss_cap: 'Short size cap (unbounded-loss risk)',
+  short_gross_exposure_cap: 'Total short exposure cap',
   low_council_confidence: 'Council confidence too low',
   low_specialist_avg_score: 'Analyst scores too weak',
   pdt_block: 'Pattern day trader rule',

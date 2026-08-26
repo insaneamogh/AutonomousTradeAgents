@@ -14,7 +14,7 @@ import * as Haptics from 'expo-haptics';
 import { ApiError } from '@/lib/api';
 import { EmptyState, ErrorState, Skeleton, cn } from '@app/ui';
 
-import { HeroHeadline, HeroSub, Tile, TileLabel } from '@/components/bento';
+import { DirectionPill, HeroHeadline, HeroSub, Tile, TileLabel } from '@/components/bento';
 import { useClosePosition, useOpenPositions } from '@/hooks/usePositions';
 
 function money(n: number | null): string {
@@ -134,15 +134,21 @@ export default function PositionsScreen() {
                   >
                     {p.side} {p.qty} {p.symbol}
                   </Text>
-                  <View
-                    className={cn(
-                      'rounded-full px-2 py-0.5',
-                      'border border-hairline dark:border-hairline-dark',
-                    )}
-                  >
-                    <Text className="text-[10px] uppercase tracking-[1px] text-text-secondary dark:text-text-secondary-dark">
-                      {p.exitMode === 'agent' ? 'Agent exit' : 'Manual exit'}
-                    </Text>
+                  <View className="flex-row items-center gap-2">
+                    <DirectionPill
+                      label={p.direction.toUpperCase()}
+                      tone={p.direction === 'short' ? 'rose' : 'mint'}
+                    />
+                    <View
+                      className={cn(
+                        'rounded-full px-2 py-0.5',
+                        'border border-hairline dark:border-hairline-dark',
+                      )}
+                    >
+                      <Text className="text-[10px] uppercase tracking-[1px] text-text-secondary dark:text-text-secondary-dark">
+                        {p.exitMode === 'agent' ? 'Agent exit' : 'Manual exit'}
+                      </Text>
+                    </View>
                   </View>
                 </View>
 
