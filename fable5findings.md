@@ -359,6 +359,38 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 ## Entries
 
+### 2026-08-26 — `11078dcb` fix(broker): give a user the env-key Alpaca connection at login, not just at boot
+
+Found live, verified against the user's actual Railway deployment
+(curled `/health`, ran a real request-login → verify → check
+`/api/v1/broker/connections` round-trip against it with a fresh test
+user) after they wired up `USE_POSTGRES`/`DATABASE_URL`/the Alpaca env
+keys per the shared-paper-account model chosen this session: a
+brand-new user showed `broker: "No broker connected"` and an empty
+connections list, even with the keys correctly configured and Postgres
+confirmed active (reconciler ticking).
+
+Root cause: `ensure_env_broker_connection`'s only call site was
+`app.main`'s lifespan, run once at boot, sweeping whichever users
+existed AT THAT MOMENT. A freshly-provisioned Postgres has zero users at
+boot — so nobody got swept, including every real signup afterward. This
+was flagged as a known, optional follow-on when the boot-time fix
+landed earlier the same day (`d9ec335d`); it's the actual gap now that
+someone depends on the shared-account model for real logins rather than
+just the `DEV_AUTH_BYPASS` fixture user.
+
+Fix: new `_bootstrap_broker_for_new_login()` in `routers/auth.py`,
+called from the two paths that mint a brand-new session — magic-link
+`verify` and Google `google_login` — never from `/refresh` (an existing
+session already had its chance; refresh happens every ~15 minutes for
+every active user, and the extra check would be pure waste there).
+Best-effort, logged-not-raised on failure.
+
+Verified: `apps/api/tests` 277 → **279 passed / 8 skipped** (+2: a real
+end-to-end case proving a post-boot login still gets the connection, and
+a case proving `/refresh` never triggers it). `mypy apps/api/app` 59 →
+**59 errors** (identical). `ruff --select F,I` clean.
+
 ### 2026-08-26 — `bd0e2840` fix(mobile): make the login screen scrollable
 
 User-reported, from a live Railway screenshot: the "Continue with dev
