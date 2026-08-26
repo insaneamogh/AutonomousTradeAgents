@@ -288,3 +288,97 @@ def test_lifespan_boot_links_fixture_user_under_mockstore(
 
     reset_auth_store_for_tests()
     reset_broker_store_for_tests()
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Per-login catch-up — a user who arrives AFTER boot must not be skipped
+# ─────────────────────────────────────────────────────────────────────
+
+
+@pytestmark_crypto
+def test_login_after_boot_still_gets_env_broker_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The boot-time sweep only ever covers whoever already exists AT
+    BOOT. A user who signs up (via magic-link, or Google) afterward would
+    silently never get the env-key connection without a per-login
+    catch-up — this is the live gap a real deployment hit: a brand-new
+    Postgres has zero users at boot, so NOBODY got swept, including every
+    real signup that follows.
+
+    ``routers/auth.py``'s ``verify``/``google_login`` handlers now call
+    ``_bootstrap_broker_for_new_login`` right before returning — this
+    proves that catch-up fires end-to-end through the real HTTP endpoint,
+    not just by calling the service function directly.
+    """
+    monkeypatch.setenv("ALPACA_API_KEY", "post-boot-test-key")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "post-boot-test-secret")
+    monkeypatch.delenv("USE_POSTGRES", raising=False)
+
+    reset_auth_store_for_tests()
+    reset_broker_store_for_tests()
+
+    from app.main import app
+    from app.services.broker.broker_store import get_broker_store
+
+    with TestClient(app) as c:
+        # Boot already ran (with zero non-fixture users) by the time this
+        # request fires — exactly the "empty database at boot" scenario.
+        r = c.post("/api/v1/auth/request-login", json={"email": "post-boot@example.com"})
+        assert r.status_code == 200
+        token = r.json()["devToken"]
+        r2 = c.post(
+            "/api/v1/auth/verify",
+            json={"email": "post-boot@example.com", "token": token},
+        )
+        assert r2.status_code == 200, r2.text
+        user_id = r2.json()["userId"]
+
+    store = get_broker_store()
+    rows = asyncio.run(store.list_connections(user_id))
+    assert len(rows) == 1
+    assert rows[0].broker == "alpaca"
+    assert rows[0].status == "active"
+
+    reset_auth_store_for_tests()
+    reset_broker_store_for_tests()
+
+
+def test_refresh_does_not_trigger_broker_bootstrap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``/refresh`` must NOT call the bootstrap — an existing session
+    already had its chance at login time, and paying this check on every
+    ~15-minute token refresh for every active user would be pure waste."""
+    from app.main import app
+
+    reset_auth_store_for_tests()
+    reset_broker_store_for_tests()
+    monkeypatch.setenv("ALPACA_API_KEY", "refresh-test-key")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "refresh-test-secret")
+
+    calls: list[str] = []
+
+    async def _spy(user_id: str, **_kw: object) -> bool:
+        calls.append(user_id)
+        return False
+
+    monkeypatch.setattr(
+        "app.services.broker.env_bootstrap.ensure_env_broker_connection", _spy
+    )
+
+    client = TestClient(app)
+    r = client.post("/api/v1/auth/request-login", json={"email": "refresher@example.com"})
+    token = r.json()["devToken"]
+    verified = client.post(
+        "/api/v1/auth/verify",
+        json={"email": "refresher@example.com", "token": token},
+    ).json()
+    calls.clear()  # only care about what /refresh does, not /verify
+
+    r2 = client.post(
+        "/api/v1/auth/refresh", json={"refreshToken": verified["refreshToken"]}
+    )
+    assert r2.status_code == 200, r2.text
+    assert calls == []
+
+    reset_auth_store_for_tests()
+    reset_broker_store_for_tests()

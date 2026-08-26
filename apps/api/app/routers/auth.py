@@ -107,6 +107,32 @@ def _to_issued_response(issued: IssuedTokens) -> IssuedTokensResponse:
     )
 
 
+async def _bootstrap_broker_for_new_login(user_id: str) -> None:
+    """Best-effort: give a freshly-logged-in-or-signed-up user the env-key
+    Alpaca paper connection if they don't already have one.
+
+    ``app.main``'s lifespan sweeps every user ONCE, at boot — anyone who
+    signs up or first logs in afterward never gets it, since that sweep
+    never runs again. This is the per-login catch-up for exactly that
+    case. Called from every path that MINTS A NEW SESSION (magic-link
+    verify, Google sign-in) — deliberately NOT from ``/refresh``, which
+    doesn't need it (an existing session already had its chance) and
+    would otherwise pay this check on every ~15-minute token refresh for
+    every active user.
+
+    No-ops instantly if ``ALPACA_API_KEY``/``ALPACA_SECRET_KEY`` aren't
+    set (``ensure_env_broker_connection``'s own guard), and never raises
+    into the login response — a broker-bootstrap hiccup must not block
+    signing in.
+    """
+    try:
+        from app.services.broker.env_bootstrap import ensure_env_broker_connection
+
+        await ensure_env_broker_connection(user_id)
+    except Exception:
+        logger.exception("auth: env broker bootstrap failed for user=%s", user_id)
+
+
 @router.post(
     "/request-login",
     response_model=RequestLoginResponse,
@@ -207,6 +233,7 @@ async def verify(
         ) from exc
 
     logger.info("auth: verified magic-link for %s — session=%s", issued.user.email, issued.session.id)
+    await _bootstrap_broker_for_new_login(issued.user.id)
     return _to_issued_response(issued)
 
 
@@ -388,6 +415,7 @@ async def _verify_and_login_with_google(
     logger.info(
         "auth: google sign-in for %s — session=%s", issued.user.email, issued.session.id
     )
+    await _bootstrap_broker_for_new_login(issued.user.id)
     return _to_issued_response(issued)
 
 
