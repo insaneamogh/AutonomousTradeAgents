@@ -208,7 +208,18 @@ class AlpacaIntradayBarsProvider:
             return {}
 
         now = datetime.now(UTC)
+        # The free feed embargoes the most recent 15 minutes, so the window
+        # can only ever end in the past.
+        end = now - timedelta(minutes=self.DATA_DELAY_MINUTES)
         start = session_start or datetime.combine(now.date(), time.min, tzinfo=UTC)
+        # Midnight-UTC as the anchor inverts the window whenever the clock
+        # is inside the embargo (i.e. the first 15 minutes of a UTC day),
+        # and Alpaca rejects the whole request with "end should not be
+        # before start". It is also the wrong anchor for a US session,
+        # which runs 13:30-20:00 UTC. Walk back a day at a time until the
+        # window is real; the caller filters to the session it wants.
+        while end <= start:
+            start -= timedelta(days=1)
         cache_key = (",".join(syms), bar_minutes, start.isoformat())
         cached = self._cache.get(cache_key)
         if cached is not None and (monotonic() - cached[0]) < self._cache_ttl:
@@ -222,7 +233,7 @@ class AlpacaIntradayBarsProvider:
             symbol_or_symbols=syms,
             timeframe=TimeFrame(bar_minutes, TimeFrameUnit.Minute),
             start=start,
-            end=now - timedelta(minutes=self.DATA_DELAY_MINUTES),
+            end=end,
             feed=DataFeed.IEX,
         )
         raw = await asyncio.to_thread(self._get_client().get_stock_bars, req)  # type: ignore[attr-defined]
