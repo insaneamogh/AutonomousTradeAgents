@@ -78,6 +78,29 @@ def default_redirect_uri() -> str:
     return _env("ALPACA_OAUTH_REDIRECT_URI", "autotrader://broker/callback")
 
 
+def default_web_redirect_uri() -> str:
+    """The desktop/web browser-redirect landing page — this API's own
+    ``GET /connect/alpaca/redirect`` — the "web" sibling of
+    ``default_redirect_uri()``'s native deep link.
+
+    The native scheme can't be opened by a plain browser ``window.location``
+    navigation (see ``Settings.tsx`` desktop connect flow), so the desktop
+    build needs a second, real HTTPS redirect_uri. Alpaca's OAuth app must
+    register THIS exact URL as a second allowed redirect URI alongside the
+    native one — an operational step in Alpaca's own developer console,
+    outside this repo's reach.
+
+    Deliberately a fixed, server-known value (env-overridable, same as
+    ``default_redirect_uri()``) rather than anything derived from a
+    request — accepting a caller-supplied redirect_uri would be an
+    open-redirect / auth-code-hijack risk.
+    """
+    return _env(
+        "ALPACA_OAUTH_WEB_REDIRECT_URI",
+        "http://localhost:8000/api/v1/broker/connect/alpaca/redirect",
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────
 # PKCE primitives
 # ─────────────────────────────────────────────────────────────────────

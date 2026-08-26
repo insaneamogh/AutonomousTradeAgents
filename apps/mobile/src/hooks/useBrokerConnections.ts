@@ -66,10 +66,20 @@ export interface StartOAuthResponse {
   devWarning: string | null;
 }
 
-export async function startAlpacaOAuth(isPaper: boolean): Promise<StartOAuthResponse> {
+/**
+ * `platform: 'web'` tells the server to hand back an authorize URL whose
+ * `redirect_uri` is the HTTPS browser-redirect landing page
+ * (`GET /connect/alpaca/redirect`) instead of the native `autotrader://`
+ * deep link — the desktop/web build can't catch a custom URL scheme.
+ * Omit it (the native call site does) to keep today's deep-link default.
+ */
+export async function startAlpacaOAuth(
+  isPaper: boolean,
+  platform?: 'web',
+): Promise<StartOAuthResponse> {
   return request<StartOAuthResponse>('/api/v1/broker/connect/alpaca/start', {
     method: 'POST',
-    body: { isPaper },
+    body: { isPaper, ...(platform ? { platform } : {}) },
   });
 }
 

@@ -10,6 +10,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.services.notifications.notification_store import Platform
+
 
 def _camel(name: str) -> str:
     parts = name.split("_")
@@ -33,6 +35,18 @@ class StartOAuthRequest(_Base):
     is_paper: bool = Field(
         default=True,
         description="True = Alpaca paper trading; False = live. Default paper.",
+    )
+    platform: Platform | None = Field(
+        default=None,
+        description=(
+            "Client hint used ONLY to pick which of two fixed, server-known "
+            "redirect URIs the server sends to Alpaca — never a caller-"
+            "supplied URL (that would be an open-redirect / auth-code-"
+            "hijack risk). 'web' selects the HTTPS browser-redirect landing "
+            "page (GET /connect/alpaca/redirect); anything else — including "
+            "unset, which is what the native app sends — keeps today's "
+            "native deep-link default untouched."
+        ),
     )
 
 

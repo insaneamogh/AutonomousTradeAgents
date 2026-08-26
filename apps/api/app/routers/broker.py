@@ -143,14 +143,28 @@ async def start_alpaca_oauth(
 ) -> StartOAuthResponse:
     _require_crypto()
 
-    built = alpaca_oauth.build_authorize_url()
+    # Only ever choose between two FIXED, server-known redirect URIs based
+    # on the platform hint — never a caller-supplied string (that would be
+    # an open-redirect / auth-code-hijack risk). "web" is the desktop
+    # browser flow (alpaca_browser_redirect below); anything else —
+    # including unset, which is what the native app sends — resolves to
+    # ``None`` here, and ``build_authorize_url`` falls back to today's
+    # native deep-link default, completely unchanged.
+    redirect_uri = alpaca_oauth.default_web_redirect_uri() if body.platform == "web" else None
+
+    built = alpaca_oauth.build_authorize_url(redirect_uri=redirect_uri)
     pending.put(
         PendingOAuth(
             state=built.state,
             user_id=user.id,
             code_verifier=built.code_verifier,
             is_paper=body.is_paper,
-            redirect_uri="",  # default redirect; explicit override lands later
+            # Stashed so the callback's token exchange can name the SAME
+            # redirect_uri used here — most OAuth2 providers require the two
+            # to match exactly. "" (the native/default case) round-trips to
+            # ``None`` in ``_complete_alpaca_connect``, i.e. no behavior
+            # change from before this field was populated.
+            redirect_uri=redirect_uri or "",
         )
     )
 
@@ -172,32 +186,36 @@ async def start_alpaca_oauth(
 # ─────────────────────────────────────────────────────────────────────
 
 
-@router.post(
-    "/connect/alpaca/callback",
-    response_model=CallbackResponse,
-    response_model_by_alias=True,
-)
-async def alpaca_callback(
-    body: CallbackRequest,
-    user: AuthedUser = Depends(require_real_auth),
-    store: BrokerStore = Depends(get_broker_store),
-    pending: PendingOAuthCache = Depends(get_pending_oauth_cache),
-) -> CallbackResponse:
-    _require_crypto()
+async def _complete_alpaca_connect(
+    *,
+    code: str,
+    state: str,
+    store: BrokerStore,
+    pending: PendingOAuthCache,
+    expected_user_id: str | None,
+) -> BrokerConnectionRecord:
+    """Shared tail of the POST /callback and GET /redirect paths — same
+    shared-helper-with-optional-identity-enforcement shape as
+    ``_complete_zerodha_connect`` below.
 
+    ``expected_user_id`` is enforced when the caller is authenticated
+    (native mobile POST). The browser GET path (desktop web) has no
+    bearer — there the single-use, 15-minute, high-entropy ``state`` IS
+    the proof of initiation.
+    """
     # State must exist + match the caller (otherwise we'd let Alice complete
     # Bob's OAuth dance, attaching Bob's broker tokens to Alice).
-    stash = pending.consume(body.state)
+    stash = pending.consume(state)
     if stash is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="unknown or expired state - start the OAuth flow again",
         )
-    if stash.user_id != user.id:
+    if expected_user_id is not None and stash.user_id != expected_user_id:
         # Don't tell the attacker WHY (no "wrong user" leak) — just refuse.
         logger.warning(
             "broker callback: state belonged to user=%s but caller=%s — refusing",
-            stash.user_id, user.id,
+            stash.user_id, expected_user_id,
         )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -206,8 +224,12 @@ async def alpaca_callback(
 
     try:
         tokens = await alpaca_oauth.exchange_code_for_tokens(
-            code=body.code,
+            code=code,
             code_verifier=stash.code_verifier,
+            # Must name the SAME redirect_uri used to build the authorize
+            # URL (RFC 6749 §4.1.3) — "" (native/default) round-trips to
+            # None, i.e. today's default_redirect_uri(), unchanged.
+            redirect_uri=stash.redirect_uri or None,
         )
     except TokenExchangeError as exc:
         raise HTTPException(
@@ -238,7 +260,7 @@ async def alpaca_callback(
     )
 
     rec = await store.upsert_connection(
-        user_id=user.id,
+        user_id=stash.user_id,
         broker="alpaca",
         is_paper=stash.is_paper,
         account_number=tokens.account_number,
@@ -249,9 +271,89 @@ async def alpaca_callback(
     logger.info(
         "broker: connected alpaca (%s) for user=%s — account=%s",
         "paper" if stash.is_paper else "live",
-        user.id, tokens.account_number,
+        stash.user_id, tokens.account_number,
+    )
+    return rec
+
+
+@router.post(
+    "/connect/alpaca/callback",
+    response_model=CallbackResponse,
+    response_model_by_alias=True,
+)
+async def alpaca_callback(
+    body: CallbackRequest,
+    user: AuthedUser = Depends(require_real_auth),
+    store: BrokerStore = Depends(get_broker_store),
+    pending: PendingOAuthCache = Depends(get_pending_oauth_cache),
+) -> CallbackResponse:
+    """Authenticated completion path (native app forwards the redirect
+    params from the system browser via a deep link)."""
+    _require_crypto()
+    rec = await _complete_alpaca_connect(
+        code=body.code,
+        state=body.state,
+        store=store,
+        pending=pending,
+        expected_user_id=user.id,
     )
     return CallbackResponse(connection=_to_response(rec))
+
+
+@router.get("/connect/alpaca/redirect", response_class=HTMLResponse)
+async def alpaca_browser_redirect(
+    code: str = "",
+    state: str = "",
+    error: str = "",
+    store: BrokerStore = Depends(get_broker_store),
+    pending: PendingOAuthCache = Depends(get_pending_oauth_cache),
+) -> HTMLResponse:
+    """Browser landing for the desktop/web Alpaca OAuth redirect — register
+    THIS URL (``alpaca_oauth.default_web_redirect_uri()``) as a second
+    allowed redirect URI on the Alpaca OAuth app, alongside the native deep
+    link. No bearer (it's a top-level browser navigation, same shape as
+    ``zerodha_browser_redirect``): the single-use state stashed by the
+    authed /start call identifies the user.
+
+    Handles Alpaca's OAuth2-standard denial shape explicitly: the user
+    declining consent redirects back as ``?error=...&state=...`` with NO
+    ``code`` — Zerodha's request-token flow has no equivalent "user clicked
+    deny" shape, so this is new rather than inherited from
+    ``_complete_zerodha_connect``.
+    """
+    _require_crypto()
+    if error:
+        logger.info("alpaca browser redirect: not completed (error=%s)", error)
+        return HTMLResponse(
+            "<h2>Alpaca connection was not completed</h2>"
+            f"<p>Alpaca reported: <b>{error}</b>. You can close this tab and "
+            "try connecting again from the app.</p>"
+        )
+    if not code or not state:
+        return HTMLResponse(
+            "<h2>Alpaca connect failed</h2><p>Missing code or state on the "
+            "redirect. Start the connect flow again from the app.</p>",
+            status_code=400,
+        )
+    try:
+        rec = await _complete_alpaca_connect(
+            code=code,
+            state=state,
+            store=store,
+            pending=pending,
+            expected_user_id=None,
+        )
+    except HTTPException as exc:
+        return HTMLResponse(
+            f"<h2>Alpaca connect failed</h2><p>{exc.detail}</p>",
+            status_code=exc.status_code,
+        )
+    kind = "paper" if rec.is_paper else "live"
+    return HTMLResponse(
+        f"<h2>Alpaca {kind} account connected ✓</h2>"
+        f"<p>Account <b>{rec.account_number or 'unknown'}</b> is now linked — "
+        "you can close this tab and return to the app.</p>"
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────

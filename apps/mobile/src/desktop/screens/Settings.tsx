@@ -73,7 +73,7 @@ export function SettingsScreen() {
   const connect = async () => {
     setConnectError(null);
     try {
-      const res = await startAlpacaOAuth(true);
+      const res = await startAlpacaOAuth(true, 'web');
       window.location.assign(res.authorizeUrl);
     } catch {
       setConnectError('Could not start the Alpaca connection.');

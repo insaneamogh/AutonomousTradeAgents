@@ -362,6 +362,211 @@ def test_unused_imports_keep_alive_for_pyflakes() -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Desktop/web browser GET redirect — mirrors test_zerodha_routes.py's
+# three redirect tests, plus the ?error= denial case Zerodha's flow has
+# no equivalent of.
+# ─────────────────────────────────────────────────────────────────────
+
+
+@pytestmark_crypto
+def test_alpaca_browser_redirect_completes_connect_without_bearer(
+    client: TestClient, mocked_token_endpoint: None
+) -> None:
+    """The desktop/web build starts OAuth with platform='web' and lands on
+    this GET redirect after Alpaca's own top-level browser navigation —
+    no bearer available there, unlike the native POST /callback.
+    """
+    access = _login_and_get_access(client)
+    started = client.post(
+        "/api/v1/broker/connect/alpaca/start",
+        headers=_bearer(access),
+        json={"isPaper": True, "platform": "web"},
+    ).json()
+
+    r = client.get(
+        "/api/v1/broker/connect/alpaca/redirect",
+        params={"code": "auth-code-from-alpaca", "state": started["state"]},
+    )
+    assert r.status_code == 200, r.text
+    assert "connected" in r.text.lower()
+
+    listed = client.get("/api/v1/broker/connections", headers=_bearer(access)).json()
+    assert len(listed) == 1
+    assert listed[0]["status"] == "active"
+    assert listed[0]["accountNumber"] == "PA-ACCOUNT-001"
+
+
+@pytestmark_crypto
+def test_alpaca_browser_redirect_replay_fails(
+    client: TestClient, mocked_token_endpoint: None
+) -> None:
+    access = _login_and_get_access(client)
+    started = client.post(
+        "/api/v1/broker/connect/alpaca/start",
+        headers=_bearer(access),
+        json={"isPaper": True, "platform": "web"},
+    ).json()
+
+    params = {"code": "auth-code-from-alpaca", "state": started["state"]}
+    first = client.get("/api/v1/broker/connect/alpaca/redirect", params=params)
+    assert first.status_code == 200, first.text
+    replay = client.get("/api/v1/broker/connect/alpaca/redirect", params=params)
+    assert replay.status_code == 400
+
+
+@pytestmark_crypto
+def test_alpaca_browser_redirect_missing_params_is_400(client: TestClient) -> None:
+    r = client.get("/api/v1/broker/connect/alpaca/redirect")
+    assert r.status_code == 400
+    assert "Missing" in r.text
+
+
+@pytestmark_crypto
+def test_alpaca_browser_redirect_access_denied_shows_friendly_message(
+    client: TestClient,
+) -> None:
+    """Alpaca's OAuth2-standard denial shape — the user declined consent —
+    redirects back as ``?error=...&state=...`` with NO ``code``. Zerodha's
+    request-token flow has no equivalent shape, so this needed an explicit
+    check rather than falling out of the shared helper. Must render a
+    friendly message, not a raw 400 validation error, and must not require
+    a valid/consumable state to explain that.
+    """
+    r = client.get(
+        "/api/v1/broker/connect/alpaca/redirect",
+        params={"error": "access_denied", "state": "never-issued-or-missing"},
+    )
+    assert r.status_code == 200, r.text
+    assert "not completed" in r.text.lower()
+    assert "access_denied" in r.text
+
+
+# ─────────────────────────────────────────────────────────────────────
+# redirect_uri must match between /start's authorize_url and the
+# token-exchange step — for BOTH the native default and the "web" hint.
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _capture_redirect_uri_sent_to_token_endpoint() -> tuple[dict[str, list[str]], Iterator[None]]:
+    """Patch ``exchange_code_for_tokens`` to route through a MockTransport
+    that records the POSTed form body, so the test can assert on the exact
+    ``redirect_uri`` Alpaca's token endpoint actually received.
+    """
+    received: dict[str, list[str]] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        from urllib.parse import parse_qs
+
+        received.update(parse_qs(request.content.decode("utf-8")))
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "tok-XXX",
+                "refresh_token": "",
+                "expires_in": 0,
+                "token_type": "Bearer",
+                "scope": "",
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_exchange = alpaca_oauth.exchange_code_for_tokens
+
+    async def patched(*, code, code_verifier, redirect_uri=None, client=None):
+        async with httpx.AsyncClient(transport=transport) as c:
+            return await real_exchange(
+                code=code,
+                code_verifier=code_verifier,
+                redirect_uri=redirect_uri,
+                client=c,
+            )
+
+    def _install() -> Iterator[None]:
+        alpaca_oauth.exchange_code_for_tokens = patched  # type: ignore[assignment]
+        try:
+            yield
+        finally:
+            alpaca_oauth.exchange_code_for_tokens = real_exchange  # type: ignore[assignment]
+
+    return received, _install()
+
+
+def _redirect_uri_from_authorize_url(authorize_url: str) -> str:
+    from urllib.parse import parse_qs, urlparse
+
+    return parse_qs(urlparse(authorize_url).query)["redirect_uri"][0]
+
+
+@pytestmark_crypto
+def test_native_exchange_uses_default_redirect_uri_unchanged(client: TestClient) -> None:
+    """No ``platform`` sent (today's only real client, the native app):
+    the authorize URL AND the token exchange must both keep using the
+    implicit native default — byte-for-byte unchanged from before the
+    "web" redirect_uri plumbing was added.
+    """
+    received, install = _capture_redirect_uri_sent_to_token_endpoint()
+    next(install)
+    try:
+        access = _login_and_get_access(client)
+        started = client.post(
+            "/api/v1/broker/connect/alpaca/start",
+            headers=_bearer(access),
+            json={"isPaper": True},
+        ).json()
+        authorize_redirect = _redirect_uri_from_authorize_url(started["authorizeUrl"])
+        assert authorize_redirect == "autotrader://broker/callback"
+
+        r = client.post(
+            "/api/v1/broker/connect/alpaca/callback",
+            headers=_bearer(access),
+            json={"code": "abc", "state": started["state"]},
+        )
+        assert r.status_code == 200, r.text
+    finally:
+        try:
+            next(install)
+        except StopIteration:
+            pass
+
+    assert received["redirect_uri"] == [authorize_redirect]
+
+
+@pytestmark_crypto
+def test_web_exchange_uses_same_redirect_uri_as_authorize_url(client: TestClient) -> None:
+    """``platform: "web"`` must produce an authorize_url whose redirect_uri
+    EXACTLY matches what the token-exchange step sends — most OAuth2
+    providers (Alpaca included) require the two to match, so a start/
+    exchange mismatch here would pass every test that doesn't check this
+    specifically while still failing for real against Alpaca's API.
+    """
+    received, install = _capture_redirect_uri_sent_to_token_endpoint()
+    next(install)
+    try:
+        access = _login_and_get_access(client)
+        started = client.post(
+            "/api/v1/broker/connect/alpaca/start",
+            headers=_bearer(access),
+            json={"isPaper": True, "platform": "web"},
+        ).json()
+        authorize_redirect = _redirect_uri_from_authorize_url(started["authorizeUrl"])
+        assert authorize_redirect == alpaca_oauth.default_web_redirect_uri()
+        assert authorize_redirect != "autotrader://broker/callback"
+
+        r = client.get(
+            "/api/v1/broker/connect/alpaca/redirect",
+            params={"code": "abc", "state": started["state"]},
+        )
+        assert r.status_code == 200, r.text
+    finally:
+        try:
+            next(install)
+        except StopIteration:
+            pass
+
+    assert received["redirect_uri"] == [authorize_redirect]
+
+
+# ─────────────────────────────────────────────────────────────────────
 # connectionSource — display-only field distinguishing env-bootstrapped
 # connections from real OAuth ones (see app/services/broker/env_bootstrap.py)
 # ─────────────────────────────────────────────────────────────────────
