@@ -359,6 +359,21 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 ## Entries
 
+### 2026-08-26 — `bd0e2840` fix(mobile): make the login screen scrollable
+
+User-reported, from a live Railway screenshot: the "Continue with dev
+token" button was cut off with no way to reach it. Root cause: the
+screen's content `View` had no `ScrollView` wrapper; adding the Google
+button + divider (this same day, `febba726`) pushed total content past
+shorter viewport heights with nothing to scroll. Wrapped in `ScrollView`
++ `keyboardShouldPersistTaps="handled"`, matching `watchlist.tsx`'s
+existing pattern. Verified directly, not assumed: at a forced 1280x450
+viewport, the dev-token button measured `top:599` (off-screen) before
+the fix; `scrollIntoView` reaches it at `top:357` after. Also `chore`
+`288aa7b1`: added a `dev-api` entry to `.claude/launch.json` so the API
+can be previewed in-browser alongside `mobile-web` (only `mobile-web`
+existed before).
+
 ### 2026-08-26 — `4bd3f245`…`febba726` feat(auth): "Continue with Google" + a less destructive session-refresh failure mode
 
 The user's "I keep having to re-auth" complaint traces to one root cause,
