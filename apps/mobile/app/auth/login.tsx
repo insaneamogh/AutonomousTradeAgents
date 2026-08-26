@@ -9,7 +9,7 @@
 // magic-link card — it doesn't replace or gate on the email flow above.
 
 import { useState } from 'react';
-import { KeyboardAvoidingView, Platform, Text, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, ScrollView, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 
@@ -103,7 +103,10 @@ export default function LoginScreen() {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         className="flex-1"
       >
-        <View className="flex-1 px-6 pt-16 pb-8 gap-6">
+        <ScrollView
+          contentContainerClassName="px-6 pt-16 pb-8 gap-6"
+          keyboardShouldPersistTaps="handled"
+        >
           <View className="gap-2">
             <Text className="text-[28px] font-bold text-text-primary dark:text-text-primary-dark">
               Sign in
@@ -222,7 +225,7 @@ export default function LoginScreen() {
               )}
             </Card>
           ) : null}
-        </View>
+        </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
