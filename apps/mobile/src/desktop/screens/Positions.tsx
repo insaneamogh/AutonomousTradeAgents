@@ -79,8 +79,18 @@ export function PositionsScreen() {
         <Cell span={selected ? 8 : 12}>
           <Card>
             <CardHead label="Open positions" />
-            {positions.isLoading || rows.length === 0 ? (
+            {positions.isLoading ? (
               <SkelRows rows={5} h={20} />
+            ) : rows.length === 0 ? (
+              /* A genuine "0 open" result, not a slow request — an empty
+                 inbox is a state, and shimmering at it forever reads as
+                 a hung request. Same convention as Picks/Dashboard. */
+              <div className="pg-empty">
+                <p className="pg-empty-title">No open positions</p>
+                <p className="pg-empty-body">
+                  Nothing the agent is currently holding for this account.
+                </p>
+              </div>
             ) : (
               <table className="pg-table">
                 <thead>
