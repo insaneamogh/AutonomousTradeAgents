@@ -7,6 +7,13 @@
       "runtimeArgs": ["expo", "start", "--web", "--port", "8081"],
       "cwd": "apps/mobile",
       "port": 8081
+    },
+    {
+      "name": "dev-api",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "uv", "run", "--package", "api", "uvicorn", "app.main:app", "--port", "8000"],
+      "cwd": "apps/api",
+      "port": 8000
     }
   ]
 }
