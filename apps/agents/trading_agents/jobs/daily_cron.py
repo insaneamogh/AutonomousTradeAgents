@@ -218,6 +218,7 @@ async def main(
     watchlist: list[str],
     *,
     force: bool,
+    skip_calendar_gate: bool = False,
     skip_ghost_eval: bool = False,
     skip_reflect: bool = False,
     scan_context: Mapping[str, SymbolScanContext] | None = None,
@@ -228,6 +229,23 @@ async def main(
     covers only the symbols that tripped a deterministic rule and forwards
     the rule identifiers to the analysts. A scheduled full sweep passes
     None and behaves exactly as before.
+
+    ``force`` and ``skip_calendar_gate`` are deliberately independent
+    knobs, not two spellings of the same thing:
+
+    - ``force`` is the operator's "run it anyway" — it bypasses BOTH the
+      market-calendar gate below AND the per-(user, symbol, day) dedup
+      check in ``_run_one``. That is the CLI/human-operator contract
+      (``--force``: "rerun this symbol right now, I know it already ran")
+      and it must keep bypassing dedup.
+    - ``skip_calendar_gate`` bypasses ONLY the calendar gate, for a caller
+      that has already established the market is open by other means (the
+      scanner's trigger loop checks ``ScanResult.market_open`` itself) and
+      just wants this redundant check skipped. It does NOT touch the dedup
+      check — a symbol already decided today, whether by the baseline
+      sweep or an earlier trigger, is still suppressed. That is what keeps
+      the once-per-symbol-per-day cap ``engine.scanner.cooldown``'s
+      docstring promises true regardless of which loop woke the council.
     """
     log.info(
         "daily cron start — user=%s symbols=%s use_postgres=%s triggered=%s",
@@ -239,11 +257,13 @@ async def main(
 
     # Market-calendar gate: no NYSE close today → nothing to decide. The
     # GitHub Actions schedule fires Mon-Fri regardless of holidays; this is
-    # the deterministic gate the audit asked for. --force overrides.
+    # the deterministic gate the audit asked for. --force overrides it (and
+    # the dedup check below); skip_calendar_gate overrides ONLY this gate,
+    # for a caller that already knows the market is open.
     today = datetime.now(UTC).date()
     from engine.features import is_us_trading_day
 
-    if not force and not is_us_trading_day(today):
+    if not (force or skip_calendar_gate) and not is_us_trading_day(today):
         log.info("US market closed on %s — skipping council run", today)
         return 0
 

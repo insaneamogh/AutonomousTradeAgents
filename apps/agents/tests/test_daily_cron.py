@@ -107,6 +107,82 @@ async def test_force_runs_even_when_already_decided(monkeypatch) -> None:
     assert called == 1
 
 
+async def test_skip_calendar_gate_still_honors_dedup(monkeypatch) -> None:
+    """``skip_calendar_gate`` must NOT bypass the once-per-symbol-per-day
+    dedup check — only ``--force`` does that.
+
+    This is the regression test for the bug where the scheduler's trigger
+    loop called ``main(force=True, ...)`` and that single flag silently
+    bypassed BOTH the calendar gate AND this dedup guard, so a
+    scanner-triggered run could re-spend LLM cost on a symbol the baseline
+    sweep (or an earlier trigger) had already decided today.
+    """
+    from trading_agents.jobs import daily_cron
+    from trading_agents.memory import DecisionEntry, get_decision_log
+
+    user_id = "00000000-0000-0000-0000-000000000001"
+
+    log = get_decision_log()
+    await log.record(
+        DecisionEntry(
+            user_id=user_id,
+            symbol="META",
+            horizon="short",
+            triggered_at=datetime.now(UTC),
+            selected_strategy="momentum",
+            selector_confidence=0.6,
+            final_action="BUY",
+        )
+    )
+
+    called = 0
+
+    async def fake_run_council(**kwargs):
+        nonlocal called
+        called += 1
+        return {"final_action": "BUY", "selected_strategy": "momentum",
+                "selector_confidence": 0.6, "decision_id": "dec-skipcal"}
+
+    monkeypatch.setattr(daily_cron, "run_council", fake_run_council)
+
+    rc = await daily_cron.main(
+        user_id, ["META"], force=False, skip_calendar_gate=True
+    )
+    assert rc == 0
+    assert called == 0  # already decided today — dedup still blocked it
+
+
+async def test_skip_calendar_gate_bypasses_only_the_calendar(monkeypatch) -> None:
+    """``skip_calendar_gate`` DOES bypass the calendar gate, independent of
+    dedup: with no existing decision and the market reported closed, the
+    council still runs when ``skip_calendar_gate=True`` — proving the two
+    gates are now orthogonal rather than both keyed off ``force``.
+    """
+    import engine.features
+    from trading_agents.jobs import daily_cron
+
+    # Override the autouse `_force_trading_day` fixture for this test only —
+    # monkeypatch unwinds both changes at teardown regardless of order.
+    monkeypatch.setattr(engine.features, "is_us_trading_day", lambda _d: False)
+
+    called = 0
+
+    async def fake_run_council(**kwargs):
+        nonlocal called
+        called += 1
+        return {"final_action": "BUY", "selected_strategy": "momentum",
+                "selector_confidence": 0.6, "decision_id": "dec-calbypass"}
+
+    monkeypatch.setattr(daily_cron, "run_council", fake_run_council)
+
+    user_id = "00000000-0000-0000-0000-000000000001"
+    rc = await daily_cron.main(
+        user_id, ["GOOG"], force=False, skip_calendar_gate=True
+    )
+    assert rc == 0
+    assert called == 1  # market "closed", but skip_calendar_gate ran it anyway
+
+
 async def test_prior_day_does_not_block(monkeypatch) -> None:
     """A decision from yesterday should NOT block today's run."""
     from trading_agents.jobs import daily_cron

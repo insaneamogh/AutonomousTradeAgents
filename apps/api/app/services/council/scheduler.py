@@ -58,6 +58,10 @@ import contextlib
 import logging
 import os
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from engine.scanner import ScanResult
 
 logger = logging.getLogger("api.services.council.scheduler")
 
@@ -92,6 +96,20 @@ def _watchlist() -> list[str]:
     return [s.strip().upper() for s in raw.split(",") if s.strip()] or list(
         DEFAULT_WATCHLIST
     )
+
+
+def configured_watchlist() -> list[str]:
+    """Public wrapper around ``_watchlist`` for callers outside this module
+    (``scanner_status.py`` reports its size) — avoids reaching into an
+    underscore-prefixed name from another module. Not named ``watchlist``
+    because ``_run_once`` already has a same-named local variable."""
+    return _watchlist()
+
+
+def scanner_enabled() -> bool:
+    """Public wrapper — is ``SCANNER_ENABLED`` set, regardless of whether
+    the trigger loop actually managed to arm (see ``trigger_loop_armed``)."""
+    return _flag("SCANNER_ENABLED")
 
 
 def _cron_user() -> str:
@@ -136,10 +154,28 @@ class CouncilScheduler:
         self._tasks: list[asyncio.Task[None]] = []
         self.last_run_at: datetime | None = None
         self.last_result: dict[str, int] | str | None = None
-        # Trigger-loop observability, surfaced on /health/full.
+        # Trigger-loop observability, surfaced on /health/full and, in
+        # full detail, on /api/v1/scanner/status.
         self.last_scan_at: datetime | None = None
         self.last_scan_signals: int = 0
         self.last_triggered: tuple[str, ...] = ()
+        self.last_scan_result: ScanResult | None = None
+        """The full ``ScanResult`` from the last trigger-loop pass — signals,
+        suppressed count, market_open — not just the summary counters above.
+        ``scanner_status.py`` reads this rather than duplicating a second
+        set of fields."""
+        self.last_council_run_symbols: tuple[str, ...] = ()
+        """Symbols passed to the last triggered council run specifically
+        (as opposed to ``last_result``, which both loops update)."""
+        self.trigger_loop_armed: bool = False
+        """True once ``_trigger_loop`` has a live ``Scanner`` — i.e.
+        SCANNER_ENABLED=1 AND Alpaca data keys are present. False while
+        SCANNER_ENABLED=0, and also false when it's 1 but the scanner
+        couldn't be constructed — those are different states and the
+        scanner-status endpoint tells them apart via ``scanner_enabled()``
+        vs this flag."""
+        self.scanner_interval_minutes: int | None = None
+        self.scanner_max_council_runs: int | None = None
 
     def start(self) -> None:
         if self._tasks:
@@ -202,8 +238,15 @@ class CouncilScheduler:
             )
             return
 
-        interval = _int_env("SCANNER_INTERVAL_MINUTES", 5) * 60
+        interval_minutes = _int_env("SCANNER_INTERVAL_MINUTES", 5)
         max_runs = _int_env("SCANNER_MAX_COUNCIL_RUNS", 3)
+        interval = interval_minutes * 60
+        # Only flip to armed once the scanner actually exists — a missing
+        # Alpaca key must report armed=False on /scanner/status, not a
+        # false "yes" based on the env flag alone.
+        self.trigger_loop_armed = True
+        self.scanner_interval_minutes = interval_minutes
+        self.scanner_max_council_runs = max_runs
         logger.info(
             "trigger loop armed — scanning every %d min, max %d council runs per scan",
             interval // 60, max_runs,
@@ -231,6 +274,7 @@ class CouncilScheduler:
 
         self.last_scan_at = result.scanned_at
         self.last_scan_signals = len(result.signals)
+        self.last_scan_result = result
 
         if not result.market_open:
             logger.debug("scan skipped — market closed")
@@ -267,15 +311,25 @@ class CouncilScheduler:
             rules = ", ".join(s.trigger_rule for s in result.signals_for(sym))
             logger.info("triggered council run: %s (%s)", sym, rules)
 
+        self.last_council_run_symbols = tuple(selected)
         started = datetime.now(UTC)
-        # force=True: the scanner already decided this symbol deserves a
-        # look. The cron's own per-user-per-symbol-per-day guard would
-        # otherwise suppress a genuine intraday trigger after the
-        # baseline sweep had already covered that symbol today.
+        # force is the operator's "run it anyway" — it would skip BOTH the
+        # calendar gate AND the once-per-(user, symbol, day) dedup check in
+        # daily_cron, which would let a triggered run double-spend LLM cost
+        # on a symbol the baseline sweep (or an earlier trigger) already
+        # decided today. That's not what we want here.
+        #
+        # skip_calendar_gate skips ONLY the calendar check: ``result``
+        # above already came from a market-hours-gated scan (market_open
+        # was just checked), so that gate is redundant for this call — but
+        # the dedup guard must still run, because it's what keeps the
+        # once-per-symbol-per-day cap uniform whether a symbol was decided
+        # by the baseline sweep or by an earlier trigger this same day.
         code = await cron_main(
             _cron_user(),
             selected,
-            force=True,
+            force=False,
+            skip_calendar_gate=True,
             skip_ghost_eval=True,
             skip_reflect=True,
             scan_context=scan_context,

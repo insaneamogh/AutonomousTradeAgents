@@ -1,0 +1,209 @@
+"""``CouncilScheduler._scan_once`` — trigger-loop unit tests.
+
+Exercises the method directly against a FRESH ``CouncilScheduler`` instance
+(never the module singleton), with a fake scanner exposing an async
+``.scan()`` that returns a hand-built ``ScanResult``. No Alpaca keys, no
+background task, no Postgres.
+
+``daily_cron.main`` is imported INSIDE ``_scan_once`` (not at module scope
+in ``scheduler.py``), so it must be patched on the defining module —
+``trading_agents.jobs.daily_cron`` — the same technique
+``test_daily_cron.py`` already uses for ``is_us_trading_day``.
+
+The kwargs assertion in ``test_scan_once_...exact_kwargs`` is the tripwire
+against ever regressing back to ``force=True`` on the triggered path,
+which silently bypassed the once-per-symbol-per-day dedup guard.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+
+import pytest
+
+from engine.scanner import ScanResult, ScanSignal
+
+
+def _signal(symbol: str, rule: str = "volume_spike_2x") -> ScanSignal:
+    return ScanSignal(
+        symbol=symbol,
+        trigger_rule=rule,
+        strength=0.8,
+        observed_at=datetime.now(UTC),
+        direction="bullish",
+        detail=f"{symbol} test signal ({rule})",
+        context={},
+    )
+
+
+class _FakeScanner:
+    """Stands in for ``engine.scanner.Scanner`` — returns a canned result
+    regardless of the symbols it's asked to scan."""
+
+    def __init__(self, result: ScanResult) -> None:
+        self._result = result
+        self.scan_calls: list[list[str]] = []
+
+    async def scan(self, symbols: list[str]) -> ScanResult:
+        self.scan_calls.append(list(symbols))
+        return self._result
+
+
+@pytest.fixture(autouse=True)
+def _pinned_watchlist(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Deterministic watchlist so ``_watchlist()`` doesn't depend on
+    ``daily_cron.DEFAULT_WATCHLIST`` staying a particular size — the fake
+    scanner ignores its input anyway, this just keeps the env tidy."""
+    monkeypatch.setenv("AGENT_CRON_WATCHLIST", "AAA,BBB,CCC,DDD")
+
+
+async def test_scan_once_records_metadata_and_calls_cron_with_exact_kwargs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Happy path: one triggered symbol → scan metadata is recorded AND
+    the council is called with exactly ``force=False,
+    skip_calendar_gate=True`` (never ``force=True``)."""
+    from app.services.council.scheduler import CouncilScheduler
+    from trading_agents.jobs import daily_cron
+
+    sig = _signal("AAA")
+    result = ScanResult(
+        scanned_at=datetime.now(UTC),
+        market_open=True,
+        symbols_scanned=("AAA", "BBB", "CCC", "DDD"),
+        signals=(sig,),
+        suppressed=(),
+    )
+    scanner = _FakeScanner(result)
+
+    captured: dict = {}
+
+    async def fake_cron_main(user_id, symbols, **kwargs):
+        captured["user_id"] = user_id
+        captured["symbols"] = list(symbols)
+        captured["kwargs"] = kwargs
+        return 0
+
+    monkeypatch.setattr(daily_cron, "main", fake_cron_main)
+
+    scheduler = CouncilScheduler()
+    await scheduler._scan_once(scanner, max_runs=3)
+
+    # Scan metadata recorded.
+    assert scheduler.last_scan_at == result.scanned_at
+    assert scheduler.last_scan_signals == 1
+    assert scheduler.last_scan_result is result
+    assert scheduler.last_triggered == ("AAA",)
+    assert scheduler.last_council_run_symbols == ("AAA",)
+    assert scheduler.last_run_at is not None
+    assert scheduler.last_result == {"exit_code": 0, "symbols": 1, "triggered": 1}
+
+    # The tripwire.
+    assert captured["symbols"] == ["AAA"]
+    assert captured["kwargs"]["force"] is False
+    assert captured["kwargs"]["skip_calendar_gate"] is True
+    assert captured["kwargs"]["skip_ghost_eval"] is True
+    assert captured["kwargs"]["skip_reflect"] is True
+
+
+async def test_scan_once_market_closed_updates_metadata_but_skips_cron(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Market closed → scan metadata still updates (so /scanner/status can
+    report ``market_open=False``), but the council is never called."""
+    from app.services.council.scheduler import CouncilScheduler
+    from trading_agents.jobs import daily_cron
+
+    result = ScanResult(
+        scanned_at=datetime.now(UTC),
+        market_open=False,
+        symbols_scanned=(),
+        signals=(),
+        suppressed=(),
+    )
+    scanner = _FakeScanner(result)
+
+    called = 0
+
+    async def fake_cron_main(*args, **kwargs):
+        nonlocal called
+        called += 1
+        return 0
+
+    monkeypatch.setattr(daily_cron, "main", fake_cron_main)
+
+    scheduler = CouncilScheduler()
+    await scheduler._scan_once(scanner, max_runs=3)
+
+    assert scheduler.last_scan_at == result.scanned_at
+    assert scheduler.last_scan_result is result
+    assert scheduler.last_scan_signals == 0
+    assert called == 0
+    # Untouched — no triggered run happened.
+    assert scheduler.last_council_run_symbols == ()
+    assert scheduler.last_run_at is None
+
+
+async def test_scan_once_no_signals_skips_cron(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Market open but a clean scan (no triggers) → still no council call."""
+    from app.services.council.scheduler import CouncilScheduler
+    from trading_agents.jobs import daily_cron
+
+    result = ScanResult(
+        scanned_at=datetime.now(UTC),
+        market_open=True,
+        symbols_scanned=("AAA", "BBB"),
+        signals=(),
+        suppressed=(),
+    )
+    scanner = _FakeScanner(result)
+
+    called = 0
+
+    async def fake_cron_main(*args, **kwargs):
+        nonlocal called
+        called += 1
+        return 0
+
+    monkeypatch.setattr(daily_cron, "main", fake_cron_main)
+
+    scheduler = CouncilScheduler()
+    await scheduler._scan_once(scanner, max_runs=3)
+
+    assert called == 0
+    assert scheduler.last_triggered == ()
+    assert scheduler.last_council_run_symbols == ()
+
+
+async def test_scan_once_caps_selected_symbols_at_max_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """More triggered symbols than SCANNER_MAX_COUNCIL_RUNS → only the
+    first N (in first-fired order) are passed to the council."""
+    from app.services.council.scheduler import CouncilScheduler
+    from trading_agents.jobs import daily_cron
+
+    signals = tuple(_signal(sym) for sym in ("AAA", "BBB", "CCC", "DDD"))
+    result = ScanResult(
+        scanned_at=datetime.now(UTC),
+        market_open=True,
+        symbols_scanned=("AAA", "BBB", "CCC", "DDD"),
+        signals=signals,
+        suppressed=(),
+    )
+    scanner = _FakeScanner(result)
+
+    captured: dict = {}
+
+    async def fake_cron_main(user_id, symbols, **kwargs):
+        captured["symbols"] = list(symbols)
+        return 0
+
+    monkeypatch.setattr(daily_cron, "main", fake_cron_main)
+
+    scheduler = CouncilScheduler()
+    await scheduler._scan_once(scanner, max_runs=2)
+
+    assert captured["symbols"] == ["AAA", "BBB"]
+    assert scheduler.last_council_run_symbols == ("AAA", "BBB")
+    assert scheduler.last_triggered == ("AAA", "BBB", "CCC", "DDD")
