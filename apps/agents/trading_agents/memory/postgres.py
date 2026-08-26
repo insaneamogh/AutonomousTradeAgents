@@ -147,6 +147,7 @@ class PostgresDecisionLog:
                 realized_pnl=entry.realized_pnl,
                 reviewed_at=entry.reviewed_at,
                 degraded_nodes=entry.degraded_nodes,
+                reasoning=entry.reasoning,
             )
             session.add(row)
             await session.commit()

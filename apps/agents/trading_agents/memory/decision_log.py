@@ -76,6 +76,13 @@ class DecisionEntry:
     # Non-empty → the run was degraded; reflection/calibration exclude it.
     # First-class so it survives even when proposal_dto replaces raw_state.
     degraded_nodes: list[str] | None = None
+    reasoning: dict[str, Any] | None = None
+    """The deterministic reasoning surface — strategy-fit components, the
+    sizing arithmetic, the risk rules that passed, the scan trigger, and a
+    feature snapshot. Its own field (and its own column) because
+    ``raw_state`` is written to ``proposal`` only when there is NO approved
+    proposal, which dropped it on exactly the rows worth explaining."""
+
     # The camelCase ApprovalProposalDto dict — present only when the risk
     # officer approved. Stored in the ``proposal`` JSONB column so the API's
     # ``list_pending`` can parse the row directly (single write path).

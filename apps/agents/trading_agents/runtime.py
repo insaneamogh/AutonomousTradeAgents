@@ -208,6 +208,37 @@ def _to_proposal_dto(state: CouncilState) -> dict[str, Any] | None:
 _SNAPSHOT_BLOCKS = ("technicals", "quant", "news", "events", "liquidity", "asset")
 
 
+def _reasoning_block(final: CouncilState) -> dict[str, Any]:
+    """The deterministic reasoning surface, persisted for the thesis view.
+
+    Everything in here is machine output, not model prose: which strategy
+    fit and by which NAMED checks, which risk rules passed (not only the
+    one that vetoed), what woke the scanner, the sizing arithmetic behind
+    the qty/stop/target, and the features every analyst was reading.
+
+    It gets its own column rather than riding in ``raw_state`` because the
+    Postgres log writes ``raw_state`` into ``proposal`` ONLY when there is
+    no approved proposal — which dropped all of this on exactly the
+    approved decisions a user asks about.
+    """
+    proposal = final.get("proposal") or {}
+    return {
+        "version": 1,
+        "strategy_fit": final.get("strategy_fit"),
+        "selected_direction": final.get("selected_direction"),
+        "router_rationale": final.get("router_rationale"),
+        "analyst_subset": list(final.get("analyst_subset") or []),
+        "risk_checks_passed": list(final.get("risk_checks_passed") or []),
+        "risk_veto_rule": final.get("risk_veto_rule"),
+        "risk_reason": final.get("risk_reason"),
+        "sizing": proposal.get("sizing"),
+        "informational_flags": list(proposal.get("informational_flags") or []),
+        "scan_triggers": (final.get("context") or {}).get("scan_triggers"),
+        "feature_snapshot": _feature_snapshot(final.get("context") or {}),
+        "degraded_nodes": list(final.get("degraded_nodes") or []),
+    }
+
+
 def _feature_snapshot(context: dict[str, Any]) -> dict[str, Any]:
     """The slice of the feature dict worth persisting alongside a decision.
 
@@ -267,18 +298,8 @@ def _to_decision_entry(
             # Non-empty when any node ran on a parse-retry or neutral
             # fallback — calibration/reflection exclude these runs.
             "degraded_nodes": list(final.get("degraded_nodes") or []),
-            # ── The reasoning surface the thesis view reads ─────────
-            # Everything here is deterministic output, not model prose:
-            # which strategy fit and by which named checks, which risk
-            # rules passed, why the scanner woke this symbol, and the
-            # sizing arithmetic behind the qty/stop/target.
-            "strategy_fit": final.get("strategy_fit"),
-            "selected_direction": final.get("selected_direction"),
-            "risk_checks_passed": list(final.get("risk_checks_passed") or []),
-            "router_rationale": final.get("router_rationale"),
-            "scan_triggers": (final.get("context") or {}).get("scan_triggers"),
-            "feature_snapshot": _feature_snapshot(final.get("context") or {}),
         },
+        reasoning=_reasoning_block(final),
         # Full audit surface (WP0) — dedicated columns in Postgres.
         technical=tech or None,
         fundamental=fund or None,

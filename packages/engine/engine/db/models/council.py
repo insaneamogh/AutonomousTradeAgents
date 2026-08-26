@@ -143,6 +143,14 @@ class AgentDecision(Base):
     # 0010). Non-empty → degraded run; reflection/calibration exclude it.
     degraded_nodes: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
 
+    # The full deterministic reasoning surface (migration 0012): the
+    # strategy-fit components, the sizing arithmetic, the risk rules that
+    # PASSED, the scan trigger, and a feature snapshot. Separate from
+    # ``proposal`` because that column is parsed back into a wire DTO —
+    # see the migration for why this used to be silently dropped on
+    # exactly the approved decisions a user wants explained.
+    reasoning: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
 
 # ─────────────────────────────────────────────────────────────────────
 # Phase 2 Reflection — per-strategy priors (migration 0003)
