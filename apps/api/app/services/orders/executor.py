@@ -198,25 +198,29 @@ async def _execute_via_broker(
             else proposal.qty
         )
 
-        # 2. Bracket legs: agent-managed BUYs carry the user-approved exit
+        # 2. Bracket legs: agent-managed entries carry the user-approved exit
         # plan to the broker (OCO stop + target survive our downtime). GTC
         # so the children outlive the entry day — this is a swing product.
+        # A SELL-to-open (short) needs and gets a bracket exactly like a
+        # BUY-to-open (long) — the inverted geometry (stop above entry) is
+        # already correct by the time it reaches here (engine.sizing.atr).
         use_bracket = (
             exit_mode == "agent"
-            and proposal.side == "BUY"
             and proposal.stop_loss is not None
             and proposal.target_price is not None
         )
-        if exit_mode == "agent" and proposal.side == "BUY" and not use_bracket:
+        if exit_mode == "agent" and not use_bracket:
             if not conn.is_paper:
                 # Real money: REFUSE rather than silently demote. Without
                 # broker-side legs the position manager's time-stop is the
                 # only exit, and it dies with our process — the approval
-                # card promised a stop the broker would honor.
+                # card promised a stop the broker would honor. This applies
+                # to a short exactly as much as a long: an unprotected live
+                # short has UNBOUNDED downside with nothing watching it.
                 logger.warning(
-                    "executor: live agent-mode BUY %s BLOCKED — no "
+                    "executor: live agent-mode %s %s BLOCKED — no "
                     "stop_loss/target_price to bracket with.",
-                    proposal.symbol,
+                    proposal.side, proposal.symbol,
                 )
                 return ExecuteResponse(
                     order=None,
@@ -232,10 +236,10 @@ async def _execute_via_broker(
                 )
             # Paper: warn only, so demos on an incomplete proposal still run.
             logger.warning(
-                "executor[paper]: agent-mode BUY %s placed WITHOUT a bracket "
+                "executor[paper]: agent-mode %s %s placed WITHOUT a bracket "
                 "(missing stop_loss/target_price) — broker-side protection "
                 "absent; relying on the time-stop only.",
-                proposal.symbol,
+                proposal.side, proposal.symbol,
             )
 
         # 3. Claim the proposal BEFORE touching the broker. Two concurrent
@@ -733,6 +737,13 @@ def _re_run_risk(
         confidence=confidence,
         closes_intraday_position=inputs.closes_intraday_position,
         is_intraday=inputs.is_intraday,
+        # Short-side inputs. Without these, shortable_check/short_requires_stop
+        # veto EVERY short unconditionally at this last-line-of-defense
+        # check (both read None as "unknown" and fail closed) regardless of
+        # whether ALLOW_SHORTS is on and the council already cleared it.
+        stop_price=proposal.stop_loss,
+        shortable=proposal.shortable,
+        easy_to_borrow=proposal.easy_to_borrow,
     )
     return evaluate(risk_proposal, context, caps, specialists=inputs.specialists)
 
