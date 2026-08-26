@@ -115,6 +115,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     use_pg = env_flag("USE_POSTGRES")
     enable_reconciler = env_flag("RECONCILER_ENABLED", default=use_pg)
 
+    # Give the fixture (Mock) or every existing (Postgres) user the env-key
+    # Alpaca PAPER connection when ALPACA_API_KEY / ALPACA_SECRET_KEY are
+    # configured. Deliberately UNCONDITIONAL here — not nested under the
+    # reconciler branch below — so it also runs under MockStore (the
+    # shipped default, USE_POSTGRES=0) and whenever RECONCILER_ENABLED=0 on
+    # Postgres. Those were the two runtimes where a restart used to leave
+    # every user silently disconnected despite the keys being present.
+    # Best-effort + idempotent; a no-op the instant the keys aren't set.
+    from app.services.broker.env_bootstrap import bootstrap_env_broker_connections
+
+    created, considered = await bootstrap_env_broker_connections(use_pg=use_pg)
+    if considered:
+        logger.info(
+            "env broker bootstrap: %d/%d users linked to Alpaca paper",
+            created, considered,
+        )
+
     if use_pg and enable_reconciler:
         # Import lazily so MockStore code paths never pull these in.
         from app.services.broker.broker_store import get_broker_store
@@ -145,30 +162,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 .on_conflict_do_nothing(index_elements=["id"])
             )
             await session.commit()
-
-        # Give every existing user the env-key Alpaca PAPER connection when
-        # ALPACA_API_KEY / ALPACA_SECRET_KEY are configured. Without a
-        # broker_connections row the keys bought market data but nothing
-        # could trade, and the UI read "No broker linked". Idempotent, paper
-        # only, and never auto-grants live consent.
-        from sqlalchemy import select as _select
-
-        from app.services.broker.env_bootstrap import (
-            ensure_env_broker_connection,
-            env_keys_present,
-        )
-
-        if env_keys_present():
-            async with session_factory() as session:
-                user_ids = (await session.execute(_select(User.id))).scalars().all()
-            created = 0
-            for uid in user_ids:
-                if await ensure_env_broker_connection(str(uid)):
-                    created += 1
-            logger.info(
-                "env broker bootstrap: %d/%d users linked to Alpaca paper",
-                created, len(user_ids),
-            )
 
         # Warm the ticker universe so the first typeahead keystroke isn't
         # a 6s wait. Best-effort: search degrades to empty, never 500s.

@@ -105,3 +105,66 @@ async def ensure_env_broker_connection(
 
     logger.info("Alpaca PAPER connection bootstrapped from environment API keys")
     return True
+
+
+async def bootstrap_env_broker_connections(
+    *,
+    use_pg: bool,
+    store: BrokerStore | None = None,
+) -> tuple[int, int]:
+    """Run ``ensure_env_broker_connection`` for every user this process can
+    reach, at boot, regardless of which store backs the deployment.
+
+    This is the call site logic — deliberately gated ONLY by
+    ``env_keys_present()`` (checked first, so a deployment with no Alpaca
+    keys does zero extra work) and never by ``USE_POSTGRES`` or
+    ``RECONCILER_ENABLED``. Those two used to gate the only call site that
+    existed, which meant the bootstrap silently never ran under MockStore
+    (``USE_POSTGRES=0``, the shipped default) or whenever an operator set
+    ``RECONCILER_ENABLED=0`` on Postgres — exactly the runtimes where a
+    restart leaving every user disconnected hurts most.
+
+    ``use_pg=True`` enumerates every ``User`` row via Postgres — the same
+    fan-out the old call site did. ``use_pg=False`` can't do that:
+    ``MockAuthStore`` has no "list all users" accessor (``_users`` is a
+    private dict), so instead this targets exactly ``FIXTURE_USER_ID`` —
+    the one identity guaranteed to survive a MockStore restart
+    (``MockAuthStore._seed_fixture()`` reseeds it on every construction),
+    and the same id ``DEV_AUTH_BYPASS`` resolves to and ``.env.example``'s
+    ``AGENT_CRON_USER_ID`` already targets by convention.
+
+    Returns ``(created_count, considered_count)``. Best-effort: a failure
+    for one user (surfaced as a log line by ``ensure_env_broker_connection``)
+    never stops the rest, and this never raises into the caller — boot must
+    not fail because of this.
+    """
+    if not env_keys_present():
+        return (0, 0)
+
+    if use_pg:
+        # Import lazily so MockStore code paths never pull Postgres in.
+        from sqlalchemy import select
+
+        from engine.db.models import User
+        from engine.db.session import async_session_factory
+
+        try:
+            session_factory = async_session_factory()
+            async with session_factory() as session:
+                rows = (await session.execute(select(User.id))).scalars().all()
+        except Exception:  # noqa: BLE001 — best-effort; a DB hiccup here must
+            # not fail the whole app boot over a feature that's allowed to
+            # catch up on the next restart.
+            logger.exception("env broker bootstrap: could not enumerate users — skipping")
+            return (0, 0)
+        user_ids = [str(uid) for uid in rows]
+    else:
+        from app.services.auth.auth_store import FIXTURE_USER_ID
+
+        user_ids = [FIXTURE_USER_ID]
+
+    created = 0
+    for uid in user_ids:
+        if await ensure_env_broker_connection(uid, store=store):
+            created += 1
+    return created, len(user_ids)

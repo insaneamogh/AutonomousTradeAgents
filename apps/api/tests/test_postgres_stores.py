@@ -276,5 +276,63 @@ async def test_postgres_confidence_store_clamps_delta() -> None:
     assert final.confidence == pytest.approx(MAX_CONFIDENCE)
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Full lifespan boot — env-key Alpaca bootstrap under real Postgres
+# ─────────────────────────────────────────────────────────────────────
+
+
+async def test_env_broker_bootstrap_fires_with_reconciler_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression guard for the second hidden gate this fix closes.
+
+    Before it, the env-key Alpaca bootstrap lived entirely inside
+    ``if use_pg and enable_reconciler:`` in ``app.main.lifespan`` — so an
+    operator running real Postgres with ``RECONCILER_ENABLED=0`` got the
+    exact same silent no-bootstrap as MockStore despite having a real
+    database and real Alpaca keys configured. It must now fire regardless,
+    gated only by the keys being present.
+    """
+    from app.services.auth.auth_store import reset_auth_store_for_tests
+    from app.services.auth.postgres_auth_store import PostgresAuthStore
+    from app.services.broker.broker_store import reset_broker_store_for_tests
+    from app.services.broker.postgres_broker_store import PostgresBrokerStore
+
+    auth = PostgresAuthStore()
+    user = await auth.upsert_user(f"env-bootstrap-{secrets.token_hex(4)}@example.com")
+
+    monkeypatch.setenv("USE_POSTGRES", "1")
+    monkeypatch.setenv("RECONCILER_ENABLED", "0")
+    monkeypatch.setenv("ALPACA_API_KEY", "pg-lifespan-test-key")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "pg-lifespan-test-secret")
+    monkeypatch.delenv("ALPACA_BASE_URL", raising=False)
+
+    # The auth/broker store singletons pick Mock vs. Postgres once, on
+    # first use, from USE_POSTGRES — reset so they re-resolve against the
+    # env just set, instead of reusing whatever the rest of this pytest
+    # session already cached (almost certainly MockStore).
+    reset_auth_store_for_tests()
+    reset_broker_store_for_tests()
+    try:
+        from fastapi.testclient import TestClient
+
+        from app.main import app
+
+        # `with` form: forces the real startup/shutdown lifespan to run,
+        # unlike a bare TestClient(app).
+        with TestClient(app):
+            pass
+    finally:
+        reset_auth_store_for_tests()
+        reset_broker_store_for_tests()
+
+    store = PostgresBrokerStore()
+    rows = await store.list_connections(user.id)
+    alpaca_rows = [r for r in rows if r.broker == "alpaca" and r.status == "active"]
+    assert len(alpaca_rows) == 1
+    assert alpaca_rows[0].is_paper is True
+    assert alpaca_rows[0].live_trading_consent is False
+
+
 # Keep imports alive for linters even when Postgres isn't running.
 _ = (uuid, timedelta)
