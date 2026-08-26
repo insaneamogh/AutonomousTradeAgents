@@ -194,6 +194,7 @@ function AuthRouteGuard({ children }: { children: React.ReactNode }) {
  * Listens for deep links the app supports:
  *   - ``autotrader://auth/verify?email=...&token=...``   magic-link login
  *   - ``autotrader://broker/callback?code=...&state=...`` Alpaca OAuth callback
+ *   - ``autotrader://auth/google/callback?code=...``      Google sign-in callback
  *
  * Auth/verify pushes the verify screen with params; the screen auto-submits.
  *
@@ -202,6 +203,19 @@ function AuthRouteGuard({ children }: { children: React.ReactNode }) {
  * fires. We POST to the API + invalidate the broker-connections query so
  * the Settings tab refreshes when the user returns. If the POST fails we
  * route to Settings to show the error.
+ *
+ * Auth/google/callback is a SAFETY NET, not the primary completion path.
+ * The happy path resolves entirely in-process: ``useGoogleSignIn``'s
+ * ``promptAsync()`` awaits the redirect itself and never needs this
+ * handler at all. Unlike broker/callback (where Alpaca's code_verifier is
+ * stashed server-side, keyed by ``state``, so any handler can complete it),
+ * Google's client-side PKCE exchange needs the code_verifier that lives
+ * only in that hook's in-memory ``AuthRequest`` — this top-level handler
+ * has no access to it and can't safely reconstruct it. So if Android
+ * backgrounds the app mid-redirect and the callback lands here instead of
+ * resolving ``promptAsync()`` directly, the in-process attempt is a dead
+ * end either way — this just routes back to login so the user isn't
+ * stranded, rather than pretend to finish an exchange it can't.
  */
 function DeepLinkHandler() {
   const router = useRouter();
@@ -233,6 +247,13 @@ function DeepLinkHandler() {
         // (tabs)/settings.tsx exposes the route at /settings — group
         // segments don't appear in the URL.
         router.push('/settings');
+        return;
+      }
+      if (parsed.path === 'auth/google/callback') {
+        // See the docstring above: we deliberately do NOT attempt the PKCE
+        // exchange here (no access to the code_verifier). Just make sure
+        // the user lands somewhere sane instead of stuck on a blank tab.
+        router.replace('/auth/login');
         return;
       }
     }

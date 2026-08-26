@@ -49,7 +49,7 @@ function mockFetchResponse(status: number, body: unknown): void {
     status,
     // eslint-disable-next-line @typescript-eslint/require-await
     text: async () => JSON.stringify(body),
-  } as unknown as Response);
+  });
 }
 
 const ISSUED = {
@@ -63,7 +63,7 @@ const ISSUED = {
 
 beforeEach(() => {
   jest.resetAllMocks();
-  global.fetch = jest.fn() as unknown as typeof fetch;
+  global.fetch = jest.fn();
   useAuthStore.setState({ status: 'idle', user: null, accessToken: null });
   mockLoadPersistedUser.mockResolvedValue(null);
   mockSaveRefreshToken.mockResolvedValue(undefined);

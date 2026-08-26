@@ -4,6 +4,9 @@
 // "Continue with dev token" CTA that deep-links the user straight to the
 // verify screen with the token prefilled. In prod this branch never fires
 // because the API drops ``devToken`` from the response.
+//
+// "Continue with Google" is a second, independent login method below the
+// magic-link card — it doesn't replace or gate on the email flow above.
 
 import { useState } from 'react';
 import { KeyboardAvoidingView, Platform, Text, TextInput, View } from 'react-native';
@@ -12,6 +15,8 @@ import { router } from 'expo-router';
 
 import { Button, Card, cn } from '@app/ui';
 
+import { GoogleSignInButton } from '@/components/GoogleSignInButton';
+import { useGoogleSignIn } from '@/hooks/useGoogleSignIn';
 import { ApiError, request } from '@/lib/api';
 
 interface RequestLoginResponse {
@@ -24,6 +29,25 @@ export default function LoginScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [challenge, setChallenge] = useState<RequestLoginResponse | null>(null);
+
+  const { signInAsync: googleSignInAsync } = useGoogleSignIn();
+  const [googleSubmitting, setGoogleSubmitting] = useState(false);
+  const [googleError, setGoogleError] = useState<string | null>(null);
+
+  async function onGooglePress() {
+    setGoogleError(null);
+    setGoogleSubmitting(true);
+    try {
+      await googleSignInAsync();
+      // On success, signInAsync() has already called authStore.signIn();
+      // the root layout's AuthRouteGuard reacts to status='authenticated'
+      // and redirects out of /auth on its own — no explicit push needed.
+    } catch (err) {
+      setGoogleError(err instanceof Error ? err.message : 'Google sign-in failed.');
+    } finally {
+      setGoogleSubmitting(false);
+    }
+  }
 
   async function onSubmit() {
     setError(null);
@@ -133,6 +157,27 @@ export default function LoginScreen() {
               </Text>
             ) : null}
           </Card>
+
+          <View className="flex-row items-center gap-3">
+            <View className="h-px flex-1 bg-border-strong dark:bg-border-strong-dark" />
+            <Text className="text-[12px] font-medium uppercase tracking-[1.2px] text-text-tertiary dark:text-text-tertiary-dark">
+              or
+            </Text>
+            <View className="h-px flex-1 bg-border-strong dark:bg-border-strong-dark" />
+          </View>
+
+          <View className="gap-2">
+            <GoogleSignInButton
+              onPress={onGooglePress}
+              loading={googleSubmitting}
+              testID="login-google"
+            />
+            {googleError ? (
+              <Text className="text-[13px] leading-[19px] text-danger dark:text-danger-dark">
+                {googleError}
+              </Text>
+            ) : null}
+          </View>
 
           {challenge ? (
             <Card variant="inset" className="gap-3">
