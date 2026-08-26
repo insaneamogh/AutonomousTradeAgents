@@ -44,6 +44,26 @@ interface IssuedTokensResponse {
   refreshExpiresInSeconds: number;
 }
 
+/**
+ * Refresh-failure codes that mean the stored credential itself is dead —
+ * see ``apps/api/app/services/auth/auth.py``'s ``REFRESH_CODE_*`` constants.
+ * Only these justify wiping the persisted refresh token. Any OTHER 401
+ * (a bare `session_not_found`, an unrecognized future code, or no `code`
+ * at all — e.g. an older API build) means "the backend doesn't currently
+ * recognize this session", not "this credential can never work again": a
+ * later successful backend restore (e.g. once Postgres persistence lands)
+ * should still be able to complete without forcing a brand-new login.
+ */
+const CREDENTIAL_DEAD_CODES = new Set(['session_revoked', 'token_invalid', 'superseded']);
+
+/** True only for a 401 whose body carries one of the CREDENTIAL_DEAD_CODES. */
+function isCredentialDead(err: unknown): boolean {
+  if (!(err instanceof ApiError) || err.status !== 401) return false;
+  const body = err.body as { code?: unknown } | null | undefined;
+  const code = typeof body?.code === 'string' ? body.code : null;
+  return code !== null && CREDENTIAL_DEAD_CODES.has(code);
+}
+
 interface AuthState {
   status: AuthStatus;
   user: AuthUser | null;
@@ -96,8 +116,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       });
       await get().signIn(issued);
     } catch (err) {
-      // Refresh failed → session is dead. Wipe + drop to login.
-      if (err instanceof ApiError && err.status === 401) {
+      // Only wipe storage when the backend says THIS credential is dead
+      // (revoked / invalid / superseded). A bare "session not found" (or
+      // any other failure) just means we can't restore right now — keep
+      // the refresh token so a later successful restore doesn't force a
+      // brand-new login.
+      if (isCredentialDead(err)) {
         await clearAll();
       }
       set({ status: 'unauthenticated', user: null, accessToken: null });
@@ -128,9 +152,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       });
       await get().signIn(issued);
       return issued.accessToken;
-    } catch {
-      // Any failure here = session gone. Drop to login.
-      await clearAll();
+    } catch (err) {
+      // Same distinction as restore(): only wipe storage when the
+      // credential itself is confirmed dead, not on every failure — this
+      // path is also used by the API interceptor's silent-refresh-on-401,
+      // so it used to be even more aggressive than restore()'s about
+      // wiping on ANY thrown error.
+      if (isCredentialDead(err)) {
+        await clearAll();
+      }
       set({ status: 'unauthenticated', user: null, accessToken: null });
       return null;
     }
