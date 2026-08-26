@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import HTMLResponse
@@ -56,16 +57,42 @@ from app.services.broker.broker_store import (
 )
 from app.services.broker.crypto import (
     CryptoUnavailableError,
+    decrypt_from_storage,
     encrypt_for_storage,
     is_dev_key_in_use,
 )
 from app.services.broker.crypto import (
     is_available as crypto_available,
 )
+from app.services.broker.env_bootstrap import ALPACA_ENV_SENTINEL
 
 logger = logging.getLogger("api.router.broker")
 
 router = APIRouter(prefix="/broker", tags=["broker"])
+
+
+def _connection_source(rec: BrokerConnectionRecord) -> Literal["environment", "oauth"]:
+    """Best-effort, display-only: did ``ensure_env_broker_connection`` create
+    this row from the process environment's Alpaca keys, or did the user
+    complete OAuth themselves?
+
+    Not persisted — recomputed here on every response by decrypting the
+    stored token and comparing it against the env-bootstrap sentinel, the
+    same check ``broker_use._build_alpaca`` makes at call time. A handful
+    of rows per user at most, so decrypting each is not a hot-path concern.
+
+    Anything that isn't a live sentinel match — a non-Alpaca broker, a
+    revoked row (``revoke_connection`` nulls the ciphertext to ``""``), a
+    decrypt failure — defaults to "oauth", the conservative reading: this
+    field only ever claims "environment" on positive evidence.
+    """
+    if rec.broker != "alpaca" or not rec.encrypted_access_token:
+        return "oauth"
+    try:
+        token = decrypt_from_storage(rec.encrypted_access_token)
+    except Exception:  # noqa: BLE001 — display field must never break /connections
+        return "oauth"
+    return "environment" if token == ALPACA_ENV_SENTINEL else "oauth"
 
 
 def _to_response(rec: BrokerConnectionRecord) -> BrokerConnectionResponse:
@@ -76,6 +103,7 @@ def _to_response(rec: BrokerConnectionRecord) -> BrokerConnectionResponse:
         account_number=rec.account_number,
         status=rec.status,
         live_trading_consent=rec.live_trading_consent,
+        connection_source=_connection_source(rec),
         created_at=rec.created_at,
         last_used_at=rec.last_used_at,
     )

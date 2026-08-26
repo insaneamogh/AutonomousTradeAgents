@@ -6,6 +6,7 @@ camelCase on the wire; snake_case in Python via ``alias_generator``.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -65,6 +66,15 @@ class BrokerConnectionResponse(_Base):
     live_trading_consent: bool = False
     """Per-connection real-money opt-in. Live orders also require the global
     LIVE_TRADING_ENABLED env."""
+    connection_source: Literal["environment", "oauth"] = "oauth"
+    """Not persisted — recomputed on every response (see
+    ``routers.broker._connection_source``) by decrypting the stored token
+    and comparing it against ``env_bootstrap.ALPACA_ENV_SENTINEL``.
+    "environment" means ``ensure_env_broker_connection`` created this row
+    from the API process's own ``ALPACA_API_KEY``/``ALPACA_SECRET_KEY``
+    rather than a per-user OAuth grant — the UI uses this to warn that
+    revoking it will relink automatically on the next boot while the server
+    still has those keys configured."""
     created_at: datetime
     last_used_at: datetime | None = None
 

@@ -17,6 +17,15 @@ export interface BrokerConnection {
   isPaper: boolean;
   accountNumber: string | null;
   status: 'active' | 'revoked' | 'expired';
+  /**
+   * Not persisted server-side — recomputed on every response (see
+   * `_connection_source` in `apps/api/app/routers/broker.py`). "environment"
+   * means the API auto-created this connection from its own Alpaca API
+   * keys rather than the user completing OAuth; revoking one of these will
+   * relink automatically on the next server boot while those keys are
+   * still configured.
+   */
+  connectionSource: 'environment' | 'oauth';
   createdAt: string;
   lastUsedAt: string | null;
 }

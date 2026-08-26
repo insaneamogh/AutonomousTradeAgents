@@ -11,6 +11,7 @@ runs.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import timedelta
 from typing import Iterator
@@ -358,3 +359,52 @@ def test_unused_imports_keep_alive_for_pyflakes() -> None:
     """
     _ = mint_access
     _ = timedelta
+
+
+# ─────────────────────────────────────────────────────────────────────
+# connectionSource — display-only field distinguishing env-bootstrapped
+# connections from real OAuth ones (see app/services/broker/env_bootstrap.py)
+# ─────────────────────────────────────────────────────────────────────
+
+
+@pytestmark_crypto
+def test_connections_response_flags_environment_vs_oauth_source(
+    client: TestClient, mocked_token_endpoint: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.services.broker.env_bootstrap import ensure_env_broker_connection
+
+    # A real OAuth connection reports "oauth".
+    access = _login_and_get_access(client, "oauth-source-user@example.com")
+    started = client.post(
+        "/api/v1/broker/connect/alpaca/start",
+        headers=_bearer(access),
+        json={"isPaper": True},
+    ).json()
+    client.post(
+        "/api/v1/broker/connect/alpaca/callback",
+        headers=_bearer(access),
+        json={"code": "abc", "state": started["state"]},
+    )
+    listed = client.get("/api/v1/broker/connections", headers=_bearer(access)).json()
+    assert len(listed) == 1
+    assert listed[0]["connectionSource"] == "oauth"
+
+    # A second user, bootstrapped from process env keys, reports "environment".
+    email = "env-source-user@example.com"
+    challenge = client.post("/api/v1/auth/request-login", json={"email": email}).json()
+    issued = client.post(
+        "/api/v1/auth/verify",
+        json={"email": email, "token": challenge["devToken"]},
+    ).json()
+    other_access, other_user_id = issued["accessToken"], issued["userId"]
+
+    monkeypatch.setenv("ALPACA_API_KEY", "key")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "secret")
+    created = asyncio.run(ensure_env_broker_connection(other_user_id))
+    assert created is True
+
+    other_listed = client.get(
+        "/api/v1/broker/connections", headers=_bearer(other_access)
+    ).json()
+    assert len(other_listed) == 1
+    assert other_listed[0]["connectionSource"] == "environment"

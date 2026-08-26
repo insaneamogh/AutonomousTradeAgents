@@ -429,11 +429,14 @@ function brokerLabel(connection: BrokerConnection): string {
 
 function ConnectedBrokerCard({ connection }: { connection: BrokerConnection }) {
   const revoke = useRevokeBrokerConnection();
+  const isEnvLinked = connection.connectionSource === 'environment';
 
   const confirmDisconnect = () => {
     Alert.alert(
       `Disconnect ${brokerLabel(connection)}?`,
-      'The agent can no longer read positions or place orders for this account. You can reconnect anytime.',
+      isEnvLinked
+        ? 'The agent can no longer read positions or place orders for this account. Because it was linked from the server’s own Alpaca keys (not your own login), it will relink automatically the next time the server restarts while those keys stay configured.'
+        : 'The agent can no longer read positions or place orders for this account. You can reconnect anytime.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -449,9 +452,23 @@ function ConnectedBrokerCard({ connection }: { connection: BrokerConnection }) {
     <Card variant="default" className="gap-3">
       <View className="flex-row items-center justify-between">
         <View className="flex-1 gap-1">
-          <Text className="text-[15px] font-semibold text-text-primary dark:text-text-primary-dark">
-            {brokerLabel(connection)}
-          </Text>
+          <View className="flex-row flex-wrap items-center gap-2">
+            <Text className="text-[15px] font-semibold text-text-primary dark:text-text-primary-dark">
+              {brokerLabel(connection)}
+            </Text>
+            {isEnvLinked ? (
+              <View
+                className={cn(
+                  'rounded-full px-2 py-0.5',
+                  'border border-hairline dark:border-hairline-dark',
+                )}
+              >
+                <Text className="text-[10px] uppercase tracking-[1px] text-text-secondary dark:text-text-secondary-dark">
+                  Connected via server configuration
+                </Text>
+              </View>
+            ) : null}
+          </View>
           {connection.accountNumber ? (
             <Text
               className="text-[12px] text-text-tertiary dark:text-text-tertiary-dark"
@@ -471,6 +488,11 @@ function ConnectedBrokerCard({ connection }: { connection: BrokerConnection }) {
         accessibilityLabel={`Disconnect ${brokerLabel(connection)}`}
         testID={`disconnect-${connection.broker}`}
       />
+      {isEnvLinked ? (
+        <Text className="text-[12px] leading-[17px] text-text-tertiary dark:text-text-tertiary-dark">
+          Will relink automatically while the server has Alpaca keys configured.
+        </Text>
+      ) : null}
     </Card>
   );
 }

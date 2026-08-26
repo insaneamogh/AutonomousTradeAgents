@@ -159,6 +159,11 @@ export function SettingsScreen() {
                             {c.broker.toUpperCase()}
                           </Numeral>
                           <Pill>{c.isPaper ? 'PAPER' : 'LIVE'}</Pill>
+                          {c.connectionSource === 'environment' ? (
+                            <Pill title="Auto-linked from the server's own Alpaca API keys, not a personal OAuth grant.">
+                              Connected via server configuration
+                            </Pill>
+                          ) : null}
                         </Row>
                       </td>
                       <td className="pg-num">{c.accountNumber ?? '—'}</td>
@@ -167,14 +172,21 @@ export function SettingsScreen() {
                       </td>
                       <td className="pg-num-right pg-dim">{ago(c.lastUsedAt)}</td>
                       <td className="pg-num-right">
-                        <Button
-                          size="sm"
-                          onClick={() => revoke.mutate(c.id)}
-                          disabled={revoke.isPending}
-                          ariaLabel={`Revoke the ${c.broker} connection`}
-                        >
-                          Revoke
-                        </Button>
+                        <Stack gap={4} style={{ alignItems: 'flex-end' }}>
+                          <Button
+                            size="sm"
+                            onClick={() => revoke.mutate(c.id)}
+                            disabled={revoke.isPending}
+                            ariaLabel={`Revoke the ${c.broker} connection`}
+                          >
+                            Revoke
+                          </Button>
+                          {c.connectionSource === 'environment' ? (
+                            <span className="pg-caption" style={{ textAlign: 'right', maxWidth: 168 }}>
+                              Will relink automatically while the server has Alpaca keys configured.
+                            </span>
+                          ) : null}
+                        </Stack>
                       </td>
                     </tr>
                   ))}
