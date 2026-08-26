@@ -359,6 +359,226 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 ## Entries
 
+### 2026-08-26 — `d93f21dd`…`41df00c6` feat(watchlist): live Alpaca-backed symbol search on both add-to-watchlist screens
+
+Closes a real gap: `POST /api/v1/watchlist` already had live-Alpaca-backed
+search infrastructure (`GET /api/v1/symbols/search`, built earlier the same
+day in `103c27ca` but wired only into the ad-hoc "run the council on a
+ticker" launcher on desktop) — every actual watchlist-add entry point, on
+both platforms, was still a plain text field with only after-the-fact
+regex/tradability validation.
+
+- **New `apps/mobile/src/hooks/useTickerCombobox.ts`** — lifts the desktop
+  `CouncilLauncher`'s proven combobox state (query/open/activeIndex/hits)
+  into a headless, DOM-agnostic hook so both surfaces below share one state
+  machine instead of drifting apart.
+- **Desktop** (`apps/mobile/src/desktop/screens/Settings.tsx`): the
+  watchlist card's plain `<input>` (zero validation, zero typeahead, and —
+  found in passing — zero error display; a failed add used to fail
+  completely silently) now uses the same combobox pattern as
+  `CouncilLauncher`, confirmed byte-for-byte untouched by this change
+  (`git diff` against it is empty).
+- **Mobile (React Native)**: two new components, `SymbolResultsList`
+  (dumb, `.map()`-over-`Pressable` rows — not `FlatList`, since it renders
+  inside `watchlist.tsx`'s plain `ScrollView` and nesting a
+  `VirtualizedList` there trips RN's own warning) and `SymbolTypeahead`
+  (smart wrapper owning the combobox, exposing `onCommitSymbol` for either
+  a dropdown pick or the preserved type-exact-ticker fallback).
+  `keyboardShouldPersistTaps="handled"` added to the screen's `ScrollView`
+  — the RN-native equivalent of the desktop's mousedown-before-blur trick.
+- Both surfaces clear the attempted text only on a successful add, leaving
+  it in place next to the error otherwise.
+- **New tests, all previously absent**: `apps/api/tests/test_symbol_search.py`
+  (ranking, caching, `assert_tradable`'s reject/pass/fail-open cases, and a
+  first-ever router-level test for `POST /watchlist` itself), a new
+  `packages/broker/tests/test_alpaca.py` (`lookup_asset`/`list_tradable_assets`
+  field mapping, and — pinned separately — that `shortable`/`easy_to_borrow`
+  stay `None` rather than collapsing to `False` when the broker doesn't
+  report them), and a Jest render test for `SymbolResultsList` (deliberately
+  not the data-fetching wrapper, to keep this repo's hours-old Jest setup
+  modest). Both new Python test files had to locally suppress a pre-existing
+  `alpaca-py`/`websockets` version mismatch (`trading/stream.py` still
+  imports the deprecated `websockets.legacy`) that this repo's
+  `filterwarnings = ["error"]` would otherwise turn into a collection-time
+  crash — the first tests to actually trigger `broker.alpaca`'s import
+  without real keys configured.
+- Rate limiting on `GET /api/v1/symbols/search` deliberately deferred —
+  authenticated, cheap (in-memory scan), non-sensitive data.
+- Verified: `apps/api/tests` 209 → **237 passed / 7 skipped**;
+  `packages/broker/tests` 18 → **26 passed**; `apps/mobile`/`@app/ui`
+  typecheck clean; `apps/mobile` Jest 4 → **7 passed**. All independently
+  re-run on `main` after cherry-picking, not taken on the subagent's word.
+- **Demo prerequisite, not a code change**: `ALPACA_API_KEY`/`ALPACA_SECRET_KEY`
+  are blank by default in `.env.example` — without real values, every
+  typeahead (this one and the pre-existing `CouncilLauncher` one) silently
+  shows empty results.
+
+### 2026-08-26 — `5298df57`…`ec7d9adb` fix(orders,engine): short positions can actually open, hold, and close
+
+Closes the gap flagged the same day in `5c042151`: the short-side risk
+rules and inverted-bracket sizing were correctly built, but disconnected
+from real execution at three independent points — any one alone meant no
+short could ever complete a fill; one of the three was a live safety bug,
+not just a missing feature.
+
+- **Proposal lifecycle** (`9c29cee5`): the Drafter already emitted
+  `direction`/`opens_short` and the context asset block already carried
+  `shortable`/`easy_to_borrow`, but `runtime.py`'s `_to_proposal_dto` built
+  its camelCase dict by explicit field list and silently dropped both, and
+  `ApprovalProposalDto` had nowhere to receive them anyway. Added with safe
+  defaults; no Alembic migration needed (`AgentDecision.proposal` is a
+  schema-less JSONB column).
+- **Executor** (`7ff5f7e8`): `_re_run_risk` never populated `stop_price`/
+  `shortable`/`easy_to_borrow` on the execution-time `RiskProposal` —
+  `shortable_check`/`short_requires_stop` treat `None` as "unverified,
+  veto," so this was the literal reason **no short could complete a fill,
+  regardless of `ALLOW_SHORTS`**. Also: `_execute_via_broker`'s bracket
+  eligibility (and its paired live-mode unprotected-order refusal) required
+  `side == "BUY"`, so a live short would have gone out with no stop and no
+  refusal safety net.
+- **`order_sync.py` (`c52005bc`) — the most severe find, not in the
+  original brief**: `_apply_decision_lifecycle` keyed entry-vs-exit off a
+  hardcoded `side == "BUY"` literal. A short's own entry order IS a SELL,
+  so its opening fill fell into the *exit* branch and stamped `closed_at`
+  the instant it filled — on every reconciler tick, before the position
+  was ever visible as open. Fixed by comparing against the decision's own
+  recorded entry side instead of a literal, with the same fix shape applied
+  to `_maybe_record_pdt` (was blind to a short's entry order for PDT),
+  `_detect_external_closes` (`qty > 0` "still held" check excluded every
+  short), and `_last_snapshot_mark` (same `qty > 0` exclusion on the
+  fallback mark price).
+- **Paper simulator** (`489f3017`): `PaperPortfolio.fill` rewritten around
+  signed quantities (negative = short, matching Alpaca's own convention)
+  — the old SELL branch clamped to held qty (silently no-opping a
+  short-open), and the BUY branch never realized P&L on a cover. Verified
+  by hand against `equity() = cash + Σ(qty·mark)` across same-sign extend,
+  opposite-sign partial/full close, and cross-through-flat in both
+  directions.
+- **`position_manager.py`** (`b33428e2`): `_close_position` — used by
+  *both* the automated time-stop/signal closer and the user's manual
+  "Close now" — hardcoded a SELL to close any position. For a short, that
+  reads to the risk engine as *opening a new short*, not closing one, so
+  it was vetoed every time: **a short could not be closed through this app
+  at all, agent- or user-initiated**, worse than the originally-scoped bug.
+  Now derives the close side from the held position's sign; same fix
+  shape applied to the in-flight-close re-entrance guard (was blind to a
+  BUY-to-cover) and the close push-notification's hardcoded "SELL" verb.
+- **`drawdown_halt.py`** (`e2f1f8eb`): used to exempt *every* SELL
+  unconditionally (letting a new short open during an active halt) while
+  blocking *every* BUY (blocking a user from covering an existing short to
+  de-risk, contradicting the reason SELL-to-close is exempted at all). New
+  `covers_short_only`/`held_short_qty` predicates in `_short.py`, mirroring
+  the existing `opens_short`/`held_long_qty`, make the exemption symmetric:
+  a SELL exempt only when it doesn't open/extend a short; a BUY exempt only
+  when it doesn't cross past the held short into a new long.
+- **UI** (`99d55bf8`): `positions_service.py`'s P&L sign and live-mark
+  filter were long-only; `OpenPositionDto` gained a `direction` field.
+  Direction badges added per-platform — `DirectionPill` (mobile) vs. the
+  desktop's own `Pill` (never `DirectionPill` there — the two design
+  systems are never blended, per `DESIGN.md`). `vetoes.tsx`'s stale
+  `forbid_short` key fixed to `forbid_short_phase_0`, plus labels added for
+  the four short-specific veto rules, which had none.
+- **`ALLOW_SHORTS=0` documented** in `.env.example` (`ec7d9adb`) —
+  fail-closed default, per `engine.env.env_flag`.
+- **Known, accepted gap, not fixed here**: `sector_concentration.py`,
+  `single_name.py`, `correlation_cap.py`, `max_open_positions.py` all still
+  gate on `Side.BUY` only — a short-open is invisible to all four caps, and
+  (found while fixing `position_manager.py`) a cover-BUY that de-risks a
+  short can in principle be blocked by one of them exactly like a fresh
+  long would be. A single-position demo never trips this; a real portfolio
+  eventually could. `direction`/`opens_short` were not promoted onto
+  `BrokerInterface`/`OrderRequest`. `test_sizing.py` confirmed unchanged
+  (0 SELL references).
+- Verified: `apps/api/tests` 209 → **214 passed / 7 skipped**;
+  `test_risk.py`+`test_sizing.py`+`test_backtester_risk.py` 32 → **35
+  passed** (+3 new `drawdown_halt` cases; the other two files confirmed
+  byte-for-byte untouched); combined with `test_council_mock.py` (6
+  passed/1 skipped, unchanged) and `packages/broker/tests` (18 passed,
+  unchanged), the full run across all five is **59 passed / 1 skipped**;
+  `mypy` across `apps/api/app`, `packages/engine`,
+  `packages/broker`, `apps/agents`: 192 → **190 errors** (net improvement;
+  every remaining error traced to a pre-existing, untouched line); `ruff
+  --select F,I` clean. All independently re-run on `main` after
+  cherry-picking, including hand-verified arithmetic on same-sign extend,
+  opposite-sign close, and cross-through-flat cases in the paper broker's
+  signed-bookkeeping rewrite.
+- **Demo prerequisite, not a code change**: both the automated closer and
+  the manual "Close now" button hard-require `USE_POSTGRES=1` **and** a
+  real, connected Alpaca paper OAuth connection — a coherent open-and-close
+  demo needs `USE_POSTGRES=1` + a real Alpaca paper connection +
+  `TRADING_MODE=paper` + `ALLOW_SHORTS=1`, all set together.
+
+### 2026-08-26 — `72ccef8a`…`614fc42d` feat(agents,api,mobile): surface the deterministic scanner on the UI, close a dedup gap
+
+The scanner itself (`packages/engine/engine/scanner/` — 21 named
+deterministic trigger rules, zero LLM calls, added earlier the same day in
+`699ac789`) was correct and well-tested, but its findings were shown
+nowhere on the UI, and a scanner-triggered council run's cost-dedup
+guarantee was weaker than `engine.scanner.cooldown`'s own docstring
+promised.
+
+- **Dedup fix** (`72ccef8a`): the scheduler's trigger loop called
+  `daily_cron.main(force=True, ...)` to skip the market-calendar gate —
+  but `force` *also* bypassed the once-per-(user, symbol, day) Postgres
+  dedup check, meaning a triggered run after a process restart had zero
+  protection against double-spending LLM cost on a symbol already decided
+  that day. Added an orthogonal `skip_calendar_gate` kwarg to
+  `daily_cron.main()`; the scheduler now passes `force=False,
+  skip_calendar_gate=True` instead. `force`'s own contract (the CLI
+  operator's "run it anyway," bypassing both gates) is untouched —
+  `test_force_runs_even_when_already_decided` passes unmodified, confirmed
+  explicitly, not just by a full-suite green.
+  **Trade-off, accepted rather than further engineered**: since the
+  baseline sweep already covers the full watchlist once a day
+  unconditionally, the trigger loop now only adds real value in the window
+  *before* that daily sweep fires — a later trigger still shows correctly
+  on the new UI (below), but the council run itself becomes a no-op skip.
+  This is the correct, intended consequence of honoring the documented
+  contract uniformly, not a regression.
+- **New `GET /api/v1/scanner/status`** (`ef4231f1`): a dedicated endpoint
+  (not a `HealthResponse` extension — that schema is a lossy
+  one-line-per-component summary and can't carry a signal list), backed by
+  new scheduler observability fields (`last_scan_result`,
+  `last_council_run_symbols`, `trigger_loop_armed`,
+  `scanner_interval_minutes`, `scanner_max_council_runs`) that were mostly
+  already computed and just never read by anything.
+- **UI** (`614fc42d`): a new, deliberately *separate* "Scanner" card on
+  both the desktop `Dashboard.tsx` and the mobile tab index — not folded
+  into "Opportunity Radar" (which means pending council approvals, not
+  scanner flags; conflating the two risks a viewer thinking a flagged
+  symbol is already an actionable trade). Renders all 4 honest states
+  (scheduler off / armed-but-unavailable / clean / signals-present) via a
+  new shared `useScannerStatus` hook mirroring `useHealthFull`.
+- `.env.example` gained `COUNCIL_SCHEDULER_ENABLED`/`SCANNER_ENABLED`/
+  `SCANNER_INTERVAL_MINUTES`/`SCANNER_MAX_COUNCIL_RUNS` plus the 7
+  scanner-rule threshold vars from `scanner/select.py` — all previously
+  undocumented and off by default everywhere.
+- New tests: `apps/agents/tests/test_daily_cron.py` (+2, pinning the
+  dedup-fix regression and the calendar-bypass-is-independent case),
+  `apps/api/tests/test_council_scheduler.py` (new, 4 tests, including one
+  asserting the exact `force=False, skip_calendar_gate=True` kwargs reach
+  `cron_main` — the tripwire against ever regressing to the old call),
+  `apps/api/tests/test_scanner_route.py` (new, 3 tests).
+- **Operational note for future multi-agent sessions in this repo**: this
+  work and the short-position work above were built concurrently in
+  separate git worktrees, and *both* independently hit the same `git
+  stash`/`git stash pop` collision — `refs/stash` is shared across all
+  worktrees of one repo (they share a single `.git` dir), so two agents
+  stashing around the same time can pop each other's entry. Both recovered
+  with zero data loss (reading the dangling stash commit's tree directly
+  rather than trusting the ref), but avoid `git stash` inside a
+  worktree-isolated subagent when another may be running concurrently —
+  use a throwaway branch or a plain diff capture instead.
+- Verified: `packages/engine/tests/test_scanner_engine.py` +
+  `test_scanner_triggers.py` unchanged (62 passed); full `packages/engine/tests`
+  + `apps/agents/tests` 248 → **253 passed / 1 skipped**; full
+  `apps/api/tests` 209 → **221 passed / 7 skipped**; `mypy apps/api/app
+  apps/agents` 135 → **138 errors** (delta fully attributed — the 3 new
+  files check clean, remaining new lines are either this file's existing
+  100%-untyped-test-helper convention or line-shifts of pre-existing
+  errors); `ruff --select F,I` clean. All independently re-run on `main`
+  after cherry-picking.
+
 ### 2026-08-25 — `9d938eef` refactor(api): collapse the store-selector duplication into a shared helper
 
 Closes technical-debt items #3 and #5 above. Scope was six files, all
