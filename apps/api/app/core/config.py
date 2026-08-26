@@ -26,6 +26,20 @@ from engine.env import env_flag
 _PRODUCTION_ENVS: set[str] = {"prod", "production", "live"}
 
 
+def _csv_to_list(v: object, *, empty: list[str]) -> object:
+    """Split a comma-separated env string into a list; pass non-strings
+    through untouched (pydantic-settings may already hand us a list).
+    ``empty`` is the field-specific default for an unset/blank value —
+    ``["*"]`` for CORS (permissive local dev), ``[]`` for Google client ids
+    (unconfigured, not "allow everything").
+    """
+    if isinstance(v, str):
+        if not v.strip():
+            return list(empty)
+        return [s.strip() for s in v.split(",") if s.strip()]
+    return v
+
+
 class Settings(BaseSettings):
     """Runtime config. Reads from env + a local ``.env`` if present."""
 
@@ -55,15 +69,33 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Google commonly issues a SEPARATE OAuth client id per platform (iOS,
+    # Android, Web) for one logical app — the ID token's ``aud`` claim holds
+    # whichever one the client used, so verification must accept ANY of
+    # them. Empty (the default) means Google sign-in is unconfigured:
+    # POST /api/v1/auth/google returns 503 — magic-link login is unaffected
+    # either way, and this is deliberately NOT one of
+    # ``production_config_problems()``'s hard-fail checks (see auth.google
+    # router: magic-link alone must remain a valid production config).
+    google_oauth_client_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list,
+        description=(
+            "Comma-separated Google OAuth client ids (iOS/Android/Web) whose "
+            "ID tokens we accept. Empty = Google sign-in disabled (503)."
+        ),
+    )
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_csv(cls, v: object) -> object:
         """Accept ``CORS_ORIGINS`` as comma-separated string from env."""
-        if isinstance(v, str):
-            if not v.strip():
-                return ["*"]
-            return [s.strip() for s in v.split(",") if s.strip()]
-        return v
+        return _csv_to_list(v, empty=["*"])
+
+    @field_validator("google_oauth_client_ids", mode="before")
+    @classmethod
+    def _split_google_client_ids(cls, v: object) -> object:
+        """Accept ``GOOGLE_OAUTH_CLIENT_IDS`` as comma-separated string."""
+        return _csv_to_list(v, empty=[])
 
     @property
     def is_production(self) -> bool:

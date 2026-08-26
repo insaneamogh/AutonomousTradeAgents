@@ -2,9 +2,14 @@
 
 This is a tight, internal implementation of HS256 JWT using only the
 standard library (``hmac``, ``hashlib``, ``base64``, ``json``, ``secrets``).
-It exists because we can't pull ``python-jose`` until the user runs
-``uv sync`` (lockfile commits are hands-off). The shape mirrors the
-``python-jose`` API so swapping in later is one import + a config flag.
+``python-jose`` IS a real dependency now (Google sign-in's RS256/JWKS
+verification uses it — see ``app.services.auth.google_oauth``), but our own
+HS256 mint/verify path stays hand-rolled on purpose: HS256 needs none of
+what jose adds (asymmetric keys, JWKS fetch/cache), so there's no reason to
+touch a working, already-audited signing path just because a dependency
+became available. The shape mirrors the ``python-jose`` API, so making that
+swap later — if we ever want it — is one import + a config flag, not a
+rewrite.
 
 We rely on **stdlib crypto primitives only** — HMAC, SHA-256, base64,
 ``hmac.compare_digest`` for constant-time verification. The HS256 spec

@@ -19,6 +19,9 @@ dev = [
   "ruff>=0.7.0",
   "mypy>=1.13.0",
   "httpx2>=2.9.1",
+  # python-jose ships no inline type markers — google_oauth.py's RS256/JWKS
+  # verification imports it; without stubs mypy reports import-untyped.
+  "types-python-jose>=3.3.0",
 ]
 
 [tool.ruff]

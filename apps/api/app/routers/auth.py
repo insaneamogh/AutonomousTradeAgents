@@ -14,6 +14,10 @@ Phase 3 auth foundation. Flow:
     3. POST /auth/refresh        { refreshToken }
        → 200 { ... new pair ... }
        Rotates the refresh token. Old refresh is invalidated by hash mismatch.
+       A 401 failure carries a machine-readable ``code`` alongside ``detail``
+       (see ``app.services.auth.auth.RefreshError``) so the client can tell
+       a truly-dead credential apart from a session the backend merely
+       doesn't currently recognize.
 
     4. POST /auth/logout         { refreshToken? }
        → 200 { revoked: true }
@@ -23,6 +27,13 @@ Phase 3 auth foundation. Flow:
     5. GET  /auth/me
        → 200 { userId, email, authMethod }
        Identity probe — protected by ``require_real_auth`` (no bypass).
+
+    6. POST /auth/google         { idToken, deviceId?, deviceLabel? }
+       → 200 { userId, email, accessToken, refreshToken, ... }
+       "Continue with Google" — a second way to reach the exact same
+       session shape ``/auth/verify`` produces. Verifies the Google ID
+       token (``app.services.auth.google_oauth``) before ever touching
+       user/session state.
 """
 
 from __future__ import annotations
@@ -30,10 +41,12 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 
 from app.core.config import get_settings
 from app.middleware.auth import AuthedUser, require_real_auth
 from app.schemas.auth import (
+    GoogleLoginRequest,
     IssuedTokensResponse,
     LogoutRequest,
     LogoutResponse,
@@ -46,6 +59,10 @@ from app.schemas.auth import (
 from app.services.auth.auth import (
     AuthError,
     IssuedTokens,
+    RefreshError,
+)
+from app.services.auth.auth import (
+    login_with_google as auth_login_with_google,
 )
 from app.services.auth.auth import (
     refresh as auth_refresh,
@@ -193,7 +210,7 @@ async def refresh(
     body: RefreshRequest,
     request: Request,
     store: AuthStore = Depends(get_auth_store),
-) -> IssuedTokensResponse:
+) -> IssuedTokensResponse | JSONResponse:
     settings = get_settings()
 
     from app.services.auth.rate_limit import check_refresh_rate
@@ -210,6 +227,15 @@ async def refresh(
             refresh_token=body.refresh_token,
             store=store,
             secret=settings.jwt_secret,
+        )
+    except RefreshError as exc:
+        # Sibling ``code`` alongside ``detail`` (not nested inside it) so
+        # ``detail`` stays the plain string every other auth error already
+        # returns — the mobile authStore reads ``code`` to decide whether
+        # this credential is truly dead or just unrecognized right now.
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"detail": str(exc), "code": exc.code},
         )
     except AuthError as exc:
         raise HTTPException(
@@ -293,6 +319,84 @@ async def me(user: AuthedUser = Depends(require_real_auth)) -> MeResponse:
         email=user.email,
         auth_method=user.auth_method,
     )
+
+
+@router.post(
+    "/google",
+    response_model=IssuedTokensResponse,
+    response_model_by_alias=True,
+    status_code=status.HTTP_200_OK,
+)
+async def google_login(
+    body: GoogleLoginRequest,
+    request: Request,
+    store: AuthStore = Depends(get_auth_store),
+) -> IssuedTokensResponse:
+    """"Continue with Google" — verify the ID token, then issue the exact
+    same session shape ``/auth/verify`` does. Magic-link stays untouched
+    and remains a fully valid login path on its own.
+
+    Rate-limited: 30/hour/IP. Unlike ``/verify`` there's no caller-supplied
+    email to key on before the token verifies, so this is IP-only (see
+    ``check_google_rate``).
+    """
+    settings = get_settings()
+
+    from app.services.auth.rate_limit import check_google_rate
+
+    client_ip = request.client.host if request.client else None
+    if not check_google_rate(client_ip):
+        logger.warning("auth: rate limit hit for google login (ip window)")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many Google sign-in attempts — wait a bit and try again.",
+        )
+
+    if not settings.google_oauth_client_ids:
+        # Deliberately NOT part of production_config_problems()'s hard-fail
+        # boot check — magic-link alone must remain a valid production
+        # config. This surfaces as a per-request 503 instead.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Google sign-in is not configured on this server.",
+        )
+
+    # Imported as a module (not `from ... import verify_google_id_token`) so
+    # tests can monkeypatch `google_oauth.verify_google_id_token` the same
+    # way test_broker.py patches `alpaca_oauth.exchange_code_for_tokens` —
+    # this router calls it as a module attribute, resolved at call time.
+    from app.services.auth import google_oauth
+
+    try:
+        identity = await google_oauth.verify_google_id_token(
+            body.id_token,
+            audience=settings.google_oauth_client_ids,
+        )
+    except google_oauth.GoogleJWKSFetchError as exc:
+        # Not the caller's fault — we simply couldn't reach/parse Google's
+        # key endpoint. 503, not 401, so the client knows to retry.
+        logger.warning("auth: google JWKS fetch failed — %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not verify Google sign-in right now — try again shortly.",
+        ) from exc
+    except google_oauth.GoogleAuthError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+        ) from exc
+
+    issued = await auth_login_with_google(
+        email=identity.email,
+        store=store,
+        secret=settings.jwt_secret,
+        device_id=body.device_id,
+        device_label=body.device_label,
+    )
+    logger.info(
+        "auth: google sign-in for %s — session=%s", issued.user.email, issued.session.id
+    )
+    return _to_issued_response(issued)
 
 
 # Quiet unused-import lint on the convenience re-export.

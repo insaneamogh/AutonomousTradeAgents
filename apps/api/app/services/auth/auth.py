@@ -17,7 +17,16 @@ Three flows:
      Validates the refresh JWT, looks up the session row, checks
      ``revoked_at IS NULL``, ROTATES the refresh token (new opaque secret
      + hash + JWT) — the old refresh is invalidated by hash mismatch on
-     the next call.
+     the next call. Failures raise ``RefreshError`` with a machine-readable
+     ``code`` (see the ``REFRESH_CODE_*`` constants) so the client can tell
+     "this credential is dead" apart from "the backend doesn't currently
+     recognize this session".
+
+  4. ``login_with_google(email)``
+     A second entry point alongside ``verify_magic_link`` — by the time
+     it's called, the router has already verified the Google ID token
+     (``app.services.auth.google_oauth``). Upserts the user + mints the
+     same access/refresh pair as magic-link.
 
 PLAN.md §3 calls for refresh rotation per-device. Each session is one
 device; logout / "log out other devices" lands as ``revoke_session`` per
@@ -56,6 +65,32 @@ MAGIC_LINK_TTL: timedelta = timedelta(minutes=15)
 
 class AuthError(Exception):
     """User-visible auth failure. Routers translate to 4xx."""
+
+
+# Machine-readable codes for a failed ``refresh()`` — see ``RefreshError``.
+# The mobile client's session-refresh decision tree (authStore.ts) keys off
+# these exact strings to decide whether the stored refresh token is truly
+# dead (wipe SecureStore) or the backend merely doesn't currently recognize
+# it (keep it — a later successful restore shouldn't force a fresh login).
+REFRESH_CODE_SESSION_NOT_FOUND = "session_not_found"
+REFRESH_CODE_SESSION_REVOKED = "session_revoked"
+REFRESH_CODE_SESSION_EXPIRED = "session_expired"
+REFRESH_CODE_TOKEN_INVALID = "token_invalid"
+REFRESH_CODE_SUPERSEDED = "superseded"
+
+
+class RefreshError(AuthError):
+    """A ``refresh()`` failure, carrying a machine-readable ``code`` on top
+    of the human ``str(exc)`` message. The router threads ``code`` into the
+    401 response body so the client can distinguish "this exact credential
+    is dead" (revoked / invalid / superseded — safe to wipe storage) from
+    "the backend doesn't currently recognize this session" (not found —
+    NOT safe to conclude the credential can never work again).
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def _match_candidate(
@@ -194,6 +229,47 @@ async def verify_magic_link(
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Google sign-in
+# ─────────────────────────────────────────────────────────────────────
+
+
+async def login_with_google(
+    *,
+    email: str,
+    store: AuthStore,
+    secret: str,
+    device_id: str | None = None,
+    device_label: str | None = None,
+) -> IssuedTokens:
+    """Get-or-create the user for a verified Google identity, then mint the
+    same access + refresh pair ``verify_magic_link`` issues.
+
+    By the time this is called, the router has ALREADY verified the Google
+    ID token's signature, ``aud``/``iss``, and ``email_verified`` claim
+    (``app.services.auth.google_oauth.verify_google_id_token``) — this
+    function only does the "mint tokens for a known-good email" half,
+    reusing ``_issue_pair`` so a Google-issued session is indistinguishable
+    from a magic-link one everywhere downstream.
+
+    ``store.upsert_user`` only sets ``auth_method`` on first INSERT, so an
+    existing magic-link user signing in with Google under the same email
+    keeps ``auth_method == "magic_link"`` forever. That's an accepted,
+    cosmetic quirk (see ``auth_store.upsert_user``'s docstring) — not
+    something to work around here.
+    """
+    email = email.strip().lower()
+    user = await store.upsert_user(email, auth_method="google")
+
+    return await _issue_pair(
+        user=user,
+        store=store,
+        secret=secret,
+        device_id=device_id,
+        device_label=device_label,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Refresh rotation
 # ─────────────────────────────────────────────────────────────────────
 
@@ -215,18 +291,22 @@ async def refresh(
     try:
         claims: Claims = verify_refresh(secret=secret, token=refresh_token)
     except TokenError as exc:
-        raise AuthError(f"refresh token rejected: {exc}") from exc
+        raise RefreshError(
+            REFRESH_CODE_TOKEN_INVALID, f"refresh token rejected: {exc}"
+        ) from exc
 
     if not claims.sid:
-        raise AuthError("refresh token missing session id")
+        raise RefreshError(
+            REFRESH_CODE_TOKEN_INVALID, "refresh token missing session id"
+        )
 
     session = await store.get_session(claims.sid)
     if session is None:
-        raise AuthError("session not found")
+        raise RefreshError(REFRESH_CODE_SESSION_NOT_FOUND, "session not found")
     if session.revoked_at is not None:
-        raise AuthError("session revoked")
+        raise RefreshError(REFRESH_CODE_SESSION_REVOKED, "session revoked")
     if session.expires_at < datetime.now(timezone.utc):
-        raise AuthError("session expired")
+        raise RefreshError(REFRESH_CODE_SESSION_EXPIRED, "session expired")
     hash_ok = await asyncio.to_thread(
         verify_token_hash, refresh_token, stored=session.refresh_token_hash
     )
@@ -238,11 +318,16 @@ async def refresh(
             session.id,
         )
         await store.revoke_session(session.id)
-        raise AuthError("refresh token superseded — session revoked")
+        raise RefreshError(
+            REFRESH_CODE_SUPERSEDED, "refresh token superseded — session revoked"
+        )
 
     user = await store.get_user_by_id(session.user_id)
     if user is None:
-        raise AuthError("session user missing")
+        # The session row resolved but its owning user didn't — a broken
+        # data state, not a "backend forgot" state. Treat like a dead
+        # credential rather than something a later restore could fix.
+        raise RefreshError(REFRESH_CODE_TOKEN_INVALID, "session user missing")
 
     # Rotate: new refresh token, new hash, COMPARE-AND-SWAP on the hash we
     # just validated. If the swap misses, a concurrent refresh already
@@ -258,7 +343,9 @@ async def refresh(
             "concurrent refresh detected on session %s — revoking", session.id
         )
         await store.revoke_session(session.id)
-        raise AuthError("refresh token superseded — session revoked")
+        raise RefreshError(
+            REFRESH_CODE_SUPERSEDED, "refresh token superseded — session revoked"
+        )
     new_access = mint_access(secret=secret, user_id=user.id, session_id=session.id)
 
     return IssuedTokens(

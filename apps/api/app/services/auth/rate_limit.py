@@ -22,6 +22,11 @@ WINDOW_SECONDS = 3600
 # is generous headroom while still capping a stolen-token flood.
 REFRESH_IP_LIMIT = 60
 
+# Google sign-in: unlike magic-link, there's no caller-supplied email to key
+# on BEFORE the token verifies (the email only comes out the other end of
+# verification) — IP-only, mirroring ``check_refresh_rate``'s shape.
+GOOGLE_IP_LIMIT = 30
+
 # Verify: each attempt costs a scrypt(n=2**14) per outstanding magic-link for
 # the email, so an unthrottled endpoint is a CPU amplifier. A real user needs
 # one verify per login (two or three with fat fingers); 10/hour/email and
@@ -90,6 +95,14 @@ def check_refresh_rate(ip: str | None) -> bool:
     """True if this refresh is allowed (per-IP flood cap)."""
     try:
         return _limiter.allow(f"refresh-ip:{ip or 'unknown'}", limit=REFRESH_IP_LIMIT)
+    except Exception:  # noqa: BLE001 — never lock users out on a limiter bug
+        return True
+
+
+def check_google_rate(ip: str | None) -> bool:
+    """True if this Google sign-in attempt is allowed (per-IP flood cap)."""
+    try:
+        return _limiter.allow(f"google-ip:{ip or 'unknown'}", limit=GOOGLE_IP_LIMIT)
     except Exception:  # noqa: BLE001 — never lock users out on a limiter bug
         return True
 

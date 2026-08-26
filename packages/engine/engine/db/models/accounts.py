@@ -43,7 +43,7 @@ class User(Base):
     display_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # Phase 3 (migration 0004): which auth path the user came in through.
-    # 'magic_link' | 'password' | 'oauth_alpaca' | 'dev_bypass'.
+    # 'magic_link' | 'password' | 'oauth_alpaca' | 'dev_bypass' | 'google'.
     auth_method: Mapped[str] = mapped_column(
         String(20), nullable=False, default="magic_link", server_default="magic_link"
     )
