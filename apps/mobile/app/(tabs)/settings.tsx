@@ -294,6 +294,14 @@ function BrokersCard() {
     setConnectError(null);
     try {
       const started = await startAlpacaOAuth(isPaper);
+      // See the desktop Settings screen for why this checks
+      // oauthNotConfigured specifically, not just devWarning being set.
+      if (started.oauthNotConfigured) {
+        setConnectError(
+          started.devWarning ?? 'Alpaca OAuth is not configured on this server.',
+        );
+        return;
+      }
       setPendingState(started.state);
       const canOpen = await Linking.canOpenURL(started.authorizeUrl);
       if (!canOpen) {

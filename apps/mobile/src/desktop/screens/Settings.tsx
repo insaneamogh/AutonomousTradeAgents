@@ -74,6 +74,17 @@ export function SettingsScreen() {
     setConnectError(null);
     try {
       const res = await startAlpacaOAuth(true, 'web');
+      // oauthNotConfigured means the upcoming redirect is guaranteed to
+      // fail on Alpaca's OWN page with a generic "unknown client" error
+      // that gives no hint the problem is server-side config — show
+      // devWarning here instead of navigating into that dead end. (Not
+      // gated on devWarning being merely truthy — that field can also
+      // fire for the unrelated dev-encryption-key case, which doesn't
+      // block a working OAuth redirect.)
+      if (res.oauthNotConfigured) {
+        setConnectError(res.devWarning ?? 'Alpaca OAuth is not configured on this server.');
+        return;
+      }
       window.location.assign(res.authorizeUrl);
     } catch {
       setConnectError('Could not start the Alpaca connection.');

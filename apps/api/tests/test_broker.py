@@ -163,6 +163,54 @@ def test_start_returns_pkce_authorize_url(client: TestClient) -> None:
     assert body["state"]
     # Dev-key warning surfaces because we haven't overridden the env.
     assert body["devWarning"] and "dev fallback" in body["devWarning"]
+    assert "OAuth is not configured" in body["devWarning"]
+
+
+def test_start_warns_when_oauth_client_not_configured(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Isolates the NEW half of the warning from the pre-existing
+    encryption-key one: a real-looking encryption key is set so only the
+    OAuth-client-id/secret gap is left to surface.
+
+    This is what stops a deployment with unconfigured
+    ALPACA_OAUTH_CLIENT_ID/_SECRET from silently redirecting a real user
+    to Alpaca's own authorize page with the dev placeholder — which
+    Alpaca rejects with a generic "unknown client" error that gives no
+    hint the problem is server-side config (this is exactly what a live
+    deployment hit). The frontend is expected to check this field and
+    show it instead of navigating.
+    """
+    monkeypatch.setenv("BROKER_TOKEN_ENCRYPTION_KEY", "a-real-fernet-key")
+    access = _login_and_get_access(client)
+    r = client.post(
+        "/api/v1/broker/connect/alpaca/start",
+        headers=_bearer(access),
+        json={"isPaper": True},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["devWarning"] == (
+        "Alpaca OAuth is not configured on this server (ALPACA_OAUTH_CLIENT_ID/"
+        "_SECRET) — continuing will fail on Alpaca's own page. If you're using "
+        "the shared-paper-account model (ALPACA_API_KEY/ALPACA_SECRET_KEY "
+        "instead), you don't need to Connect at all — it's linked automatically."
+    )
+
+
+def test_start_has_no_oauth_warning_when_client_configured(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BROKER_TOKEN_ENCRYPTION_KEY", "a-real-fernet-key")
+    monkeypatch.setenv("ALPACA_OAUTH_CLIENT_ID", "real-client-id")
+    monkeypatch.setenv("ALPACA_OAUTH_CLIENT_SECRET", "real-client-secret")
+    access = _login_and_get_access(client)
+    r = client.post(
+        "/api/v1/broker/connect/alpaca/start",
+        headers=_bearer(access),
+        json={"isPaper": True},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["devWarning"] is None
 
 
 @pytestmark_crypto

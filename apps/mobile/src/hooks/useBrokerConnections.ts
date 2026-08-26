@@ -63,7 +63,14 @@ export interface StartOAuthResponse {
   authorizeUrl: string;
   state: string;
   expiresAt: string;
+  /** Human-readable, for display only — may combine multiple unrelated
+   * warnings. Don't string-match it; check `oauthNotConfigured` instead. */
   devWarning: string | null;
+  /** True when the server has no real Alpaca OAuth app configured — the
+   * dev placeholder client id in `authorizeUrl` is guaranteed to be
+   * rejected by Alpaca's own page with a generic "unknown client" error.
+   * Callers should show `devWarning` instead of navigating. */
+  oauthNotConfigured: boolean;
 }
 
 /**

@@ -126,6 +126,8 @@ def _require_crypto() -> None:
         )
 
 
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Start OAuth
 # ─────────────────────────────────────────────────────────────────────
@@ -168,16 +170,32 @@ async def start_alpaca_oauth(
         )
     )
 
+    # Two independent, unrelated things this warns about — join whichever
+    # apply. A dev-fallback client id is the more user-visible one: it
+    # guarantees the upcoming redirect fails on ALPACA's own page with a
+    # generic "unknown client" error that gives no hint the problem is
+    # server-side config, so callers should check for this and avoid
+    # navigating at all rather than let the user hit that dead end.
+    warnings = []
+    if not alpaca_oauth.is_configured():
+        warnings.append(
+            "Alpaca OAuth is not configured on this server (ALPACA_OAUTH_CLIENT_ID/"
+            "_SECRET) — continuing will fail on Alpaca's own page. If you're using "
+            "the shared-paper-account model (ALPACA_API_KEY/ALPACA_SECRET_KEY "
+            "instead), you don't need to Connect at all — it's linked automatically."
+        )
+    if is_dev_key_in_use():
+        warnings.append(
+            "BROKER_TOKEN_ENCRYPTION_KEY is the dev fallback. Set a real key via Doppler before prod."
+        )
+
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
     return StartOAuthResponse(
         authorize_url=built.authorize_url,
         state=built.state,
         expires_at=expires_at,
-        dev_warning=(
-            "BROKER_TOKEN_ENCRYPTION_KEY is the dev fallback. Set a real key via Doppler before prod."
-            if is_dev_key_in_use()
-            else None
-        ),
+        dev_warning=" ".join(warnings) or None,
+        oauth_not_configured=not alpaca_oauth.is_configured(),
     )
 
 

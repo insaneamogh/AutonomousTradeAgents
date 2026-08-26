@@ -56,7 +56,24 @@ class StartOAuthResponse(_Base):
     expires_at: datetime
     dev_warning: str | None = Field(
         default=None,
-        description="Set when the API is using the dev fallback encryption key.",
+        description=(
+            "Human-readable, for display. May combine multiple independent "
+            "warnings (dev encryption key, unconfigured OAuth client) — not "
+            "meant to be parsed. See oauth_not_configured for the specific, "
+            "machine-readable signal that following authorize_url is "
+            "guaranteed to fail."
+        ),
+    )
+    oauth_not_configured: bool = Field(
+        default=False,
+        description=(
+            "True when ALPACA_OAUTH_CLIENT_ID/_SECRET are unset — the dev "
+            "placeholder client id would go out in authorize_url, which "
+            "Alpaca's own OAuth app always rejects. Callers should show "
+            "dev_warning instead of navigating to authorize_url when this "
+            "is true; string-matching dev_warning's prose is NOT a stable "
+            "contract, this field is."
+        ),
     )
 
 

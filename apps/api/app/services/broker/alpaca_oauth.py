@@ -47,6 +47,16 @@ logger = logging.getLogger("api.alpaca_oauth")
 DEFAULT_AUTHORIZE_URL = "https://app.alpaca.markets/oauth/authorize"
 DEFAULT_TOKEN_URL = "https://api.alpaca.markets/oauth/token"
 
+# Deliberately unusable placeholders — real values must be set via env.
+# ``is_configured()``/``require_configured()`` exist specifically so a
+# missing config fails cleanly on OUR side (503, before ever redirecting
+# to Alpaca) instead of these placeholders silently reaching Alpaca's own
+# authorize page, which rejects them with a generic, confusing
+# "Client authentication failed due to unknown client" error that gives
+# the user no indication the problem is server-side configuration.
+_DEV_CLIENT_ID = "DEV-ALPACA-CLIENT-ID"
+_DEV_CLIENT_SECRET = "DEV-ALPACA-CLIENT-SECRET"
+
 
 def _env(name: str, default: str) -> str:
     return os.environ.get(name, default).strip() or default
@@ -62,13 +72,32 @@ def token_endpoint() -> str:
 
 def client_id() -> str:
     """OAuth client id. The user is expected to set ``ALPACA_OAUTH_CLIENT_ID``
-    via Doppler in prod. Local dev uses a clearly-fake value.
+    via Doppler in prod. Local dev uses a clearly-fake value — callers that
+    actually start the OAuth flow must check ``is_configured()``/
+    ``require_configured()`` first, since this placeholder will always be
+    rejected by Alpaca itself.
     """
-    return _env("ALPACA_OAUTH_CLIENT_ID", "DEV-ALPACA-CLIENT-ID")
+    return _env("ALPACA_OAUTH_CLIENT_ID", _DEV_CLIENT_ID)
 
 
 def client_secret() -> str:
-    return _env("ALPACA_OAUTH_CLIENT_SECRET", "DEV-ALPACA-CLIENT-SECRET")
+    return _env("ALPACA_OAUTH_CLIENT_SECRET", _DEV_CLIENT_SECRET)
+
+
+def is_configured() -> bool:
+    """True only when a REAL client id/secret pair is set — not the dev
+    placeholders `client_id()`/`client_secret()` fall back to.
+
+    Deliberately NOT a hard gate on ``/connect/alpaca/start`` — the
+    existing test suite exercises the OAuth *mechanics* (state, PKCE,
+    token exchange against a mocked endpoint) against the dev
+    placeholder on purpose, since none of that needs a real Alpaca app.
+    Only an actual browser redirect to Alpaca's real servers cares
+    whether the client id is real, so this feeds ``dev_warning`` instead
+    (see ``start_alpaca_oauth``) — the caller decides whether to still
+    navigate.
+    """
+    return client_id() != _DEV_CLIENT_ID and client_secret() != _DEV_CLIENT_SECRET
 
 
 def default_redirect_uri() -> str:
