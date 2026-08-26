@@ -30,6 +30,10 @@ def _decision(**overrides: Any) -> SimpleNamespace:
         realized_pnl=None,
         closed_at=None,
         close_reason=None,
+        # The decision's OWN entry proposal — None here reproduces the
+        # pre-item-1 shape (no "direction"/"side" fields yet recorded),
+        # which must still resolve to the "BUY" fallback everywhere below.
+        proposal=None,
     )
     for k, v in overrides.items():
         setattr(base, k, v)
@@ -108,3 +112,38 @@ async def test_partial_sell_uses_min_qty_for_pnl() -> None:
 
     # (102 - 100) * min(10, 12) = 20.00
     assert decision.realized_pnl == Decimal("20.00")
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Short positions — the entry side is SELL, not BUY
+# ─────────────────────────────────────────────────────────────────────
+
+
+async def test_short_entry_sell_fill_lands_in_entry_branch_not_exit() -> None:
+    """The decision's OWN entry side is SELL (it opened a short). Its entry
+    fill must heal fill_qty/fill_avg_price, not self-close. Before the fix,
+    _apply_decision_lifecycle keyed off a hardcoded 'BUY' literal, so a
+    short's own opening fill fell into the exit branch and stamped
+    closed_at before the position was ever visible as open."""
+    decision = _decision(proposal={"side": "SELL"})
+    order = _order("SELL", filled_qty=10, avg="100.00", decision_id=decision.id)
+    await _apply_decision_lifecycle(_session_for(decision), order)
+
+    assert decision.fill_qty == 10
+    assert decision.fill_avg_price == Decimal("100.00")
+    assert decision.closed_at is None
+
+
+async def test_short_cover_buy_fill_closes_with_short_sign_pnl() -> None:
+    """A BUY that covers a short realizes (entry - exit) * qty — the
+    mirror of the long formula, keyed off the decision's own entry side."""
+    decision = _decision(
+        proposal={"side": "SELL"}, fill_qty=10, fill_avg_price=Decimal("100.00")
+    )
+    order = _order("BUY", filled_qty=10, avg="92.00", decision_id=decision.id)
+    await _apply_decision_lifecycle(_session_for(decision), order)
+
+    # (100.00 - 92.00) * 10 = 80.00 — profit on a short that fell.
+    assert decision.realized_pnl == Decimal("80.00")
+    assert decision.closed_at is not None
+    assert decision.close_reason == "user_manual"

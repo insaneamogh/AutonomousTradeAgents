@@ -7,11 +7,14 @@ Three responsibilities, in order:
      Status, filled_qty, avg_fill_price converge to broker truth; a fill
      delta inserts an ``order_fills`` row.
 
-  2. DECISION LIFECYCLE — a filled BUY heals the decision's entry columns
-     (fill_qty / fill_avg_price). A fully-filled SELL linked to a decision
-     closes it: ``closed_at`` + ``realized_pnl`` (long-only math:
-     (exit - entry) * qty). If the entry and exit filled on the same UTC
-     date, a ``pdt_ledger`` row is recorded (idempotent on close_order_id).
+  2. DECISION LIFECYCLE — a fill matching the decision's OWN entry side
+     (read off ``decision.proposal["side"]`` — "BUY" for a long, "SELL" for
+     a short) heals the decision's entry columns (fill_qty / fill_avg_price).
+     A fully-filled order on the OPPOSITE side closes it: ``closed_at`` +
+     ``realized_pnl``, using (exit - entry) * qty for a long or
+     (entry - exit) * qty for a short. If the entry and exit filled on the
+     same UTC date, a ``pdt_ledger`` row is recorded (idempotent on
+     close_order_id).
 
   3. EXTERNAL CLOSES — the user is always allowed to close positions
      directly in the Alpaca app. We detect it: an open agent position
@@ -164,7 +167,17 @@ async def _record_fill_delta(
 
 
 async def _apply_decision_lifecycle(session: AsyncSession, order_row: object) -> None:
-    """Propagate a fully-filled order to its agent_decisions row."""
+    """Propagate a fully-filled order to its agent_decisions row.
+
+    "Entry" vs "exit" is decided by comparing the fill's side to the
+    DECISION's OWN entry side (``decision.proposal["side"]``) — never by
+    testing for a literal "BUY". A short's entry order IS a SELL: keying
+    off a hardcoded "BUY" put a short's own opening fill into the exit
+    branch, which stamped ``closed_at`` before the position was ever
+    visible as open. ``decision.proposal`` is written once at council time
+    and never mutated afterward, so it always reflects the ENTRY, even
+    while reading THIS fill (which might be the exit).
+    """
     from engine.db.models import AgentDecision
 
     if order_row.agent_decision_id is None:
@@ -174,40 +187,53 @@ async def _apply_decision_lifecycle(session: AsyncSession, order_row: object) ->
     if decision is None:
         return
 
-    if order_row.side == "BUY":
+    entry_side = str((decision.proposal or {}).get("side", "BUY"))
+
+    if order_row.side == entry_side:
         decision.fill_qty = int(order_row.filled_qty)
         decision.fill_avg_price = order_row.avg_fill_price
         return
 
-    # SELL → the decision's position is (fully or partially) exiting.
-    # v1 closes the decision when the exit order is filled; partial manual
-    # scaling is out of scope (long-only, one entry / one exit per decision).
+    # Opposite side of the entry → the decision's position is (fully or
+    # partially) exiting. v1 closes the decision when the exit order is
+    # filled; partial manual scaling is out of scope (one entry / one exit
+    # per decision, long or short).
     if decision.closed_at is None:
         entry = decision.fill_avg_price
         exit_price = order_row.avg_fill_price
         if entry is not None and exit_price is not None and decision.fill_qty:
             qty = min(int(order_row.filled_qty), int(decision.fill_qty))
-            decision.realized_pnl = (
-                (exit_price - entry) * Decimal(qty)
-            ).quantize(Decimal("0.01"))
+            # A long profits when price rises (exit - entry); a short
+            # profits when price falls (entry - exit) — the mirror image,
+            # keyed off the ENTRY side, not the exit fill's side.
+            signed_move = (
+                (entry - exit_price) if entry_side == "SELL" else (exit_price - entry)
+            )
+            decision.realized_pnl = (signed_move * Decimal(qty)).quantize(Decimal("0.01"))
         decision.closed_at = order_row.filled_at or datetime.now(UTC)
         if decision.close_reason is None:
             decision.close_reason = "user_manual"
-        await _maybe_record_pdt(session, decision, order_row)
+        await _maybe_record_pdt(session, decision, order_row, entry_side)
 
 
 async def _maybe_record_pdt(
-    session: AsyncSession, decision: object, close_order: object
+    session: AsyncSession, decision: object, close_order: object, entry_side: str = "BUY"
 ) -> None:
     """Same-UTC-day entry+exit → one pdt_ledger row. Idempotent on the
     close order. Phase 0 uses calendar days (same simplification as the
-    PDT lookback); Phase 1.5 swaps to NYSE business days."""
+    PDT lookback); Phase 1.5 swaps to NYSE business days.
+
+    ``entry_side`` is the decision's OWN entry side ("BUY" for a long,
+    "SELL" for a short) — a hardcoded "BUY" here would never find a
+    short's entry order, undercounting a same-day short round-trip for
+    PDT purposes.
+    """
     from engine.db.models import Order, PdtLedger
 
     entry_stmt = (
         select(Order)
         .where(Order.agent_decision_id == decision.id)
-        .where(Order.side == "BUY")
+        .where(Order.side == entry_side)
         .where(Order.status == "filled")
         .order_by(Order.filled_at.asc())
         .limit(1)
@@ -275,26 +301,37 @@ async def _detect_external_closes(
 
     for decision in open_decisions:
         symbol = decision.symbol.upper()
-        if held_qty.get(symbol, 0) > 0:
-            continue  # still held (v1 ignores partial external reductions)
+        # != 0, not > 0: Alpaca reports a held SHORT as a NEGATIVE qty, and
+        # "still held" must be true for that case too — v1 ignores partial
+        # external reductions either way.
+        if held_qty.get(symbol, 0) != 0:
+            continue
 
-        # An exit of OURS in flight explains the gap — not external.
+        # An exit of OURS in flight explains the gap — not external. Any
+        # open order past entry on this decision is a close attempt,
+        # whichever side it is (BUY-to-cover for a short, SELL for a long),
+        # so this must not filter on side.
         in_flight_stmt = (
             select(Order.id)
             .where(Order.agent_decision_id == decision.id)
-            .where(Order.side == "SELL")
             .where(Order.status.in_(IN_FLIGHT_STATUSES))
             .limit(1)
         )
         if (await session.execute(in_flight_stmt)).scalar_one_or_none() is not None:
             continue
 
+        entry_side = str((decision.proposal or {}).get("side", "BUY"))
         approx_exit = await _last_snapshot_mark(session, uid, symbol)
         realized: Decimal | None = None
         if approx_exit is not None and decision.fill_avg_price is not None and decision.fill_qty:
-            realized = (
-                (approx_exit - decision.fill_avg_price) * Decimal(int(decision.fill_qty))
-            ).quantize(Decimal("0.01"))
+            # Same entry-side-keyed sign flip as the ordinary close path —
+            # a short realizes (entry - exit), not (exit - entry).
+            signed_move = (
+                (decision.fill_avg_price - approx_exit)
+                if entry_side == "SELL"
+                else (approx_exit - decision.fill_avg_price)
+            )
+            realized = (signed_move * Decimal(int(decision.fill_qty))).quantize(Decimal("0.01"))
 
         await session.execute(
             update(AgentDecision)
@@ -332,8 +369,12 @@ async def _last_snapshot_mark(
                 continue
             qty = int(pos.get("qty", 0) or 0)
             mv = float(pos.get("market_value", 0) or 0)
-            if qty > 0 and mv > 0:
-                return Decimal(str(round(mv / qty, 4)))
+            # qty and market_value share a sign (both negative for a held
+            # short, per Alpaca's convention) — abs() on both turns that
+            # into the same positive per-share price a long would produce,
+            # instead of excluding every short from ever getting a mark.
+            if qty != 0 and mv != 0:
+                return Decimal(str(round(abs(mv) / abs(qty), 4)))
     return None
 
 
