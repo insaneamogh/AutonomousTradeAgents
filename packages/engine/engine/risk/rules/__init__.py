@@ -8,7 +8,12 @@ then aggregate-exposure rules — which see the post-trim qty). The
 informational ``wash_sale`` rule runs LAST and only contributes flags.
 """
 
-from engine.risk.rules._short import held_long_qty, opens_short
+from engine.risk.rules._short import (
+    covers_short_only,
+    held_long_qty,
+    held_short_qty,
+    opens_short,
+)
 from engine.risk.rules.confidence import min_council_confidence
 from engine.risk.rules.correlation_cap import correlation_cap
 from engine.risk.rules.derivative_notional import derivative_notional_cap
@@ -29,10 +34,12 @@ from engine.risk.rules.wash_sale import wash_sale
 
 __all__ = [
     "correlation_cap",
+    "covers_short_only",
     "derivative_notional_cap",
     "drawdown_halt",
     "forbid_short_phase_0",
     "held_long_qty",
+    "held_short_qty",
     "lot_size_block",
     "max_open_positions",
     "min_council_confidence",

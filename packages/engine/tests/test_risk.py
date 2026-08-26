@@ -43,7 +43,21 @@ def _buy(symbol: str = "AAPL", qty: int = 10, last_price: float = 150.0, **kw: o
         confidence=0.70,
         closes_intraday_position=False,
     )
-    base.update(kw)  # type: ignore[arg-type]
+    base.update(kw)
+    return RiskProposal(**base)  # type: ignore[arg-type]
+
+
+def _sell(symbol: str = "AAPL", qty: int = 10, last_price: float = 150.0, **kw: object) -> RiskProposal:
+    base = dict(
+        symbol=symbol,
+        side=Side.SELL,
+        qty=qty,
+        last_price=last_price,
+        estimated_notional=qty * last_price,
+        confidence=0.70,
+        closes_intraday_position=False,
+    )
+    base.update(kw)
     return RiskProposal(**base)  # type: ignore[arg-type]
 
 
@@ -96,6 +110,40 @@ def test_drawdown_does_not_block_sells_so_user_can_flatten() -> None:
     )
     d = evaluate(sell, ctx)
     assert d.approved
+
+
+def test_drawdown_halt_still_blocks_a_new_short_during_halt() -> None:
+    """A SELL that OPENS a short (no held long) is a new bet, not a
+    flatten — the halt must still apply, unlike the old unconditional
+    "every SELL is exempt" behavior."""
+    ctx = _ctx(drawdown_halted=True, drawdown_halt_reason="Yesterday's loss")
+    d = evaluate(_sell("AAPL", 10), ctx, RiskCaps(forbid_short_phase_0=False))
+    assert not d.approved
+    assert d.veto_rule == "drawdown_halt_active"
+
+
+def test_drawdown_halt_allows_covering_an_existing_short() -> None:
+    """A BUY that only reduces/closes a held short is de-risking, exactly
+    like a SELL that closes a long — allowed even while halted."""
+    ctx = _ctx(
+        drawdown_halted=True,
+        open_positions=(PortfolioPosition("AAPL", -10, 150.0, -1500.0, "tech"),),
+    )
+    d = evaluate(_buy("AAPL", 10), ctx, RiskCaps(forbid_short_phase_0=False))
+    assert d.approved
+
+
+def test_drawdown_halt_blocks_a_cover_that_flips_long() -> None:
+    """A BUY bigger than the held short crosses into a brand-new long —
+    that portion is a new bet, so the halt still applies to the whole
+    order (covers_short_only is False the moment any part goes net-long)."""
+    ctx = _ctx(
+        drawdown_halted=True,
+        open_positions=(PortfolioPosition("AAPL", -10, 150.0, -1500.0, "tech"),),
+    )
+    d = evaluate(_buy("AAPL", 15), ctx, RiskCaps(forbid_short_phase_0=False))
+    assert not d.approved
+    assert d.veto_rule == "drawdown_halt_active"
 
 
 # ─────────────────────────────────────────────────────────────────────

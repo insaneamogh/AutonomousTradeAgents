@@ -41,7 +41,7 @@ from engine.risk.postgres_context import (
     PostgresRiskContextProvider,
     load_db_risk_state,
 )
-from engine.risk.rules import held_long_qty, opens_short
+from engine.risk.rules import covers_short_only, held_long_qty, held_short_qty, opens_short
 from engine.risk.types import (
     ClosedTrade,
     PortfolioPosition,
@@ -67,8 +67,10 @@ __all__ = [
     "Side",
     "SpecialistScore",
     "cluster_for",
+    "covers_short_only",
     "evaluate",
     "held_long_qty",
+    "held_short_qty",
     "is_derivative",
     "load_db_risk_state",
     "market_of",
