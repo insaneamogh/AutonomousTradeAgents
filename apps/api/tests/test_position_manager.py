@@ -12,11 +12,22 @@ plumbing; what must be pinned here is WHEN the agent decides to close:
 from __future__ import annotations
 
 import uuid
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-from app.services.orders.position_manager import _exit_reason, _has_in_flight_close
+import pytest
+
+from app.services.orders import position_manager as position_manager_mod
+from app.services.orders.position_manager import (
+    _close_position,
+    _exit_reason,
+    _has_in_flight_close,
+)
+from broker.types import Side
 
 NOW = datetime(2026, 6, 12, 15, 0, tzinfo=UTC)
 
@@ -80,3 +91,163 @@ async def test_in_flight_close_guard_detects_pending_sell() -> None:
 
 async def test_in_flight_close_guard_clear_when_no_open_sell() -> None:
     assert await _has_in_flight_close(_session(newer_sell_exists=False), uuid.uuid4()) is False
+
+
+# ─────────────────────────────────────────────────────────────────────
+# _close_position — a short must be covered with a BUY, not another SELL
+# ─────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class _FakePosition:
+    symbol: str
+    qty: int
+    avg_entry_price: float
+    market_value: float
+    unrealized_pl: float = 0.0
+    unrealized_pl_pct: float = 0.0
+
+
+@dataclass
+class _FakeCloseOrder:
+    broker_order_id: str
+    client_order_id: str | None
+    symbol: str
+    side: Any
+    qty: int
+    filled_qty: int = 0
+    avg_fill_price: float | None = None
+    status: Any = "accepted"
+    submitted_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    filled_at: datetime | None = None
+    raw: dict = field(default_factory=dict)
+
+
+@dataclass
+class _FakeCloseBroker:
+    positions: list[Any] = field(default_factory=list)
+    placed: list[Any] = field(default_factory=list)
+    canceled: list[str] = field(default_factory=list)
+
+    async def get_account_equity(self) -> float:
+        return 100_000.0
+
+    async def get_buying_power(self) -> float:
+        return 100_000.0
+
+    async def list_positions(self) -> list[Any]:
+        return list(self.positions)
+
+    async def cancel_open_orders(self, symbol: str) -> int:
+        self.canceled.append(symbol)
+        return 0
+
+    async def place_order(self, request: Any) -> _FakeCloseOrder:
+        order = _FakeCloseOrder(
+            broker_order_id="alp-close-0001",
+            client_order_id=request.client_order_id,
+            symbol=request.symbol,
+            side=request.side,
+            qty=request.qty,
+        )
+        self.placed.append(order)
+        return order
+
+
+class _FakeSessionCM:
+    """Async-context-manager stand-in for ``session_factory()``."""
+
+    def __init__(self) -> None:
+        self.session = MagicMock()
+        self.session.execute = AsyncMock()
+        self.session.commit = AsyncMock()
+
+    async def __aenter__(self) -> MagicMock:
+        return self.session
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+
+def _short_decision() -> SimpleNamespace:
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        symbol="NVDA",
+        fill_qty=10,
+        fill_avg_price=100.0,
+    )
+
+
+async def test_close_position_covers_a_short_with_a_buy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A short is held (qty=-10) — closing it must place a BUY for 10
+    shares, not another SELL. Before the fix, ``_close_position`` hardcoded
+    SELL for every close, which for a short doesn't increase the position
+    (the risk engine vetoes it outright — see the docstring) so the
+    observable bug was that a short could never be closed through this
+    path at all, agent or manual.
+    """
+    broker = _FakeCloseBroker(
+        positions=[
+            _FakePosition(
+                symbol="NVDA", qty=-10, avg_entry_price=100.0, market_value=-1000.0
+            )
+        ]
+    )
+    conn = SimpleNamespace(id="conn-1", is_paper=True)
+
+    @asynccontextmanager
+    async def fake_broker_cm(_user_id, *, broker_=None, store=None, **_kw):
+        yield broker, conn
+
+    monkeypatch.setattr(position_manager_mod, "with_broker_client", fake_broker_cm)
+
+    session_cm = _FakeSessionCM()
+    initiated = await _close_position(
+        lambda: session_cm,
+        user_id="00000000-0000-0000-0000-000000000001",
+        decision=_short_decision(),
+        reason="agent_time",
+    )
+
+    assert initiated is True
+    assert len(broker.placed) == 1
+    placed = broker.placed[0]
+    assert placed.side == Side.BUY
+    assert placed.qty == 10
+
+
+async def test_close_position_closes_a_long_with_a_sell(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unchanged behavior pin: a long (positive qty) still closes with a
+    SELL, exactly as before this fix."""
+    broker = _FakeCloseBroker(
+        positions=[
+            _FakePosition(
+                symbol="NVDA", qty=10, avg_entry_price=100.0, market_value=1000.0
+            )
+        ]
+    )
+    conn = SimpleNamespace(id="conn-1", is_paper=True)
+
+    @asynccontextmanager
+    async def fake_broker_cm(_user_id, *, broker_=None, store=None, **_kw):
+        yield broker, conn
+
+    monkeypatch.setattr(position_manager_mod, "with_broker_client", fake_broker_cm)
+
+    session_cm = _FakeSessionCM()
+    initiated = await _close_position(
+        lambda: session_cm,
+        user_id="00000000-0000-0000-0000-000000000001",
+        decision=_short_decision(),
+        reason="agent_time",
+    )
+
+    assert initiated is True
+    assert len(broker.placed) == 1
+    placed = broker.placed[0]
+    assert placed.side == Side.SELL
+    assert placed.qty == 10

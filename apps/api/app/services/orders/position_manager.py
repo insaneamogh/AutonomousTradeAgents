@@ -15,10 +15,14 @@ Scope rules:
   - ONLY decisions with ``exit_mode='agent'``. Manual-mode positions are
     never touched, no matter what.
   - Closes route through the SAME deterministic risk gate as entries
-    (SELLs are allowed even under a drawdown halt — flattening is always
-    permitted).
+    (a close is always allowed even under a drawdown halt — de-risking is
+    always permitted, whether that's a SELL flattening a long or a BUY
+    covering a short).
+  - The close side is derived from the HELD position, not assumed: a long
+    closes with a SELL, a short closes with a BUY-to-cover. Placing the
+    wrong side would increase the position instead of closing it.
   - Resting bracket children are canceled first, or the broker would
-    reject the market SELL for unavailable qty.
+    reject the market close order for unavailable qty.
   - ``close_reason`` is stamped immediately ('agent_time' /
     'agent_signal'); ``closed_at`` + ``realized_pnl`` land when order_sync
     confirms the fill. A push tells the user what happened and why.
@@ -167,15 +171,20 @@ async def close_position_now(
 
 
 async def _has_in_flight_close(session, decision_id) -> bool:
-    """True if a SELL order for this decision is already pending/accepted at
-    the broker — i.e. a close is in flight and we must not re-submit."""
+    """True if a close order for this decision is already pending/accepted
+    at the broker — i.e. a close is in flight and we must not re-submit.
+
+    Not filtered by side: a short's close is a BUY-to-cover, not a SELL, so
+    a ``side == "SELL"`` filter would be blind to it and risk a double
+    close-submit on a slow tick. Any open order tied to this decision past
+    entry-resolution is a close attempt, whichever side it placed as.
+    """
     from app.services.orders.order_sync import IN_FLIGHT_STATUSES
     from engine.db.models import Order
 
     stmt = (
         select(Order.id)
         .where(Order.agent_decision_id == decision_id)
-        .where(Order.side == "SELL")
         .where(Order.status.in_(IN_FLIGHT_STATUSES))
         .limit(1)
     )
@@ -222,7 +231,19 @@ async def _close_position(
     decision,
     reason: str,
 ) -> bool:
-    """Risk-gate → cancel resting legs → market SELL → persist → notify."""
+    """Risk-gate → cancel resting legs → market order → persist → notify.
+
+    The close side is derived from the HELD position, never assumed: a
+    long (positive qty) closes with a SELL, a short (negative qty) closes
+    with a BUY-to-cover. Before this, every close hardcoded SELL — which
+    for a short doesn't silently increase it (the risk engine's own
+    ``held_long_qty`` sees 0 long shares held, so that SELL reads as
+    "opening a fresh short" and ``forbid_short_phase_0``/``shortable_check``
+    veto it — the latter unconditionally, since this call never set
+    ``shortable``/``easy_to_borrow``). The observable failure was worse than
+    silent: a short could never be closed through this path AT ALL, agent
+    or manual — every attempt logged "close VETOED" forever.
+    """
     from broker.types import OrderRequest, OrderType, Side, TimeInForce
     from engine.risk import RiskProposal, evaluate
     from engine.risk import Side as RiskSide
@@ -235,18 +256,25 @@ async def _close_position(
 
     async with with_broker_client(user_id, broker="alpaca") as (broker, conn):
         risk_ctx = await _build_risk_context(broker, user_id=user_id)
-        last_price = next(
+        held = next(
             (
-                p.market_value / p.qty
-                for p in risk_ctx.open_positions
-                if p.symbol.upper() == symbol and p.qty > 0
+                p for p in risk_ctx.open_positions
+                if p.symbol.upper() == symbol and p.qty != 0
             ),
-            float(decision.fill_avg_price or 0) or 1.0,
+            None,
+        )
+        is_short = held is not None and held.qty < 0
+        close_side = RiskSide.BUY if is_short else RiskSide.SELL
+        broker_close_side = Side.BUY if is_short else Side.SELL
+        last_price = (
+            held.market_value / held.qty
+            if held is not None
+            else (float(decision.fill_avg_price or 0) or 1.0)
         )
         risk_decision = evaluate(
             RiskProposal(
                 symbol=symbol,
-                side=RiskSide.SELL,
+                side=close_side,
                 qty=qty,
                 estimated_notional=round(qty * last_price, 2),
                 last_price=last_price,
@@ -275,7 +303,7 @@ async def _close_position(
             decision_id=decision.id,
             client_order_id=client_order_id,
             symbol=symbol,
-            side="SELL",
+            side=broker_close_side.value,
             qty=qty,
             is_paper=conn.is_paper,
         )
@@ -283,7 +311,7 @@ async def _close_position(
         order = await broker.place_order(
             OrderRequest(
                 symbol=symbol,
-                side=Side.SELL,
+                side=broker_close_side,
                 qty=qty,
                 order_type=OrderType.MARKET,
                 time_in_force=TimeInForce.DAY,
@@ -313,18 +341,20 @@ async def _close_position(
         "position_manager: closing %d %s for user=%s — %s (broker_order=%s)",
         qty, symbol, user_id, label, order.broker_order_id,
     )
-    _notify_close(user_id=user_id, symbol=symbol, qty=qty, label=label)
+    _notify_close(
+        user_id=user_id, symbol=symbol, qty=qty, label=label, side=broker_close_side.value
+    )
     return True
 
 
-def _notify_close(*, user_id: str, symbol: str, qty: int, label: str) -> None:
+def _notify_close(*, user_id: str, symbol: str, qty: int, label: str, side: str = "SELL") -> None:
     try:
         from app.services.notifications.notifications import schedule_position_event_notification
 
         schedule_position_event_notification(
             user_id=user_id,
             title="Agent closing position",
-            body=f"SELL {qty} {symbol} — {label}. Tap for the trade log.",
+            body=f"{side} {qty} {symbol} — {label}. Tap for the trade log.",
         )
     except Exception:
         logger.exception("position_manager: close notification failed")
