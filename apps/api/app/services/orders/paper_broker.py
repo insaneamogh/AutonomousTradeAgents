@@ -80,7 +80,11 @@ class PaperFill:
     qty: int
     price: float
     realized_pnl: float | None
-    """Set on SELLs: (price - avg_entry) * qty. None on BUYs."""
+    """Set when this fill CLOSES OR REDUCES an existing position — a SELL
+    against a held long, or a BUY that covers a held short. ``None`` when
+    the fill only OPENS or EXTENDS a position (same sign as what's already
+    held, or the account was flat): a BUY that opens/extends a long, or a
+    SELL that opens/extends a short."""
     filled_at: datetime
 
 
@@ -123,9 +127,28 @@ class PaperPortfolio:
         client_order_id: str | None,
     ) -> PaperFill:
         """Apply an immediate simulated fill. Caller has already passed the
-        risk chain; this only does the bookkeeping. SELL qty clamps to the
-        held quantity (long-only — forbid_short vetoes naked sells before
-        we get here, but a stale proposal could still over-sell).
+        risk chain; this only does the bookkeeping.
+
+        Signed-quantity bookkeeping throughout: a negative
+        ``PaperHolding.qty`` is a short, matching both Alpaca's own
+        convention and how ``engine.risk.rules._short.held_long_qty`` reads
+        a position (``max(0, p.qty)`` — a short is simply "not long," never
+        an error). A BUY is ``signed_delta = +qty``; a SELL is
+        ``signed_delta = -qty``.
+
+          - Flat, or same sign as the existing holding → OPEN/EXTEND: the
+            weighted-average-price formula (unchanged from before, just
+            expressed in signed terms so it works for a short too).
+          - Opposite sign → REDUCE/CLOSE/CROSS: realize P&L on the closing
+            portion, signed by the HELD position's own direction, and if
+            the order's qty exceeds what was held, the leftover crosses
+            through flat and opens fresh in the NEW direction at this same
+            fill price.
+
+        No qty clamping — the full requested qty always fills. The old
+        code clamped a SELL to the held qty (silently no-opping a
+        short-open); that clamp is superseded by the signed math below,
+        which opens a short exactly like it opens a long.
         """
         if client_order_id:
             existing = self.find_fill_by_client_order_id(client_order_id)
@@ -136,32 +159,51 @@ class PaperPortfolio:
                 )
                 return existing
 
+        signed_delta = qty if side == "BUY" else -qty
+        held = self.holdings.get(symbol)
         realized: float | None = None
-        if side == "BUY":
-            held = self.holdings.get(symbol)
-            if held is None:
-                self.holdings[symbol] = PaperHolding(
-                    symbol=symbol, qty=qty, avg_entry_price=price, mark=price
-                )
-            else:
-                total = held.qty + qty
-                held.avg_entry_price = (
-                    held.avg_entry_price * held.qty + price * qty
-                ) / total
-                held.qty = total
+
+        if held is None or held.qty == 0:
+            # Flat → opens fresh in whichever direction this order implies.
+            self.holdings[symbol] = PaperHolding(
+                symbol=symbol, qty=signed_delta, avg_entry_price=price, mark=price
+            )
+        elif (held.qty > 0) == (signed_delta > 0):
+            # Same sign as the existing holding — extend it (weighted avg).
+            total = held.qty + signed_delta
+            held.avg_entry_price = (
+                held.avg_entry_price * abs(held.qty) + price * abs(signed_delta)
+            ) / abs(total)
+            held.qty = total
+            held.mark = price
+        else:
+            # Opposite sign — reduces, closes, or crosses through flat.
+            closing_qty = min(abs(signed_delta), abs(held.qty))
+            realized = (
+                (price - held.avg_entry_price) * closing_qty
+                if held.qty > 0
+                else (held.avg_entry_price - price) * closing_qty
+            )
+            remainder = abs(signed_delta) - closing_qty
+            if remainder > 0:
+                # Crossed through flat — the leftover opens fresh in the
+                # NEW direction, at this same fill price (one order/fill).
+                new_sign = 1 if signed_delta > 0 else -1
+                held.qty = new_sign * remainder
+                held.avg_entry_price = price
                 held.mark = price
-            self.cash -= qty * price
-        else:  # SELL
-            held = self.holdings.get(symbol)
-            if held is None:
-                qty = 0
             else:
-                qty = min(qty, held.qty)
-                realized = (price - held.avg_entry_price) * qty
-                held.qty -= qty
+                held.qty += signed_delta
+                held.mark = price
                 if held.qty == 0:
                     del self.holdings[symbol]
-            self.cash += qty * price
+
+        # Same formula either direction: a BUY (+delta) pays cash out, a
+        # SELL (-delta, whether closing a long or opening a short) brings
+        # cash in. Verified against equity() = cash + sum(qty * mark): a
+        # short's negative qty * mark is exactly the liability that offsets
+        # the cash credited when it was opened.
+        self.cash -= signed_delta * price
 
         f = PaperFill(
             id=f"paper-{uuid.uuid4().hex[:12]}",

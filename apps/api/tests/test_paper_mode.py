@@ -68,6 +68,9 @@ def _proposal(
     side: str = "BUY",
     qty: int = 10,
     last_price: float = 100.0,
+    stop_loss: float | None = None,
+    shortable: bool | None = None,
+    easy_to_borrow: bool | None = None,
 ) -> ApprovalProposalDto:
     return ApprovalProposalDto(
         id=proposal_id,
@@ -77,6 +80,9 @@ def _proposal(
         order_type="MARKET",
         limit_price=None,
         estimated_notional=qty * last_price,
+        stop_loss=stop_loss,
+        shortable=shortable,
+        easy_to_borrow=easy_to_borrow,
         rationale="test",
         bull_case="up",
         bear_case="down",
@@ -171,6 +177,33 @@ async def test_paper_naked_sell_is_vetoed_by_risk_chain() -> None:
     assert resp.risk_blocked is True
     assert resp.risk_veto_rule == "forbid_short_phase_0"
     assert get_paper_store().portfolio(USER, "US").fills == []
+
+
+async def test_paper_short_open_with_allow_shorts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ALLOW_SHORTS=1 + a valid stop above entry + a verified borrow → the
+    short is NOT vetoed and books a negative-qty paper holding with cash
+    correctly CREDITED (a short sale receives cash up front)."""
+    monkeypatch.setenv("ALLOW_SHORTS", "1")
+    await _seed_pending(
+        _proposal(
+            proposal_id="agent-paper-short-1",
+            side="SELL",
+            qty=5,
+            last_price=100.0,
+            stop_loss=110.0,
+            shortable=True,
+            easy_to_borrow=True,
+        )
+    )
+    resp = await execute_proposal(user_id=USER, proposal_id="agent-paper-short-1")
+    assert resp.risk_blocked is False
+    assert resp.order is not None
+
+    pf = get_paper_store().portfolio(USER, "US")
+    holding = pf.holdings["NVDA"]
+    assert holding.qty == -5
+    assert holding.avg_entry_price == 100.0
+    assert pf.cash == 100_000.0 + 500.0
 
 
 async def test_paper_fill_is_idempotent_on_client_order_id() -> None:
