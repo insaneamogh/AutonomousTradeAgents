@@ -359,6 +359,167 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 ## Entries
 
+### 2026-08-26 — `4bd3f245`…`febba726` feat(auth): "Continue with Google" + a less destructive session-refresh failure mode
+
+The user's "I keep having to re-auth" complaint traces to one root cause,
+confirmed by reading the store implementations directly: `USE_POSTGRES=0`
+(the shipped default) means both the auth-session store and the broker-
+connection store are process-memory dicts, wiped on every API restart —
+and the mobile client's own refresh-failure handling then **actively
+deletes** its stored credential on the resulting 401, turning "the
+backend forgot" into "logged out for good." Google Sign-In alone does not
+fix this — a Google-issued session is exactly as ephemeral under the same
+store. This entry covers the explicitly-requested Google login plus the
+one client-side fix that's a direct, well-scoped contributor to the actual
+persistence complaint; a sibling entry below covers the Alpaca-connection
+half of the same root cause plus a separate desktop bug.
+
+- **Google ID-token verification** (`apps/api/app/services/auth/google_oauth.py`,
+  new): RS256 verification via `python-jose` (already declared + installed
+  — no new backend dependency; `google-auth`'s default sync transport
+  would've blocked the event loop, which this async-first codebase
+  doesn't do). Alg locked to RS256 from the *unverified* header before any
+  network call (defeats the classic alg-confusion attack); JWKS fetched
+  from Google and cached by `kid` with a TTL, an unknown `kid` forcing
+  exactly one refetch (key-rotation window) before failing; `aud`/`iss`
+  checked manually since jose's built-in checks only take one expected
+  value each and Google needs "one of several client ids" / "one of two
+  documented issuer strings"; `email_verified` required to be the literal
+  `True`, not merely truthy — an unverified email must never create or
+  link an account.
+- **`login_with_google()`** (`auth.py`), parallel to `verify_magic_link`,
+  reuses the existing `_issue_pair()` so a Google session is
+  indistinguishable from a magic-link one downstream — no session/token
+  model changes anywhere. `upsert_user`'s existing get-or-create-by-email
+  semantics mean one account serves both login methods with **no
+  migration** (`auth_method` is free-text, no DB constraint); an existing
+  magic-link user who later uses Google keeps `auth_method="magic_link"`
+  forever — an accepted, cosmetic quirk, pinned by a test rather than
+  silently left to drift.
+- **`POST /api/v1/auth/google`** (primary path) + **`POST
+  /api/v1/auth/google/exchange`** (fallback, for a Google OAuth client
+  type whose platform policy is confidential — typically "Web
+  application" — and refuses a secret-less PKCE exchange; holds its own
+  separate `GOOGLE_OAUTH_WEB_CLIENT_ID`/`GOOGLE_OAUTH_CLIENT_SECRET`,
+  distinct from the ID-token audience allow-list). Both routes share one
+  `_verify_and_login_with_google()` tail so they can't drift on what
+  counts as "verified." Unconfigured → 503, deliberately *not* added to
+  `production_config_problems()`'s hard-fail boot check — magic-link
+  alone stays a valid production config. New per-IP rate bucket (no
+  caller-supplied email to key on before the token verifies).
+- **The actual persistence fix, mobile side**: `auth.py`'s `refresh()`
+  used to collapse "session not found" / "revoked" / "expired" / "token
+  invalid" / "superseded" into one undifferentiated 401. It now raises a
+  typed `RefreshError` carrying a machine-readable `code`, threaded onto
+  the 401 body as a sibling of `detail`. `authStore.ts`'s `restore()` —
+  and its sibling `refresh()` action, which was actually the more
+  aggressive of the two, wiping storage on *any* thrown error — now only
+  wipe the stored credential for `session_revoked`/`token_invalid`/
+  `superseded`; a bare `session_not_found` (or any code they haven't
+  seen yet, including no code at all from an older API build) just marks
+  the app-open unauthenticated *without* deleting the refresh token, so a
+  later successful restore doesn't force a brand-new login. One subtlety
+  worth naming: a session whose row resolves but whose owning user has
+  vanished is mapped to `token_invalid` rather than `session_not_found` —
+  a broken data state, not a "backend forgot" state, deliberately not
+  treated as something a later restore could fix.
+- **Mobile flow**: Authorization Code + PKCE via `expo-auth-session` +
+  `expo-web-browser` (new deps, installed via `npx expo install`) against
+  Google's standard OIDC discovery document. Tries the client-side
+  exchange first; on any failure, falls back to the backend exchange
+  endpoint — which of the two actually fires in practice depends on which
+  Google Cloud OAuth client type ends up configured, which can't be
+  determined by reading this repo. `GoogleSignInButton.tsx` uses Google's
+  official multi-color logomark (sourced from Google's own branding
+  guidelines, not freehanded) — its brand-color fills are a deliberate,
+  named exception to the design-tokens-only rule, since they're Google's
+  trademark colors, not this app's palette. A defensive
+  `auth/google/callback` deep-link branch exists as an Android-backgrounding
+  safety net; the happy path resolves in-process and never touches it.
+- **Explicitly deferred**: a `google_sub` column/migration for identity
+  binding independent of email — doing it correctly requires reworking
+  `upsert_user`'s get-or-create-only semantics to backfill it onto an
+  existing row, which is out of scope here; the free-text `auth_method`
+  column already makes the core ask schema-cost-free without it.
+- Verified: `apps/api/tests` 258 → **277 passed / 8 skipped**; existing
+  `test_auth.py`/`test_auth_hardening.py`/`test_auth_p3_hardening.py`
+  confirmed **zero byte diff** (purely additive change); `mypy
+  apps/api/app` 59 → **59 errors / 19 files** (identical set, one new
+  clean file); `ruff --select F,I` clean; `apps/mobile` typecheck clean;
+  Jest 7 → **21 passed** (+14, all in the new `authStore.test.ts` — the
+  first fetch-mock test in this app's auth surface). All independently
+  re-run on `main` after cherry-picking.
+- **External prerequisite, not a code gap**: a real Google Cloud OAuth
+  client (iOS/Android/Web as needed) must be created before the endpoint
+  or the mobile flow can be exercised end-to-end — the actual browser
+  round-trip isn't meaningfully testable in Jest and needs real-device QA
+  once that exists.
+
+### 2026-08-26 — `d9ec335d`…`8b09fbd3` fix(broker): a genuinely persistent Alpaca connection, and a desktop connect bug
+
+Sibling to the entry above — same root cause (`USE_POSTGRES=0` →
+in-memory `InMemoryBrokerStore`, wiped every restart), plus one
+independently-confirmed, separate bug: on the desktop/web build, "Connect
+Alpaca" most likely never completed at all.
+
+- **Un-gated the env-key bootstrap** (`0c39c95a`): `ensure_env_broker_connection`
+  (built earlier the same day in `2fe8b9fd` — auto-links a user's paper
+  account straight from `ALPACA_API_KEY`/`ALPACA_SECRET_KEY`, no per-user
+  OAuth) only ever ran inside `if use_pg and enable_reconciler:` in
+  `main.py`'s lifespan — silently never firing under the shipped
+  `USE_POSTGRES=0` default (the mode where the pain is worst), and also
+  silently disabled by `RECONCILER_ENABLED=0` even when Postgres *was* on.
+  New `bootstrap_env_broker_connections(*, use_pg)`, called unconditionally
+  (gated only on its own "are the env keys even set" check): the Postgres
+  branch keeps the existing enumerate-every-`User`-row behavior (now
+  wrapped in try/except so a DB hiccup can't fail boot); MockStore mode
+  targets exactly `FIXTURE_USER_ID` — the one identity guaranteed to
+  survive a MockStore restart, since there's no backend-agnostic "list
+  all users" accessor to do more than that.
+- **Fixed a trust bug found alongside it** (`563ffeb4`): revoking an
+  env-bootstrapped connection didn't stick — the *next* restart silently
+  recreated it with zero explanation anywhere in the UI. New
+  `connectionSource: "environment" | "oauth"` on the connections response
+  (a cheap, non-persisted comparison of the decrypted token against the
+  known sentinel — no schema change), surfaced as a "connected via server
+  configuration" pill in Settings.
+- **The desktop OAuth-callback bug** (`8d56dd03`) — confirmed real and
+  worse than "missing route": Alpaca's redirect is hardcoded server-side
+  to the native `autotrader://` deep-link scheme; the desktop build does
+  a real full-page browser navigation to Alpaca and back with nowhere to
+  catch `?code&state`. Adding a page in the obvious place (a new Expo
+  route) would **not** have worked either: `DesktopShell` unconditionally
+  swaps out the entire router subtree the instant `restore()` succeeds
+  post-redirect, unmounting any callback screen before it could finish
+  its own network call — and the access token is never persisted, so it
+  would have no bearer token to call an authenticated endpoint with
+  anyway. Fixed by reusing the exact pattern already built and tested for
+  Zerodha: `alpaca_callback`'s body extracted into a shared
+  `_complete_alpaca_connect(..., expected_user_id)` helper (mirroring
+  `_complete_zerodha_connect`), reused by both the existing authenticated
+  POST (native, byte-for-byte unchanged) and a new **unauthenticated**
+  `GET /connect/alpaca/redirect` (desktop) where the single-use,
+  15-minute `state` token itself is the proof of identity — a plain
+  server-rendered HTML response that never touches the Expo bundle,
+  `DesktopShell`, or the router at all. A new `platform` hint on `/start`
+  picks between exactly two *fixed*, server-known redirect URIs — never a
+  caller-supplied one, which would be an open-redirect/code-hijack risk.
+  The redirect_uri actually used is now stashed on `PendingOAuth` and
+  threaded into the token exchange too, since OAuth2 requires the two to
+  match exactly — a mismatch would have passed every test that didn't
+  check for it specifically while still failing for real against
+  Alpaca's API.
+- Verified: `apps/api/tests` 237 → **258 passed / 8 skipped**; existing
+  `test_broker.py` suite confirmed **zero deletions, pure addition**
+  (255 insertions); `mypy apps/api/app` 59 → **59 errors / 19 files**
+  (identical); `ruff --select F,I` clean; `apps/mobile` typecheck clean.
+  All independently re-run on `main` after cherry-picking.
+- **External prerequisite, not a code gap**: whether Alpaca's OAuth app
+  (in Alpaca's own developer console) supports registering a second
+  redirect URI, or needs a second OAuth client, is outside this repo's
+  reach and must be confirmed/configured there directly before the
+  desktop fix can be exercised live.
+
 ### 2026-08-26 — `d93f21dd`…`41df00c6` feat(watchlist): live Alpaca-backed symbol search on both add-to-watchlist screens
 
 Closes a real gap: `POST /api/v1/watchlist` already had live-Alpaca-backed
