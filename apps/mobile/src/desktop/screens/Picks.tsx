@@ -158,17 +158,34 @@ function PlanStat({ label, value }: { label: string; value: string }) {
 /**
  * Turn a failed run into something true.
  *
- * A 422 is the server telling us exactly what is wrong with the ticker —
+ * A 422 is the server telling us exactly what is wrong with the ticker --
  * showing "the agent server may be cold" for it sent the user chasing
  * infrastructure when the real problem was the symbol they picked.
+ *
+ * Two shapes of 422 exist and were NOT both handled: our own
+ * `assert_tradable` raises `{detail: "<plain string>"}`, but FastAPI's
+ * own pydantic validation (the `Symbol` pattern on the request body)
+ * raises `{detail: [{loc, msg, type}, ...]}` -- an ARRAY. The old check
+ * only matched the string shape, so a ticker that failed validation
+ * before `assert_tradable` ever ran fell through to the generic "server
+ * may be cold" message -- exactly backwards, since this is the one case
+ * where the server said precisely what was wrong. A response with no
+ * `status` at all (network failure, CORS, DNS) is the only case that's
+ * genuinely infrastructure, so that keeps the "cold" wording.
  */
 function runErrorMessage(err: unknown): string {
-  const e = err as { status?: number; body?: { detail?: string } } | null;
+  const e = err as { status?: number; body?: { detail?: unknown } } | null;
   const detail = e?.body?.detail;
-  if (e?.status === 422 && typeof detail === 'string') return detail;
-  if (e?.status === 429) return 'Daily council budget reached. Try again tomorrow.';
   if (typeof detail === 'string' && detail) return detail;
-  return 'Couldn\u2019t start the run. The agent server may be cold.';
+  if (Array.isArray(detail) && detail.length > 0) {
+    const first = detail[0] as { msg?: unknown } | undefined;
+    if (typeof first?.msg === 'string') return first.msg;
+  }
+  if (e?.status === 429) return 'Daily council budget reached. Try again tomorrow.';
+  if (typeof e?.status === 'number') {
+    return `The server refused the request (${e.status}). Try again.`;
+  }
+  return 'Couldn\u2019t reach the agent server \u2014 check your connection and try again.';
 }
 
 /** Kicks off a council run and drops the user straight into the theater. */

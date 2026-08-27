@@ -131,9 +131,18 @@ async def close_position_now(
     overrides the agent early). Same risk gate + bracket-cancel + persist +
     push as the agent path — only the ``reason`` differs.
 
+    Dispatches to ``cancel_pending_order_now`` when the entry never filled
+    — "close" is the one user-facing verb for "stop this trade", whether
+    that means flattening a live position or cancelling an order that's
+    still working at the broker. Before this, an approved-but-unfilled
+    proposal had no way to be stopped at all: the ``fill_qty`` check below
+    used to just refuse with ``no_open_position``, which is technically
+    true and completely unhelpful outside market hours, when an order can
+    sit unfilled for hours.
+
     Returns ``{closed: bool, error: str | None}``. ``error`` is one of
     not_found / not_owner / already_closed / no_open_position /
-    close_in_flight / risk_vetoed.
+    no_pending_order / close_in_flight / risk_vetoed.
     """
     import os
 
@@ -160,7 +169,9 @@ async def close_position_now(
         if decision.closed_at is not None:
             return {"closed": False, "error": "already_closed"}
         if not decision.fill_qty:
-            return {"closed": False, "error": "no_open_position"}
+            return await cancel_pending_order_now(
+                session, session_factory, user_id=user_id, decision=decision
+            )
         if await _has_in_flight_close(session, decision.id):
             return {"closed": False, "error": "close_in_flight"}
 
@@ -168,6 +179,69 @@ async def close_position_now(
         session_factory, user_id=user_id, decision=decision, reason=reason
     )
     return {"closed": initiated, "error": None if initiated else "risk_vetoed"}
+
+
+async def cancel_pending_order_now(
+    session,
+    session_factory: async_sessionmaker,
+    *,
+    user_id: str,
+    decision,
+) -> dict:
+    """Cancel an approved order that hasn't filled yet.
+
+    Finds the newest ``orders`` row for this decision still in an open
+    broker state and cancels it there. Cancelling Alpaca's bracket PARENT
+    (the entry) takes its OCO stop/target children with it — those don't
+    exist as live orders at the broker until the parent fills, so there is
+    nothing separate to cancel.
+
+    The decision row's ``user_response`` stays ``'approved'`` — the user
+    really did approve it, that's the audit fact. What changes is the
+    ORDER's terminal status, which is what ``list_open_positions`` reads
+    to decide whether an approved-but-unfilled row is still worth
+    showing.
+    """
+    from sqlalchemy import desc, select
+
+    from app.services.orders.order_sync import OPEN_ORDER_STATUSES
+    from engine.db.models import Order
+
+    stmt = (
+        select(Order)
+        .where(Order.agent_decision_id == decision.id)
+        .where(Order.status.in_(OPEN_ORDER_STATUSES))
+        .order_by(desc(Order.submitted_at))
+        .limit(1)
+    )
+    order_row = (await session.execute(stmt)).scalar_one_or_none()
+    if order_row is None or order_row.broker_order_id is None:
+        return {"closed": False, "error": "no_pending_order"}
+
+    try:
+        async with with_broker_client(user_id, broker="alpaca") as (broker, _conn):
+            canceled = await broker.cancel_order(order_row.broker_order_id)
+    except Exception:
+        logger.exception(
+            "position_manager: cancel failed for %s order=%s",
+            decision.symbol, order_row.broker_order_id,
+        )
+        return {"closed": False, "error": "risk_vetoed"}
+
+    new_status = (
+        canceled.status.value if hasattr(canceled.status, "value") else str(canceled.status)
+    )
+    async with session_factory() as write_session:
+        await write_session.execute(
+            update(Order).where(Order.id == order_row.id).values(status=new_status)
+        )
+        await write_session.commit()
+
+    logger.info(
+        "position_manager: cancelled unfilled order for %s user=%s (broker_order=%s → %s)",
+        decision.symbol, user_id, order_row.broker_order_id, new_status,
+    )
+    return {"closed": True, "error": None}
 
 
 async def _has_in_flight_close(session, decision_id) -> bool:

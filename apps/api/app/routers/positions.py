@@ -30,6 +30,10 @@ _CLOSE_ERROR_STATUS = {
     "not_owner": status.HTTP_404_NOT_FOUND,  # don't reveal another user's id exists
     "already_closed": status.HTTP_409_CONFLICT,
     "no_open_position": status.HTTP_409_CONFLICT,
+    # The entry never filled and the order that would have filled it is
+    # already gone (filled between the list and the tap, or cancelled
+    # already) — nothing left to cancel.
+    "no_pending_order": status.HTTP_409_CONFLICT,
     "close_in_flight": status.HTTP_409_CONFLICT,
 }
 

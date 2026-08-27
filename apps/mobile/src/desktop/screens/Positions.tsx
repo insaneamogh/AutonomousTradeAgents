@@ -92,6 +92,12 @@ export function PositionsScreen() {
                 </p>
               </div>
             ) : (
+              // 8 data columns + the action column don't fit an 8/12-span
+              // card once the trade biography panel opens beside it —
+              // without its own scroll region the table overflowed the
+              // card and clipped the Close button at the right edge
+              // instead of the page ever scrolling sideways.
+              <div style={{ overflowX: 'auto' }}>
               <table className="pg-table">
                 <thead>
                   <tr>
@@ -166,16 +172,19 @@ export function PositionsScreen() {
                         )}
                       </td>
                       <td className="pg-num-right">
-                        {p.status === 'pending_fill' ? (
-                          <span className="pg-caption pg-dim">nothing to close yet</span>
-                        ) : p.decisionId ? (
+                        {p.decisionId ? (
                           <Button
                             size="sm"
+                            kind={p.status === 'pending_fill' ? 'secondary' : 'primary'}
                             onClick={() => close.mutate(p.decisionId!)}
                             disabled={close.isPending}
-                            ariaLabel={`Close the ${p.symbol} position now`}
+                            ariaLabel={
+                              p.status === 'pending_fill'
+                                ? `Cancel the working ${p.symbol} order`
+                                : `Close the ${p.symbol} position now`
+                            }
                           >
-                            Close
+                            {p.status === 'pending_fill' ? 'Cancel order' : 'Close'}
                           </Button>
                         ) : (
                           <span className="pg-caption pg-dim">close at broker</span>
@@ -185,8 +194,16 @@ export function PositionsScreen() {
                   ))}
                 </tbody>
               </table>
+              </div>
             )}
-            {close.data && !close.data.closed ? (
+            {close.isError ? (
+              <div className="pg-inset" style={{ borderColor: 'var(--pg-bear)' }}>
+                <Label>Close refused</Label>
+                <div className="pg-body-sm pg-bear" style={{ marginTop: 6 }}>
+                  {closeErrorMessage(close.error)}
+                </div>
+              </div>
+            ) : close.data && !close.data.closed ? (
               <div className="pg-inset" style={{ borderColor: 'var(--pg-bear)' }}>
                 <Label>Close refused</Label>
                 <div className="pg-body-sm pg-bear" style={{ marginTop: 6 }}>
@@ -205,6 +222,27 @@ export function PositionsScreen() {
       </div>
     </>
   );
+}
+
+const CLOSE_ERROR_COPY: Record<string, string> = {
+  not_found: "That position or order isn't there any more.",
+  not_owner: "That position or order isn't there any more.",
+  already_closed: 'Already closed.',
+  no_open_position: "This position was already closed — nothing left to close.",
+  no_pending_order: 'The order already filled or was already cancelled.',
+  close_in_flight: 'A close is already in progress for this position.',
+  risk_vetoed: 'A risk rule blocked the close — try again shortly.',
+};
+
+/** A 409/404 from close/cancel is thrown, not returned — the "closed:
+ * false" branch above only covers the 200-with-risk_vetoed shape. This
+ * covers the rest so a failed cancel/close is never silently dropped. */
+function closeErrorMessage(err: unknown): string {
+  const e = err as { status?: number; body?: { detail?: unknown } } | null;
+  const code = typeof e?.body?.detail === 'string' ? e.body.detail : null;
+  if (code && CLOSE_ERROR_COPY[code]) return CLOSE_ERROR_COPY[code];
+  if (code) return code;
+  return "Couldn't reach the agent server — try again.";
 }
 
 function TimelineCard({ decisionId, onClose }: { decisionId: string; onClose: () => void }) {

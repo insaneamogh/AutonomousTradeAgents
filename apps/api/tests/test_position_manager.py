@@ -251,3 +251,87 @@ async def test_close_position_closes_a_long_with_a_sell(
     placed = broker.placed[0]
     assert placed.side == Side.SELL
     assert placed.qty == 10
+
+
+# ─────────────────────────────────────────────────────────────────────
+# cancel_pending_order_now — stopping an order that hasn't filled
+#
+# An approved proposal with no fill yet used to have NO way to be
+# stopped: "no_open_position" was accurate but unhelpful, since there was
+# never anything TO close — only an order still working at the broker.
+# ─────────────────────────────────────────────────────────────────────
+
+
+class _FakeCancelBroker:
+    def __init__(self, *, final_status: str = "canceled") -> None:
+        self.cancelled_ids: list[str] = []
+        self._final_status = final_status
+
+    async def cancel_order(self, broker_order_id: str) -> SimpleNamespace:
+        self.cancelled_ids.append(broker_order_id)
+        return SimpleNamespace(status=self._final_status)
+
+
+def _fake_read_session(order_row: object | None) -> MagicMock:
+    session = MagicMock()
+    result = MagicMock()
+    result.scalar_one_or_none = MagicMock(return_value=order_row)
+    session.execute = AsyncMock(return_value=result)
+    return session
+
+
+async def test_cancel_pending_order_cancels_at_the_broker_and_updates_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.orders.position_manager import cancel_pending_order_now
+
+    order_row = SimpleNamespace(
+        id=uuid.uuid4(), broker_order_id="brk-order-1", status="accepted"
+    )
+    broker = _FakeCancelBroker(final_status="canceled")
+    conn = SimpleNamespace(id="conn-1", is_paper=True)
+
+    @asynccontextmanager
+    async def fake_broker_cm(_user_id, *, broker_=None, store=None, **_kw):
+        yield broker, conn
+
+    monkeypatch.setattr(position_manager_mod, "with_broker_client", fake_broker_cm)
+
+    write_session_cm = _FakeSessionCM()
+    result = await cancel_pending_order_now(
+        _fake_read_session(order_row),
+        lambda: write_session_cm,
+        user_id="00000000-0000-0000-0000-000000000001",
+        decision=SimpleNamespace(id=uuid.uuid4(), symbol="KO"),
+    )
+
+    assert result == {"closed": True, "error": None}
+    assert broker.cancelled_ids == ["brk-order-1"]
+    write_session_cm.session.execute.assert_awaited_once()
+    write_session_cm.session.commit.assert_awaited_once()
+
+
+async def test_cancel_pending_order_with_no_working_order_refuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The order already filled (or was already cancelled) between the
+    list and the tap — nothing left to cancel. Must not touch the broker."""
+    from app.services.orders.position_manager import cancel_pending_order_now
+
+    broker = _FakeCancelBroker()
+
+    @asynccontextmanager
+    async def fake_broker_cm(_user_id, *, broker_=None, store=None, **_kw):
+        yield broker, SimpleNamespace(id="conn-1", is_paper=True)
+
+    monkeypatch.setattr(position_manager_mod, "with_broker_client", fake_broker_cm)
+
+    result = await cancel_pending_order_now(
+        _fake_read_session(None),
+        lambda: _FakeSessionCM(),
+        user_id="00000000-0000-0000-0000-000000000001",
+        decision=SimpleNamespace(id=uuid.uuid4(), symbol="KO"),
+    )
+
+    assert result == {"closed": False, "error": "no_pending_order"}
+    assert broker.cancelled_ids == []

@@ -23,20 +23,45 @@ function money(n: number | null): string {
   return `${sign}$${Math.abs(n).toFixed(2)}`;
 }
 
+/** 409 error codes from /positions/{id}/close, in plain English. A close
+ * and a cancel share this one endpoint (the server decides which based
+ * on whether the entry filled), so this covers both outcomes. */
+const CLOSE_ERROR_COPY: Record<string, string> = {
+  not_found: "That position or order isn't there any more.",
+  not_owner: "That position or order isn't there any more.",
+  already_closed: 'Already closed.',
+  no_open_position: 'This position was already closed.',
+  no_pending_order: 'The order already filled or was already cancelled.',
+  close_in_flight: 'A close is already in progress for this position.',
+  risk_vetoed: 'A risk rule blocked the close — try again shortly.',
+};
+
+function closeErrorDetail(err: unknown): string {
+  const code =
+    err instanceof ApiError && typeof (err.body as { detail?: string })?.detail === 'string'
+      ? (err.body as { detail: string }).detail
+      : null;
+  if (code && CLOSE_ERROR_COPY[code]) return CLOSE_ERROR_COPY[code];
+  if (code) return code;
+  return "Couldn't reach the agent server.";
+}
+
 export default function PositionsScreen() {
   const router = useRouter();
   const { data, isLoading, isError, refetch } = useOpenPositions();
   const close = useClosePosition();
   const list = data ?? [];
 
-  const confirmClose = (decisionId: string, symbol: string, qty: number) => {
+  const confirmClose = (decisionId: string, symbol: string, qty: number, pending: boolean) => {
     Alert.alert(
-      `Close ${qty} ${symbol}?`,
-      'This places a market sell now, through the same risk checks the agent uses. Resting stop/target orders are cancelled first.',
+      pending ? `Cancel the ${symbol} order?` : `Close ${qty} ${symbol}?`,
+      pending
+        ? "This cancels the order at the broker before it fills. Nothing was ever bought or sold."
+        : 'This places a market sell now, through the same risk checks the agent uses. Resting stop/target orders are cancelled first.',
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: pending ? 'Keep order' : 'Cancel', style: 'cancel' },
         {
-          text: 'Close position',
+          text: pending ? 'Cancel order' : 'Close position',
           style: 'destructive',
           onPress: () => {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
@@ -47,18 +72,13 @@ export default function PositionsScreen() {
                     Haptics.NotificationFeedbackType.Warning,
                   ).catch(() => {});
                   Alert.alert(
-                    'Not closed',
-                    res.detail ?? 'A risk rule blocked the close — try again shortly.',
+                    pending ? 'Not cancelled' : 'Not closed',
+                    res.detail ?? CLOSE_ERROR_COPY[res.error ?? ''] ?? 'Try again shortly.',
                   );
                 }
               },
               onError: (err) => {
-                const detail =
-                  err instanceof ApiError &&
-                  typeof (err.body as { detail?: string })?.detail === 'string'
-                    ? (err.body as { detail: string }).detail
-                    : "Couldn't reach the agent server.";
-                Alert.alert('Close failed', detail);
+                Alert.alert(pending ? 'Cancel failed' : 'Close failed', closeErrorDetail(err));
               },
             });
           },
@@ -184,17 +204,18 @@ export default function PositionsScreen() {
                   </Text>
                 )}
 
-                {p.status === 'pending_fill' ? (
-                  <Text className="mt-1 text-[10px] text-text-tertiary dark:text-text-tertiary-dark">
-                    Nothing to close yet — the order hasn't filled. Cancel it at the
-                    broker if you no longer want it.
-                  </Text>
-                ) : p.decisionId ? (
+                {p.decisionId ? (
                   <Pressable
-                    onPress={() => confirmClose(p.decisionId!, p.symbol, p.qty)}
+                    onPress={() =>
+                      confirmClose(p.decisionId!, p.symbol, p.qty, p.status === 'pending_fill')
+                    }
                     disabled={busy}
                     accessibilityRole="button"
-                    accessibilityLabel={`Close ${p.qty} ${p.symbol} now`}
+                    accessibilityLabel={
+                      p.status === 'pending_fill'
+                        ? `Cancel the working ${p.symbol} order`
+                        : `Close ${p.qty} ${p.symbol} now`
+                    }
                     className={cn(
                       'mt-1 min-h-[44px] items-center justify-center rounded-lg',
                       'border border-hairline dark:border-hairline-dark',
@@ -202,7 +223,13 @@ export default function PositionsScreen() {
                     )}
                   >
                     <Text className="text-[13px] font-medium text-text-primary dark:text-text-primary-dark">
-                      {busy ? 'Closing…' : 'Close now'}
+                      {busy
+                        ? p.status === 'pending_fill'
+                          ? 'Cancelling…'
+                          : 'Closing…'
+                        : p.status === 'pending_fill'
+                          ? 'Cancel order'
+                          : 'Close now'}
                     </Text>
                   </Pressable>
                 ) : (
