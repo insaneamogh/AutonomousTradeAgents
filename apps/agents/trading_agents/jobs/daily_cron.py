@@ -395,12 +395,42 @@ def cli() -> int:
         log.error("empty watchlist — pass --watchlist or set AGENT_CRON_WATCHLIST")
         return 2
 
+    return asyncio.run(
+        _run_cli(
+            args.user_id,
+            symbols,
+            force=args.force,
+            skip_ghost_eval=args.skip_ghost_eval,
+            skip_reflect=args.no_reflect,
+        )
+    )
+
+
+async def _run_cli(
+    user_id: str,
+    symbols: list[str],
+    *,
+    force: bool,
+    skip_ghost_eval: bool,
+    skip_reflect: bool,
+) -> int:
+    """Load the watchlist and run the pass on ONE event loop.
+
+    These were two ``asyncio.run`` calls. ``engine.db.session`` caches a
+    single AsyncEngine per process, so the first call bound its asyncpg
+    connections to a loop that the second call had already closed — every
+    subsequent pool checkout raised "attached to a different loop". The
+    visible damage was the equity resolver: it failed on every run, was
+    caught by its own fallback, and sized the whole sweep against the
+    100k fixture instead of real account equity. That is the exact
+    failure the resolver was written to prevent.
+    """
     # The user's curated watchlist (user_watchlist table) overrides the
     # static default when it exists — that's the product: "tell the agent
     # what you're interested in, it tracks those."
     if env_flag("USE_POSTGRES"):
         try:
-            user_symbols = asyncio.run(_load_user_watchlist(args.user_id))
+            user_symbols = await _load_user_watchlist(user_id)
         except Exception:  # fall back to the CLI/default list
             log.exception("user watchlist load failed — using default list")
             user_symbols = []
@@ -409,14 +439,12 @@ def cli() -> int:
                      len(user_symbols), ",".join(user_symbols))
             symbols = user_symbols
 
-    return asyncio.run(
-        main(
-            args.user_id,
-            symbols,
-            force=args.force,
-            skip_ghost_eval=args.skip_ghost_eval,
-            skip_reflect=args.no_reflect,
-        )
+    return await main(
+        user_id,
+        symbols,
+        force=force,
+        skip_ghost_eval=skip_ghost_eval,
+        skip_reflect=skip_reflect,
     )
 
 
