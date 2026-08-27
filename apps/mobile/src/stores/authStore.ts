@@ -64,6 +64,33 @@ function isCredentialDead(err: unknown): boolean {
   return code !== null && CREDENTIAL_DEAD_CODES.has(code);
 }
 
+/**
+ * De-dupes concurrent ``refresh()`` calls into one in-flight request.
+ *
+ * The API's refresh tokens are single-use and rotate on every call
+ * (server-side compare-and-swap on the stored hash). The dashboard fires
+ * several independently-polling queries (positions, scanner status,
+ * health, review — every 30-60s) against a 15-minute access token, so
+ * near the expiry boundary it was common for two or more requests to 401
+ * within the same tick. Each one independently called ``refresh()``, so
+ * both read the SAME stored refresh token and both POSTed it. The winner
+ * rotated it; the loser's identical token was then a REPLAY — the server
+ * doesn't just reject it, it revokes the whole session
+ * (``auth.py::refresh`` — "somebody is using a replayed older refresh").
+ * The loser's caller saw ``superseded`` in ``CREDENTIAL_DEAD_CODES`` and
+ * wiped the credential, silently signing the user out mid-session. The
+ * one visible symptom was whichever request happened to be the loser —
+ * often "Decision failed — try again" on an approve tap, with no hint
+ * that the real cause was a session the user never asked to end.
+ *
+ * Sharing one in-flight promise means every concurrent 401 waits on the
+ * SAME refresh call and gets the SAME outcome — the race this was built
+ * to detect (an attacker replaying an old token after we've already
+ * rotated) still revokes correctly; two of our own requests hitting
+ * expiry in the same tick no longer look like one.
+ */
+let inFlightRefresh: Promise<string | null> | null = null;
+
 interface AuthState {
   status: AuthStatus;
   user: AuthUser | null;
@@ -139,31 +166,42 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   refresh: async () => {
-    const refresh = await loadRefreshToken();
-    if (!refresh) {
-      set({ status: 'unauthenticated', user: null, accessToken: null });
-      return null;
-    }
-    try {
-      const issued = await request<IssuedTokensResponse>('/api/v1/auth/refresh', {
-        method: 'POST',
-        body: { refreshToken: refresh },
-        skipAuth: true,
-      });
-      await get().signIn(issued);
-      return issued.accessToken;
-    } catch (err) {
-      // Same distinction as restore(): only wipe storage when the
-      // credential itself is confirmed dead, not on every failure — this
-      // path is also used by the API interceptor's silent-refresh-on-401,
-      // so it used to be even more aggressive than restore()'s about
-      // wiping on ANY thrown error.
-      if (isCredentialDead(err)) {
-        await clearAll();
+    // Join the in-flight call rather than starting a second one — see the
+    // comment on ``inFlightRefresh`` above for why this isn't optional.
+    if (inFlightRefresh) return inFlightRefresh;
+
+    const run = async (): Promise<string | null> => {
+      const refresh = await loadRefreshToken();
+      if (!refresh) {
+        set({ status: 'unauthenticated', user: null, accessToken: null });
+        return null;
       }
-      set({ status: 'unauthenticated', user: null, accessToken: null });
-      return null;
-    }
+      try {
+        const issued = await request<IssuedTokensResponse>('/api/v1/auth/refresh', {
+          method: 'POST',
+          body: { refreshToken: refresh },
+          skipAuth: true,
+        });
+        await get().signIn(issued);
+        return issued.accessToken;
+      } catch (err) {
+        // Same distinction as restore(): only wipe storage when the
+        // credential itself is confirmed dead, not on every failure — this
+        // path is also used by the API interceptor's silent-refresh-on-401,
+        // so it used to be even more aggressive than restore()'s about
+        // wiping on ANY thrown error.
+        if (isCredentialDead(err)) {
+          await clearAll();
+        }
+        set({ status: 'unauthenticated', user: null, accessToken: null });
+        return null;
+      }
+    };
+
+    inFlightRefresh = run().finally(() => {
+      inFlightRefresh = null;
+    });
+    return inFlightRefresh;
   },
 
   signOut: async () => {

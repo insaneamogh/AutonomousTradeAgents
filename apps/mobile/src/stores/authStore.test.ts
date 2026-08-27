@@ -217,4 +217,40 @@ describe('authStore.refresh()', () => {
     expect(result).toBeNull();
     expect(mockClearAll).toHaveBeenCalledTimes(1);
   });
+
+  // Refresh tokens are single-use and rotate on the server; a second call
+  // presenting the same (now-spent) token is treated as a replay and the
+  // server revokes the WHOLE session, not just the second call. Several
+  // dashboard queries poll independently against one 15-minute access
+  // token, so two or more requests hitting a 401 in the same tick used to
+  // each fire their own `/auth/refresh` — the loser's call died as a
+  // "superseded" replay and wiped a credential that was never actually
+  // dead. These pin that concurrent callers share ONE network call.
+  it('de-dupes concurrent calls into a single network request', async () => {
+    mockLoadRefreshToken.mockResolvedValue('stored-refresh-token');
+    mockFetchResponse(200, ISSUED);
+
+    const [a, b, c] = await Promise.all([
+      useAuthStore.getState().refresh(),
+      useAuthStore.getState().refresh(),
+      useAuthStore.getState().refresh(),
+    ]);
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(a).toBe(ISSUED.accessToken);
+    expect(b).toBe(ISSUED.accessToken);
+    expect(c).toBe(ISSUED.accessToken);
+    expect(useAuthStore.getState().status).toBe('authenticated');
+  });
+
+  it('allows a fresh network call once the in-flight one has settled', async () => {
+    mockLoadRefreshToken.mockResolvedValue('stored-refresh-token');
+    mockFetchResponse(200, ISSUED);
+    await useAuthStore.getState().refresh();
+
+    mockFetchResponse(200, ISSUED);
+    await useAuthStore.getState().refresh();
+
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+  });
 });
