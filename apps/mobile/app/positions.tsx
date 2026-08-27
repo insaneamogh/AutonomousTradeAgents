@@ -146,11 +146,13 @@ export default function PositionsScreen() {
                       )}
                     >
                       <Text className="text-[10px] uppercase tracking-[1px] text-text-secondary dark:text-text-secondary-dark">
-                        {!p.managed
-                          ? 'Unmanaged'
-                          : p.exitMode === 'agent'
-                            ? 'Agent exit'
-                            : 'Manual exit'}
+                        {p.status === 'pending_fill'
+                          ? 'Awaiting fill'
+                          : !p.managed
+                            ? 'Unmanaged'
+                            : p.exitMode === 'agent'
+                              ? 'Agent exit'
+                              : 'Manual exit'}
                       </Text>
                     </View>
                   </View>
@@ -162,16 +164,18 @@ export default function PositionsScreen() {
                     className="text-[13px] text-text-secondary dark:text-text-secondary-dark"
                     style={{ fontVariant: ['tabular-nums'] }}
                   >
-                    {money(p.avgEntryPrice)} → {money(p.lastPrice)}
+                    {p.status === 'pending_fill' ? 'order working — not filled yet' : `${money(p.avgEntryPrice)} → ${money(p.lastPrice)}`}
                   </Text>
                 </View>
 
-                <View className="flex-row justify-between">
-                  <TileLabel>Unrealized</TileLabel>
-                  <Text className={cn('text-[13px] font-medium', pnlClass)} style={{ fontVariant: ['tabular-nums'] }}>
-                    {money(pnl)}
-                  </Text>
-                </View>
+                {p.status !== 'pending_fill' && (
+                  <View className="flex-row justify-between">
+                    <TileLabel>Unrealized</TileLabel>
+                    <Text className={cn('text-[13px] font-medium', pnlClass)} style={{ fontVariant: ['tabular-nums'] }}>
+                      {money(pnl)}
+                    </Text>
+                  </View>
+                )}
 
                 {(p.stopLoss != null || p.targetPrice != null || p.timeStopDays != null) && (
                   <Text className="text-[10px] text-text-tertiary dark:text-text-tertiary-dark">
@@ -180,7 +184,12 @@ export default function PositionsScreen() {
                   </Text>
                 )}
 
-                {p.decisionId ? (
+                {p.status === 'pending_fill' ? (
+                  <Text className="mt-1 text-[10px] text-text-tertiary dark:text-text-tertiary-dark">
+                    Nothing to close yet — the order hasn't filled. Cancel it at the
+                    broker if you no longer want it.
+                  </Text>
+                ) : p.decisionId ? (
                   <Pressable
                     onPress={() => confirmClose(p.decisionId!, p.symbol, p.qty)}
                     disabled={busy}

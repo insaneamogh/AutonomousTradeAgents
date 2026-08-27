@@ -128,3 +128,61 @@ def test_symbol_already_covered_by_a_decision_is_not_duplicated() -> None:
         )
         == []
     )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Pending-fill positions
+#
+# An approved proposal used to disappear the instant it was decided and
+# only reappear once the broker filled it — invisible in between, most
+# visibly outside market hours when an order can sit accepted-but-unfilled
+# for hours. These pin the DTO `_from_decision` builds for that gap.
+# ─────────────────────────────────────────────────────────────────────
+
+
+class _Decision:
+    def __init__(self, **kw: object) -> None:
+        self.id = kw.get("id", "dec-1")
+        self.proposal = kw.get("proposal", {})
+        self.fill_avg_price = kw.get("fill_avg_price")
+        self.fill_qty = kw.get("fill_qty")
+        self.symbol = kw.get("symbol", "KO")
+        self.exit_mode = kw.get("exit_mode", "agent")
+        self.user_responded_at = kw.get("user_responded_at")
+        self.triggered_at = kw.get("triggered_at", "2026-08-27T09:21:01Z")
+
+
+def test_pending_fill_reports_the_proposal_qty_with_no_entry_or_mark() -> None:
+    from app.services.orders.positions_service import _from_decision
+
+    dto = _from_decision(
+        _Decision(
+            proposal={"side": "BUY", "qty": 55, "stopLoss": 87.04, "targetPrice": 97.72},
+        ),
+        marks={"KO": 89.5},  # even a known mark must not be used pre-fill
+        status="pending_fill",
+    )
+    assert dto.status == "pending_fill"
+    assert dto.qty == 55
+    assert dto.avg_entry_price is None
+    assert dto.last_price is None
+    assert dto.unrealized_pnl is None
+    assert (dto.stop_loss, dto.target_price) == (87.04, 97.72)
+
+
+def test_open_position_uses_the_live_mark() -> None:
+    from app.services.orders.positions_service import _from_decision
+
+    dto = _from_decision(
+        _Decision(
+            proposal={"side": "BUY", "qty": 55},
+            fill_qty=55,
+            fill_avg_price=87.5,
+        ),
+        marks={"KO": 90.0},
+        status="open",
+    )
+    assert dto.status == "open"
+    assert dto.avg_entry_price == 87.5
+    assert dto.last_price == 90.0
+    assert dto.unrealized_pnl == pytest.approx(137.5)  # (90 - 87.5) * 55

@@ -189,6 +189,13 @@ export interface OpenPositionDto {
    * the broker, or before this deployment's decision history). It still
    * counts against the account, so it is listed rather than hidden. */
   managed: boolean;
+  /** "pending_fill": the order was placed but hasn't filled yet (common
+   * outside market hours) — no entry price, no live mark, nothing to
+   * close yet, only an order working at the broker. "open": a real,
+   * filled position. Unmanaged rows are always "open". Value stays
+   * snake_case on the wire — Pydantic's camelCase alias generator only
+   * renames JSON keys, not Literal string values. */
+  status: 'open' | 'pending_fill';
   symbol: string;
   side: Side;
   /** "long" or "short" — derived server-side from the entry proposal's

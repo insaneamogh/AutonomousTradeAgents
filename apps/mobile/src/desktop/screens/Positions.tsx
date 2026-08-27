@@ -125,12 +125,15 @@ export function PositionsScreen() {
                             <Pill tone={p.direction === 'short' ? 'bear' : 'bull'}>
                               {p.direction.toUpperCase()}
                             </Pill>
+                            {p.status === 'pending_fill' ? <Pill tone="neutral">AWAITING FILL</Pill> : null}
                             {!p.managed ? <Pill tone="neutral">UNMANAGED</Pill> : null}
                           </Row>
                           <span className="pg-caption">
-                            {p.managed
-                              ? `opened ${ago(p.openedAt)}`
-                              : `held at broker — no council decision behind it`}
+                            {p.status === 'pending_fill'
+                              ? `approved ${ago(p.openedAt)} — order working at the broker`
+                              : p.managed
+                                ? `opened ${ago(p.openedAt)}`
+                                : `held at broker — no council decision behind it`}
                           </span>
                         </Stack>
                       </td>
@@ -141,17 +144,31 @@ export function PositionsScreen() {
                       </td>
                       <td className="pg-num-right">{p.qty}</td>
                       <td className="pg-num-right">{p.avgEntryPrice != null ? usd(p.avgEntryPrice, 2) : '—'}</td>
-                      <td className="pg-num-right">{p.lastPrice != null ? usd(p.lastPrice, 2) : '—'}</td>
+                      <td className="pg-num-right">
+                        {p.status === 'pending_fill' ? (
+                          <span className="pg-caption pg-dim">not filled yet</span>
+                        ) : p.lastPrice != null ? (
+                          usd(p.lastPrice, 2)
+                        ) : (
+                          '—'
+                        )}
+                      </td>
                       <td className="pg-num-right pg-dim">
                         {p.stopLoss != null ? usd(p.stopLoss, 2) : '—'} / {p.targetPrice != null ? usd(p.targetPrice, 2) : '—'}
                       </td>
                       <td className="pg-num-right">
-                        <span className={p.unrealizedPnl != null && p.unrealizedPnl < 0 ? 'pg-bear' : 'pg-bull'}>
-                          {signedUsd(p.unrealizedPnl)}
-                        </span>
+                        {p.status === 'pending_fill' ? (
+                          <span className="pg-caption pg-dim">—</span>
+                        ) : (
+                          <span className={p.unrealizedPnl != null && p.unrealizedPnl < 0 ? 'pg-bear' : 'pg-bull'}>
+                            {signedUsd(p.unrealizedPnl)}
+                          </span>
+                        )}
                       </td>
                       <td className="pg-num-right">
-                        {p.decisionId ? (
+                        {p.status === 'pending_fill' ? (
+                          <span className="pg-caption pg-dim">nothing to close yet</span>
+                        ) : p.decisionId ? (
                           <Button
                             size="sm"
                             onClick={() => close.mutate(p.decisionId!)}

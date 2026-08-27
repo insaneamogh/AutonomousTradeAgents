@@ -1,8 +1,17 @@
 """Wire schemas for /api/v1/positions — open agent positions + close.
 
-One ``OpenPositionDto`` per open agent-managed decision (approved + filled
-+ not closed). Carries the exit plan so the mobile screen can show "who
-closes this and when" and offer a close-now button.
+One ``OpenPositionDto`` per open agent-managed decision (approved + not
+closed) OR per unmanaged broker position. Carries the exit plan so the
+mobile screen can show "who closes this and when" and offer a close-now
+button.
+
+Includes rows still awaiting a fill (``status="pending_fill"``): an
+approved proposal used to disappear from ``/approvals/pending`` the
+instant it was decided and only reappear here once the broker filled it —
+invisible in between, most visibly outside market hours, when an order
+can sit accepted-but-unfilled for hours. There was no other surface that
+listed it: ``/orders`` has no GET, so an approved order was nowhere in
+the app until the market opened.
 """
 
 from __future__ import annotations
@@ -23,6 +32,12 @@ class OpenPositionDto(CamelCaseModel):
     # position still counts against the account, so hiding it made
     # /account report open positions that /positions could not show.
     managed: bool = True
+    # "pending_fill": the order was placed at the broker but hasn't filled
+    # yet (common outside market hours) — there is no entry price, no
+    # live mark, and nothing to close, only an order to watch. "open":
+    # a real position, filled and live. Unmanaged rows are always "open"
+    # — they exist at the broker BECAUSE they already filled.
+    status: Literal["open", "pending_fill"] = "open"
     symbol: str
     side: Literal["BUY", "SELL"]
     # Derived from the entry proposal's own "direction", falling back to

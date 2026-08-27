@@ -22,6 +22,7 @@ returns [] (there is no position ledger).
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from app.core.ids import to_uuid as _to_uuid
 from app.schemas.positions import OpenPositionDto
@@ -29,9 +30,17 @@ from engine.env import env_flag
 
 logger = logging.getLogger("api.positions")
 
+# Order rows in these states will never fill — the decision behind one
+# stays user_response='approved' with fill_qty NULL forever (order_sync
+# only touches the decision on a FILL), so without this exclusion a dead
+# order would show as "awaiting fill" indefinitely instead of vanishing.
+_DEAD_ORDER_STATUSES = frozenset(
+    {"rejected", "canceled", "cancelled", "expired", "done_for_day"}
+)
+
 
 async def list_open_positions(user_id: str) -> list[OpenPositionDto]:
-    """Open agent positions for the user, newest first, with live marks."""
+    """Open + pending-fill agent positions for the user, with live marks."""
     if not env_flag("USE_POSTGRES"):
         return []
     uid = _to_uuid(user_id)
@@ -40,21 +49,49 @@ async def list_open_positions(user_id: str) -> list[OpenPositionDto]:
 
     from sqlalchemy import desc, select
 
-    from engine.db.models import AgentDecision, PositionsSnapshot
+    from engine.db.models import AgentDecision, Order, PositionsSnapshot
     from engine.db.session import async_session_factory
 
     factory = async_session_factory()
     async with factory() as session:
-        stmt = (
+        base = (
             select(AgentDecision)
             .where(AgentDecision.user_id == uid)
             .where(AgentDecision.risk_approved.is_(True))
             .where(AgentDecision.user_response == "approved")
-            .where(AgentDecision.fill_qty.is_not(None))
             .where(AgentDecision.closed_at.is_(None))
-            .order_by(desc(AgentDecision.triggered_at))
         )
-        decisions = (await session.execute(stmt)).scalars().all()
+        filled = (await session.execute(
+            base.where(AgentDecision.fill_qty.is_not(None))
+            .order_by(desc(AgentDecision.triggered_at))
+        )).scalars().all()
+
+        # Approved, no fill yet — the order is still working at the broker
+        # (or hasn't been tried yet). Common outside market hours: a
+        # MARKET order placed pre-open sits accepted until the session
+        # starts. Cross-referenced against `orders` below to drop any
+        # that already died (rejected/canceled) rather than show forever.
+        awaiting = (await session.execute(
+            base.where(AgentDecision.fill_qty.is_(None))
+            .order_by(desc(AgentDecision.triggered_at))
+        )).scalars().all()
+
+        if awaiting:
+            order_stmt = (
+                select(Order.agent_decision_id, Order.status)
+                .where(Order.user_id == uid)
+                .where(Order.agent_decision_id.in_([d.id for d in awaiting]))
+                .order_by(desc(Order.submitted_at))
+            )
+            # Latest order per decision — a retried approval can leave more
+            # than one row; only the newest attempt's status matters.
+            latest_status: dict[object, str] = {}
+            for decision_id, status in await session.execute(order_stmt):
+                latest_status.setdefault(decision_id, status)
+            awaiting = [
+                d for d in awaiting
+                if latest_status.get(d.id) not in _DEAD_ORDER_STATUSES
+            ]
 
         # One snapshot read → symbol → last mark map for live unrealized P&L,
         # and the source of truth for what the broker actually holds.
@@ -67,7 +104,7 @@ async def list_open_positions(user_id: str) -> list[OpenPositionDto]:
         snapshot = (await session.execute(snap_stmt)).scalar_one_or_none()
 
     marks: dict[str, float] = {}
-    broker_positions: dict[str, dict] = {}
+    broker_positions: dict[str, dict[str, Any]] = {}
     if snapshot is not None:
         for pos in snapshot.open_positions or []:
             sym = str(pos.get("symbol", "")).upper()
@@ -84,54 +121,63 @@ async def list_open_positions(user_id: str) -> list[OpenPositionDto]:
                 marks[sym] = round(abs(mv) / abs(qty), 4)
 
     out: list[OpenPositionDto] = []
-    for d in decisions:
-        proposal = d.proposal or {}
-        # The entry proposal's own direction, falling back to side == "SELL"
-        # for rows that predate the "direction" field (item 1).
-        raw_direction = proposal.get("direction")
-        side = str(proposal.get("side", "BUY"))
-        direction = raw_direction if raw_direction in ("long", "short") else (
-            "short" if side == "SELL" else "long"
-        )
-        is_short = direction == "short"
-
-        entry = float(d.fill_avg_price) if d.fill_avg_price is not None else None
-        last = marks.get(d.symbol.upper())
-        qty = int(d.fill_qty or 0)
-        # fill_qty is always a non-negative share COUNT (an order's filled
-        # quantity, not a signed position) — a short's unrealized P&L is
-        # the mirror of a long's: it gains when price FALLS, so the sign
-        # flips on direction rather than on the sign of qty.
-        unrealized = (
-            round((-1.0 if is_short else 1.0) * (last - entry) * qty, 2)
-            if (last is not None and entry is not None and qty)
-            else None
-        )
-        out.append(
-            OpenPositionDto(
-                decision_id=str(d.id),
-                managed=True,
-                symbol=d.symbol,
-                side=side,  # type: ignore[arg-type]
-                direction=direction,  # type: ignore[arg-type]
-                qty=qty,
-                avg_entry_price=entry,
-                last_price=last,
-                unrealized_pnl=unrealized,
-                exit_mode=d.exit_mode if d.exit_mode in ("agent", "manual") else "agent",
-                stop_loss=proposal.get("stopLoss"),
-                target_price=proposal.get("targetPrice"),
-                time_stop_days=proposal.get("timeStopDays"),
-                opened_at=d.user_responded_at or d.triggered_at,
-            )
-        )
+    for d in filled:
+        out.append(_from_decision(d, marks, status="open"))
+    for d in awaiting:
+        out.append(_from_decision(d, marks, status="pending_fill"))
 
     out.extend(_unmanaged(broker_positions, out, snapshot))
     return out
 
 
+def _from_decision(
+    d: object, marks: dict[str, float], *, status: str
+) -> OpenPositionDto:
+    proposal = d.proposal or {}  # type: ignore[attr-defined]
+    # The entry proposal's own direction, falling back to side == "SELL"
+    # for rows that predate the "direction" field.
+    raw_direction = proposal.get("direction")
+    side = str(proposal.get("side", "BUY"))
+    direction = raw_direction if raw_direction in ("long", "short") else (
+        "short" if side == "SELL" else "long"
+    )
+    is_short = direction == "short"
+
+    # A pending-fill row has no fill yet, so it reports the proposal's
+    # planned qty rather than a fill_qty that is NULL by definition.
+    entry = float(d.fill_avg_price) if d.fill_avg_price is not None else None  # type: ignore[attr-defined]
+    last = marks.get(d.symbol.upper()) if status == "open" else None  # type: ignore[attr-defined]
+    qty = int(d.fill_qty) if d.fill_qty is not None else int(proposal.get("qty", 0) or 0)  # type: ignore[attr-defined]
+    # fill_qty is always a non-negative share COUNT (an order's filled
+    # quantity, not a signed position) — a short's unrealized P&L is the
+    # mirror of a long's: it gains when price FALLS, so the sign flips on
+    # direction rather than on the sign of qty.
+    unrealized = (
+        round((-1.0 if is_short else 1.0) * (last - entry) * qty, 2)
+        if (last is not None and entry is not None and qty)
+        else None
+    )
+    return OpenPositionDto(
+        decision_id=str(d.id),  # type: ignore[attr-defined]
+        managed=True,
+        status=status,  # type: ignore[arg-type]
+        symbol=d.symbol,  # type: ignore[attr-defined]
+        side=side,  # type: ignore[arg-type]
+        direction=direction,  # type: ignore[arg-type]
+        qty=qty,
+        avg_entry_price=entry,
+        last_price=last,
+        unrealized_pnl=unrealized,
+        exit_mode=d.exit_mode if d.exit_mode in ("agent", "manual") else "agent",  # type: ignore[attr-defined]
+        stop_loss=proposal.get("stopLoss"),
+        target_price=proposal.get("targetPrice"),
+        time_stop_days=proposal.get("timeStopDays"),
+        opened_at=d.user_responded_at or d.triggered_at,  # type: ignore[attr-defined]
+    )
+
+
 def _unmanaged(
-    broker_positions: dict[str, dict],
+    broker_positions: dict[str, dict[str, Any]],
     managed: list[OpenPositionDto],
     snapshot: object | None,
 ) -> list[OpenPositionDto]:
