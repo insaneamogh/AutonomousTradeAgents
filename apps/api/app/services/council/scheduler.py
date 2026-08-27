@@ -88,8 +88,8 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
-def _watchlist() -> list[str]:
-    """Configured watchlist, falling back to the cron's default set."""
+def _env_watchlist() -> list[str]:
+    """Configured watchlist from env, falling back to the cron's defaults."""
     from trading_agents.jobs.daily_cron import DEFAULT_WATCHLIST
 
     raw = os.environ.get("AGENT_CRON_WATCHLIST", "").strip()
@@ -98,12 +98,37 @@ def _watchlist() -> list[str]:
     )
 
 
-def configured_watchlist() -> list[str]:
+async def _watchlist() -> list[str]:
+    """The user's curated watchlist, else the env/default list.
+
+    ``daily_cron.cli()`` has always preferred the ``user_watchlist`` table
+    — "tell the agent what you're interested in, it tracks those" — but
+    the scheduler read only ``AGENT_CRON_WATCHLIST``. Since the scheduler
+    is the path that actually runs in production, curating a watchlist in
+    the app changed nothing: the scanner and the baseline sweep kept
+    working off whatever the env var said.
+
+    Falls back to env on any load failure. An unreachable table must not
+    stop the sweep from running at all.
+    """
+    from trading_agents.jobs.daily_cron import _load_user_watchlist
+
+    if not _flag("USE_POSTGRES"):
+        return _env_watchlist()
+    try:
+        curated = await _load_user_watchlist(_cron_user())
+    except Exception:
+        logger.exception("user watchlist load failed — using the env list")
+        return _env_watchlist()
+    return curated or _env_watchlist()
+
+
+async def configured_watchlist() -> list[str]:
     """Public wrapper around ``_watchlist`` for callers outside this module
     (``scanner_status.py`` reports its size) — avoids reaching into an
     underscore-prefixed name from another module. Not named ``watchlist``
     because ``_run_once`` already has a same-named local variable."""
-    return _watchlist()
+    return await _watchlist()
 
 
 def scanner_enabled() -> bool:
@@ -269,7 +294,7 @@ class CouncilScheduler:
         from trading_agents.jobs.daily_cron import SymbolScanContext
         from trading_agents.jobs.daily_cron import main as cron_main
 
-        symbols = _watchlist()
+        symbols = await _watchlist()
         result = await scanner.scan(symbols)  # type: ignore[attr-defined]
 
         self.last_scan_at = result.scanned_at
@@ -344,14 +369,10 @@ class CouncilScheduler:
         idempotency check, the push notification, and the ghost/reflection
         follow-ups — this only decides *when*.
         """
-        from trading_agents.jobs.daily_cron import DEFAULT_WATCHLIST
         from trading_agents.jobs.daily_cron import main as cron_main
 
-        user_id = os.environ.get("AGENT_CRON_USER_ID", "").strip() or _FIXTURE_USER
-        raw = os.environ.get("AGENT_CRON_WATCHLIST", "").strip()
-        watchlist = [s.strip().upper() for s in raw.split(",") if s.strip()] or list(
-            DEFAULT_WATCHLIST
-        )
+        user_id = _cron_user()
+        watchlist = await _watchlist()
 
         logger.info("council scan starting — %d symbols", len(watchlist))
         started = datetime.now(UTC)

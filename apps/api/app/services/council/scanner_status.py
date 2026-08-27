@@ -49,13 +49,18 @@ def _signal_dto(signal: ScanSignal) -> ScanSignalDto:
 async def build_scanner_status_report() -> ScannerStatusResponse:
     """Aggregate the running scheduler's scanner state. Never raises."""
     try:
-        return _build()
-    except Exception as exc:  # noqa: BLE001 — this must always answer 200
+        watchlist_size = len(await configured_watchlist())
+    except Exception as exc:
+        logger.warning("scanner watchlist read failed — %s", exc)
+        watchlist_size = 0
+    try:
+        return _build(watchlist_size)
+    except Exception as exc:
         logger.warning("scanner status read failed — %s", exc)
-        return _empty_report()
+        return _empty_report(watchlist_size)
 
 
-def _empty_report() -> ScannerStatusResponse:
+def _empty_report(watchlist_size: int = 0) -> ScannerStatusResponse:
     """Honest all-default response — used both when the scheduler was
     never started and as the fallback if something above still manages
     to raise."""
@@ -67,7 +72,7 @@ def _empty_report() -> ScannerStatusResponse:
         last_scan_at=None,
         scan_interval_minutes=None,
         max_council_runs_per_scan=None,
-        watchlist_size=len(configured_watchlist()),
+        watchlist_size=watchlist_size,
         signals=[],
         triggered_symbols=[],
         suppressed_count=0,
@@ -77,10 +82,10 @@ def _empty_report() -> ScannerStatusResponse:
     )
 
 
-def _build() -> ScannerStatusResponse:
+def _build(watchlist_size: int) -> ScannerStatusResponse:
     scheduler = get_council_scheduler()
     if scheduler is None:
-        return _empty_report()
+        return _empty_report(watchlist_size)
 
     result = scheduler.last_scan_result
     signals = [_signal_dto(s) for s in result.signals] if result is not None else []
@@ -96,7 +101,7 @@ def _build() -> ScannerStatusResponse:
         last_scan_at=scheduler.last_scan_at,
         scan_interval_minutes=scheduler.scanner_interval_minutes,
         max_council_runs_per_scan=scheduler.scanner_max_council_runs,
-        watchlist_size=len(configured_watchlist()),
+        watchlist_size=watchlist_size,
         signals=signals,
         triggered_symbols=triggered_symbols,
         suppressed_count=suppressed_count,
