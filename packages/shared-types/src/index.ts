@@ -26,7 +26,7 @@ export type OrderStatus =
   | 'expired';
 
 export type AccountStatus = 'connected' | 'disconnected' | 'expiring';
-export type ActivityKind = 'proposal' | 'approved' | 'declined' | 'filled' | 'vetoed';
+export type ActivityKind = 'proposal' | 'approved' | 'declined' | 'filled' | 'vetoed' | 'hold';
 export type DecisionOutcome = 'approved' | 'declined' | 'expired';
 export type RiskLevel = 1 | 2 | 3 | 4 | 5;
 
@@ -54,7 +54,8 @@ export interface ActivityEntryDto {
   id: string;
   kind: ActivityKind;
   symbol: string;
-  side: Side;
+  /** null for "hold" — a HOLD that never became a proposal has no side. */
+  side: Side | null;
   qty?: number;
   price?: number;
   verdict?: Verdict;

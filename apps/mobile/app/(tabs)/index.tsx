@@ -133,6 +133,9 @@ const KIND_LABEL: Record<ActivityEntryDto['kind'], string> = {
   declined: 'declined',
   filled: 'filled',
   vetoed: 'vetoed',
+  // A HOLD never reached the risk officer — "vetoed" would claim a
+  // rule fired when none did.
+  hold: 'held',
 };
 
 function ActivityTile() {

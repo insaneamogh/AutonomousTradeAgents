@@ -654,6 +654,9 @@ function HealthTile({ name, comp }: { name: string; comp: ComponentHealth }) {
 function activityColor(kind: string): string {
   if (kind === 'filled' || kind === 'approved') return 'var(--pg-bull)';
   if (kind === 'vetoed' || kind === 'declined') return 'var(--pg-bear)';
+  // "hold" (never reached the risk officer) is deliberately NOT bear —
+  // it isn't a refusal, it's the deterministic gate declining to spend
+  // an LLM call on a non-setup, or the drafter itself saying no.
   return 'var(--pg-outline)';
 }
 

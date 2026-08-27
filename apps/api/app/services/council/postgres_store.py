@@ -276,9 +276,16 @@ def _row_to_proposal_dto(row: AgentDecision) -> ApprovalProposalDto | None:
 
 
 def _decision_to_activity(row: AgentDecision) -> ActivityEntryDto:
-    # Derive kind from row state.
-    side_val = cast(str, (row.proposal or {}).get("side", "BUY"))
-    qty_val = (row.proposal or {}).get("qty")
+    # A real proposal dict always carries "side" — using its presence,
+    # not the column's bare truthiness, distinguishes an actual drafted
+    # proposal from either shape a HOLD's ``proposal`` column can hold
+    # (None on a fresh row, or a stale pre-fix raw_state envelope on an
+    # old one — see memory/postgres.py). Defaulting side to "BUY" for a
+    # HOLD that never proposed anything was its own bug: every HOLD in
+    # this feed read as an unnamed BUY that got vetoed.
+    has_proposal = bool((row.proposal or {}).get("side"))
+    side_val = cast(str, (row.proposal or {}).get("side")) if has_proposal else None
+    qty_val = (row.proposal or {}).get("qty") if has_proposal else None
 
     if row.user_response == "approved":
         kind = "approved"
@@ -286,9 +293,23 @@ def _decision_to_activity(row: AgentDecision) -> ActivityEntryDto:
     elif row.user_response in ("declined", "expired"):
         kind = "declined"
         headline = f"You {row.user_response} the {side_val} {row.symbol} proposal."
-    elif not row.risk_approved:
+    elif row.risk_veto_rule:
+        # The risk officer actually ran and actually refused — the only
+        # case that is really a veto.
         kind = "vetoed"
-        headline = f"Vetoed — {row.risk_veto_rule or 'risk rule fired'}."
+        headline = f"Vetoed — {row.risk_veto_rule}."
+    elif not has_proposal:
+        # HOLD without a risk-officer refusal: either no strategy cleared
+        # the fit floor, or the Drafter itself declined — neither ever
+        # reached the risk officer, so calling it "vetoed" is false. Open
+        # the decision's biography for the real reason (selector/drafter
+        # rationale); this feed is a headline, not the explanation.
+        kind = "hold"
+        headline = (
+            f"Held {row.symbol} — {row.selected_strategy} fit, drafter declined."
+            if row.selected_strategy
+            else f"Held {row.symbol} — no strategy fit."
+        )
     else:
         kind = "proposal"
         headline = f"Agent proposed {side_val} {qty_val or ''} {row.symbol}."
