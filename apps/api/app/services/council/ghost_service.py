@@ -154,6 +154,16 @@ async def build_veto_ledger(window_days: int = 30, *, user_id: str) -> VetoLedge
                     .outerjoin(GhostOutcome, GhostOutcome.decision_id == AgentDecision.id)
                     .where(
                         AgentDecision.risk_approved.is_(False),
+                        # A veto is a NAMED deterministic rule refusing a
+                        # drafted proposal. Filtering on risk_approved
+                        # alone also swept up every strategy-fit HOLD —
+                        # symbols that matched no setup and so never
+                        # reached the risk engine at all. Those have no
+                        # rule and no proposal, and they were landing in
+                        # the ledger as "unnamed_rule", which both
+                        # overstated the veto count and made the per-rule
+                        # scorecard read as broken.
+                        AgentDecision.risk_veto_rule.is_not(None),
                         AgentDecision.triggered_at >= cutoff,
                         *tenant,
                     )
@@ -164,6 +174,8 @@ async def build_veto_ledger(window_days: int = 30, *, user_id: str) -> VetoLedge
 
     by_rule: dict[str, list[tuple[AgentDecision, GhostOutcome | None]]] = {}
     for dec, ghost in rows:
+        # The query guarantees a rule name; the fallback only guards a
+        # row written before rule names were mandatory.
         rule = dec.risk_veto_rule or "unnamed_rule"
         by_rule.setdefault(rule, []).append((dec, ghost))
 
