@@ -240,6 +240,11 @@ def _reasoning_block(final: CouncilState) -> dict[str, Any]:
         "risk_checks_passed": list(final.get("risk_checks_passed") or []),
         "risk_veto_rule": final.get("risk_veto_rule"),
         "risk_reason": final.get("risk_reason"),
+        # The Drafter's own explanation of a HOLD — present only when the
+        # model actually reached a verdict (constrained by the fit node's
+        # direction) and said no, or the sizer zeroed out its qty. Absent
+        # for the two upstream HOLDs (no strategy fit; parse failure).
+        "drafter_rationale": final.get("drafter_rationale") or None,
         "sizing": proposal.get("sizing"),
         "informational_flags": list(proposal.get("informational_flags") or []),
         "scan_triggers": (final.get("context") or {}).get("scan_triggers"),
@@ -314,8 +319,22 @@ def _to_decision_entry(
         fundamental=fund or None,
         macro=macro or None,
         analyst_subset=list(final.get("analyst_subset") or []) or None,
-        bull_case=internal_proposal.get("bull_case") or (proposal_dto or {}).get("bullCase"),
-        bear_case=internal_proposal.get("bear_case") or (proposal_dto or {}).get("bearCase"),
+        # Third fallback: the Drafter's own bull/bear case survives on a
+        # HOLD via ``final["bull_case"]``/``final["bear_case"]`` (see
+        # drafter_node) — without it, every HOLD the model actually
+        # explained looked identical to one it never reasoned about at all.
+        bull_case=(
+            internal_proposal.get("bull_case")
+            or (proposal_dto or {}).get("bullCase")
+            or final.get("bull_case")
+            or None
+        ),
+        bear_case=(
+            internal_proposal.get("bear_case")
+            or (proposal_dto or {}).get("bearCase")
+            or final.get("bear_case")
+            or None
+        ),
         risk_reason=str(final.get("risk_reason") or "") or None,
         token_usage=final.get("token_usage"),
         completed_at=datetime.now(UTC),

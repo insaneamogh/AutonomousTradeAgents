@@ -2,7 +2,6 @@
 
 import { useAccount } from '@/hooks/useAccount';
 import { useClosePosition, useOpenPositions } from '@/hooks/usePositions';
-import { useDecisionTimeline } from '@/hooks/useDecisionTimeline';
 
 import { ago, signedPct, signedUsd, tone, usd } from '../format';
 import {
@@ -20,6 +19,7 @@ import {
   Stack,
   StatTile,
 } from '../primitives';
+import { TimelineCard } from '../TradeBiography';
 import { useState } from 'react';
 
 export function PositionsScreen() {
@@ -245,36 +245,3 @@ function closeErrorMessage(err: unknown): string {
   return "Couldn't reach the agent server — try again.";
 }
 
-function TimelineCard({ decisionId, onClose }: { decisionId: string; onClose: () => void }) {
-  const timeline = useDecisionTimeline(decisionId);
-  return (
-    <Card>
-      <CardHead
-        label="Trade biography"
-        right={
-          <Button size="sm" kind="ghost" onClick={onClose} ariaLabel="Close the trade biography">
-            Close
-          </Button>
-        }
-      />
-      {timeline.isLoading || !timeline.data ? (
-        <SkelRows rows={5} />
-      ) : (
-        <Stack gap={0}>
-          {timeline.data.events.map((e, i) => (
-            <Row key={`${e.kind}-${i}`} gap={10} style={{ alignItems: 'flex-start', padding: '10px 0', borderTop: i === 0 ? undefined : '1px solid var(--pg-card-border)' }}>
-              <span aria-hidden style={{ width: 6, height: 6, borderRadius: 9999, marginTop: 7, flex: 'none', background: 'var(--pg-outline)' }} />
-              <Stack gap={2} style={{ flex: 1 }}>
-                <span style={{ fontSize: 13, fontWeight: 500 }}>{e.title}</span>
-                <span className="pg-caption">{e.detail}</span>
-              </Stack>
-              <span className="pg-caption pg-num" style={{ flex: 'none' }}>
-                {ago(e.at)}
-              </span>
-            </Row>
-          ))}
-        </Stack>
-      )}
-    </Card>
-  );
-}

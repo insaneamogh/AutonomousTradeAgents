@@ -13,6 +13,7 @@ import { NavProvider, useNav } from './nav';
 import { Shell } from './Shell';
 import { CouncilScreen } from './screens/Council';
 import { DashboardScreen } from './screens/Dashboard';
+import { DecisionsScreen } from './screens/Decisions';
 import { InsightsScreen } from './screens/Insights';
 import { PickDetailScreen } from './screens/PickDetail';
 import { PicksScreen } from './screens/Picks';
@@ -50,6 +51,8 @@ function Route() {
       return <PositionsScreen />;
     case 'strategies':
       return <StrategiesScreen />;
+    case 'decisions':
+      return <DecisionsScreen />;
     case 'review':
       return <ReviewScreen />;
     case 'insights':

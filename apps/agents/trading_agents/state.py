@@ -56,6 +56,17 @@ class CouncilState(TypedDict, total=False):
 
     # ── Drafter output ───────────────────────────────────────────────
     proposal: dict[str, Any] | None
+    drafter_rationale: str
+    """The Drafter's own explanation of a HOLD verdict — set ONLY when the
+    model actually reached a verdict and said no, or the sizer zeroed its
+    qty (see ``drafter_node``). Absent for the two upstream HOLDs (no
+    strategy fit; parse failure), where there was no verdict to explain."""
+    bull_case: str
+    """The Drafter's bull case, kept even on a HOLD — normally this rides
+    inside ``proposal``, but a HOLD never builds one."""
+    bear_case: str
+    """The Drafter's bear case, kept even on a HOLD — same reasoning as
+    ``bull_case`` above."""
 
     # ── Risk officer (deterministic) ─────────────────────────────────
     risk_approved: bool

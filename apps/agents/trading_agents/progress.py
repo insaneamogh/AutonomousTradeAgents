@@ -104,11 +104,18 @@ def summarize_node(node: NodeName, state: dict[str, Any]) -> dict[str, Any] | No
         }
     if node == "drafter":
         p = state.get("proposal") or {}
+        # On a HOLD, ``proposal`` is None and there is no side/qty/notional
+        # to show — but the model was still asked to explain itself, and
+        # that explanation lives in ``drafter_rationale`` (see
+        # ``drafter_node``). Without this fallback the card read a bare
+        # "Sizes the order and writes the plan" placeholder on every HOLD,
+        # which is what the node does when it DOESN'T hold, not why it did.
+        thesis = p.get("rationale") or state.get("drafter_rationale")
         return {
             "side": p.get("side"),
             "qty": p.get("qty"),
             "notional": p.get("estimated_notional"),
-            "thesis": _clip(p.get("rationale")),
+            "thesis": _clip(thesis),
         }
     if node == "risk_officer":
         return {

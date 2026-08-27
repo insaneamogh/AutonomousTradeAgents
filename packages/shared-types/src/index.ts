@@ -385,3 +385,30 @@ export interface ScorecardResponse {
   months: ScorecardMonth[];
   overrides: OverrideStats;
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// /api/v1/decisions — the browsable decision list
+// ─────────────────────────────────────────────────────────────────────
+
+export interface DecisionSummaryDto {
+  id: string;
+  symbol: string;
+  finalAction: string;
+  /** ISO 8601 string. */
+  triggeredAt: string;
+  riskApproved: boolean;
+  riskVetoRule: string | null;
+  selectedStrategy: string | null;
+  selectorConfidence: number;
+  selectorRationale: string;
+  regime: string | null;
+  analystSubset: string[] | null;
+  userResponse: string | null;
+}
+
+export interface DecisionListResponse {
+  decisions: DecisionSummaryDto[];
+  total: number;
+  limit: number;
+  offset: number;
+}

@@ -60,6 +60,60 @@ def _analyst_summaries(row: AgentDecision) -> list[dict[str, Any]]:
     return out
 
 
+def _proposed_or_held_summary(
+    row: AgentDecision, proposal: dict[str, Any], side: str | None
+) -> tuple[str, str]:
+    """The headline event's title + detail — the answer to "why is this a
+    HOLD" when it is one.
+
+    Three genuinely different HOLDs used to render as one indistinguishable
+    "Council proposed HOLD X" with an empty detail:
+
+      1. No strategy cleared the fit floor — nothing downstream ever ran.
+         ``selected_strategy`` is None. Explained by ``selector_rationale``
+         only in the rare case it carries a reason; usually there simply
+         wasn't one worth naming.
+      2. A strategy fit, the whole council ran, and the Drafter itself
+         said no (or the sizer zeroed its qty). Explained by
+         ``reasoning.drafter_rationale`` — see ``drafter_node``.
+      3. A proposal WAS drafted (this is the normal case) — unchanged.
+    """
+    # ``side`` is on every real proposal dict unconditionally (both the
+    # camelCase DTO and the Drafter's own snake_case shape); using it as
+    # the "is this actually a proposal" test — rather than bare
+    # truthiness — is what keeps this correct against historical rows
+    # written before the fix in ``memory/postgres.py``, whose ``proposal``
+    # column can still hold the old raw_state envelope (a non-empty dict
+    # with no ``side`` key at all).
+    if proposal.get("side"):
+        return (
+            f"Council proposed {side or row.final_action} {row.symbol}",
+            str(proposal.get("rationale", ""))[:300],
+        )
+
+    reasoning = row.reasoning or {}
+    drafter_rationale = str(reasoning.get("drafter_rationale") or "").strip()
+    if row.selected_strategy and drafter_rationale:
+        return (
+            f"Council held {row.symbol} — {row.selected_strategy} fit, but the drafter said no",
+            drafter_rationale[:300],
+        )
+    if row.selected_strategy:
+        # A strategy fit and the council ran, but neither drafter_rationale
+        # nor a proposal survived — a parse failure on the Drafter call.
+        return (
+            f"Council held {row.symbol} — the drafter's read failed to parse",
+            "The Drafter's response couldn't be parsed twice in a row; "
+            "the pass defaulted to HOLD rather than guess.",
+        )
+    return (
+        f"Council held {row.symbol} — no strategy fit",
+        (row.selector_rationale or "").strip()
+        or "No registered strategy's preconditions were met for this setup — "
+        "the council never reached the analysts.",
+    )
+
+
 def _owned_by(row: AgentDecision, user_id: str) -> bool:
     """Whether ``user_id`` may read this decision.
 
@@ -141,18 +195,21 @@ async def build_biography(decision_id: str, *, user_id: str) -> Biography | None
     side = proposal.get("side") or (row.final_action if row.final_action in ("BUY", "SELL") else None)
     events: list[TimelineEvent] = []
 
+    title, detail = _proposed_or_held_summary(row, proposal, side)
+
     events.append(
         TimelineEvent(
             kind="proposed",
             at=row.triggered_at,
-            title=f"Council proposed {side or row.final_action} {row.symbol}",
-            detail=str(proposal.get("rationale", ""))[:300],
+            title=title,
+            detail=detail,
             data={
                 "regime": row.regime,
                 "selectedStrategy": row.selected_strategy,
                 "selectorConfidence": float(row.selector_confidence)
                 if row.selector_confidence is not None
                 else None,
+                "selectorRationale": row.selector_rationale or None,
                 "analysts": _analyst_summaries(row),
                 "qty": proposal.get("qty"),
                 "estimatedNotional": proposal.get("estimatedNotional"),

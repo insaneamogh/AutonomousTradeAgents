@@ -18,6 +18,7 @@ export type DesktopRoute =
   | { name: 'council'; runId: string; symbol: string }
   | { name: 'positions' }
   | { name: 'strategies' }
+  | { name: 'decisions' }
   | { name: 'review' }
   | { name: 'insights' }
   | { name: 'settings' };
@@ -37,6 +38,8 @@ export function sectionOf(route: DesktopRoute): SectionId {
     case 'pick':
     case 'council':
       return 'picks';
+    case 'decisions':
+      return 'strategies';
     default:
       return route.name;
   }
@@ -60,7 +63,8 @@ export function NavProvider({ children }: { children: ReactNode }) {
       go: (route) =>
         setStack((prev) => {
           // Top-level sections reset the stack; detail routes push onto it.
-          const isDetail = route.name === 'pick' || route.name === 'council';
+          const isDetail =
+            route.name === 'pick' || route.name === 'council' || route.name === 'decisions';
           return isDetail ? [...prev, route] : [route];
         }),
       back: () => setStack((prev) => (prev.length > 1 ? prev.slice(0, -1) : prev)),

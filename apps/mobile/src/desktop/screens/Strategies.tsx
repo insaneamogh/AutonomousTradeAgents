@@ -3,7 +3,9 @@
 import { useStrategiesPerformance } from '@/hooks/useStrategiesPerformance';
 
 import { ago, signedPct, signedUsd, tone } from '../format';
+import { useNav } from '../nav';
 import {
+  Button,
   Card,
   CardHead,
   Cell,
@@ -21,6 +23,7 @@ import {
 
 export function StrategiesScreen() {
   const perf = useStrategiesPerformance(30);
+  const { go } = useNav();
 
   if (perf.isError) {
     return (
@@ -52,7 +55,17 @@ export function StrategiesScreen() {
           <StatTile label="Strategies" value={String(rows.length)} loading={perf.isLoading} caption="Registered and eligible" />
         </Cell>
         <Cell span={3}>
-          <StatTile label="Decisions" value={String(decisions)} loading={perf.isLoading} caption="In the window" />
+          <StatTile
+            label="Decisions"
+            value={String(decisions)}
+            loading={perf.isLoading}
+            caption="In the window"
+            accessory={
+              <Button size="sm" kind="ghost" onClick={() => go({ name: 'decisions' })} ariaLabel="Browse every decision">
+                View all →
+              </Button>
+            }
+          />
         </Cell>
         <Cell span={3}>
           <StatTile

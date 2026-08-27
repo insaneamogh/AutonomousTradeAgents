@@ -127,7 +127,22 @@ async def drafter_node(state: CouncilState, llm: LLM) -> CouncilState:
         verdict = "HOLD"
 
     if verdict == "HOLD":
-        return {**state, "proposal": None, "final_action": "HOLD"}
+        # The model was asked to explain a HOLD in the bear case (see the
+        # prompt), and it usually does — that explanation used to be
+        # thrown away here along with the rest of ``data``, because
+        # everything downstream only ever read it off ``state["proposal"]``,
+        # which a HOLD never builds. Carrying it as its own state key is
+        # what let a HOLD in the audit row and the theater UI stay a bare
+        # "No proposal — HOLD." forever, even when the model had just
+        # written three sentences about why.
+        return {
+            **state,
+            "proposal": None,
+            "final_action": "HOLD",
+            "drafter_rationale": str(data.get("rationale", "")).strip(),
+            "bull_case": str(data.get("bull_case", "")).strip(),
+            "bear_case": str(data.get("bear_case", "")).strip(),
+        }
 
     last_price = float(ctx.get("last_price", 100.0) or 100.0)
     equity = float(ctx.get("portfolio_equity", 100_000.0) or 100_000.0)
@@ -155,7 +170,21 @@ async def drafter_node(state: CouncilState, llm: LLM) -> CouncilState:
             "sizer returned qty=0 for %s — converting to HOLD (%s)",
             state["symbol"], sizing.notes,
         )
-        return {**state, "proposal": None, "final_action": "HOLD"}
+        # The model actually said BUY/SELL here — it's the deterministic
+        # sizer, not the drafter, that zeroed it out. That distinction
+        # matters to the reader, so the sizer's OWN reason rides alongside
+        # the model's bull case rather than replacing it.
+        return {
+            **state,
+            "proposal": None,
+            "final_action": "HOLD",
+            "drafter_rationale": (
+                f"{str(data.get('rationale', '')).strip()} | "
+                f"Sizer returned 0 shares: {sizing.notes}"
+            ).strip(" |"),
+            "bull_case": str(data.get("bull_case", "")).strip(),
+            "bear_case": str(data.get("bear_case", "")).strip(),
+        }
 
     rationale = str(data.get("rationale", "")).strip()
     sizer_note = f"Sizing ({sizing.method}): {sizing.notes}"

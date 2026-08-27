@@ -117,10 +117,27 @@ class PostgresDecisionLog:
                 regime=entry.regime,
                 # When the risk officer approved, ``proposal`` holds the
                 # camelCase DTO so the API's list_pending() can parse this
-                # row directly (single write path). Otherwise we keep the
-                # raw_state snapshot for audit.
+                # row directly (single write path). Otherwise, when a
+                # proposal was drafted but vetoed, we keep the Drafter's
+                # own (snake_case) dict — rationale/bull_case/bear_case/
+                # qty/side survive for the audit trail even though nothing
+                # executed. A genuine HOLD (nothing ever drafted) writes
+                # None here, not the raw_state ENVELOPE ``{regime,
+                # proposal, analyst_subset, degraded_nodes}`` this used to
+                # fall back to — that dict is truthy even when its own
+                # "proposal" key is null, so every HOLD's biography read
+                # ``proposal.get("side")`` as None and ``.get("rationale")``
+                # as "", rendering as a bare "Council proposed HOLD X"
+                # with an empty detail no matter what the council actually
+                # found. ``regime``/``analyst_subset``/``degraded_nodes``
+                # are already their own dedicated columns below, so the
+                # envelope carried nothing the row didn't already have.
                 proposal=entry.proposal_dto
-                or (entry.raw_state if isinstance(entry.raw_state, dict) else None),
+                or (
+                    entry.raw_state.get("proposal")
+                    if isinstance(entry.raw_state, dict)
+                    else None
+                ),
                 risk_approved=entry.risk_approved,
                 risk_veto_rule=entry.risk_veto_rule,
                 risk_reason=entry.risk_reason,
