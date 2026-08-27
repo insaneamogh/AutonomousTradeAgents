@@ -359,6 +359,76 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 ## Entries
 
+### 2026-08-27 — `f856858c`+`deb07bc9`+`69b8e7df`+`d66584be` fix: four silent failures found by running the live stack, not the tests
+
+The user reported an empty dashboard — no positions, no recommendations —
+against a deployment where everything "worked". Root cause was ownership,
+and the hunt turned up three more failures that no test could see because
+each one was swallowed by its own best-effort `except`.
+
+**The dashboard blocker (config, not code).** `AGENT_CRON_USER_ID` was
+unset, so `scheduler.py` attributed every scheduled decision to the
+fixture user `00000000-…-0001` while the real logged-in user is
+`43221580-…`. Tenant scoping — working exactly as the F1 CRITICAL fix
+intended — then hid all 15 decisions, including 4 approved BUY proposals
+with brackets. Set the Railway var to the real user id, reassigned the
+existing rows (backup of the id list taken first), and seeded
+`user_watchlist`, which was empty so the watchlist screen rendered blank
+while the scheduler ran happily off the env-var fallback.
+
+**`f856858c` — cost ledger + push fan-out.**
+- `app/services/notifications/__init__.py` was 0 bytes after the services
+  split, so `daily_cron`'s package-level import of
+  `schedule_proposal_pending_notification` raised ImportError on every
+  approved proposal. Its own `except` swallowed it: scheduled picks
+  landed in the DB and notified nobody. This is the "lambda-like trigger
+  that notifies me" feature — it had never fired.
+- `get_cost_ledger()` warned "PostgresCostLedger is not yet wired" and
+  returned the in-memory ledger, so every cost row died with the process.
+  `llm_calls` was empty across weeks of real runs and /health/full
+  reported $0.00 regardless of actual billing. Added
+  `memory/cost_ledger_postgres.py`. Verified live: 23 rows and climbing.
+
+**`deb07bc9` — unmanaged positions.** `/account` reported
+`openPositions: 1` while `/positions` returned `[]`. Both were right on
+their own terms (one counts what the broker holds, the other listed only
+open agent *decisions*), but the position they disagreed about was real
+money and the screen read as broken. `OpenPositionDto` gains `managed:
+bool`; `decision_id` becomes nullable so clients render "close at the
+broker" rather than a Close button that would 404. No stop/target is
+reported for one — promising an exit plan the agent never authored would
+be the worse failure.
+
+**`69b8e7df` — one event loop for the cron.** `cli()` made two
+`asyncio.run()` calls, and `engine.db.session` caches one AsyncEngine per
+process, so the watchlist load bound its asyncpg connections to a loop
+the second call had already closed. Every later pool checkout raised
+"attached to a different loop". Visible damage: the equity resolver
+failed on every run, its fallback swallowed the error, and the whole
+sweep was sized against the **100k fixture instead of real equity** —
+precisely the failure the resolver was written to prevent (audit §5). A
+45-symbol sweep also wedged indefinitely on a pool ping. Collapsed into
+one `_run_cli` coroutine; verified live that the warnings are gone.
+
+**`d66584be` — veto ledger.** Filtered on `risk_approved IS FALSE`, which
+also matched every strategy-fit HOLD — symbols that fit no strategy and
+short-circuited before the risk engine ran. The live ledger read 28
+vetoes, 100% `unnamed_rule`, against 0 actual rule firings. Now requires
+`risk_veto_rule IS NOT NULL`, which is exactly "a named rule refused a
+drafted proposal".
+
+**Left open:**
+- `orders`, `ghost_outcomes` and `decision_review` are still empty, and
+  that is correct: they fill from the product loop (approve → order;
+  decline/veto → ghost; grade → review). No agent should fabricate them.
+- Named risk vetoes are 0 because the book holds one position — the
+  concentration, correlation-cluster and max-open-positions rules cannot
+  bite until positions accumulate. The ledger fills as trades are taken.
+- `scanner/status` reports `watchlistSize` from the env var, not the
+  45-symbol DB watchlist.
+- Alpaca order history that predates our decision rows is not imported,
+  so the NVDA bracket shows as unmanaged with no order row behind it.
+
 ### 2026-08-26 — `5a7f8cb2`+`e9c9ac6c`+`e2827fb7` fix(mobile,broker): three live-reported UI/config bugs, one root-cause diagnosis
 
 All found live, from the user's own screenshots of the deployed app right after wiring up Postgres + Alpaca env keys. Two are real, independent code bugs, fixed and tested; the remaining reported symptoms (agent "ran cold", positions not matching a manually-opened NVDA share at Alpaca) trace to ONE root cause that is **not fixable in code** — see the diagnosis at the bottom.
