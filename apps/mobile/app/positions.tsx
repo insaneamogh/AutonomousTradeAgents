@@ -126,7 +126,7 @@ export default function PositionsScreen() {
                   : 'text-rose dark:text-rose-dark';
             const busy = close.isPending && close.variables === p.decisionId;
             return (
-              <Tile key={p.decisionId} className="gap-2">
+              <Tile key={p.decisionId ?? `broker:${p.symbol}`} className="gap-2">
                 <View className="flex-row items-center justify-between">
                   <Text
                     className="text-[16px] font-semibold text-text-primary dark:text-text-primary-dark"
@@ -146,7 +146,11 @@ export default function PositionsScreen() {
                       )}
                     >
                       <Text className="text-[10px] uppercase tracking-[1px] text-text-secondary dark:text-text-secondary-dark">
-                        {p.exitMode === 'agent' ? 'Agent exit' : 'Manual exit'}
+                        {!p.managed
+                          ? 'Unmanaged'
+                          : p.exitMode === 'agent'
+                            ? 'Agent exit'
+                            : 'Manual exit'}
                       </Text>
                     </View>
                   </View>
@@ -176,21 +180,28 @@ export default function PositionsScreen() {
                   </Text>
                 )}
 
-                <Pressable
-                  onPress={() => confirmClose(p.decisionId, p.symbol, p.qty)}
-                  disabled={busy}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Close ${p.qty} ${p.symbol} now`}
-                  className={cn(
-                    'mt-1 min-h-[44px] items-center justify-center rounded-lg',
-                    'border border-hairline dark:border-hairline-dark',
-                    busy && 'opacity-50',
-                  )}
-                >
-                  <Text className="text-[13px] font-medium text-text-primary dark:text-text-primary-dark">
-                    {busy ? 'Closing…' : 'Close now'}
+                {p.decisionId ? (
+                  <Pressable
+                    onPress={() => confirmClose(p.decisionId!, p.symbol, p.qty)}
+                    disabled={busy}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Close ${p.qty} ${p.symbol} now`}
+                    className={cn(
+                      'mt-1 min-h-[44px] items-center justify-center rounded-lg',
+                      'border border-hairline dark:border-hairline-dark',
+                      busy && 'opacity-50',
+                    )}
+                  >
+                    <Text className="text-[13px] font-medium text-text-primary dark:text-text-primary-dark">
+                      {busy ? 'Closing…' : 'Close now'}
+                    </Text>
+                  </Pressable>
+                ) : (
+                  <Text className="mt-1 text-[10px] text-text-tertiary dark:text-text-tertiary-dark">
+                    Held at the broker with no council decision behind it — close it
+                    at the broker.
                   </Text>
-                </Pressable>
+                )}
               </Tile>
             );
           })

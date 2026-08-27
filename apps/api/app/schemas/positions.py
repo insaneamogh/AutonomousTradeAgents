@@ -14,7 +14,15 @@ from app.schemas.base import CamelCaseModel
 
 
 class OpenPositionDto(CamelCaseModel):
-    decision_id: str
+    # None for an unmanaged position — one that exists at the broker with
+    # no agent decision behind it, so there is nothing to close *through*
+    # the decision lifecycle.
+    decision_id: str | None = None
+    # False when the agent did not open this position (opened directly at
+    # the broker, or before this deployment's decision history). Such a
+    # position still counts against the account, so hiding it made
+    # /account report open positions that /positions could not show.
+    managed: bool = True
     symbol: str
     side: Literal["BUY", "SELL"]
     # Derived from the entry proposal's own "direction", falling back to

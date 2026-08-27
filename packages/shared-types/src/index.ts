@@ -182,7 +182,13 @@ export interface AddWatchlistRequest {
 // ─────────────────────────────────────────────────────────────────────
 
 export interface OpenPositionDto {
-  decisionId: string;
+  /** null for an unmanaged position — there is no decision to close it
+   * through, so the client must not offer a close button. */
+  decisionId: string | null;
+  /** False when the agent did not open this position (opened directly at
+   * the broker, or before this deployment's decision history). It still
+   * counts against the account, so it is listed rather than hidden. */
+  managed: boolean;
   symbol: string;
   side: Side;
   /** "long" or "short" — derived server-side from the entry proposal's

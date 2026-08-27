@@ -108,9 +108,13 @@ export function PositionsScreen() {
                 <tbody>
                   {rows.map((p) => (
                     <tr
-                      key={p.decisionId}
-                      className="pg-row-btn"
-                      onClick={() => setSelected(p.decisionId === selected ? null : p.decisionId)}
+                      key={p.decisionId ?? `broker:${p.symbol}`}
+                      className={p.decisionId ? 'pg-row-btn' : undefined}
+                      onClick={
+                        p.decisionId
+                          ? () => setSelected(p.decisionId === selected ? null : p.decisionId)
+                          : undefined
+                      }
                     >
                       <td>
                         <Stack gap={2}>
@@ -121,8 +125,13 @@ export function PositionsScreen() {
                             <Pill tone={p.direction === 'short' ? 'bear' : 'bull'}>
                               {p.direction.toUpperCase()}
                             </Pill>
+                            {!p.managed ? <Pill tone="neutral">UNMANAGED</Pill> : null}
                           </Row>
-                          <span className="pg-caption">opened {ago(p.openedAt)}</span>
+                          <span className="pg-caption">
+                            {p.managed
+                              ? `opened ${ago(p.openedAt)}`
+                              : `held at broker — no council decision behind it`}
+                          </span>
                         </Stack>
                       </td>
                       <td>
@@ -142,14 +151,18 @@ export function PositionsScreen() {
                         </span>
                       </td>
                       <td className="pg-num-right">
-                        <Button
-                          size="sm"
-                          onClick={() => close.mutate(p.decisionId)}
-                          disabled={close.isPending}
-                          ariaLabel={`Close the ${p.symbol} position now`}
-                        >
-                          Close
-                        </Button>
+                        {p.decisionId ? (
+                          <Button
+                            size="sm"
+                            onClick={() => close.mutate(p.decisionId!)}
+                            disabled={close.isPending}
+                            ariaLabel={`Close the ${p.symbol} position now`}
+                          >
+                            Close
+                          </Button>
+                        ) : (
+                          <span className="pg-caption pg-dim">close at broker</span>
+                        )}
                       </td>
                     </tr>
                   ))}
