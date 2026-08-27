@@ -200,18 +200,30 @@ _cost_ledger: CostLedger | None = None
 
 
 def get_cost_ledger() -> CostLedger:
-    """Process singleton. Postgres impl deferred; InMemory is the live
-    default while the API picks up auth + Postgres in stages.
+    """Process singleton. Postgres-backed when ``USE_POSTGRES`` is set.
+
+    Falls back to the in-memory ledger if the Postgres impl can't be
+    constructed (no DATABASE_URL, driver missing). That degrades cost
+    *reporting*, which is recoverable; refusing to build a ledger would
+    take down every council run, which is not.
     """
     import logging
 
     global _cost_ledger
     if _cost_ledger is None:
         if env_flag("USE_POSTGRES"):
-            logging.getLogger("agents.cost").warning(
-                "USE_POSTGRES=1 but PostgresCostLedger is not yet wired — "
-                "falling back to InMemoryCostLedger. Costs won't persist."
-            )
+            try:
+                from trading_agents.memory.cost_ledger_postgres import (
+                    PostgresCostLedger,
+                )
+
+                _cost_ledger = PostgresCostLedger()
+                return _cost_ledger
+            except Exception:
+                logging.getLogger("agents.cost").exception(
+                    "PostgresCostLedger unavailable — falling back to "
+                    "InMemoryCostLedger. Costs won't persist."
+                )
         _cost_ledger = InMemoryCostLedger()
     return _cost_ledger
 
