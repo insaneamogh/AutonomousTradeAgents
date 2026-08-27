@@ -174,7 +174,11 @@ def _default_provider(state: CouncilState) -> RiskContextProvider:
         return PostgresRiskContextProvider(session_factory=async_session_factory())
 
     ctx = state.get("context") or {}
-    equity = float(ctx.get("portfolio_equity", 100_000.0) or 100_000.0)
+    # `x or default` treats a genuinely-zero equity the same as an absent
+    # one (0.0 is falsy) — same bug as drafter.py's sizing inputs. Only a
+    # missing key gets the fixture; a present zero is real.
+    raw_equity = ctx.get("portfolio_equity")
+    equity = float(raw_equity) if raw_equity is not None else 100_000.0
     return MockRiskContextProvider(
         account_equity=equity,
         cash=equity,

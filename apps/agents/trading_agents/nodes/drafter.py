@@ -144,8 +144,17 @@ async def drafter_node(state: CouncilState, llm: LLM) -> CouncilState:
             "bear_case": str(data.get("bear_case", "")).strip(),
         }
 
-    last_price = float(ctx.get("last_price", 100.0) or 100.0)
-    equity = float(ctx.get("portfolio_equity", 100_000.0) or 100_000.0)
+    # `x or default` treats a GENUINELY-zero value the same as an absent
+    # one (0.0 is falsy) — a fully-drawn-down account (equity=0.0) would
+    # silently size a new trade against the fake $100k fixture instead of
+    # refusing via atr_position_size's own equity<=0 zero-qty branch
+    # (packages/engine/engine/sizing/atr.py). Only a missing key gets the
+    # fixture; a present zero is a real fact about the account/quote and
+    # must reach the sizer as zero.
+    raw_last_price = ctx.get("last_price")
+    last_price = float(raw_last_price) if raw_last_price is not None else 100.0
+    raw_equity = ctx.get("portfolio_equity")
+    equity = float(raw_equity) if raw_equity is not None else 100_000.0
     atr_14 = ctx.get("technicals", {}).get("atr_14")
     # An unparseable confidence collapses to 0.0, which sizes down to
     # qty<1 and converts the pass to HOLD below — the safe direction.
