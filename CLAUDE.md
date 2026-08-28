@@ -31,7 +31,7 @@ If a feature request would put LLM output inside a risk decision or execution pa
 
 | In v1 | Out of v1 |
 |---|---|
-| US equities + ETFs | Options / F&O |
+| US equities + ETFs; options Phase A (long calls/puts only, no spreads/assignment) | Options Phase B (spreads) / Phase C (cash-secured puts, covered calls, assignment) |
 | Alpaca paper, then live | Zerodha / Upstox / IBKR |
 | Swing trades (1–10 day holds, daily bars) | Intraday (v1.5), India (v2) |
 | LangGraph state-machine council | Mixture-of-experts learned routing |
@@ -86,11 +86,11 @@ If a request implies any "Out" item, confirm before building.
 
 Per `PLAN.md` §11:
 
-1. **Phase 0** — Skeleton + Alpaca paper smoke test + broker abstraction + minimal schema. _You are here._
+1. **Phase 0** — Skeleton + Alpaca paper smoke test + broker abstraction + minimal schema.
 2. **Phase 1** — Event-driven backtester + risk engine (PDT, drawdown, concentration, sizing) + reconciler + 5 hand-coded reference strategies.
 3. **Phase 2** — LangGraph agent council on paper trading.
 4. **Phase 3** — Mobile app v0.
-5. **Phase 4** — Paper trading with founder + 2-3 trusted users + small real capital.
+5. **Phase 4** — Paper trading with founder + 2-3 trusted users + small real capital. _You are here — paper trading is live end-to-end on the founder's own account (real Alpaca paper connection, Postgres-backed, Google Sign-In); real capital not yet enabled (`TRADING_MODE=paper` throughout). Current focus: options trading Phase A + the production-grade wiring-gap fixes tracked in `fable5findings.md`'s build log._
 6. **Phase 5/6** — Beta + public.
 
 **Don't build agents before the backtester ships.** Don't ship live trading before Phase 4 paper-validation is in.
