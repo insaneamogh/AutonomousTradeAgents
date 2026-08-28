@@ -9,32 +9,11 @@ import { Pressable, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 
-import type { VetoRuleDto } from '@app/shared-types';
+import { vetoRuleLabels, type VetoRuleDto } from '@app/shared-types';
 import { EmptyState, Skeleton } from '@app/ui';
 
 import { HeroHeadline, HeroSub, Tile, TileLabel, TileValue } from '@/components/bento';
 import { useVetoLedger } from '@/hooks/useInsights';
-
-// Named rule identifiers from engine.risk → human copy. Unknown rules
-// fall back to the raw identifier (audit beats prettiness).
-const RULE_LABEL: Record<string, string> = {
-  drawdown_halt: 'Daily drawdown circuit breaker',
-  forbid_short_phase_0: 'Short selling blocked (Phase 0)',
-  shortable_check: 'Not shortable / borrow unverified',
-  short_requires_stop: 'Short had no protective stop',
-  short_unbounded_loss_cap: 'Short size cap (unbounded-loss risk)',
-  short_gross_exposure_cap: 'Total short exposure cap',
-  low_council_confidence: 'Council confidence too low',
-  low_specialist_avg_score: 'Analyst scores too weak',
-  pdt_block: 'Pattern day trader rule',
-  max_open_positions: 'Too many open positions',
-  position_size_cap: 'Position size cap',
-  correlation_cap: 'Correlation cluster cap',
-  sector_concentration: 'Sector concentration cap',
-  single_name_concentration: 'Single name concentration cap',
-  live_trading_disabled: 'Live trading disabled',
-  unnamed_rule: 'Unnamed rule',
-};
 
 export default function VetoLedgerScreen() {
   const router = useRouter();
@@ -108,7 +87,7 @@ function RuleTile({ r }: { r: VetoRuleDto }) {
           className="flex-1 text-[14px] font-medium text-text-primary dark:text-text-primary-dark"
           numberOfLines={1}
         >
-          {RULE_LABEL[r.rule] ?? r.rule}
+          {vetoRuleLabels[r.rule] ?? r.rule}
         </Text>
         <Text
           className="text-[14px] font-medium text-text-primary dark:text-text-primary-dark"

@@ -1,5 +1,7 @@
 /** Pure formatting helpers for the desktop tree. No React, no tokens. */
 
+import { vetoRuleLabels } from '@app/shared-types';
+
 /** `$100,000` — whole dollars, thousands-separated. */
 export function usd(value: number | null | undefined, digits = 0): string {
   if (value == null || Number.isNaN(value)) return '—';
@@ -57,9 +59,11 @@ export function clock(iso: string | null | undefined): string {
   return d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
-/** `pdt_block` → `PDT BLOCK`. */
+/** `pdt_block` → `Pattern day trader rule`, via the shared veto-rule label
+ * map. Falls back to `PDT BLOCK`-style uppercasing for anything not in the
+ * map, so a truly unknown identifier still renders instead of crashing. */
 export function ruleLabel(rule: string): string {
-  return rule.replace(/_/g, ' ').toUpperCase();
+  return vetoRuleLabels[rule] ?? rule.replace(/_/g, ' ').toUpperCase();
 }
 
 /** Sentence-case a snake/kebab identifier: `risk_officer` → `Risk officer`. */

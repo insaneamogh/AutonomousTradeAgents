@@ -8,6 +8,18 @@
 // to serialize Python's snake_case fields to camelCase.
 
 // ─────────────────────────────────────────────────────────────────────
+// Veto rule labels — the one canonical copy of risk_veto_rule → human
+// label. Plain JSON (not .ts) so packages/engine's Python drift test can
+// `json.load()` it directly. See vetoRuleLabels.json for the identifiers
+// this must cover — packages/engine/engine/risk/rules/*.py's `veto_rule=`
+// literals plus live_trading_gate.py's `risk_veto_rule=`.
+// ─────────────────────────────────────────────────────────────────────
+
+import vetoRuleLabelsJson from './vetoRuleLabels.json';
+
+export const vetoRuleLabels: Record<string, string> = vetoRuleLabelsJson;
+
+// ─────────────────────────────────────────────────────────────────────
 // Enums (string literal unions — narrower than `string`, no runtime cost)
 // ─────────────────────────────────────────────────────────────────────
 
