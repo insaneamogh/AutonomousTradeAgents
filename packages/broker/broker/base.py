@@ -58,3 +58,14 @@ class BrokerInterface(Protocol):
         Pre-trade risk uses this.
         """
         ...
+
+    async def get_options_trading_level(self) -> int | None:
+        """Broker-approved options trading tier, or None when the broker
+        has no such concept (Zerodha/India — options Phase A is US-only).
+        Feeds ``RiskContext.options_trading_level``, which
+        ``engine.options.rules.options_level_insufficient`` gates entries
+        on. Read fresh per call, same as equity/buying_power — this is
+        account-level state that can change (a broker can approve/revoke
+        a tier), not something to cache.
+        """
+        ...

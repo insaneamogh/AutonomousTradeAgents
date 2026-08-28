@@ -15,13 +15,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import NamedTuple
 
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import (
+    AssetClass,
+    ContractType,
     OrderClass,
     OrderSide,
+    PositionIntent,
     QueryOrderStatus,
 )
 from alpaca.trading.enums import (
@@ -31,7 +34,9 @@ from alpaca.trading.enums import (
     OrderType as _AlpacaType,
 )
 from alpaca.trading.enums import TimeInForce as _AlpacaTif
+from alpaca.trading.models import OptionContract
 from alpaca.trading.requests import (
+    GetOptionContractsRequest,
     GetOrdersRequest,
     LimitOrderRequest,
     MarketOrderRequest,
@@ -40,9 +45,13 @@ from alpaca.trading.requests import (
     StopOrderRequest,
     TakeProfitRequest,
 )
+from alpaca.trading.requests import (
+    OrderRequest as _AlpacaOrderRequest,
+)
 
 from broker.base import BrokerInterface
 from broker.types import (
+    OccSymbol,
     Order,
     OrderRequest,
     OrderStatus,
@@ -63,7 +72,34 @@ logger = logging.getLogger("broker.alpaca")
 _SIDE_TO_ALPACA: dict[Side, OrderSide] = {
     Side.BUY: OrderSide.BUY,
     Side.SELL: OrderSide.SELL,
+    Side.BUY_TO_OPEN: OrderSide.BUY,
+    Side.SELL_TO_CLOSE: OrderSide.SELL,
 }
+
+_SIDE_TO_POSITION_INTENT: dict[Side, PositionIntent] = {
+    Side.BUY_TO_OPEN: PositionIntent.BUY_TO_OPEN,
+    Side.SELL_TO_CLOSE: PositionIntent.SELL_TO_CLOSE,
+}
+"""Alpaca keeps ``side`` and ``position_intent`` as two separate fields on
+an order request. A plain equity ``Side`` (BUY/SELL) has no entry here, so
+``_build_alpaca_request`` leaves ``position_intent`` unset for equities —
+only the options-only ``Side`` values carry one."""
+
+
+class OptionBracketNotSupportedError(ValueError):
+    """Raised when asked to build a bracket-class order for an option
+    symbol.
+
+    Alpaca's ``OrderClass`` only allows ``simple``/``mleg`` for
+    ``us_option`` assets — no bracket, no OCO. Phase A never constructs
+    this combination upstream (the executor forces ``use_bracket=False``
+    for every options proposal — a broker bracket is structurally
+    impossible for a single-leg option order), so reaching this exception
+    means an upstream invariant broke. Belt-and-suspenders: better to fail
+    loudly here, with a named error, than let Alpaca's API reject the
+    request with an opaque 422.
+    """
+
 
 _TYPE_TO_ALPACA: dict[OrderType, _AlpacaType] = {
     OrderType.MARKET: _AlpacaType.MARKET,
@@ -258,9 +294,14 @@ class AlpacaBroker(BrokerInterface):
         acct = await self._get_account()
         return float(acct.buying_power)  # type: ignore[attr-defined]
 
+    async def get_options_trading_level(self) -> int | None:
+        acct = await self._get_account()
+        level = getattr(acct, "options_trading_level", None)
+        return int(level) if level is not None else None
+
     # ── Mappers ──────────────────────────────────────────────────────
 
-    def _build_alpaca_request(self, request: OrderRequest) -> object:
+    def _build_alpaca_request(self, request: OrderRequest) -> _AlpacaOrderRequest:
         side = _SIDE_TO_ALPACA[request.side]
         tif = _TIF_TO_ALPACA[request.time_in_force]
         common = {
@@ -270,7 +311,21 @@ class AlpacaBroker(BrokerInterface):
             "time_in_force": tif,
             "client_order_id": request.client_order_id,
         }
+        position_intent = _SIDE_TO_POSITION_INTENT.get(request.side)
+        if position_intent is not None:
+            common["position_intent"] = position_intent
         if request.is_bracket:
+            if OccSymbol.try_parse(request.symbol) is not None:
+                # Belt-and-suspenders — the executor should never construct
+                # this combination (it forces use_bracket=False for every
+                # options proposal), but the broker layer is the last line
+                # before the wire, so it's the one place this can't slip
+                # through as an opaque Alpaca 422 instead.
+                raise OptionBracketNotSupportedError(
+                    f"Cannot build a bracket order for option symbol "
+                    f"{request.symbol!r} — Alpaca's OrderClass only allows "
+                    "simple/mleg for us_option; no bracket, no OCO."
+                )
             # Entry + OCO children held BROKER-side. The stop/target the
             # user approved survive an outage of our entire stack.
             common["order_class"] = OrderClass.BRACKET
@@ -334,6 +389,10 @@ class AlpacaBroker(BrokerInterface):
         )
 
     def _position_from_alpaca(self, raw: object) -> Position:
+        # AssetClass is a (str, Enum) — comparing to the enum member works
+        # regardless of whether alpaca-py handed back the member itself or
+        # its raw string value.
+        is_option = getattr(raw, "asset_class", None) == AssetClass.US_OPTION
         return Position(
             symbol=str(getattr(raw, "symbol", "")),
             qty=int(float(getattr(raw, "qty", 0) or 0)),
@@ -341,6 +400,13 @@ class AlpacaBroker(BrokerInterface):
             market_value=float(getattr(raw, "market_value", 0) or 0),
             unrealized_pl=float(getattr(raw, "unrealized_pl", 0) or 0),
             unrealized_pl_pct=float(getattr(raw, "unrealized_plpc", 0) or 0) * 100,
+            # Phase A default: no non-standard-multiplier US equity option
+            # is currently listed, so 100 is hardcoded rather than looked
+            # up. OptionContract.size is the source of truth if this
+            # assumption ever needs revisiting — not built now since
+            # nothing today requires the extra round-trip.
+            multiplier=100 if is_option else 1,
+            is_option=is_option,
             raw={
                 k: str(v)
                 for k, v in (getattr(raw, "model_dump", lambda: {})() or {}).items()
@@ -450,5 +516,78 @@ async def list_tradable_assets(*, api_key: str, secret_key: str) -> list[AssetIn
             for a in assets
             if getattr(a, "tradable", False)
         ]
+
+    return await asyncio.to_thread(_fetch)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Options — contract lookup (Phase A: long calls/puts only)
+# ─────────────────────────────────────────────────────────────────────
+
+
+async def lookup_option_contract(
+    symbol_or_id: str, *, api_key: str, secret_key: str
+) -> OptionContract | dict[str, object] | None:
+    """Alpaca's record for one OCC option symbol (or contract id), or None
+    when it doesn't exist. Thin pass-through to
+    ``TradingClient.get_option_contract`` — same error-swallowing pattern
+    as ``lookup_asset``: the caller only needs to know whether it can act
+    on it, not why a lookup failed.
+
+    ``dict`` is part of the return type (not just ``OptionContract``)
+    because alpaca-py's own ``get_option_contract`` is typed to return
+    either — the same raw-response fallback ``lookup_asset`` already
+    tolerates for ``get_asset``, read via ``getattr(..., default)`` rather
+    than direct attribute access for exactly that reason.
+    """
+    from alpaca.trading.client import TradingClient
+
+    def _fetch() -> OptionContract | dict[str, object] | None:
+        client = TradingClient(api_key=api_key, secret_key=secret_key, paper=True)
+        try:
+            return client.get_option_contract(symbol_or_id)
+        except Exception:
+            return None
+
+    return await asyncio.to_thread(_fetch)
+
+
+async def list_option_contracts(
+    underlying_symbols: list[str],
+    *,
+    api_key: str,
+    secret_key: str,
+    expiration_date_gte: date | None = None,
+    expiration_date_lte: date | None = None,
+    contract_type: ContractType | None = None,
+) -> list[OptionContract]:
+    """Active option contracts on the given underlyings, optionally
+    windowed by expiry and/or filtered to calls-only/puts-only. Thin
+    pass-through to ``TradingClient.get_option_contracts`` — same pattern
+    as ``list_tradable_assets`` (caller is expected to cache; a full chain
+    scan per keystroke would be as absurd here as it is for equities).
+
+    Returns ``[]`` on a broker-side failure rather than raising — mirrors
+    ``lookup_option_contract``'s "the caller only needs to know whether it
+    can act on it" contract, and an empty chain is the correct input for
+    every downstream selection rule to self-gate on (no contract to pick).
+    """
+    from alpaca.trading.client import TradingClient
+    from alpaca.trading.enums import AssetStatus
+
+    def _fetch() -> list[OptionContract]:
+        client = TradingClient(api_key=api_key, secret_key=secret_key, paper=True)
+        request = GetOptionContractsRequest(
+            underlying_symbols=underlying_symbols,
+            status=AssetStatus.ACTIVE,
+            expiration_date_gte=expiration_date_gte,
+            expiration_date_lte=expiration_date_lte,
+            type=contract_type,
+        )
+        try:
+            response = client.get_option_contracts(request)
+        except Exception:
+            return []
+        return list(getattr(response, "option_contracts", None) or [])
 
     return await asyncio.to_thread(_fetch)

@@ -466,6 +466,14 @@ class ZerodhaBroker(BrokerInterface):
             return float(cash)
         return float((margins.get("equity") or {}).get("net", 0) or 0)
 
+    async def get_options_trading_level(self) -> int | None:
+        """Kite has no options-trading-tier concept — Phase A options are
+        US/Alpaca-only. Always None; ``options_level_insufficient`` never
+        runs against an Indian symbol anyway (it's a US-only rule set),
+        but this keeps the Protocol honestly implemented rather than
+        silently inherited from the stub."""
+        return None
+
     # ── Mappers ──────────────────────────────────────────────────────
 
     def _order_from_kite(self, raw: dict[str, Any]) -> Order:
