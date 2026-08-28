@@ -1,8 +1,12 @@
 """council_run_id on llm_calls — correlate cost rows before the decision exists
 
-Revision ID: 0013_llm_calls_run_id
-Revises: 0012_decision_reasoning
+Revision ID: 0014_llm_calls_run_id
+Revises: 0013_options_orders
 Create Date: 2026-08-28
+
+Renumbered from 0013 to 0014 at merge time — it was built in parallel with
+migration 0013_options_orders (the options-trading foundation), both
+against the same 0012 base, and 0013_options_orders landed on main first.
 
 Every ``llm_calls`` row was writing with ``agent_decision_id`` and ``user_id``
 unconditionally NULL — there was no way to answer "which LLM calls produced
@@ -37,8 +41,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision: str = "0013_llm_calls_run_id"
-down_revision: str | None = "0012_decision_reasoning"
+revision: str = "0014_llm_calls_run_id"
+down_revision: str | None = "0013_options_orders"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
