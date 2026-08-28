@@ -355,6 +355,97 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 ## Entries
 
+### 2026-08-28 — `20154ac9`+`73f44007`+`618b77fb` feat/fix/refactor: options shared-types foundation + two wiring-gap fixes
+
+First implementation work of the production-grade phase (plan at
+`.claude/plans/prancy-meandering-rainbow.md`), built via 1 direct pass +
+2 parallel worktree subagents, each independently re-reviewed (real
+diffs read, tests re-run from a clean cherry-pick) before merging —
+this repo's established review discipline.
+
+**`20154ac9` — options shared-types foundation (Part 1 §1.1, mine
+directly, not delegated — everything else in the options track depends
+on getting these shapes right).** Additive-only, zero blast radius:
+`broker.types` gains `Side.BUY_TO_OPEN`/`SELL_TO_CLOSE` and a strict
+`OccSymbol` parser (OCC format: `{underlying}{YYMMDD}{C|P}{strike*1000
+zero-padded to 8 digits}`); `engine.risk.types` gains `RiskCaps`
+`options_*` caps (fail-closed via a new `ALLOW_OPTIONS` env flag,
+mirroring `ALLOW_SHORTS`'s existing convention exactly), a new
+`OptionLegDetails` dataclass, `RiskProposal.is_option`/`.option`,
+`RiskContext.options_trading_level`, `PortfolioPosition.is_option`/
+`.multiplier`; one real Alembic migration (`0013_options_orders`) adds
+`orders.{is_option,multiplier,option_action}` — the only schema change
+this whole phase needs, everything else rides the existing JSONB
+extension points. `ApprovalProposalDto` gets matching fields, with
+`option_action` restricted to a 2-value `Literal` at the Pydantic
+boundary (a free 422 before the risk engine ever runs). Verified:
+`packages/engine`+`packages/broker` 213 passed (unchanged); `apps/api`
+298 passed / 8 skipped (unchanged); mypy delta zero on every touched
+file, confirmed via `git stash` comparison (same 6 pre-existing
+`dict[Any]` errors before and after, just shifted line numbers); ruff
+clean on all touched files.
+
+**`73f44007` — stale Fly.io / dead-doc references (wiring-gap item,
+subagent-built, independently re-verified).** Deploy target has been
+Railway for a while, not Fly.io — fixed in `CLAUDE.md`, `PLAN.md`,
+`infra/docker-compose.yml`, `infra/migrations/env.py`.
+`docs/RUNBOOK.md`/`apps/api/AUTH.md` were deleted in the `5febf1e4` docs
+consolidation; redirected `daily_cron.py`/`scripts/smoke_paper_trade.py`
+to `docs/README.md` (which already covers the same ground), and stated
+plainly in `crypto.py`/`tokenStorage.ts`/`zerodha_reconnect_cron.py` that
+nothing currently documents the flows AUTH.md used to cover, rather than
+link to a dead file. `daily_cron.py`'s docstring also described a
+fictional "GitHub Actions / Fly machines" scheduling story — rewritten
+to describe the real mechanism (`CouncilScheduler`, an in-process
+asyncio task, off by default). `zerodha_reconnect_cron.py` never had an
+equivalent scheduler at all (Zerodha parked for v1) — now says so
+plainly instead of describing the same fiction. The subagent's own
+verification pass caught 3 more stale references beyond the ones I'd
+named in the brief (`crypto.py`, `tokenStorage.ts`,
+`smoke_paper_trade.py`) — fixed those too, same pattern. Verified myself
+independently after cherry-pick: `git grep -in "fly\.io\|fly machine"` →
+zero tracked-file hits; ruff on the touched Python files shows exactly
+one finding, confirmed via `git stash` to be pre-existing (an
+already-stale `noqa: BLE001` in `zerodha_reconnect_cron.py`, unrelated to
+this change, just shifted line number).
+
+**`618b77fb` — veto-rule label consolidation (wiring-gap item,
+subagent-built).** `vetoes.tsx`'s `RULE_LABEL` and `format.ts`'s
+`ruleLabel()` were two independent, hand-maintained lookups that had
+drifted — and not just by omission: `vetoes.tsx`'s map had **wrong
+keys for real, currently-firing rules**
+(`low_council_confidence`/`low_specialist_avg_score` vs. the actual
+`min_`-prefixed names, a single `drawdown_halt` vs. the actual
+`_active`/`_just_tripped` split, `position_size_cap` vs. the actual
+`max_position_pct`/`_trim`), meaning the veto ledger screen has likely
+been silently falling back to raw identifier strings for several
+real vetoes in production, not just a cosmetic gap. `format.ts`'s
+`ruleLabel()` had no lookup at all — bare uppercase-and-strip for every
+call. New `packages/shared-types/src/vetoRuleLabels.json` (plain JSON,
+not `.ts`, so a Python test can `json.load()` it directly) is now the
+one canonical map, re-exported from the package index; both TS call
+sites now read from it, each keeping its own existing crash-proof
+fallback for a truly unrecognized key. New
+`packages/engine/tests/test_veto_rule_labels.py` statically scans
+`veto_rule=`/`risk_veto_rule=` literals across the rules package +
+`live_trading_gate.py` and asserts they're all covered — proven to
+actually catch drift (a key was temporarily deleted, the test failed
+naming exactly that key, then it was restored). Verified independently
+after cherry-pick: re-derived the required-identifier set myself via a
+fresh grep (20 `veto_rule=` + 1 `risk_veto_rule=` = 21, matching the
+subagent's count exactly, all 21 present in the JSON); `packages/engine/tests`
+188 passed including the new drift test; `pnpm --filter @app/shared-types
+typecheck` and `pnpm --filter @app/mobile typecheck` both clean;
+`pnpm --filter @app/mobile test` 23/23 passed.
+
+**Left open:** the options broker/risk/execution track (Part 1 §1.3-1.5)
+and the LLM-call-attribution wiring-gap fix (Part 2 §2.4) are still
+running in their own worktrees as of this entry — build-log entries for
+those follow once reviewed and merged. The options sizing/contract-
+selection/agent-council-wiring/UI track (Part 1 §1.2, 1.6, 1.7) is
+queued behind the LLM-attribution fix landing (both touch
+`apps/agents/trading_agents/state.py`/`nodes/*.py`).
+
 ### 2026-08-28 — `6878d1d6` docs: move options trading in-scope for v1, correct stale phase marker
 
 Demo-readiness work (Google Sign-In, Alpaca connection persistence, the
