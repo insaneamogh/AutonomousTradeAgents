@@ -355,6 +355,57 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 ## Entries
 
+### 2026-08-28 — `c6ebc324` feat(engine): add options/contracts.fetch_option_candidates — chain fetch + OI merge + ContractQuote mapping
+
+Layer 2 of 3 fixing the options chain-fetch inertness bug (see the layer-1
+entry immediately below for the full root cause). `engine/options/
+contracts.py`'s own module docstring had promised "chain fetch +
+normalise" (`docs/OPTIONS_PLAN.md` §2.1) since this package was first
+built, but it never actually landed there — the real (broken) fetch lived
+directly in `trading_agents.nodes.drafter` instead. Now it does, correctly:
+
+- New `fetch_option_candidates(underlying_symbol, *, api_key, secret_key,
+  now, caps=None)` calls `broker.alpaca.list_option_chain_quotes` (layer
+  1) and the existing, unchanged `list_option_contracts` concurrently
+  (`asyncio.gather`), merging `open_interest` from the latter into
+  candidates from the former by exact OCC symbol string.
+- **The merge is necessary, not a nice-to-have**: confirmed by reading
+  `engine.options.selection._passes_liquidity` — it hard-fails on
+  `open_interest is None` (deliberately: "can't prove liquidity you can't
+  see"). Leaving OI unset would silently relocate the exact inertness bug
+  layer 1 fixes one stage downstream, under a different rejection reason
+  (`no_liquid_contract` instead of `no_candidates`) — same practical
+  effect, harder to notice.
+- `ContractQuote.volume` is populated from `ChainQuote.last_trade_size` —
+  the size of the single last trade, not cumulative daily volume; no
+  field on either Alpaca endpoint used here reports the latter. A real
+  but documented-imperfect liquidity proxy, flagged as a named follow-up
+  (true daily volume would need a third, per-contract bars call — real
+  scope creep for this fix).
+- Both calls windowed to `RiskCaps.options_min_dte`/`options_max_dte` —
+  deliberately the wide, authoritative bound, not `selection.py`'s own
+  narrower 21-45 DTE heuristic (that module has its own documented reason
+  not to import `RiskCaps` for its selection-only window — this keeps
+  both reasons intact rather than merging them into one constant).
+- Reused this file's own existing `contract_type_of()` helper for the
+  OCC-parsed `str` → `Literal["call","put"]` narrowing — zero new casting
+  code needed.
+
+Tests (`packages/engine/tests/test_options_contracts.py`, 7 new): OI
+merge-by-symbol correctness, a chain symbol with no metadata match (or an
+unparseable/`None` OI value) → `open_interest=None` (fails closed, not a
+default), the DTE window's actual date arithmetic reaching both calls
+correctly, empty chain → empty tuple, and — the one that pins a
+deliberate design choice — a raised exception from the chain call
+propagates uncaught here rather than being swallowed a second time (the
+drafter's own catch, one layer up, is what turns it into a HOLD).
+Verified: full engine suite 280→**287 passed**; `ruff check`/`ruff format
+--check`/`mypy` clean on both modified files.
+
+**Still net-new and unwired** — nothing calls this function yet. Layer 3
+(next commit) rewires the drafter to actually use it, which is the
+behavior-changing commit that flips the feature from inert to live.
+
 ### 2026-08-28 — `5b10d0d3` feat(broker): add list_option_chain_quotes wrapping the real Alpaca chain-snapshot endpoint
 
 **Root-cause finding: options trading Phase A is architecturally complete
