@@ -18,6 +18,8 @@ import os
 from datetime import UTC, date, datetime
 from typing import NamedTuple
 
+from alpaca.data.enums import OptionsFeed
+from alpaca.data.requests import OptionChainRequest
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import (
     AssetClass,
@@ -589,5 +591,130 @@ async def list_option_contracts(
         except Exception:
             return []
         return list(getattr(response, "option_contracts", None) or [])
+
+    return await asyncio.to_thread(_fetch)
+
+
+class ChainQuote(NamedTuple):
+    """One contract's normalized chain-SNAPSHOT market data, from
+    ``OptionHistoricalDataClient.get_option_chain`` — ``docs/OPTIONS_PLAN.md``
+    §0's live-verified ``/v1beta1/options/snapshots/{underlying}`` endpoint.
+    Distinct from ``list_option_contracts`` above (``/v2/options/contracts``):
+    that one is contract *metadata* (and the only place ``open_interest``
+    lives); this one is market data (bid/ask/delta/IV), and carries none of
+    open interest or cumulative daily volume — see
+    ``engine.options.contracts.fetch_option_candidates``, which merges both.
+
+    ``contract_type``/``strike``/``expiry`` are NOT separate fields on
+    alpaca-py's ``OptionsSnapshot`` — confirmed against the installed
+    model (only ``.symbol``/``.latest_trade``/``.latest_quote``/
+    ``.implied_volatility``/``.greeks`` exist) — so they are parsed from
+    ``.symbol`` via ``OccSymbol.try_parse``, not read as snapshot fields.
+    """
+
+    occ_symbol: str
+    underlying_symbol: str
+    contract_type: str  # "call" | "put"
+    strike: float
+    expiry: date
+    bid: float | None
+    ask: float | None
+    delta: float | None
+    implied_volatility: float | None
+    last_trade_size: float | None
+    """Size of the single LAST trade, NOT cumulative daily volume — no
+    field on this endpoint (or ``list_option_contracts``) reports the
+    latter; true daily volume would need a separate per-contract bars
+    call. A documented, imperfect liquidity proxy."""
+
+
+def _default_options_feed() -> OptionsFeed:
+    """``ALPACA_OPTIONS_FEED`` env override (``"opra"``/``"indicative"``,
+    case-insensitive) — fails closed to ``INDICATIVE``, the free Basic-tier
+    feed every account already has (``docs/OPTIONS_PLAN.md`` §0: derived
+    quotes, 15-minute delay — not the full OPRA tape). Never silently
+    requests a data tier the account may not be entitled to."""
+    raw = os.environ.get("ALPACA_OPTIONS_FEED", "").strip().lower()
+    return OptionsFeed.OPRA if raw == "opra" else OptionsFeed.INDICATIVE
+
+
+async def list_option_chain_quotes(
+    underlying_symbol: str,
+    *,
+    api_key: str,
+    secret_key: str,
+    feed: OptionsFeed | None = None,
+    expiration_date_gte: date | None = None,
+    expiration_date_lte: date | None = None,
+    contract_type: ContractType | None = None,
+) -> list[ChainQuote]:
+    """Chain snapshot for one underlying — bid/ask/delta/IV per contract.
+
+    Thin pass-through to ``OptionHistoricalDataClient.get_option_chain``,
+    windowed the same way ``list_option_contracts`` already is (caller
+    supplies the expiry bounds). Returns ``[]`` on a broker-side
+    (network/auth) failure — same convention as every other lookup in this
+    module.
+
+    Does NOT swallow a per-item mapping failure the same way: an
+    unparseable OCC symbol is skipped (logged) and the batch continues,
+    but nothing here reads a field via ``getattr(..., default)``. That is
+    deliberate, not an oversight — the bug this function replaces
+    (``_to_contract_quote`` in ``trading_agents.nodes.drafter``, now
+    deleted) read attribute names that do not exist on the real Alpaca
+    model via exactly that pattern, and every real contract silently
+    became ``None`` and got filtered out — invisible across 736 passing
+    tests because nothing ever exercised a real response shape. Real
+    attribute access means a future SDK field rename raises immediately,
+    in a test built on real model instances, instead of quietly degrading
+    a filter stage until every candidate vanishes three layers away.
+    """
+    from alpaca.data.historical.option import OptionHistoricalDataClient
+
+    resolved_feed = feed or _default_options_feed()
+
+    def _fetch() -> list[ChainQuote]:
+        client = OptionHistoricalDataClient(api_key=api_key, secret_key=secret_key)
+        request = OptionChainRequest(
+            underlying_symbol=underlying_symbol,
+            feed=resolved_feed,
+            type=contract_type,
+            expiration_date_gte=expiration_date_gte,
+            expiration_date_lte=expiration_date_lte,
+        )
+        try:
+            snapshots = client.get_option_chain(request)
+        except Exception:
+            logger.exception("list_option_chain_quotes: fetch failed for %s", underlying_symbol)
+            return []
+
+        quotes: list[ChainQuote] = []
+        for occ_symbol, snapshot in (snapshots or {}).items():
+            parsed = OccSymbol.try_parse(occ_symbol)
+            if parsed is None:
+                logger.warning(
+                    "list_option_chain_quotes: unparseable OCC symbol %r for %s — skipping",
+                    occ_symbol,
+                    underlying_symbol,
+                )
+                continue
+            q = snapshot.latest_quote
+            t = snapshot.latest_trade
+            g = snapshot.greeks
+            quotes.append(
+                ChainQuote(
+                    occ_symbol=occ_symbol,
+                    underlying_symbol=parsed.underlying,
+                    contract_type=parsed.contract_type,
+                    strike=parsed.strike,
+                    expiry=parsed.expiry,
+                    bid=q.bid_price if q is not None else None,
+                    ask=q.ask_price if q is not None else None,
+                    delta=g.delta if g is not None else None,
+                    implied_volatility=snapshot.implied_volatility,
+                    last_trade_size=t.size if t is not None else None,
+                )
+            )
+        return quotes
 
     return await asyncio.to_thread(_fetch)
