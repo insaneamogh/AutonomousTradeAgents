@@ -104,6 +104,12 @@ export function PickDetailScreen({ id }: { id: string }) {
   const equity = account.data?.equity ?? null;
   const concentration = equity && equity > 0 ? (pick.estimatedNotional / equity) * 100 : null;
   const riskPerShare = pick.stopLoss != null && pick.limitPrice != null ? Math.abs(pick.limitPrice - pick.stopLoss) : null;
+  // Options (Phase A) are always `side: "BUY"` (buying a call OR a put,
+  // never selling to open) - side/isBuy can't distinguish a bullish call
+  // from a bearish put, so every option-aware branch below reads
+  // isOption/contractType instead.
+  const isOption = pick.isOption === true;
+  const contractLabel = isOption ? (pick.contractType ?? '').toUpperCase() : '';
 
   const submit = (outcome: 'approved' | 'declined') => {
     decide.mutate(
@@ -120,11 +126,17 @@ export function PickDetailScreen({ id }: { id: string }) {
         <Stack gap={8}>
           <Row gap={14}>
             <span className="pg-h1 pg-num">{pick.symbol}</span>
-            <Pill tone={pick.side === 'BUY' ? 'bull' : 'bear'}>{pick.side}</Pill>
+            {isOption ? (
+              <Pill tone={pick.contractType === 'put' ? 'bear' : 'bull'}>{contractLabel}</Pill>
+            ) : (
+              <Pill tone={pick.side === 'BUY' ? 'bull' : 'bear'}>{pick.side}</Pill>
+            )}
             <ScorePill score={conviction} />
           </Row>
           <span className="pg-body-sm">
-            {pick.qty} shares · {pick.orderType === 'LIMIT' && pick.limitPrice ? `limit ${usd(pick.limitPrice, 2)}` : 'market order'} ·
+            {isOption
+              ? `$${pick.strike?.toFixed(2) ?? '—'} strike · ${pick.qty} contract${pick.qty === 1 ? '' : 's'} · exp ${pick.expiryDate ?? '—'}`
+              : `${pick.qty} shares · ${pick.orderType === 'LIMIT' && pick.limitPrice ? `limit ${usd(pick.limitPrice, 2)}` : 'market order'}`} ·
             proposed {ago(pick.proposedAt)}
           </span>
         </Stack>
@@ -195,10 +207,18 @@ export function PickDetailScreen({ id }: { id: string }) {
                 kind="primary"
                 onClick={() => submit('approved')}
                 disabled={decide.isPending}
-                ariaLabel={`Approve ${pick.side} ${pick.qty} ${pick.symbol}`}
+                ariaLabel={
+                  isOption
+                    ? `Approve ${pick.qty} ${pick.symbol} ${contractLabel} $${pick.strike ?? ''}`
+                    : `Approve ${pick.side} ${pick.qty} ${pick.symbol}`
+                }
               >
                 <IconCheck size={16} />
-                {decide.isPending ? 'Submitting…' : `Approve ${pick.side} ${pick.qty} ${pick.symbol}`}
+                {decide.isPending
+                  ? 'Submitting…'
+                  : isOption
+                    ? `Approve ${pick.qty} ${pick.symbol} ${contractLabel} $${pick.strike ?? ''}`
+                    : `Approve ${pick.side} ${pick.qty} ${pick.symbol}`}
               </Button>
               <Button
                 onClick={() => submit('declined')}
@@ -232,36 +252,73 @@ export function PickDetailScreen({ id }: { id: string }) {
                 </tr>
               </thead>
               <tbody>
-                <CheckRow
-                  rule="atr_position_size"
-                  reads="Stop placed off ATR, size derived from it"
-                  value={pick.stopLoss != null ? usd(pick.stopLoss, 2) : '—'}
-                  ok={pick.stopLoss != null}
-                />
-                <CheckRow
-                  rule="reward_risk_floor"
-                  reads="Target must clear the R-multiple floor"
-                  value={pick.rMultiple != null ? `${pick.rMultiple.toFixed(2)}R` : '—'}
-                  ok={pick.rMultiple != null && pick.rMultiple >= 1}
-                />
-                <CheckRow
-                  rule="max_position_pct"
-                  reads="Notional as a share of equity"
-                  value={concentration != null ? `${concentration.toFixed(2)}%` : '—'}
-                  ok={concentration != null && concentration <= 25}
-                />
-                <CheckRow
-                  rule="time_stop"
-                  reads="Agent flattens if neither stop nor target hits"
-                  value={pick.timeStopDays != null ? `${pick.timeStopDays}d` : '—'}
-                  ok={pick.timeStopDays != null}
-                />
-                <CheckRow
-                  rule="risk_per_share"
-                  reads="Entry to stop distance"
-                  value={riskPerShare != null ? usd(riskPerShare, 2) : '—'}
-                  ok={riskPerShare != null}
-                />
+                {isOption ? (
+                  <>
+                    <CheckRow
+                      rule="options_premium_size"
+                      reads="Sized from a premium-at-risk budget, not an ATR stop"
+                      value={pick.ask != null ? usd(pick.ask, 2) : '—'}
+                      ok={pick.ask != null}
+                    />
+                    <CheckRow
+                      rule="illiquid_contract"
+                      reads="Open interest / volume / spread floor at selection time"
+                      value={pick.openInterest != null ? `${pick.openInterest.toLocaleString('en-US')} OI` : '—'}
+                      ok={pick.openInterest != null}
+                    />
+                    <CheckRow
+                      rule="iv_unavailable"
+                      reads="Missing IV is a hard reject, not a neutral pass"
+                      value={pick.impliedVolatility != null ? `${(pick.impliedVolatility * 100).toFixed(1)}% IV` : '—'}
+                      ok={pick.impliedVolatility != null}
+                    />
+                    <CheckRow
+                      rule="max_premium_pct"
+                      reads="Premium as a share of equity"
+                      value={concentration != null ? `${concentration.toFixed(2)}%` : '—'}
+                      ok={concentration != null && concentration <= 2}
+                    />
+                    <CheckRow
+                      rule="time_stop"
+                      reads="Expiry sweep force-surfaces the position before assignment risk"
+                      value={pick.timeStopDays != null ? `${pick.timeStopDays}d` : '—'}
+                      ok={pick.timeStopDays != null}
+                    />
+                  </>
+                ) : (
+                  <>
+                    <CheckRow
+                      rule="atr_position_size"
+                      reads="Stop placed off ATR, size derived from it"
+                      value={pick.stopLoss != null ? usd(pick.stopLoss, 2) : '—'}
+                      ok={pick.stopLoss != null}
+                    />
+                    <CheckRow
+                      rule="reward_risk_floor"
+                      reads="Target must clear the R-multiple floor"
+                      value={pick.rMultiple != null ? `${pick.rMultiple.toFixed(2)}R` : '—'}
+                      ok={pick.rMultiple != null && pick.rMultiple >= 1}
+                    />
+                    <CheckRow
+                      rule="max_position_pct"
+                      reads="Notional as a share of equity"
+                      value={concentration != null ? `${concentration.toFixed(2)}%` : '—'}
+                      ok={concentration != null && concentration <= 25}
+                    />
+                    <CheckRow
+                      rule="time_stop"
+                      reads="Agent flattens if neither stop nor target hits"
+                      value={pick.timeStopDays != null ? `${pick.timeStopDays}d` : '—'}
+                      ok={pick.timeStopDays != null}
+                    />
+                    <CheckRow
+                      rule="risk_per_share"
+                      reads="Entry to stop distance"
+                      value={riskPerShare != null ? usd(riskPerShare, 2) : '—'}
+                      ok={riskPerShare != null}
+                    />
+                  </>
+                )}
               </tbody>
             </table>
 
@@ -287,12 +344,25 @@ export function PickDetailScreen({ id }: { id: string }) {
             <Card>
               <CardHead label="Order plan" />
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                <PlanCell label="Side" value={pick.side} />
-                <PlanCell label="Quantity" value={String(pick.qty)} />
-                <PlanCell label="Type" value={pick.orderType} />
-                <PlanCell label="Limit" value={pick.limitPrice != null ? usd(pick.limitPrice, 2) : 'Market'} />
-                <PlanCell label="Stop loss" value={pick.stopLoss != null ? usd(pick.stopLoss, 2) : '—'} />
-                <PlanCell label="Target" value={pick.targetPrice != null ? usd(pick.targetPrice, 2) : '—'} />
+                {isOption ? (
+                  <>
+                    <PlanCell label="Contract" value={contractLabel || '—'} />
+                    <PlanCell label="Quantity" value={`${pick.qty} contract${pick.qty === 1 ? '' : 's'}`} />
+                    <PlanCell label="Strike" value={pick.strike != null ? usd(pick.strike, 2) : '—'} />
+                    <PlanCell label="Expiry" value={pick.expiryDate ?? '—'} />
+                    <PlanCell label="Premium (ask)" value={pick.ask != null ? usd(pick.ask, 2) : '—'} />
+                    <PlanCell label="Stop / target" value="No bracket on options" />
+                  </>
+                ) : (
+                  <>
+                    <PlanCell label="Side" value={pick.side} />
+                    <PlanCell label="Quantity" value={String(pick.qty)} />
+                    <PlanCell label="Type" value={pick.orderType} />
+                    <PlanCell label="Limit" value={pick.limitPrice != null ? usd(pick.limitPrice, 2) : 'Market'} />
+                    <PlanCell label="Stop loss" value={pick.stopLoss != null ? usd(pick.stopLoss, 2) : '—'} />
+                    <PlanCell label="Target" value={pick.targetPrice != null ? usd(pick.targetPrice, 2) : '—'} />
+                  </>
+                )}
               </div>
               <Stack gap={6}>
                 <Row style={{ justifyContent: 'space-between' }}>

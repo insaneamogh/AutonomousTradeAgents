@@ -31,6 +31,13 @@ import {
 import { useDecideApproval, usePendingApprovals } from '@/hooks/useApprovals';
 import { useBrokerConnections } from '@/hooks/useBrokerConnections';
 
+/** ISO 8601 date ("2026-10-16") -> "Oct 16" for a compact contract label. */
+function formatExpiry(iso: string): string {
+  const d = new Date(`${iso}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
 const FLAG_COPY: Record<string, string> = {
   wash_sale_warning: 'IRS wash-sale risk on this name',
   sector_unknown: 'Sector classification missing',
@@ -70,6 +77,11 @@ export default function PickDetailScreen() {
   }
 
   const isBuy = p.side === 'BUY';
+  // Options (Phase A) are always a BUY — `side`/`isBuy` can't tell a bullish
+  // call from a bearish put apart, so every option-aware branch below reads
+  // isOption/contractType instead of reusing isBuy for direction/tone.
+  const isOption = p.isOption === true;
+  const contractLabel = isOption ? (p.contractType ?? '').toUpperCase() : '';
   const entry = p.qty > 0 ? p.estimatedNotional / p.qty : 0;
   const timeStopDays = p.timeStopDays ?? 5;
 
@@ -133,15 +145,25 @@ export default function PickDetailScreen() {
           <View>
             <HeroHeadline>{p.symbol}</HeroHeadline>
             <HeroSub>
-              {isBuy ? 'Long' : 'Sell'} · {p.qty} sh ·{' '}
-              {p.orderType === 'LIMIT' && p.limitPrice
-                ? `limit $${p.limitPrice.toFixed(2)}`
-                : 'market'}
+              {isOption ? (
+                <>
+                  {contractLabel} ${p.strike?.toFixed(2) ?? '—'} · {p.qty} contract
+                  {p.qty === 1 ? '' : 's'}
+                  {p.expiryDate ? ` · exp ${formatExpiry(p.expiryDate)}` : ''}
+                </>
+              ) : (
+                <>
+                  {isBuy ? 'Long' : 'Sell'} · {p.qty} sh ·{' '}
+                  {p.orderType === 'LIMIT' && p.limitPrice
+                    ? `limit $${p.limitPrice.toFixed(2)}`
+                    : 'market'}
+                </>
+              )}
             </HeroSub>
           </View>
           <DirectionPill
-            label={`${levelLabel(p.convictionLevel)} CONVICTION`}
-            tone={isBuy ? 'mint' : 'rose'}
+            label={isOption ? `${contractLabel} · ${levelLabel(p.convictionLevel)}` : `${levelLabel(p.convictionLevel)} CONVICTION`}
+            tone={isOption ? (p.contractType === 'put' ? 'rose' : 'mint') : isBuy ? 'mint' : 'rose'}
           />
         </View>
 
@@ -172,23 +194,41 @@ export default function PickDetailScreen() {
         </Tile>
 
         <Tile className="gap-2">
-          <TileLabel>Exit plan</TileLabel>
-          <Row k="Entry (approx)" v={`$${entry.toFixed(2)}`} />
-          {p.stopLoss != null && <Row k="Stop loss" v={`$${p.stopLoss.toFixed(2)}`} />}
-          {p.targetPrice != null && <Row k="Target" v={`$${p.targetPrice.toFixed(2)}`} />}
-          {p.rMultiple != null && <Row k="Reward : risk" v={`${p.rMultiple.toFixed(1)}R`} />}
-          <Row k="Time stop" v={`${timeStopDays} trading day${timeStopDays === 1 ? '' : 's'}`} />
-          <Text className="text-[11px] leading-[16px] text-text-tertiary dark:text-text-tertiary-dark">
-            If you delegate the close, stop &amp; target sit at the broker as a bracket and the
-            agent exits after {timeStopDays}d (or earlier on a council SELL) - even while
-            you&apos;re away from the phone.
-          </Text>
+          <TileLabel>{isOption ? 'Contract' : 'Exit plan'}</TileLabel>
+          {isOption ? (
+            <>
+              <Row k="Contract" v={`${contractLabel} $${p.strike?.toFixed(2) ?? '—'}`} />
+              <Row k="Expiry" v={p.expiryDate ? formatExpiry(p.expiryDate) : '—'} />
+              <Row k="Premium (approx)" v={`$${entry.toFixed(2)}`} />
+              <Row k="Time stop" v={`${timeStopDays} trading day${timeStopDays === 1 ? '' : 's'}`} />
+              <Text className="text-[11px] leading-[16px] text-text-tertiary dark:text-text-tertiary-dark">
+                Alpaca has no bracket order for options - there is no stop/target leg. The agent's
+                expiry sweep and time stop own the close instead.
+              </Text>
+            </>
+          ) : (
+            <>
+              <Row k="Entry (approx)" v={`$${entry.toFixed(2)}`} />
+              {p.stopLoss != null && <Row k="Stop loss" v={`$${p.stopLoss.toFixed(2)}`} />}
+              {p.targetPrice != null && <Row k="Target" v={`$${p.targetPrice.toFixed(2)}`} />}
+              {p.rMultiple != null && <Row k="Reward : risk" v={`${p.rMultiple.toFixed(1)}R`} />}
+              <Row k="Time stop" v={`${timeStopDays} trading day${timeStopDays === 1 ? '' : 's'}`} />
+              <Text className="text-[11px] leading-[16px] text-text-tertiary dark:text-text-tertiary-dark">
+                If you delegate the close, stop &amp; target sit at the broker as a bracket and the
+                agent exits after {timeStopDays}d (or earlier on a council SELL) - even while
+                you&apos;re away from the phone.
+              </Text>
+            </>
+          )}
         </Tile>
 
         <Tile className="gap-2">
           <TileLabel>Risk check</TileLabel>
           <Row k="Risk level" v={levelLabel(p.riskLevel)} />
-          <Row k="Notional" v={`$${Math.round(p.estimatedNotional).toLocaleString('en-US')}`} />
+          <Row
+            k={isOption ? 'Premium at risk' : 'Notional'}
+            v={`$${Math.round(p.estimatedNotional).toLocaleString('en-US')}`}
+          />
           {(p.informationalFlags ?? []).map((f) => (
             <Text key={f} className="text-[11px] text-warning dark:text-warning-dark">
               ⚠ {FLAG_COPY[f] ?? f}
@@ -207,7 +247,11 @@ export default function PickDetailScreen() {
               label="Approve"
               onPress={() => setConfirmOpen(true)}
               disabled={decide.isPending}
-              accessibilityLabel={`Approve ${p.symbol} ${isBuy ? 'buy' : 'sell'}`}
+              accessibilityLabel={
+                isOption
+                  ? `Approve ${p.symbol} ${contractLabel} $${p.strike ?? ''}`
+                  : `Approve ${p.symbol} ${isBuy ? 'buy' : 'sell'}`
+              }
             />
           </View>
           <View className="flex-1">
@@ -237,9 +281,14 @@ export default function PickDetailScreen() {
             </Text>
             <View className="mt-3 gap-2">
               <Row
-                k={isBuy ? 'Buy' : 'Sell'}
-                v={`${p.qty} sh · ~$${Math.round(p.estimatedNotional).toLocaleString('en-US')}`}
+                k={isOption ? `Buy ${contractLabel}` : isBuy ? 'Buy' : 'Sell'}
+                v={
+                  isOption
+                    ? `${p.qty} contract${p.qty === 1 ? '' : 's'} · ~$${Math.round(p.estimatedNotional).toLocaleString('en-US')}`
+                    : `${p.qty} sh · ~$${Math.round(p.estimatedNotional).toLocaleString('en-US')}`
+                }
               />
+              {isOption && <Row k="Strike / expiry" v={`$${p.strike?.toFixed(2) ?? '—'} · ${p.expiryDate ? formatExpiry(p.expiryDate) : '—'}`} />}
               {p.stopLoss != null && <Row k="Stop loss" v={`$${p.stopLoss.toFixed(2)}`} />}
               {p.targetPrice != null && <Row k="Target" v={`$${p.targetPrice.toFixed(2)}`} />}
               <Row k="Broker" v={brokerLabel} />

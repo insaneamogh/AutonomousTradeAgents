@@ -7,7 +7,7 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { AddWatchlistRequest, WatchlistItemDto } from '@app/shared-types';
+import type { AddWatchlistRequest, WatchlistAssetClass, WatchlistItemDto } from '@app/shared-types';
 
 import { request } from '@/lib/api';
 
@@ -21,14 +21,22 @@ export function useWatchlist() {
   });
 }
 
+/** A plain string keeps every existing call site (desktop's Settings
+ * watchlist widget) unchanged and defaults to 'equity'; pass
+ * `{ symbol, assetClass }` to request an options-tracked symbol. */
+type AddWatchlistInput = string | { symbol: string; assetClass: WatchlistAssetClass };
+
 export function useAddWatchlistSymbol() {
   const qc = useQueryClient();
-  return useMutation<WatchlistItemDto, Error, string>({
-    mutationFn: (symbol) =>
-      request<WatchlistItemDto>('/api/v1/watchlist', {
+  return useMutation<WatchlistItemDto, Error, AddWatchlistInput>({
+    mutationFn: (input) => {
+      const body: AddWatchlistRequest =
+        typeof input === 'string' ? { symbol: input } : { symbol: input.symbol, assetClass: input.assetClass };
+      return request<WatchlistItemDto>('/api/v1/watchlist', {
         method: 'POST',
-        body: { symbol } satisfies AddWatchlistRequest,
-      }),
+        body,
+      });
+    },
     onSettled: () => qc.invalidateQueries({ queryKey: WATCHLIST_KEY }),
   });
 }

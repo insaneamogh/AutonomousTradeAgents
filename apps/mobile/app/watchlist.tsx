@@ -1,14 +1,17 @@
 // Watchlist — the symbols the agent tracks for this user.
 //
 // The daily council runs over this list (or the default 10 names when
-// it's empty). Stocks + ETFs only in v1 — the server rejects anything
-// else with a clear message, mirrored here in the helper copy.
+// it's empty). A symbol is tracked as an equity/ETF setup or an options
+// one (Phase A: long calls/puts only, still gated by ALLOW_OPTIONS
+// server-side — this toggle is a preference, not a bypass) — the ticker
+// itself is always the underlying either way.
 
 import { useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 
+import type { WatchlistAssetClass } from '@app/shared-types';
 import { ApiError } from '@/lib/api';
 import { EmptyState, ErrorState, Skeleton, cn } from '@app/ui';
 
@@ -34,6 +37,7 @@ export default function WatchlistScreen() {
   // the attempted text in place next to the error, same as before.
   const [addKey, setAddKey] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [assetClass, setAssetClass] = useState<WatchlistAssetClass>('equity');
 
   // Shared by both the dropdown-select path and the type-exact-ticker
   // fallback (SymbolTypeahead calls this for either) — one validate +
@@ -45,16 +49,19 @@ export default function WatchlistScreen() {
       return;
     }
     setError(null);
-    addSymbol.mutate(symbol, {
-      onSuccess: () => setAddKey((k) => k + 1),
-      onError: (err) => {
-        const detail =
-          err instanceof ApiError && typeof (err.body as { detail?: string })?.detail === 'string'
-            ? (err.body as { detail: string }).detail
-            : "Couldn't add the symbol - try again.";
-        setError(detail);
+    addSymbol.mutate(
+      { symbol, assetClass },
+      {
+        onSuccess: () => setAddKey((k) => k + 1),
+        onError: (err) => {
+          const detail =
+            err instanceof ApiError && typeof (err.body as { detail?: string })?.detail === 'string'
+              ? (err.body as { detail: string }).detail
+              : "Couldn't add the symbol - try again.";
+          setError(detail);
+        },
       },
-    });
+    );
   };
 
   const list = items ?? [];
@@ -87,12 +94,42 @@ export default function WatchlistScreen() {
 
         <Tile className="gap-2">
           <TileLabel>Add a symbol</TileLabel>
+          <View className="flex-row gap-2">
+            {(['equity', 'option'] as WatchlistAssetClass[]).map((ac) => (
+              <Pressable
+                key={ac}
+                onPress={() => setAssetClass(ac)}
+                accessibilityRole="radio"
+                accessibilityLabel={`Track new symbols as ${ac}`}
+                accessibilityState={{ selected: assetClass === ac }}
+                className={cn(
+                  'min-h-[36px] flex-1 items-center justify-center rounded-lg border px-3 py-1.5',
+                  assetClass === ac
+                    ? 'border-cta bg-cta/10 dark:border-cta-dark dark:bg-cta-dark/10'
+                    : 'border-hairline dark:border-hairline-dark',
+                )}
+              >
+                <Text
+                  className={cn(
+                    'text-[12px] font-semibold uppercase tracking-[0.5px]',
+                    assetClass === ac
+                      ? 'text-cta dark:text-cta-dark'
+                      : 'text-text-secondary dark:text-text-secondary-dark',
+                  )}
+                >
+                  {ac}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
           <SymbolTypeahead key={addKey} onCommitSymbol={commitSymbol} isPending={addSymbol.isPending} />
           {error != null && (
             <Text className="text-[11px] text-rose dark:text-rose-dark">{error}</Text>
           )}
           <Text className="text-[10px] text-text-tertiary dark:text-text-tertiary-dark">
-            US stocks &amp; ETFs only in v1 - options and futures are out of scope.
+            {assetClass === 'option'
+              ? 'Options track the underlying’s ticker (Phase A: long calls/puts only). Still gated by the options rollout flag server-side.'
+              : 'US stocks & ETFs. Futures are out of scope (and don’t exist on Alpaca anyway).'}
           </Text>
         </Tile>
 

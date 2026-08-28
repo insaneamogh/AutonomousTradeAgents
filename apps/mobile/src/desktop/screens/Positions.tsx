@@ -126,7 +126,9 @@ export function PositionsScreen() {
                         <Stack gap={2}>
                           <Row gap={8}>
                             <Numeral size={15} weight={600}>
-                              {p.symbol}
+                              {p.isOption
+                                ? `${p.symbol} $${p.strike?.toFixed(2) ?? '—'} ${(p.contractType ?? '').toUpperCase()}`
+                                : p.symbol}
                             </Numeral>
                             <Pill tone={p.direction === 'short' ? 'bear' : 'bull'}>
                               {p.direction.toUpperCase()}
@@ -138,7 +140,7 @@ export function PositionsScreen() {
                             {p.status === 'pending_fill'
                               ? `approved ${ago(p.openedAt)} — order working at the broker`
                               : p.managed
-                                ? `opened ${ago(p.openedAt)}`
+                                ? `opened ${ago(p.openedAt)}${p.isOption ? ` · x${p.qty} contract${p.qty === 1 ? '' : 's'}` : ''}`
                                 : `held at broker — no council decision behind it`}
                           </span>
                         </Stack>
@@ -160,7 +162,11 @@ export function PositionsScreen() {
                         )}
                       </td>
                       <td className="pg-num-right pg-dim">
-                        {p.stopLoss != null ? usd(p.stopLoss, 2) : '—'} / {p.targetPrice != null ? usd(p.targetPrice, 2) : '—'}
+                        {p.isOption
+                          ? p.expiryDate
+                            ? `exp ${p.expiryDate}`
+                            : 'no bracket · exp unknown'
+                          : `${p.stopLoss != null ? usd(p.stopLoss, 2) : '—'} / ${p.targetPrice != null ? usd(p.targetPrice, 2) : '—'}`}
                       </td>
                       <td className="pg-num-right">
                         {p.status === 'pending_fill' ? (

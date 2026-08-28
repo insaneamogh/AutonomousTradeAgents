@@ -145,6 +145,10 @@ export default function PositionsScreen() {
                   ? 'text-gain dark:text-gain-dark'
                   : 'text-rose dark:text-rose-dark';
             const busy = close.isPending && close.variables === p.decisionId;
+            // Options are always `side: BUY` (Phase A never sells to open),
+            // so the header reads the contract instead of a side that
+            // can't tell a call from a put apart.
+            const isOption = p.isOption === true;
             return (
               <Tile key={p.decisionId ?? `broker:${p.symbol}`} className="gap-2">
                 <View className="flex-row items-center justify-between">
@@ -152,7 +156,9 @@ export default function PositionsScreen() {
                     className="text-[16px] font-semibold text-text-primary dark:text-text-primary-dark"
                     style={{ fontVariant: ['tabular-nums'] }}
                   >
-                    {p.side} {p.qty} {p.symbol}
+                    {isOption
+                      ? `${p.symbol} $${p.strike?.toFixed(2) ?? '—'} ${(p.contractType ?? '').toUpperCase()} x${p.qty}`
+                      : `${p.side} ${p.qty} ${p.symbol}`}
                   </Text>
                   <View className="flex-row items-center gap-2">
                     <DirectionPill
@@ -197,11 +203,19 @@ export default function PositionsScreen() {
                   </View>
                 )}
 
-                {(p.stopLoss != null || p.targetPrice != null || p.timeStopDays != null) && (
+                {isOption ? (
                   <Text className="text-[10px] text-text-tertiary dark:text-text-tertiary-dark">
-                    Plan: stop {money(p.stopLoss)} · target {money(p.targetPrice)}
+                    {p.expiryDate ? `Expires ${p.expiryDate}` : 'Expiry unknown'} · no bracket on
+                    options — expiry sweep + time-stop own the close
                     {p.timeStopDays != null ? ` · time-stop ${p.timeStopDays}d` : ''}
                   </Text>
+                ) : (
+                  (p.stopLoss != null || p.targetPrice != null || p.timeStopDays != null) && (
+                    <Text className="text-[10px] text-text-tertiary dark:text-text-tertiary-dark">
+                      Plan: stop {money(p.stopLoss)} · target {money(p.targetPrice)}
+                      {p.timeStopDays != null ? ` · time-stop ${p.timeStopDays}d` : ''}
+                    </Text>
+                  )
                 )}
 
                 {p.decisionId ? (
