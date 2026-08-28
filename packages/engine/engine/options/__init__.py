@@ -6,6 +6,8 @@ Public surface:
     to_risk_proposal(*, symbol, side, qty, ..., option) -> RiskProposal
     dte(expiry, now) -> int
     is_expiry_day(expiry, now) -> bool
+    fetch_option_candidates(underlying_symbol, *, api_key, secret_key, now) ->
+        tuple[ContractQuote, ...]
     select_contract(inputs: ContractSelectionInputs) -> ContractSelectionResult
     options_position_size(inputs: OptionsSizingInputs) -> OptionsSizingDecision
 
@@ -19,13 +21,22 @@ Scope split, two parallel tracks that both landed here:
         11 named veto rules).
     engine.options.{selection,sizing}   contract/strike/expiry selection +
         premium-at-risk sizing (``select_contract``, ``options_position_size``).
-Neither owns chain fetching (``packages/broker``) or execution
-(``apps/api/app/services/orders``).
+``contracts.fetch_option_candidates`` ORCHESTRATES chain fetching (merges
+two ``packages/broker`` calls into the ``ContractQuote`` shape
+``selection.select_contract`` needs) but does not itself talk to Alpaca —
+the alpaca-py-typed calls stay in ``packages/broker``, matching this
+workspace's ``agents -> engine -> broker -> alpaca-py`` layering.
+Execution still lives in ``apps/api/app/services/orders``.
 """
 
 from __future__ import annotations
 
-from engine.options.contracts import OccSymbol, contract_type_of, to_risk_proposal
+from engine.options.contracts import (
+    OccSymbol,
+    contract_type_of,
+    fetch_option_candidates,
+    to_risk_proposal,
+)
 from engine.options.expiry import dte, is_expiry_day
 from engine.options.risk import evaluate_option
 from engine.options.selection import (
@@ -50,6 +61,7 @@ __all__ = [
     "contract_type_of",
     "dte",
     "evaluate_option",
+    "fetch_option_candidates",
     "is_expiry_day",
     "options_position_size",
     "select_contract",

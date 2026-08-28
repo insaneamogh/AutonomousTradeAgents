@@ -18,12 +18,20 @@ reconcile two independently-invented intermediate shapes.
 
 from __future__ import annotations
 
+import asyncio
+from datetime import datetime, timedelta
 from typing import Literal
 
 from broker.types import OccSymbol
-from engine.risk.types import OptionLegDetails, RiskProposal, Side
+from engine.options.selection import ContractQuote
+from engine.risk.types import OptionLegDetails, RiskCaps, RiskProposal, Side
 
-__all__ = ["OccSymbol", "contract_type_of", "to_risk_proposal"]
+__all__ = [
+    "OccSymbol",
+    "contract_type_of",
+    "fetch_option_candidates",
+    "to_risk_proposal",
+]
 
 
 def contract_type_of(value: str) -> Literal["call", "put"]:
@@ -86,4 +94,99 @@ def to_risk_proposal(
         option=option,
         closes_intraday_position=closes_intraday_position,
         is_intraday=is_intraday,
+    )
+
+
+async def fetch_option_candidates(
+    underlying_symbol: str,
+    *,
+    api_key: str,
+    secret_key: str,
+    now: datetime,
+    caps: RiskCaps | None = None,
+) -> tuple[ContractQuote, ...]:
+    """Chain snapshot + open-interest enrichment -> ``ContractQuote``
+    candidates, ready for ``engine.options.selection.select_contract``.
+
+    This is the "chain fetch + normalise" this module's own docstring
+    promised (``docs/OPTIONS_PLAN.md`` §2.1) but never built until now —
+    the real fetch lived, broken, directly in
+    ``trading_agents.nodes.drafter`` instead (see that module's build-log
+    history). Two calls, concurrently:
+
+    - ``broker.alpaca.list_option_chain_quotes`` — bid/ask/delta/IV, from
+      the correct chain-SNAPSHOT endpoint.
+    - ``broker.alpaca.list_option_contracts`` (unchanged) — the ONLY
+      source of ``open_interest``; the snapshot endpoint doesn't carry it
+      at all. Merged in by exact OCC symbol string. This merge is
+      necessary, not optional: ``engine.options.selection``'s
+      ``_passes_liquidity`` hard-fails on ``open_interest is None`` (by
+      design — "can't prove liquidity you can't see"), so leaving it
+      unset would just relocate the chain-fetch bug this function
+      replaces one stage downstream, under a different name.
+
+    Windows both calls to ``RiskCaps.options_min_dte``/``options_max_dte``
+    — the wide, AUTHORITATIVE bound re-checked independently at the risk
+    gate — deliberately not ``selection.py``'s own narrower 21-45 DTE
+    heuristic, which has its own documented reason not to import
+    ``RiskCaps`` for its selection-only window. Fetching the wider range
+    here means any current or future selection rule has what it needs.
+
+    ``ContractQuote.volume`` is populated from ``ChainQuote.last_trade_size``
+    — the size of the single last trade, not cumulative daily volume; no
+    field on either Alpaca endpoint reports the latter. A real but
+    documented-imperfect liquidity proxy (a single large print can outrank
+    many small ones) — true daily volume would need a third, per-contract
+    call to the bars endpoint, which is out of scope here.
+
+    Does not itself catch a broker-layer failure — an exception from
+    either call propagates uncaught (the caller, ``trading_agents.nodes.
+    drafter._fetch_option_candidates``, is what degrades this to a HOLD).
+    """
+    resolved_caps = caps or RiskCaps.from_env()
+    gte = now.date() + timedelta(days=resolved_caps.options_min_dte)
+    lte = now.date() + timedelta(days=resolved_caps.options_max_dte)
+
+    from broker.alpaca import list_option_chain_quotes, list_option_contracts
+
+    chain_quotes, contracts = await asyncio.gather(
+        list_option_chain_quotes(
+            underlying_symbol,
+            api_key=api_key,
+            secret_key=secret_key,
+            expiration_date_gte=gte,
+            expiration_date_lte=lte,
+        ),
+        list_option_contracts(
+            [underlying_symbol],
+            api_key=api_key,
+            secret_key=secret_key,
+            expiration_date_gte=gte,
+            expiration_date_lte=lte,
+        ),
+    )
+
+    oi_by_symbol: dict[str, int] = {}
+    for contract in contracts:
+        if contract.open_interest is None:
+            continue
+        try:
+            oi_by_symbol[contract.symbol] = int(contract.open_interest)
+        except (TypeError, ValueError):
+            continue
+
+    return tuple(
+        ContractQuote(
+            occ_symbol=q.occ_symbol,
+            contract_type=contract_type_of(q.contract_type),
+            strike=q.strike,
+            expiry=q.expiry,
+            bid=q.bid,
+            ask=q.ask,
+            open_interest=oi_by_symbol.get(q.occ_symbol),
+            volume=int(q.last_trade_size) if q.last_trade_size is not None else None,
+            delta=q.delta,
+            implied_volatility=q.implied_volatility,
+        )
+        for q in chain_quotes
     )
