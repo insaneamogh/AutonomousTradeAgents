@@ -104,13 +104,21 @@ class PostgresDecisionLog:
         self._session_factory = async_session_factory()
 
     async def record(self, entry: DecisionEntry) -> DecisionEntry:
+        # entry.id is council_run_id when runtime.run_council built this entry
+        # (a real UUID string generated before any LLM call in the pass) —
+        # reusing it as the row's PK ties this decision to every llm_calls
+        # row the cost ledger correlated under the same id (see
+        # CostLedger.backfill_decision_id), with no extra lookup needed. Any
+        # caller that doesn't go through that path — or still uses the legacy
+        # opaque ``"dec-..."`` id — falls back to a fresh uuid4(), exactly as
+        # this always did.
+        try:
+            row_id = uuid.UUID(entry.id)
+        except (ValueError, TypeError):
+            row_id = uuid.uuid4()
         async with self._session_factory() as session:
             row = AgentDecision(
-                # DecisionEntry.id is a short opaque string; we ignore it
-                # and let Postgres assign a UUID4. The original opaque id
-                # was a session-local identifier — production rows are
-                # addressed by their UUID PK.
-                id=uuid.uuid4(),
+                id=row_id,
                 user_id=uuid.UUID(entry.user_id) if entry.user_id else FIXTURE_USER_ID,
                 symbol=entry.symbol,
                 horizon=entry.horizon,

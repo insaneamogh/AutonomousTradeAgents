@@ -151,6 +151,61 @@ async def test_fit_only_ever_returns_registry_ids() -> None:
     assert {r.strategy_id for r in ranked} <= set(STRATEGY_REGISTRY)
 
 
+async def test_run_council_attributes_every_llm_call_to_its_run_and_user() -> None:
+    """Regression test for the cost-attribution gap this fix closes: before
+    it, ``llm_calls.agent_decision_id`` and ``llm_calls.user_id`` were
+    unconditionally NULL on every row — no way to answer "which LLM calls
+    produced decision X" or "how much did user Y's trading cost in LLM
+    spend". Exercised end-to-end against the mock LLM (no Postgres needed):
+    ``InMemoryCostLedger`` + ``InMemoryDecisionLog`` implement the same
+    Protocols the Postgres-backed classes do, so the wiring under test —
+    ``runtime.run_council`` threading ``council_run_id``/``user_id`` through
+    every node's ``complete_json`` call, then backfilling the real decision
+    id once it exists — is identical either way.
+
+    This would NOT have passed before this change: ``council_run_id`` didn't
+    exist as a concept anywhere (state key, LedgerEntry field, or Protocol
+    method), every row's ``user_id`` was unconditionally None because
+    ``_record_to_ledger`` never received or forwarded it, and nothing ever
+    called back into the ledger after ``decision_log.record()`` to attach
+    ``agent_decision_id`` — so (a), (b), and (c) below each pin a hard
+    failure against the pre-change code, not just a shape check.
+    """
+    from trading_agents.cost_ledger import get_cost_ledger, reset_cost_ledger_for_tests
+    from trading_agents.memory import InMemoryDecisionLog
+
+    reset_cost_ledger_for_tests()  # this file has no autouse reset fixture
+    llm = LLM(api_key=None)
+    decision_log = InMemoryDecisionLog()
+
+    result = await run_council(
+        symbol="NVDA", llm=llm, decision_log=decision_log, user_id="user-42"
+    )
+
+    rows = await get_cost_ledger().all()
+    # NVDA clears the fit floor under the mock provider (see
+    # test_mock_council_produces_buy_proposal_for_nvda above) and runs the
+    # full council, so this pass must have written at least one row.
+    assert rows, "expected at least one llm_calls row for this pass"
+
+    # (a) every LLM call row from this run shares ONE council_run_id.
+    run_ids = {r.council_run_id for r in rows}
+    assert run_ids == {r.council_run_id for r in rows if r.council_run_id is not None}, (
+        "every row must carry a council_run_id — none may be None"
+    )
+    assert len(run_ids) == 1
+
+    # (b) that value equals the returned decision's id — proving the
+    # post-hoc backfill in runtime.run_council actually ran and matched.
+    (council_run_id,) = run_ids
+    assert result["decision_id"] is not None
+    assert council_run_id == result["decision_id"]
+    assert all(r.agent_decision_id == result["decision_id"] for r in rows)
+
+    # (c) user_id populated on every row when run_council was called with one.
+    assert all(r.user_id == "user-42" for r in rows)
+
+
 async def test_drafter_skipped_when_fit_holds() -> None:
     """Integration: a HOLD from the deterministic fit node must skip the
     Router, every analyst, and the Drafter — the whole rest of the graph.

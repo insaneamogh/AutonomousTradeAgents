@@ -17,15 +17,18 @@ this in a try/except): a ledger outage must never take down a council run.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from engine.db import async_session_factory
 from engine.db.models import LlmCall
 from trading_agents.cost_ledger import LedgerEntry
+
+logger = logging.getLogger("agents.cost.postgres")
 
 
 def _maybe_uuid(value: str | None) -> uuid.UUID | None:
@@ -52,6 +55,7 @@ class PostgresCostLedger:
                 id=uuid.uuid4(),
                 agent_decision_id=_maybe_uuid(entry.agent_decision_id),
                 user_id=_maybe_uuid(entry.user_id),
+                council_run_id=_maybe_uuid(entry.council_run_id),
                 model=entry.model,
                 role=entry.role,
                 input_tokens=entry.input_tokens,
@@ -90,6 +94,7 @@ class PostgresCostLedger:
                 id=str(r.id),
                 agent_decision_id=str(r.agent_decision_id) if r.agent_decision_id else None,
                 user_id=str(r.user_id) if r.user_id else None,
+                council_run_id=str(r.council_run_id) if r.council_run_id else None,
                 model=r.model,
                 role=r.role,
                 input_tokens=r.input_tokens,
@@ -102,3 +107,28 @@ class PostgresCostLedger:
             )
             for r in rows
         ]
+
+    async def backfill_decision_id(
+        self, *, council_run_id: str, decision_id: str
+    ) -> None:
+        """One UPDATE: attach ``decision_id`` to every row from this run that
+        isn't already attributed. The ``agent_decision_id IS NULL`` guard
+        matters — don't clobber a row some other path already attributed.
+
+        Best-effort, matching ``trading_agents.llm._record_to_ledger``'s
+        convention elsewhere in this codebase: a ledger outage must never
+        take down a council run.
+        """
+        try:
+            async with self._session_factory() as session:
+                await session.execute(
+                    update(LlmCall)
+                    .where(
+                        LlmCall.council_run_id == uuid.UUID(council_run_id),
+                        LlmCall.agent_decision_id.is_(None),
+                    )
+                    .values(agent_decision_id=uuid.UUID(decision_id))
+                )
+                await session.commit()
+        except Exception as exc:
+            logger.warning("cost ledger backfill failed (best-effort): %s", exc)

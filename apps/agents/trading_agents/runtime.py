@@ -85,6 +85,13 @@ async def run_council(
     }
     """
     llm = llm or LLM()
+    # Generated BEFORE any LLM call in this pass — agent_decisions.id does not
+    # exist yet (it's assigned only after decision_log.record() below, which
+    # runs strictly after run_graph() completes). Every node's complete_json()
+    # call carries this so the cost ledger can correlate rows to this pass
+    # now and backfill the real decision id onto them afterwards. See
+    # trading_agents.cost_ledger.CostLedger.backfill_decision_id.
+    council_run_id = str(uuid.uuid4())
     # Feature providers may be sync (synthetic) or async (real Alpaca/FRED
     # provider) — await when needed so callers don't care which they wired.
     context = feature_provider(symbol.upper(), horizon)
@@ -95,6 +102,7 @@ async def run_council(
         "horizon": horizon,
         "triggered_at": datetime.now(UTC),
         "user_id": user_id,
+        "council_run_id": council_run_id,
         "context": context,
     }
     if confidence_store is not None:
@@ -146,9 +154,23 @@ async def run_council(
         # so callers can read decision_id from the result; the in-memory log
         # is sync-fast anyway, and a real Postgres impl will be wrapped in
         # asyncio.shield by the caller if it wants true fire-and-forget.
-        entry = _to_decision_entry(state["symbol"], horizon, user_id, final, proposal_dto)
+        entry = _to_decision_entry(
+            state["symbol"], horizon, user_id, final, proposal_dto, council_run_id
+        )
         recorded = await decision_log.record(entry)
         decision_id = recorded.id
+        # Best-effort: attach the now-real decision id to every llm_calls row
+        # this pass wrote under council_run_id. A ledger outage must never
+        # take down a council run — same convention as every other
+        # telemetry write in this codebase (see llm._record_to_ledger).
+        try:
+            from trading_agents.cost_ledger import get_cost_ledger
+
+            await get_cost_ledger().backfill_decision_id(
+                council_run_id=council_run_id, decision_id=decision_id
+            )
+        except Exception as exc:
+            logger.warning("cost ledger backfill failed (best-effort): %s", exc)
 
     return {
         "proposal": proposal_dto,
@@ -276,6 +298,7 @@ def _to_decision_entry(
     user_id: str | None,
     final: CouncilState,
     proposal_dto: dict[str, Any] | None,
+    council_run_id: str,
 ) -> DecisionEntry:
     """Build the audit row from the final council state.
 
@@ -283,6 +306,12 @@ def _to_decision_entry(
     redundant with the per-analyst scores) and stash the proposal under a
     flat key so the Reflection prompt can pull bull/bear out without a
     deep walk.
+
+    ``id=council_run_id`` (rather than letting ``DecisionEntry``'s own
+    default id factory fire) ties this decision's row id to the same value
+    every LLM call in this pass was correlated under, so
+    ``PostgresDecisionLog.record()`` can reuse it as the real row id and the
+    cost-ledger backfill and this decision agree on one id with no lookup.
     """
     tech = final.get("technical") or {}
     fund = final.get("fundamental") or {}
@@ -290,6 +319,7 @@ def _to_decision_entry(
     internal_proposal = final.get("proposal") or {}
 
     return DecisionEntry(
+        id=council_run_id,
         user_id=user_id,
         symbol=symbol,
         horizon=horizon,

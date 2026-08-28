@@ -104,7 +104,8 @@ async def drafter_node(state: CouncilState, llm: LLM) -> CouncilState:
 
     data, degraded = await complete_json(
         llm,
-        system=DRAFTER, user=user, model=Model.SONNET, max_tokens=900
+        system=DRAFTER, user=user, model=Model.SONNET, max_tokens=900,
+        council_run_id=state.get("council_run_id"), user_id=state.get("user_id"),
     )
     if degraded:
         state = {**state, "degraded_nodes": [*(state.get("degraded_nodes") or []), "drafter"]}

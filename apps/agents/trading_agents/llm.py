@@ -106,10 +106,32 @@ class LLM:
         model: str = Model.SONNET,
         max_tokens: int = 800,
         cache_system: bool = True,
+        council_run_id: str | None = None,
+        agent_decision_id: str | None = None,
+        user_id: str | None = None,
     ) -> LLMResponse:
+        # ``council_run_id`` / ``agent_decision_id`` / ``user_id`` are optional
+        # passthrough correlators for the cost ledger (cost_ledger.LedgerEntry)
+        # — purely additive, every existing call site is unaffected. In
+        # practice a caller inside a live council pass only ever has
+        # ``council_run_id`` + ``user_id`` on hand: the real decision id does
+        # not exist until strictly after every LLM call in the pass completes
+        # (see runtime.run_council). ``agent_decision_id`` is wired through
+        # end to end for symmetry / any future direct-attribution caller, but
+        # must never carry a live, not-yet-persisted decision id —
+        # llm_calls.agent_decision_id has a real (non-deferrable) FK, and
+        # writing one before the row exists reintroduces the exact
+        # ForeignKeyViolation this design avoids.
         if self._mock:
             resp = _mock_response(system=system, user=user, model=model)
-            await _record_to_ledger(system, resp, is_mock=True)
+            await _record_to_ledger(
+                system,
+                resp,
+                is_mock=True,
+                council_run_id=council_run_id,
+                agent_decision_id=agent_decision_id,
+                user_id=user_id,
+            )
             return resp
 
         client = self._get_client()
@@ -138,7 +160,14 @@ class LLM:
             cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) if usage else 0,
             cache_creation_tokens=getattr(usage, "cache_creation_input_tokens", 0) if usage else 0,
         )
-        await _record_to_ledger(system, resp, is_mock=False)
+        await _record_to_ledger(
+            system,
+            resp,
+            is_mock=False,
+            council_run_id=council_run_id,
+            agent_decision_id=agent_decision_id,
+            user_id=user_id,
+        )
         return resp
 
     @staticmethod
@@ -166,6 +195,9 @@ async def complete_json(
     model: str = Model.SONNET,
     max_tokens: int = 800,
     cache_system: bool = True,
+    council_run_id: str | None = None,
+    agent_decision_id: str | None = None,
+    user_id: str | None = None,
 ) -> tuple[dict[str, Any] | None, bool]:
     """``llm.complete()`` + parse, with ONE re-ask on malformed output.
 
@@ -187,6 +219,8 @@ async def complete_json(
         resp = await llm.complete(
             system=system, user=user, model=model,
             max_tokens=max_tokens, cache_system=cache_system,
+            council_run_id=council_run_id, agent_decision_id=agent_decision_id,
+            user_id=user_id,
         )
         try:
             data = LLM.parse_json(resp.text)
@@ -202,6 +236,8 @@ async def complete_json(
         resp = await llm.complete(
             system=system, user=retry_user, model=model,
             max_tokens=max_tokens, cache_system=cache_system,
+            council_run_id=council_run_id, agent_decision_id=agent_decision_id,
+            user_id=user_id,
         )
         try:
             data = LLM.parse_json(resp.text)
@@ -396,7 +432,15 @@ def _mock_response(*, system: str, user: str, model: str) -> LLMResponse:
 # ─────────────────────────────────────────────────────────────────────
 
 
-async def _record_to_ledger(system: str, resp: LLMResponse, *, is_mock: bool) -> None:
+async def _record_to_ledger(
+    system: str,
+    resp: LLMResponse,
+    *,
+    is_mock: bool,
+    council_run_id: str | None = None,
+    agent_decision_id: str | None = None,
+    user_id: str | None = None,
+) -> None:
     try:
         from trading_agents.cost_ledger import (
             LedgerEntry,
@@ -414,6 +458,9 @@ async def _record_to_ledger(system: str, resp: LLMResponse, *, is_mock: bool) ->
         )
         await get_cost_ledger().record(
             LedgerEntry(
+                agent_decision_id=agent_decision_id,
+                user_id=user_id,
+                council_run_id=council_run_id,
                 model=resp.model.split("+", 1)[0],
                 role=infer_role_from_system_prompt(system),
                 input_tokens=resp.input_tokens,

@@ -69,7 +69,8 @@ async def run_specialist(
     the ``field`` prefix the clamp warnings log under.
     """
     data, degraded = await complete_json(
-        llm, system=system, user=header + body, model=model, max_tokens=MAX_TOKENS
+        llm, system=system, user=header + body, model=model, max_tokens=MAX_TOKENS,
+        council_run_id=state.get("council_run_id"), user_id=state.get("user_id"),
     )
     if data is None:
         # Same per-analyst log channel the three separate modules used, so

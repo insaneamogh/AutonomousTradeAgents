@@ -47,6 +47,7 @@ class ScriptedLLM:
         model: str = Model.SONNET,
         max_tokens: int = 800,
         cache_system: bool = True,
+        **_kw: object,
     ) -> LLMResponse:
         body = self._default
         for needle, payload in self._by_role.items():

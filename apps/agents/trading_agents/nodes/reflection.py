@@ -95,6 +95,11 @@ async def reflection_agent_run(
                 user=user_prompt,
                 model=Model.SONNET,
                 max_tokens=900,
+                # No council_run_id / agent_decision_id: this one call grades
+                # MANY DecisionEntry rows at once (grouped by strategy_id), so
+                # there is no single decision — or council pass — to
+                # attribute it to. Not a gap; don't force a 1:1 link here.
+                user_id=user_id if user_id != ALL_USERS else None,
             )
             try:
                 data = LLM.parse_json(resp.text)

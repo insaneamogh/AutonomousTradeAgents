@@ -241,6 +241,7 @@ class LlmCall(Base):
     __table_args__ = (
         Index("ix_llm_calls_called_at", "called_at"),
         Index("ix_llm_calls_user_id_called_at", "user_id", "called_at"),
+        Index("ix_llm_calls_council_run_id", "council_run_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -253,6 +254,17 @@ class LlmCall(Base):
         UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
+    )
+    # Correlates every LLM call in one council pass BEFORE agent_decisions.id
+    # exists — run_council() generates this once per pass (before any LLM
+    # call) and every node's complete_json() call carries it. Deliberately NO
+    # ForeignKey (migration 0013): the FK on agent_decision_id is checked
+    # per-statement, not deferrable, and this column must survive being
+    # written while the matching agent_decisions row does not exist yet. The
+    # runtime backfills agent_decision_id on every matching row once the
+    # decision is recorded (CostLedger.backfill_decision_id).
+    council_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
     )
     model: Mapped[str] = mapped_column(String(64), nullable=False)
     role: Mapped[str] = mapped_column(String(32), nullable=False)

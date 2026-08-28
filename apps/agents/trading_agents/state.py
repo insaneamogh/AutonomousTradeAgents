@@ -18,6 +18,11 @@ class CouncilState(TypedDict, total=False):
     triggered_at: datetime
     context: dict[str, Any]
     user_id: str | None
+    council_run_id: str
+    """Generated once per pass, before any LLM call (``runtime.run_council``).
+    Correlates every ``llm_calls`` row this pass writes so cost can be
+    attributed to the eventual ``agent_decisions`` row before that row's id
+    exists — see ``trading_agents.cost_ledger.CostLedger.backfill_decision_id``."""
 
     # ── Router output ────────────────────────────────────────────────
     regime: str

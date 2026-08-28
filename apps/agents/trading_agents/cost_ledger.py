@@ -114,6 +114,13 @@ class LedgerEntry:
     id: str = field(default_factory=lambda: f"llm-{uuid.uuid4().hex[:12]}")
     agent_decision_id: str | None = None
     user_id: str | None = None
+    council_run_id: str | None = None
+    """Correlates every LLM call in one council pass, written BEFORE the
+    matching ``agent_decisions`` row exists (that row's id isn't assigned
+    until strictly after every LLM call in the pass has completed — see
+    ``trading_agents.runtime.run_council``). ``agent_decision_id`` above
+    starts NULL for a live call and gets backfilled afterwards via
+    ``CostLedger.backfill_decision_id`` once the real decision id exists."""
     model: str = ""
     role: str = "unknown"
     """Role of the call — router / technical / fundamental / macro /
@@ -138,6 +145,19 @@ class CostLedger(Protocol):
     async def all(self) -> list[LedgerEntry]:
         """Debug / testing only."""
 
+    async def backfill_decision_id(
+        self, *, council_run_id: str, decision_id: str
+    ) -> None:
+        """Attach ``decision_id`` to every row sharing ``council_run_id``.
+
+        Called once per council pass, right after the decision row is
+        recorded — every LLM call in that pass wrote with
+        ``agent_decision_id=None`` and ``council_run_id`` set (the decision
+        didn't exist yet). Must never clobber a row some other path already
+        attributed. Best-effort: a ledger outage must never take down a
+        council run.
+        """
+
 
 class InMemoryCostLedger:
     def __init__(self) -> None:
@@ -159,6 +179,16 @@ class InMemoryCostLedger:
 
     async def all(self) -> list[LedgerEntry]:
         return list(self._rows)
+
+    async def backfill_decision_id(
+        self, *, council_run_id: str, decision_id: str
+    ) -> None:
+        # Same NULL-guard as the Postgres impl (``AND agent_decision_id IS
+        # NULL``): a row some other path already attributed must not be
+        # clobbered.
+        for row in self._rows:
+            if row.council_run_id == council_run_id and row.agent_decision_id is None:
+                row.agent_decision_id = decision_id
 
 
 # ─────────────────────────────────────────────────────────────────────

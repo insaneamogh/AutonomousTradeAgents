@@ -163,3 +163,87 @@ async def test_llm_complete_writes_to_ledger() -> None:
     assert row.is_mock is True
     # Mock responses don't report token usage, so cost should be 0.
     assert row.cost_usd == 0.0
+
+
+# ─────────────────────────────────────────────────────────────────────
+# council_run_id — correlation before agent_decisions.id exists
+#
+# agent_decisions.id isn't assigned until strictly after every LLM call in a
+# council pass has completed (runtime.run_council awaits run_graph() to
+# completion before decision_log.record() ever runs). council_run_id is the
+# id every llm_calls row from one pass shares in the meantime; backfill_
+# decision_id() is how the real decision id gets attached afterwards.
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_ledger_entry_carries_council_run_id() -> None:
+    entry = LedgerEntry(model="claude-haiku-4-5-20251001", council_run_id="run-abc")
+    assert entry.council_run_id == "run-abc"
+    # Purely additive — omitting it entirely must still be valid.
+    assert LedgerEntry(model="claude-haiku-4-5-20251001").council_run_id is None
+
+
+async def test_llm_complete_writes_council_run_id_and_user_id() -> None:
+    """``complete()``'s new passthrough kwargs must land on the ledger row —
+    this is the actual fix for both halves of the "unconditionally NULL"
+    bug (user_id) and the new correlation column (council_run_id).
+    """
+    llm = LLM(api_key=None)
+
+    await llm.complete(
+        system="You are the Router on a quant desk.",
+        user="Ticker: NVDA",
+        model="claude-haiku-4-5-20251001",
+        council_run_id="run-xyz",
+        user_id="user-1",
+    )
+
+    rows = await get_cost_ledger().all()
+    assert len(rows) == 1
+    assert rows[0].council_run_id == "run-xyz"
+    assert rows[0].user_id == "user-1"
+    # agent_decision_id was never passed at call time (it can't exist yet) —
+    # must stay None, never silently defaulted to something else.
+    assert rows[0].agent_decision_id is None
+
+
+async def test_backfill_decision_id_moves_matching_rows_only() -> None:
+    ledger = InMemoryCostLedger()
+    await ledger.record(
+        LedgerEntry(model="claude-haiku-4-5-20251001", council_run_id="run-1")
+    )
+    await ledger.record(
+        LedgerEntry(model="claude-haiku-4-5-20251001", council_run_id="run-1")
+    )
+    # A different run in the same ledger — must be untouched.
+    other = LedgerEntry(model="claude-haiku-4-5-20251001", council_run_id="run-2")
+    await ledger.record(other)
+
+    await ledger.backfill_decision_id(council_run_id="run-1", decision_id="dec-1")
+
+    rows = await ledger.all()
+    run_1_rows = [r for r in rows if r.council_run_id == "run-1"]
+    run_2_rows = [r for r in rows if r.council_run_id == "run-2"]
+    assert len(run_1_rows) == 2
+    assert all(r.agent_decision_id == "dec-1" for r in run_1_rows)
+    assert len(run_2_rows) == 1
+    assert run_2_rows[0].agent_decision_id is None, "non-matching row must be untouched"
+
+
+async def test_backfill_decision_id_never_clobbers_an_already_attributed_row() -> None:
+    """The ``agent_decision_id IS NULL`` guard: a row some other path already
+    attributed must survive a backfill call for its own council_run_id
+    untouched.
+    """
+    ledger = InMemoryCostLedger()
+    already_attributed = LedgerEntry(
+        model="claude-haiku-4-5-20251001",
+        council_run_id="run-1",
+        agent_decision_id="dec-original",
+    )
+    await ledger.record(already_attributed)
+
+    await ledger.backfill_decision_id(council_run_id="run-1", decision_id="dec-new")
+
+    rows = await ledger.all()
+    assert rows[0].agent_decision_id == "dec-original"

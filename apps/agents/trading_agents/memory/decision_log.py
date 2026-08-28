@@ -42,7 +42,11 @@ class DecisionEntry:
     replay — kept tight (no embeddings, no LLM raw text).
     """
 
-    id: str = field(default_factory=lambda: f"dec-{uuid.uuid4().hex[:12]}")
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    """A real UUID string (not the old ``"dec-..."`` opaque id) so
+    ``runtime.run_council`` can hand it the same ``council_run_id`` every LLM
+    call in the pass was correlated under, and so ``PostgresDecisionLog.
+    record()`` can reuse it as the row's real PK instead of discarding it."""
     user_id: str | None = None
     symbol: str = ""
     horizon: str = "short"

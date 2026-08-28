@@ -26,7 +26,8 @@ async def router_node(state: CouncilState, llm: LLM) -> CouncilState:
 
     data, degraded = await complete_json(
         llm,
-        system=ROUTER, user=user, model=Model.HAIKU, max_tokens=300
+        system=ROUTER, user=user, model=Model.HAIKU, max_tokens=300,
+        council_run_id=state.get("council_run_id"), user_id=state.get("user_id"),
     )
     if data is None:
         logger.warning("router degraded — neutral fallback subset")
