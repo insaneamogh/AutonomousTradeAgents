@@ -118,6 +118,7 @@ async def _execute_council(
         confidence_store=get_confidence_store(),
         progress_cb=progress_cb,
         pacing_seconds=get_settings().theater_mock_pacing_seconds,
+        instrument_preference=body.instrument_preference,
     )
 
     proposal_dto: ApprovalProposalDto | None = None

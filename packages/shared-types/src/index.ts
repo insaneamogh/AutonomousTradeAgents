@@ -302,6 +302,9 @@ export interface CircuitBreakerResponse {
 export interface AgentRunRequest {
   symbol: string;
   horizon?: Horizon;
+  /** Phase A options trading — still gated by ALLOW_OPTIONS on the agent
+   * side; requesting 'option' does nothing unless that flag is also on. */
+  instrumentPreference?: 'equity' | 'option' | null;
 }
 
 export interface AgentRunResponse {

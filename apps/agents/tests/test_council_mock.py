@@ -206,6 +206,66 @@ async def test_run_council_attributes_every_llm_call_to_its_run_and_user() -> No
     assert all(r.user_id == "user-42" for r in rows)
 
 
+async def test_run_council_instrument_preference_reaches_strategy_fit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``run_council()``'s ``instrument_preference`` kwarg must actually
+    reach ``strategy_fit_node``'s gate — proving the full plumbing (API
+    request shape -> ``run_council`` -> ``CouncilState`` ->
+    ``strategy_fit_node``) works end-to-end, not just that a hand-built
+    ``CouncilState`` can exercise the branch in isolation (which is all
+    the options-drafter unit tests prove on their own).
+
+    Structural proof, not an inference from a HOLD-reason string (the
+    top-level result dict's ``risk_reason`` is the same generic
+    "No proposal — HOLD." for every proposal-less HOLD regardless of WHY,
+    so it can't distinguish the two paths on its own): patch
+    ``drafter._fetch_option_candidates`` with a call-counting spy and
+    assert it was actually invoked. No Alpaca keys are configured in this
+    test environment, so the real chain fetch would find no candidates
+    and the run HOLDs either way — the point here is proving the run
+    entered the options branch AT ALL, not exercising contract selection.
+    """
+    from trading_agents.nodes import drafter as drafter_mod
+
+    calls: list[str] = []
+
+    async def _spy_fetch(symbol: str) -> tuple[object, ...]:
+        calls.append(symbol)
+        return ()
+
+    monkeypatch.setenv("ALLOW_OPTIONS", "1")
+    monkeypatch.setattr(drafter_mod, "_fetch_option_candidates", _spy_fetch)
+    llm = LLM(api_key=None)
+
+    result = await run_council(symbol="NVDA", llm=llm, instrument_preference="option")
+
+    assert calls == ["NVDA"], (
+        "expected the options branch's chain fetch to run exactly once — "
+        f"instrument_preference did not reach strategy_fit_node/drafter_node "
+        f"(calls={calls})"
+    )
+    assert result["final_action"] == "HOLD"
+    assert result["proposal"] is None
+
+
+async def test_run_council_instrument_preference_ignored_without_allow_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both ALLOW_OPTIONS and instrument_preference are required — the env
+    flag alone gates whether a preference does anything at all."""
+    monkeypatch.delenv("ALLOW_OPTIONS", raising=False)
+    llm = LLM(api_key=None)
+
+    result = await run_council(symbol="NVDA", llm=llm, instrument_preference="option")
+
+    # The equity path's own mock-LLM outcome for NVDA (proven above), not
+    # an options HOLD reason.
+    assert result["final_action"] == "BUY"
+    assert result["proposal"] is not None
+    assert result["proposal"].get("isOption") in (None, False)
+
+
 async def test_drafter_skipped_when_fit_holds() -> None:
     """Integration: a HOLD from the deterministic fit node must skip the
     Router, every analyst, and the Drafter — the whole rest of the graph.

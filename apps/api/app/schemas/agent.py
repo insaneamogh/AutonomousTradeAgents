@@ -37,6 +37,10 @@ class AgentRunRequest(CamelCaseModel):
 
     symbol: Symbol
     horizon: Literal["intraday", "short", "mid", "long"] = "short"
+    instrument_preference: Literal["equity", "option"] | None = None
+    """Phase A options trading — forwarded to ``run_council()`` verbatim.
+    Still gated by the ``ALLOW_OPTIONS`` env flag on the agent side; asking
+    for "option" here does nothing unless that flag is also on."""
 
     @field_validator("symbol", mode="before")
     @classmethod

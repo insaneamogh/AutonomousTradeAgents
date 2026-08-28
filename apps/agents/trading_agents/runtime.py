@@ -68,8 +68,16 @@ async def run_council(
     confidence_store: StrategyConfidenceStore | None = None,
     progress_cb: ProgressCallback | None = None,
     pacing_seconds: float = 0.0,
+    instrument_preference: Literal["equity", "option"] | None = None,
 ) -> dict[str, Any]:
     """Run the full council. Returns a result dict:
+
+    ``instrument_preference`` is the caller-facing surface for Phase A
+    options trading (e.g. a watchlist item's ``asset_class``): threaded
+    straight into ``CouncilState`` for ``strategy_fit_node`` to read, which
+    also requires ``ALLOW_OPTIONS`` before treating a run as options-
+    eligible — neither flag alone is enough. ``None``/``"equity"`` is the
+    only behavior this ever had before Phase A.
 
     {
         "proposal": <ApprovalProposalDto-shape, camelCase keys> | None,
@@ -104,6 +112,7 @@ async def run_council(
         "user_id": user_id,
         "council_run_id": council_run_id,
         "context": context,
+        "instrument_preference": instrument_preference,
     }
     if confidence_store is not None:
         # Selector pulls its priors out of state. We resolve once here so the
