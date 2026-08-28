@@ -16,7 +16,7 @@ the app until the market opened.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 from app.schemas.base import CamelCaseModel
@@ -55,6 +55,21 @@ class OpenPositionDto(CamelCaseModel):
     target_price: float | None = None
     time_stop_days: int | None = None
     opened_at: datetime
+    # ── Options facts (Phase A) — all optional, absent for an equity
+    # position. Mirrors packages/broker/broker/types.py's Position
+    # .is_option/.multiplier; contract_type/strike/expiry_date/occ_symbol
+    # would be derived server-side from the OCC symbol (never parsed
+    # client-side — see broker.types.OccSymbol.parse). NOT YET populated
+    # for a real broker position — the service that builds this dto
+    # (apps/api/app/services/orders/positions_service.py) is a separate
+    # track's scope. Added here, purely additive, so the wire contract is
+    # ready the moment that track wires population.
+    is_option: bool = False
+    contract_type: Literal["call", "put"] | None = None
+    strike: float | None = None
+    expiry_date: date | None = None
+    occ_symbol: str | None = None
+    multiplier: int = 1
 
 
 class ClosePositionResponse(CamelCaseModel):

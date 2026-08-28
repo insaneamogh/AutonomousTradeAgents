@@ -116,9 +116,13 @@ class BrokerConnection(Base):
 class UserWatchlistItem(Base):
     """One row per (user, symbol) the daily council should evaluate.
 
-    ``asset_class`` is 'equity'-only in v1 (US stocks + ETFs). The column
-    exists so options can slot in later without a schema rework — the API
-    rejects anything else until then.
+    ``asset_class`` is ``'equity'`` (US stocks + ETFs) or ``'option'``
+    (Phase A: long calls/puts only — see ``docs/OPTIONS_PLAN.md``).
+    ``String(10)`` was sized for this from the start, so no migration was
+    needed to widen it — only the TYPE constraints in the API layer
+    (``apps.api.app.schemas.watchlist``, the router, the store, and the TS
+    union in ``packages/shared-types``) had to move from a bare
+    ``Literal["equity"]`` to ``Literal["equity", "option"]``.
     """
 
     __tablename__ = "user_watchlist"

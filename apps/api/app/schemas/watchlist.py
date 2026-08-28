@@ -13,12 +13,16 @@ from app.schemas.base import CamelCaseModel
 class WatchlistItemDto(CamelCaseModel):
     id: str
     symbol: str
-    # v1 is stocks + ETFs only (locked). The field exists so options can
-    # appear later without a wire-format change.
-    asset_class: Literal["equity"] = "equity"
+    # Phase A widening: "equity" (stocks/ETFs) or "option" (long calls/puts
+    # only — docs/OPTIONS_PLAN.md). Was Literal["equity"] pre-widening.
+    asset_class: Literal["equity", "option"] = "equity"
     active: bool = True
     created_at: datetime
 
 
 class AddWatchlistRequest(CamelCaseModel):
     symbol: str = Field(min_length=1, max_length=10)
+    # Optional so pre-widening callers/tests that never sent this keep
+    # constructing the request unchanged — defaults to the only value v1
+    # ever had.
+    asset_class: Literal["equity", "option"] = "equity"

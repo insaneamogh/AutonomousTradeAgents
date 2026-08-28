@@ -1,9 +1,10 @@
 """Watchlist store — the symbols a user told the agent to track.
 
 Same Protocol + InMemory + Postgres pattern as the rest of the app.
-v1 is stocks/ETFs only (locked decision): ``asset_class`` is persisted as
-'equity' and anything else is rejected at the router. The column exists so
-options can slot in later without a schema rework.
+``asset_class`` is ``"equity"`` or ``"option"`` (Phase A: long calls/puts
+only — ``docs/OPTIONS_PLAN.md``); the router validates the literal before
+it ever reaches ``add()``, and ``add()`` persists whatever it's given
+rather than hardcoding ``"equity"``.
 """
 
 from __future__ import annotations
@@ -36,7 +37,9 @@ class WatchlistItem:
 @runtime_checkable
 class WatchlistStore(Protocol):
     async def list_items(self, user_id: str) -> list[WatchlistItem]: ...
-    async def add(self, user_id: str, symbol: str) -> WatchlistItem: ...
+    async def add(
+        self, user_id: str, symbol: str, asset_class: str = "equity"
+    ) -> WatchlistItem: ...
     async def remove(self, user_id: str, symbol: str) -> bool: ...
 
 
@@ -50,7 +53,9 @@ class InMemoryWatchlistStore:
             key=lambda i: i.symbol,
         )
 
-    async def add(self, user_id: str, symbol: str) -> WatchlistItem:
+    async def add(
+        self, user_id: str, symbol: str, asset_class: str = "equity"
+    ) -> WatchlistItem:
         key = (user_id, symbol.upper())
         existing = self._items.get(key)
         if existing is not None:
@@ -59,7 +64,7 @@ class InMemoryWatchlistStore:
             id=str(uuid.uuid4()),
             user_id=user_id,
             symbol=symbol.upper(),
-            asset_class="equity",
+            asset_class=asset_class,
             active=True,
             created_at=utc_now(),
         )
@@ -101,7 +106,9 @@ class PostgresWatchlistStore:
             for r in rows
         ]
 
-    async def add(self, user_id: str, symbol: str) -> WatchlistItem:
+    async def add(
+        self, user_id: str, symbol: str, asset_class: str = "equity"
+    ) -> WatchlistItem:
         from sqlalchemy import select
         from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -112,10 +119,20 @@ class PostgresWatchlistStore:
         async with self._session_factory() as session:
             stmt = (
                 pg_insert(UserWatchlistItem)
-                .values(id=uuid.uuid4(), user_id=uid, symbol=sym, asset_class="equity", active=True)
+                .values(
+                    id=uuid.uuid4(),
+                    user_id=uid,
+                    symbol=sym,
+                    asset_class=asset_class,
+                    active=True,
+                )
                 .on_conflict_do_update(
                     constraint="uq_user_watchlist_user_symbol",
-                    set_={"active": True},
+                    # Re-adding a removed symbol re-activates it AND updates
+                    # asset_class to whatever was just requested — the same
+                    # "the latest add wins" semantics active=True already
+                    # had, applied to the one other field add() accepts.
+                    set_={"active": True, "asset_class": asset_class},
                 )
             )
             await session.execute(stmt)

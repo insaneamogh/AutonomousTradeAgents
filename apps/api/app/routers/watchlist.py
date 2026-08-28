@@ -1,9 +1,13 @@
 """/api/v1/watchlist — the symbols the agent tracks for this user.
 
 The daily council iterates this list (falling back to the default
-watchlist when a user hasn't curated one). v1 accepts US stocks + ETF
-tickers only — options/futures were explicitly cut from scope, and
-futures don't exist on Alpaca anyway.
+watchlist when a user hasn't curated one). Tickers are always US stocks +
+ETF symbols (futures don't exist on Alpaca and stay out of scope) — what
+``asset_class`` widens is whether the council should evaluate that
+underlying for an equity setup or an options one (Phase A: long calls/
+puts only, gated separately by ``ALLOW_OPTIONS`` — see
+``docs/OPTIONS_PLAN.md``). Requesting ``asset_class="option"`` here is a
+preference, not a bypass of that gate.
 """
 
 from __future__ import annotations
@@ -28,7 +32,7 @@ def _to_dto(item) -> WatchlistItemDto:
     return WatchlistItemDto(
         id=item.id,
         symbol=item.symbol,
-        asset_class="equity",
+        asset_class=item.asset_class,
         active=item.active,
         created_at=item.created_at,
     )
@@ -57,8 +61,10 @@ async def add_symbol(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
-                f"{symbol!r} is not a valid US equity/ETF ticker. "
-                "v1 tracks stocks and ETFs only — options and futures are out of scope."
+                f"{symbol!r} is not a valid US equity/ETF ticker. Options are "
+                "tracked by their UNDERLYING'S ticker (asset_class='option' on "
+                "this same symbol) — futures are still out of scope, and "
+                "don't exist on Alpaca anyway."
             ),
         )
 
@@ -78,8 +84,8 @@ async def add_symbol(
             ),
         )
 
-    item = await store.add(user.id, symbol)
-    logger.info("watchlist: %s added %s", user.id, symbol)
+    item = await store.add(user.id, symbol, body.asset_class)
+    logger.info("watchlist: %s added %s (%s)", user.id, symbol, body.asset_class)
     return _to_dto(item)
 
 

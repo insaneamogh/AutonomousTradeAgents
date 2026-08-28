@@ -99,7 +99,31 @@ export interface ApprovalProposalDto {
    * the risk engine treats that as a veto, not as false. */
   shortable?: boolean | null;
   easyToBorrow?: boolean | null;
-  /** Initial stop price. Derived from ATR by `engine.sizing.atr_position_size`. */
+  // ── Options facts (Phase A: long calls/puts only) ──────────────────
+  /** True for an options proposal. `side` stays 'BUY' even for a bearish
+   * ("short" `direction`) thesis — that thesis buys a PUT, it never sells
+   * anything to open. Absent/false means a plain equity proposal. */
+  isOption?: boolean;
+  /** Always 'buy_to_open' in Phase A — no short option legs. */
+  optionAction?: 'buy_to_open' | 'sell_to_close' | null;
+  occSymbol?: string | null;
+  strike?: number | null;
+  /** ISO 8601 date string. */
+  expiryDate?: string | null;
+  contractType?: 'call' | 'put' | null;
+  /** 100 for standard US equity options. */
+  multiplier?: number;
+  /** Option market snapshot at propose-time — for the UI, not re-derived
+   * from `estimatedNotional`/`qty` (which are premium x qty x multiplier,
+   * not a per-contract price). */
+  openInterest?: number | null;
+  volume?: number | null;
+  bid?: number | null;
+  ask?: number | null;
+  impliedVolatility?: number | null;
+  daysToEarnings?: number | null;
+  /** Initial stop price. Derived from ATR by `engine.sizing.atr_position_size`.
+   * Always null for an options proposal — Alpaca has no bracket for options. */
   stopLoss?: number;
   /** Take-profit price (entry + stop_distance × R-multiple). */
   targetPrice?: number;
@@ -176,11 +200,15 @@ export interface DecisionResponse {
 // /api/v1/watchlist
 // ─────────────────────────────────────────────────────────────────────
 
+/** "option" is Phase A only — long calls/puts, gated separately by
+ * ALLOW_OPTIONS server-side (see docs/OPTIONS_PLAN.md). A preference here
+ * does not itself bypass that gate. */
+export type WatchlistAssetClass = 'equity' | 'option';
+
 export interface WatchlistItemDto {
   id: string;
   symbol: string;
-  /** v1 is stocks + ETFs only — the field exists for later asset classes. */
-  assetClass: 'equity';
+  assetClass: WatchlistAssetClass;
   active: boolean;
   /** ISO 8601 string. */
   createdAt: string;
@@ -188,6 +216,8 @@ export interface WatchlistItemDto {
 
 export interface AddWatchlistRequest {
   symbol: string;
+  /** Defaults to 'equity' server-side when omitted. */
+  assetClass?: WatchlistAssetClass;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -226,6 +256,22 @@ export interface OpenPositionDto {
   timeStopDays: number | null;
   /** ISO 8601 string. */
   openedAt: string;
+  // ── Options facts (Phase A) — all optional/absent for an equity
+  // position. Mirrors packages/broker/broker/types.py's Position.is_option
+  // /.multiplier; contractType/strike/expiryDate/occSymbol are derived
+  // server-side from the OCC symbol (never parsed client-side). NOT YET
+  // populated by /positions for a real broker position as of this
+  // widening — the service that builds this dto is a separate track's
+  // scope (see the options build notes) — these fields exist so the UI
+  // and the wire contract are ready the moment that track wires them.
+  isOption?: boolean;
+  contractType?: 'call' | 'put' | null;
+  strike?: number | null;
+  /** ISO 8601 date string. */
+  expiryDate?: string | null;
+  occSymbol?: string | null;
+  /** 100 for standard US equity options, 1 (or absent) for equity. */
+  multiplier?: number;
 }
 
 export interface ClosePositionResponse {
