@@ -16,7 +16,8 @@ missing from what another code path produces).
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+import warnings
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
@@ -26,6 +27,18 @@ from engine.risk import RiskCaps, RiskContext, RiskProposal, Side, opens_short
 from engine.risk.rules.short_requires_stop import short_requires_stop
 from trading_agents.nodes import drafter as drafter_mod
 from trading_agents.nodes import strategy_fit as strategy_fit_mod
+
+with warnings.catch_warnings():
+    warnings.filterwarnings(
+        "ignore", message="websockets.legacy is deprecated", category=DeprecationWarning
+    )
+    import alpaca.data.historical.option as alpaca_option_data
+    import alpaca.trading.client as alpaca_trading_client
+
+from alpaca.data.models.quotes import Quote
+from alpaca.data.models.snapshots import OptionsGreeks, OptionsSnapshot
+from alpaca.data.models.trades import Trade
+from alpaca.trading.models import OptionContract
 
 _NOW = datetime.now(UTC)
 
@@ -411,3 +424,84 @@ def test_options_proposal_side_buy_never_satisfies_short_requires_stop() -> None
 
     assert opens_short(proposal, context) is False
     assert short_requires_stop(proposal, context, caps) is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# The end-to-end test that would have caught the chain-fetch inertness
+# bug — every test above monkeypatches _fetch_option_candidates directly
+# with idealized data. This one does NOT: it patches only the two real
+# Alpaca SDK client CLASSES with realistic model_construct fixtures, and
+# lets the real _fetch_option_candidates -> engine.options.contracts.
+# fetch_option_candidates -> broker.alpaca path run for real. See the
+# build-log entries for the bug this proves is fixed.
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _occ_symbol(underlying: str, expiry: date, contract_type: str, strike: float) -> str:
+    yymmdd = expiry.strftime("%y%m%d")
+    cp = "C" if contract_type == "call" else "P"
+    strike_digits = f"{round(strike * 1000):08d}"
+    return f"{underlying}{yymmdd}{cp}{strike_digits}"
+
+
+async def test_drafter_options_path_end_to_end_through_real_alpaca_shapes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ALPACA_API_KEY", "test-key")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "test-secret")
+    monkeypatch.setattr(drafter_mod, "complete_json", _mock_llm_verdict("BUY", confidence=0.8))
+
+    # Dynamic expiry (not a fixed date): the real code computes `now` at
+    # call time via datetime.now(UTC), and select_contract's own 21-45 DTE
+    # window is checked against THAT clock, not a fixture-frozen one.
+    expiry = (datetime.now(UTC) + timedelta(days=30)).date()
+    occ = _occ_symbol("AAPL", expiry, "call", 250.0)
+
+    snapshot = OptionsSnapshot.model_construct(
+        symbol=occ,
+        latest_quote=Quote.model_construct(
+            symbol=occ, timestamp=_NOW, bid_price=3.10, ask_price=3.30
+        ),
+        latest_trade=Trade.model_construct(symbol=occ, timestamp=_NOW, price=3.20, size=25.0),
+        implied_volatility=0.28,
+        # confidence=0.8 >= the high-conviction threshold -> delta band
+        # [0.45, 0.65] (see engine.options.selection's own docstring).
+        greeks=OptionsGreeks.model_construct(delta=0.55, gamma=0.0, rho=0.0, theta=0.0, vega=0.0),
+    )
+    contract = OptionContract.model_construct(symbol=occ, open_interest="500")
+
+    class FakeOptionHistoricalDataClient:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        def get_option_chain(self, request: object) -> dict[str, OptionsSnapshot]:
+            return {occ: snapshot}
+
+    class FakeTradingClient:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        def get_option_contracts(self, request: object) -> object:
+            return type("Resp", (), {"option_contracts": [contract]})()
+
+    monkeypatch.setattr(
+        alpaca_option_data, "OptionHistoricalDataClient", FakeOptionHistoricalDataClient
+    )
+    monkeypatch.setattr(alpaca_trading_client, "TradingClient", FakeTradingClient)
+
+    out = await drafter_mod.drafter_node(_drafter_state(selected_direction="long"), llm=object())
+
+    assert out["final_action"] == "BUY"
+    p = out["proposal"]
+    assert p is not None
+    assert p["is_option"] is True
+    assert p["occ_symbol"] == occ
+    assert p["contract_type"] == "call"
+    assert p["strike"] == 250.0
+    assert p["bid"] == 3.10
+    assert p["ask"] == 3.30
+    assert p["limit_price"] == 3.30
+    assert p["implied_volatility"] == 0.28
+    assert p["open_interest"] == 500
+    assert p["volume"] == 25
+    assert p["qty"] >= 1

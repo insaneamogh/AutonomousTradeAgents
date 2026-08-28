@@ -49,26 +49,39 @@ otherwise look exactly like the "short with no stop" case those rules
 exist to catch. ``direction`` ("long"/"short") still carries the THESIS,
 separately from ``side``/``option_action`` which carry the order mechanics.
 
-The options chain fetch (``_fetch_option_candidates`` below) depends on
-``broker.alpaca.list_option_contracts`` — a function the options broker/
-execution track is expected to add, per the task notes this file was built
-against. As of this docstring it does not exist yet, so the fetch is a
-lazy import wrapped in a try/except (mirroring
-``engine.features.provider.AlpacaAssetInfoProvider``'s own lazy-import
-convention for broker-specific calls): importing this module never fails
-because of it, and a missing/failing chain fetch degrades to zero
-candidates, which ``select_contract`` turns into a named
+The options chain fetch (``_fetch_option_candidates`` below) delegates to
+``engine.options.contracts.fetch_option_candidates`` — a lazy import
+(mirroring ``engine.features.provider.AlpacaAssetInfoProvider``'s own
+lazy-import convention for broker-specific calls): importing this module
+never fails because of it, and a missing/failing chain fetch degrades to
+zero candidates, which ``select_contract`` turns into a named
 ``no_candidates`` HOLD — never a crash, never a silent equity fallback.
-Once that function lands, verify its real signature/return shape against
-what ``_to_contract_quote`` assumes below and adjust there if it differs —
-the shape assumed here should not need to change anywhere else.
+
+**History, for whoever next touches this file**: the chain fetch used to
+live directly here, calling ``broker.alpaca.list_option_contracts`` (the
+*contract-metadata* endpoint, ``/v2/options/contracts``) with an adapter
+that read ``bid``/``ask``/``delta``/``implied_volatility`` off the raw
+result via ``getattr(..., None)``. Those attributes never existed on that
+endpoint's real response — bid/ask/greeks/IV live on a DIFFERENT Alpaca
+endpoint entirely, the chain SNAPSHOT
+(``docs/OPTIONS_PLAN.md`` §0's live-verified
+``/v1beta1/options/snapshots/{underlying}``) — so every real contract
+silently became ``None`` and was filtered out. Options trading was
+therefore completely inert against any real account: `no_candidates`
+every time, regardless of signal quality, invisible across 736 passing
+tests because none of them exercised this boundary with a real Alpaca
+shape. Fixed by moving the fetch + field-mapping to
+``engine.options.contracts.fetch_option_candidates`` (which calls the
+correct endpoint via ``broker.alpaca.list_option_chain_quotes``) — see
+that function's own docstring, and the build-log entries for the full
+story.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
 from engine.options.selection import (
@@ -503,95 +516,27 @@ async def _draft_option_proposal(
 async def _fetch_option_candidates(symbol: str) -> tuple[ContractQuote, ...]:
     """Chain snapshot for ``symbol``, as ``ContractQuote`` candidates.
 
-    ASSUMPTION, flagged per the task this file was built against:
-    ``broker.alpaca.list_option_contracts`` does not exist yet as of this
-    writing (the options broker/execution track had not landed). This is a
-    lazy import — mirroring
-    ``engine.features.provider.AlpacaAssetInfoProvider.fetch``'s own
-    lazy-import-a-broker-call convention — so importing ``drafter.py``
-    never fails because of it, and a missing/failing chain fetch degrades
+    Thin wrapper: the real fetch/merge/field-mapping lives in
+    ``engine.options.contracts.fetch_option_candidates`` (a lazy import,
+    mirroring ``engine.features.provider.AlpacaAssetInfoProvider.fetch``'s
+    own lazy-import-a-broker-call convention — importing ``drafter.py``
+    never fails because of it), independently unit-testable there without
+    any LangGraph/LLM scaffolding. A missing/failing chain fetch degrades
     to zero candidates (which ``select_contract`` turns into a named
     ``no_candidates`` HOLD) rather than crashing the council run or
     silently falling back to equity sizing.
-
-    Once ``list_option_contracts`` lands, verify its real signature/return
-    shape against what's assumed here (called as
-    ``list_option_contracts(symbol, api_key=..., secret_key=...)``,
-    returning an iterable of items exposing occ_symbol/contract_type/
-    strike/expiry/bid/ask/open_interest/volume/delta/implied_volatility,
-    by attribute or by key — see ``_to_contract_quote``) and adjust
-    ``_to_contract_quote`` if it differs. The shape assumed here should not
-    need to change anywhere else.
     """
     api_key = os.environ.get("ALPACA_API_KEY", "").strip()
     secret_key = os.environ.get("ALPACA_SECRET_KEY", "").strip()
     if not api_key or not secret_key:
         return ()
 
-    try:
-        from broker.alpaca import list_option_contracts  # type: ignore[attr-defined]
-    except ImportError:
-        logger.warning(
-            "options: broker.alpaca.list_option_contracts is not implemented "
-            "yet (options broker/execution track not landed) — treating %s "
-            "as having no option candidates",
-            symbol,
-        )
-        return ()
+    from engine.options.contracts import fetch_option_candidates
 
     try:
-        raw_contracts = await list_option_contracts(
-            symbol, api_key=api_key, secret_key=secret_key
+        return await fetch_option_candidates(
+            symbol, api_key=api_key, secret_key=secret_key, now=datetime.now(UTC)
         )
     except Exception:
         logger.exception("options: chain fetch failed for %s", symbol)
         return ()
-
-    quotes = (_to_contract_quote(raw) for raw in raw_contracts)
-    return tuple(q for q in quotes if q is not None)
-
-
-def _to_contract_quote(raw: Any) -> ContractQuote | None:
-    """Best-effort adapter from an assumed broker-layer chain item to our
-    own ``ContractQuote`` — see ``_fetch_option_candidates`` for why this
-    is defensive rather than a direct type match."""
-
-    def _get(name: str) -> Any:
-        if isinstance(raw, dict):
-            return raw.get(name)
-        return getattr(raw, name, None)
-
-    def _opt_float(name: str) -> float | None:
-        v = _get(name)
-        return None if v is None else float(v)
-
-    def _opt_int(name: str) -> int | None:
-        v = _get(name)
-        return None if v is None else int(v)
-
-    try:
-        occ_symbol = str(_get("occ_symbol"))
-        contract_type = str(_get("contract_type"))
-        if contract_type not in ("call", "put"):
-            return None
-        strike = float(_get("strike"))
-        expiry = _get("expiry")
-        if isinstance(expiry, datetime):
-            expiry = expiry.date()
-        if not isinstance(expiry, date):
-            return None
-    except (TypeError, ValueError):
-        return None
-
-    return ContractQuote(
-        occ_symbol=occ_symbol,
-        contract_type=cast(Literal["call", "put"], contract_type),
-        strike=strike,
-        expiry=expiry,
-        bid=_opt_float("bid"),
-        ask=_opt_float("ask"),
-        open_interest=_opt_int("open_interest"),
-        volume=_opt_int("volume"),
-        delta=_opt_float("delta"),
-        implied_volatility=_opt_float("implied_volatility"),
-    )
