@@ -8,7 +8,7 @@ reason case. Pure-logic — no DB, no LLM, runs in milliseconds.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from engine.options.selection import (
@@ -17,7 +17,7 @@ from engine.options.selection import (
     select_contract,
 )
 
-_NOW = datetime(2026, 8, 28, 15, 0, tzinfo=timezone.utc)
+_NOW = datetime(2026, 8, 28, 15, 0, tzinfo=UTC)
 
 
 def _quote(
