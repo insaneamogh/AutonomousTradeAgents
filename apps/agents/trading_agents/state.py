@@ -40,6 +40,13 @@ class CouncilState(TypedDict, total=False):
     The Selector prepends this to its prompt; missing/empty means the LLM
     picks without a prior nudge (Phase 2 cold-start behavior)."""
 
+    instrument_preference: Literal["equity", "option"] | None
+    """Per-run caller preference (e.g. a watchlist item's ``asset_class``),
+    read by ``strategy_fit_node``. Additive, optional — absent means
+    "no preference" (equity, same as always). Gated by BOTH this AND the
+    ``ALLOW_OPTIONS`` env flag before anything downstream treats a run as
+    options-eligible; neither one alone is enough."""
+
     # ── Strategy-fit output (deterministic; keys kept from the old
     #     LLM Selector so the DB columns + Reflection loop are unchanged) ──
     selected_strategy: str | None
@@ -58,6 +65,13 @@ class CouncilState(TypedDict, total=False):
     """Full fit block — winner, per-component checks, the ranked
     alternatives, and the priors applied. Persisted for the audit row and
     rendered by the thesis view."""
+
+    instrument: Literal["option"]
+    """Set by ``strategy_fit_node``, additive, ONLY when ``ALLOW_OPTIONS``
+    + ``instrument_preference == "option"`` are both set and a strategy
+    actually won (never on a HOLD). Absent means "equity", the only value
+    this ever took before Phase A. Read by ``drafter_node`` to switch from
+    ``atr_position_size`` to ``select_contract`` + ``options_position_size``."""
 
     # ── Drafter output ───────────────────────────────────────────────
     proposal: dict[str, Any] | None

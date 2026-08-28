@@ -52,6 +52,8 @@ class ApprovalProposalDto(CamelCaseModel):
     # ``iv_unavailable``, ``earnings_blackout``) can rebuild the SAME
     # ``OptionLegDetails`` it re-verifies against, reading this DTO back
     # off the persisted decision row rather than re-fetching the chain.
+    # All optional so every existing equity call site/test keeps
+    # constructing this DTO unchanged.
     open_interest: int | None = None
     volume: int | None = None
     bid: float | None = None

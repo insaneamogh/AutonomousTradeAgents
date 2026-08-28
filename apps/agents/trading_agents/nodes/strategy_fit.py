@@ -35,6 +35,10 @@ working):
     selector_rationale   the named reason
     selected_direction   "long" | "short"   (new)
     strategy_fit         full winner + ranking, for the audit row + UI (new)
+    instrument           "option", additive — ONLY when ALLOW_OPTIONS AND
+                         state["instrument_preference"] == "option" are
+                         BOTH set and a strategy won. Absent otherwise,
+                         which is every existing behavior, unchanged.
 """
 
 from __future__ import annotations
@@ -109,7 +113,7 @@ async def strategy_fit_node(state: CouncilState) -> CouncilState:
         winner.score,
         winner.reason,
     )
-    return {
+    result: CouncilState = {
         **state,
         "selected_strategy": winner.strategy_id,
         "selected_direction": winner.direction,
@@ -117,3 +121,15 @@ async def strategy_fit_node(state: CouncilState) -> CouncilState:
         "selector_rationale": winner.reason,
         "strategy_fit": fit_block,
     }
+
+    # Options instrument gate — additive, and the ONLY new branch in this
+    # node. Both the master ALLOW_OPTIONS env switch (mirrors ALLOW_SHORTS
+    # above — same env_flag helper, same fail-closed default) AND a
+    # per-run instrument preference must be set, and a strategy must have
+    # actually won (we are past the `winner is None` branch, so it has).
+    # When either condition is absent, `result` is exactly what this node
+    # has always returned — nothing above this comment changed.
+    if env_flag("ALLOW_OPTIONS") and state.get("instrument_preference") == "option":
+        result["instrument"] = "option"
+
+    return result

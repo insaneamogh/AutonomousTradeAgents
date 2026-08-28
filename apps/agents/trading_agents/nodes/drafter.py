@@ -29,12 +29,55 @@ long" becomes an accidental short:
 If Drafter says HOLD, final_action becomes HOLD and no proposal is built.
 If the sizer returns qty<1, ditto — the Risk Officer never sees a proposal
 it can't act on.
+
+**Options Phase A** (``state["instrument"] == "option"``, set by
+``strategy_fit_node`` — see ``docs/OPTIONS_PLAN.md``): once the verdict is
+fixed (BUY/SELL, matching the deterministic direction) and is not HOLD,
+sizing is handed to ``engine.options.selection.select_contract`` +
+``engine.options.sizing.options_position_size`` INSTEAD OF
+``atr_position_size`` — an option's risk is the whole premium, not an ATR
+stop distance. No liquid contract → a named HOLD, never a silent fallback
+to the equity path. On success the built ``side`` is always "BUY": Phase A
+only ever buys a call or a put to open (``OptionLegDetails.action`` is
+always ``buy_to_open``), even for a bearish ("short") thesis — that thesis
+buys a PUT, it does not sell anything short. This is deliberate and
+load-bearing: ``engine.risk.rules._short.opens_short`` (and everything
+downstream of it — ``short_requires_stop``, ``short_unbounded_loss_cap``)
+only fires when ``RiskProposal.side is Side.SELL``, and an options proposal
+carries ``stop_loss=None`` (Alpaca has no bracket for options), which would
+otherwise look exactly like the "short with no stop" case those rules
+exist to catch. ``direction`` ("long"/"short") still carries the THESIS,
+separately from ``side``/``option_action`` which carry the order mechanics.
+
+The options chain fetch (``_fetch_option_candidates`` below) depends on
+``broker.alpaca.list_option_contracts`` — a function the options broker/
+execution track is expected to add, per the task notes this file was built
+against. As of this docstring it does not exist yet, so the fetch is a
+lazy import wrapped in a try/except (mirroring
+``engine.features.provider.AlpacaAssetInfoProvider``'s own lazy-import
+convention for broker-specific calls): importing this module never fails
+because of it, and a missing/failing chain fetch degrades to zero
+candidates, which ``select_contract`` turns into a named
+``no_candidates`` HOLD — never a crash, never a silent equity fallback.
+Once that function lands, verify its real signature/return shape against
+what ``_to_contract_quote`` assumes below and adjust there if it differs —
+the shape assumed here should not need to change anywhere else.
 """
 
 from __future__ import annotations
 
 import logging
+import os
+from datetime import UTC, date, datetime
+from typing import Any, Literal, cast
 
+from engine.options.selection import (
+    ContractQuote,
+    ContractSelectionInputs,
+    select_contract,
+)
+from engine.options.sizing import OptionsSizingInputs, options_position_size
+from engine.risk import RiskCaps
 from engine.sizing import SizingInputs, atr_position_size
 from trading_agents.llm import LLM, Model, complete_json
 from trading_agents.nodes._guards import clamp_confidence, clamp_level
@@ -156,10 +199,25 @@ async def drafter_node(state: CouncilState, llm: LLM) -> CouncilState:
     last_price = float(raw_last_price) if raw_last_price is not None else 100.0
     raw_equity = ctx.get("portfolio_equity")
     equity = float(raw_equity) if raw_equity is not None else 100_000.0
-    atr_14 = ctx.get("technicals", {}).get("atr_14")
     # An unparseable confidence collapses to 0.0, which sizes down to
     # qty<1 and converts the pass to HOLD below — the safe direction.
     confidence = clamp_confidence(data.get("confidence", 0.5), field="drafter.confidence")
+
+    # Options Phase A branch — see the module docstring. Verdict is already
+    # fixed to BUY/SELL/HOLD above (and HOLD already returned), so this can
+    # only replace the SIZING path, never the verdict logic above it.
+    if state.get("instrument") == "option":
+        return await _draft_option_proposal(
+            state,
+            data,
+            strategy_id=strategy_id,
+            direction=direction,
+            verdict=verdict,
+            confidence=confidence,
+            equity=equity,
+        )
+
+    atr_14 = ctx.get("technicals", {}).get("atr_14")
 
     sizing = atr_position_size(
         SizingInputs(
@@ -262,3 +320,267 @@ async def drafter_node(state: CouncilState, llm: LLM) -> CouncilState:
         },
         "final_action": verdict,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Options Phase A — contract selection + premium sizing.
+# See the module docstring for why ``side`` is forced to "BUY" here and
+# for the ``list_option_contracts`` dependency this is built against.
+# ─────────────────────────────────────────────────────────────────────
+
+
+async def _draft_option_proposal(
+    state: CouncilState,
+    data: dict[str, Any],
+    *,
+    strategy_id: str,
+    direction: str,
+    verdict: str,
+    confidence: float,
+    equity: float,
+) -> CouncilState:
+    """Contract selection + premium-at-risk sizing, in place of the ATR path.
+
+    Never falls back to equity: no chain / no viable contract / a zeroed
+    sizer are all named HOLDs, exactly mirroring the equity path's own
+    qty<1 HOLD-conversion immediately above.
+    """
+    symbol = str(state["symbol"])
+    ctx = state.get("context") or {}
+    options_ctx = ctx.get("options_context") or {}
+    raw_days_to_earnings = options_ctx.get("days_to_earnings")
+
+    candidates = await _fetch_option_candidates(symbol)
+    selection = select_contract(
+        ContractSelectionInputs(
+            underlying_symbol=symbol,
+            direction=cast(Literal["long", "short"], direction if direction in ("long", "short") else "long"),
+            conviction=confidence,
+            candidates=candidates,
+            now=datetime.now(UTC),
+            days_to_earnings=int(raw_days_to_earnings) if raw_days_to_earnings is not None else None,
+        )
+    )
+
+    if selection.selected is None:
+        reason = selection.rejection_reason or "no_liquid_contract"
+        logger.info(
+            "options: no viable contract for %s (%s) — HOLD. funnel=%s",
+            symbol, reason, selection.funnel_counts,
+        )
+        return {
+            **state,
+            "proposal": None,
+            "final_action": "HOLD",
+            "drafter_rationale": f"No liquid option contract found: {reason}",
+            "bull_case": str(data.get("bull_case", "")).strip(),
+            "bear_case": str(data.get("bear_case", "")).strip(),
+        }
+
+    leg = selection.selected
+    caps = RiskCaps.from_env()
+    budget_usd = equity * caps.options_max_premium_pct / 100.0
+    sizing = options_position_size(
+        OptionsSizingInputs(
+            budget_usd=budget_usd,
+            ask=float(leg.ask) if leg.ask is not None else 0.0,
+            multiplier=leg.multiplier,
+        )
+    )
+
+    if sizing.qty < 1:
+        logger.info(
+            "options: sizer returned qty=0 for %s — converting to HOLD (%s)",
+            symbol, sizing.notes,
+        )
+        return {
+            **state,
+            "proposal": None,
+            "final_action": "HOLD",
+            "drafter_rationale": (
+                f"{str(data.get('rationale', '')).strip()} | "
+                f"Sizer returned 0 contracts: {sizing.notes}"
+            ).strip(" |"),
+            "bull_case": str(data.get("bull_case", "")).strip(),
+            "bear_case": str(data.get("bear_case", "")).strip(),
+        }
+
+    rationale = str(data.get("rationale", "")).strip()
+    sizer_note = f"Sizing (options_premium): {sizing.notes}"
+    combined_rationale = f"{rationale} | {sizer_note}" if rationale else sizer_note
+    ask = float(leg.ask) if leg.ask is not None else 0.0
+    estimated_notional = round(sizing.qty * ask * leg.multiplier, 2)
+    time_stop_days = _TIME_STOP_BY_HORIZON.get(str(state.get("horizon", "short")), 5)
+    raw_last_price = ctx.get("last_price")
+    underlying_last_price = float(raw_last_price) if raw_last_price is not None else None
+
+    return {
+        **state,
+        "proposal": {
+            "strategy": strategy_id,
+            # Always "BUY" — Phase A only ever buys a call or a put to open
+            # (never sells anything to open). See the module docstring:
+            # this is load-bearing for engine.risk.rules._short.opens_short
+            # never mistaking a bought PUT for a short position.
+            "side": "BUY",
+            "direction": direction,
+            "opens_short": False,
+            "qty": sizing.qty,
+            "order_type": "MARKET",
+            "estimated_notional": estimated_notional,
+            # Alpaca has no bracket for options (docs/OPTIONS_PLAN.md §3) —
+            # populating either would promise an exit plan this order type
+            # cannot keep. The expiry sweep + agent exit own the close.
+            "stop_loss": None,
+            "target_price": None,
+            "time_stop_days": time_stop_days,
+            "r_multiple": None,
+            "rationale": combined_rationale,
+            "bull_case": str(data.get("bull_case", "")),
+            "bear_case": str(data.get("bear_case", "")),
+            "risk_level": clamp_level(data.get("risk_level", 3), field="risk_level"),
+            "conviction_level": clamp_level(
+                data.get("conviction_level", 3), field="conviction_level"
+            ),
+            "confidence": confidence,
+            "sizing_method": "options_premium",
+            "sizing": {
+                "method": "options_premium",
+                "side": "BUY",
+                "entry_price": ask,
+                "underlying_last_price": underlying_last_price,
+                "account_equity": equity,
+                "confidence": confidence,
+                "qty": sizing.qty,
+                "budget_usd": round(budget_usd, 2),
+                "premium_per_contract": round(ask * leg.multiplier, 2),
+                "notional": estimated_notional,
+                "pct_of_equity": round((estimated_notional / equity) * 100.0, 3) if equity > 0 else None,
+                "r_multiple": None,
+                "notes": sizing.notes,
+            },
+            # ── Option-snapshot fields ────────────────────────────────
+            # Every field an options risk rule needs at execution time
+            # (premium/ask, multiplier, strike, expiry, greeks/IV,
+            # open_interest/volume for a fresh liquidity re-check) must be
+            # written here NOW — the executor's re-risk-check reads the
+            # PERSISTED proposal, not live state. Matches
+            # ApprovalProposalDto's new fields, plus extra snapshot fields
+            # (bid/ask/open_interest/volume/implied_volatility/
+            # days_to_earnings) the task notes explicitly asked to err on
+            # the side of including.
+            "is_option": True,
+            "option_action": leg.action,
+            "occ_symbol": leg.occ_symbol,
+            "strike": leg.strike,
+            "expiry_date": leg.expiry,
+            "contract_type": leg.contract_type,
+            "multiplier": leg.multiplier,
+            "underlying_symbol": leg.underlying_symbol,
+            "open_interest": leg.open_interest,
+            "volume": leg.volume,
+            "bid": leg.bid,
+            "ask": leg.ask,
+            "implied_volatility": leg.implied_volatility,
+            "days_to_earnings": leg.days_to_earnings,
+        },
+        # Mirrors the forced "BUY" side above — see module docstring.
+        "final_action": "BUY",
+    }
+
+
+async def _fetch_option_candidates(symbol: str) -> tuple[ContractQuote, ...]:
+    """Chain snapshot for ``symbol``, as ``ContractQuote`` candidates.
+
+    ASSUMPTION, flagged per the task this file was built against:
+    ``broker.alpaca.list_option_contracts`` does not exist yet as of this
+    writing (the options broker/execution track had not landed). This is a
+    lazy import — mirroring
+    ``engine.features.provider.AlpacaAssetInfoProvider.fetch``'s own
+    lazy-import-a-broker-call convention — so importing ``drafter.py``
+    never fails because of it, and a missing/failing chain fetch degrades
+    to zero candidates (which ``select_contract`` turns into a named
+    ``no_candidates`` HOLD) rather than crashing the council run or
+    silently falling back to equity sizing.
+
+    Once ``list_option_contracts`` lands, verify its real signature/return
+    shape against what's assumed here (called as
+    ``list_option_contracts(symbol, api_key=..., secret_key=...)``,
+    returning an iterable of items exposing occ_symbol/contract_type/
+    strike/expiry/bid/ask/open_interest/volume/delta/implied_volatility,
+    by attribute or by key — see ``_to_contract_quote``) and adjust
+    ``_to_contract_quote`` if it differs. The shape assumed here should not
+    need to change anywhere else.
+    """
+    api_key = os.environ.get("ALPACA_API_KEY", "").strip()
+    secret_key = os.environ.get("ALPACA_SECRET_KEY", "").strip()
+    if not api_key or not secret_key:
+        return ()
+
+    try:
+        from broker.alpaca import list_option_contracts  # type: ignore[attr-defined]
+    except ImportError:
+        logger.warning(
+            "options: broker.alpaca.list_option_contracts is not implemented "
+            "yet (options broker/execution track not landed) — treating %s "
+            "as having no option candidates",
+            symbol,
+        )
+        return ()
+
+    try:
+        raw_contracts = await list_option_contracts(
+            symbol, api_key=api_key, secret_key=secret_key
+        )
+    except Exception:
+        logger.exception("options: chain fetch failed for %s", symbol)
+        return ()
+
+    quotes = (_to_contract_quote(raw) for raw in raw_contracts)
+    return tuple(q for q in quotes if q is not None)
+
+
+def _to_contract_quote(raw: Any) -> ContractQuote | None:
+    """Best-effort adapter from an assumed broker-layer chain item to our
+    own ``ContractQuote`` — see ``_fetch_option_candidates`` for why this
+    is defensive rather than a direct type match."""
+
+    def _get(name: str) -> Any:
+        if isinstance(raw, dict):
+            return raw.get(name)
+        return getattr(raw, name, None)
+
+    def _opt_float(name: str) -> float | None:
+        v = _get(name)
+        return None if v is None else float(v)
+
+    def _opt_int(name: str) -> int | None:
+        v = _get(name)
+        return None if v is None else int(v)
+
+    try:
+        occ_symbol = str(_get("occ_symbol"))
+        contract_type = str(_get("contract_type"))
+        if contract_type not in ("call", "put"):
+            return None
+        strike = float(_get("strike"))
+        expiry = _get("expiry")
+        if isinstance(expiry, datetime):
+            expiry = expiry.date()
+        if not isinstance(expiry, date):
+            return None
+    except (TypeError, ValueError):
+        return None
+
+    return ContractQuote(
+        occ_symbol=occ_symbol,
+        contract_type=cast(Literal["call", "put"], contract_type),
+        strike=strike,
+        expiry=expiry,
+        bid=_opt_float("bid"),
+        ask=_opt_float("ask"),
+        open_interest=_opt_int("open_interest"),
+        volume=_opt_int("volume"),
+        delta=_opt_float("delta"),
+        implied_volatility=_opt_float("implied_volatility"),
+    )

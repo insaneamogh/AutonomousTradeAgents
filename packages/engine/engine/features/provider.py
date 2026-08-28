@@ -25,6 +25,14 @@ Sources:
                               easy_to_borrow. REQUIRED for any short: the
                               ``shortable_check`` risk rule vetoes when it
                               is missing.
+  - options_context         : OPTIONAL (Phase A). ``iv_rank``/``atm_iv``/
+                              ``term_structure_slope``/``days_to_earnings``
+                              (all ``None`` until a real options-analytics
+                              source is wired — see
+                              ``MinimalOptionsContextProvider``), plus
+                              ALWAYS-populated ``data_delay_minutes``/
+                              ``feed_type`` for the UI's "delayed data"
+                              badge.
   - macro                   : FRED (VIX / 10y / dollar) + SPY relative strength
   - portfolio_equity        : injected ``equity_resolver`` (latest reconciler
                               snapshot in production); falls back to the
@@ -118,6 +126,61 @@ class AssetInfoProvider(Protocol):
     async def fetch(self, symbol: str) -> dict[str, Any] | None: ...
 
 
+@runtime_checkable
+class OptionsContextProvider(Protocol):
+    """Seam for a real options-market data source (IV rank, term structure,
+    days-to-earnings vs. the underlying's own history).
+
+    Same optional/failure-tolerant contract as ``FundamentalsProvider``/
+    ``AssetInfoProvider`` above: returns the ``options_context`` block or
+    None. No real market-data-backed implementation ships yet — see
+    ``MinimalOptionsContextProvider`` below — because no real IV-rank/term-
+    structure source is wired anywhere in this repo as of Phase A. Building
+    one is a follow-up; this seam exists so it can slot in without another
+    ``_optional_blocks`` change.
+    """
+
+    name: str
+
+    async def fetch(self, symbol: str) -> dict[str, Any] | None: ...
+
+
+# Always-populated regardless of what the rest of the block knows — these
+# describe the DATA FEED itself (docs/OPTIONS_PLAN.md §0: Alpaca's free
+# Basic tier is an indicative, 15-minute-delayed feed, not full OPRA), not
+# a per-symbol fact that could be legitimately unknown. The UI's "delayed
+# data" badge reads these and must never find them missing.
+_OPTIONS_DATA_DELAY_MINUTES = 15
+_OPTIONS_FEED_TYPE = "indicative_delayed"
+
+
+class MinimalOptionsContextProvider:
+    """Phase-A placeholder: the always-populated feed-quality fields, and
+    ``None`` for everything that needs a real IV-rank/term-structure data
+    source. Deliberately not synthetic — a fabricated IV rank would be
+    worse than an absent one, since ``select_contract``/the options risk
+    rules would have no way to tell a real number from a guess.
+
+    FOLLOW-UP: replace with a real implementation once an options-analytics
+    source is chosen (docs/OPTIONS_PLAN.md §6) — compute ``iv_rank``/
+    ``atm_iv``/``term_structure_slope`` from the underlying's own IV
+    history, and ``days_to_earnings`` from the same corporate-actions
+    source ``compute_corporate_actions`` already uses for ``events``.
+    """
+
+    name = "options-context-minimal"
+
+    async def fetch(self, symbol: str) -> dict[str, Any]:
+        return {
+            "iv_rank": None,
+            "atm_iv": None,
+            "term_structure_slope": None,
+            "days_to_earnings": None,
+            "data_delay_minutes": _OPTIONS_DATA_DELAY_MINUTES,
+            "feed_type": _OPTIONS_FEED_TYPE,
+        }
+
+
 class AlpacaAssetInfoProvider:
     """``broker.alpaca.lookup_asset`` → the ``asset`` feature block.
 
@@ -165,6 +228,7 @@ class RealFeatureProvider:
     quotes: QuoteProvider | None = None
     corporate_actions: CorporateActionsProvider | None = None
     asset_info: AssetInfoProvider | None = None
+    options_context: OptionsContextProvider | None = None
 
     async def __call__(self, symbol: str, horizon: str = "short") -> dict[str, Any]:
         sym = symbol.upper()
@@ -251,6 +315,8 @@ class RealFeatureProvider:
             jobs.append(("events", self.corporate_actions.fetch(symbol)))
         if self.asset_info is not None:
             jobs.append(("asset", self.asset_info.fetch(symbol)))
+        if self.options_context is not None:
+            jobs.append(("options_context", self.options_context.fetch(symbol)))
         if not jobs:
             return {}
 
@@ -279,6 +345,8 @@ class RealFeatureProvider:
                 ).as_dict()
             elif key == "asset" and result is not None:
                 out["asset"] = result
+            elif key == "options_context" and result is not None:
+                out["options_context"] = result
         return out
 
 
@@ -308,4 +376,11 @@ def feature_provider_from_env(
         quotes=snapshot_provider_from_env(),
         corporate_actions=corporate_actions_provider_from_env(),
         asset_info=AlpacaAssetInfoProvider(api_key, secret),
+        # Unconditional, like every sibling slot above — the block itself
+        # is cheap (no real network call yet, see MinimalOptionsContextProvider)
+        # and its always-populated feed-quality fields are meant to be
+        # available whenever features are, not gated behind ALLOW_OPTIONS.
+        # Whether a run actually ACTS on days_to_earnings is the Drafter's
+        # ALLOW_OPTIONS + instrument_preference gate, not this provider's.
+        options_context=MinimalOptionsContextProvider(),
     )

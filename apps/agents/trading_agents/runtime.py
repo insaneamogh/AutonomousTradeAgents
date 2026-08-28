@@ -205,7 +205,7 @@ def _to_proposal_dto(state: CouncilState) -> dict[str, Any] | None:
     # asset flags, carried on the feature dict the same way risk_officer_node
     # reads them — never from the LLM.
     asset = (state.get("context", {}) or {}).get("asset") or {}
-    return {
+    dto: dict[str, Any] = {
         "id": f"agent-{uuid.uuid4().hex[:12]}",
         "symbol": state["symbol"],
         "side": p["side"],
@@ -230,6 +230,39 @@ def _to_proposal_dto(state: CouncilState) -> dict[str, Any] | None:
         "proposedAt": now.isoformat(),
         "expiresAt": approval_expiry(now).isoformat(),
     }
+    # Options facts (Phase A). ``ApprovalProposalDto.model_validate()`` (see
+    # apps/api/app/routers/agent.py) defaults every one of these when the
+    # key is absent, so an equity proposal is unaffected either way — but an
+    # OPTIONS proposal's fields must be threaded through explicitly here or
+    # they are silently dropped at exactly this boundary (Pydantic ignores
+    # unknown/omitted keys by default) even though the Drafter wrote them
+    # into ``p`` correctly. This is the same class of bug the short-side
+    # work spent 5 commits chasing: a field one layer produces and the next
+    # layer forgets to carry. Only set when the Drafter actually marked
+    # this an options proposal — never invent option facts for an equity one.
+    if p.get("is_option"):
+        dto.update(
+            {
+                "isOption": True,
+                "optionAction": p.get("option_action"),
+                "occSymbol": p.get("occ_symbol"),
+                "strike": p.get("strike"),
+                "expiryDate": p.get("expiry_date"),
+                "contractType": p.get("contract_type"),
+                "multiplier": p.get("multiplier", 100),
+                # Extra option-snapshot fields (bid/ask/OI/volume/IV/days-
+                # to-earnings) an options risk rule needs at execution time
+                # for a fresh liquidity/earnings re-check — see
+                # ApprovalProposalDto and drafter._draft_option_proposal.
+                "openInterest": p.get("open_interest"),
+                "volume": p.get("volume"),
+                "bid": p.get("bid"),
+                "ask": p.get("ask"),
+                "impliedVolatility": p.get("implied_volatility"),
+                "daysToEarnings": p.get("days_to_earnings"),
+            }
+        )
+    return dto
 
 
 # Feature blocks worth keeping on the decision row. The full context is
