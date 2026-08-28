@@ -25,7 +25,8 @@ short with no verified borrow is not a trade.
 from __future__ import annotations
 
 import logging
-from typing import cast
+from datetime import date
+from typing import Any, Literal, cast
 
 from engine.env import env_flag
 from engine.risk import (
@@ -37,6 +38,7 @@ from engine.risk import (
     SpecialistScore,
     evaluate,
 )
+from engine.risk.types import OptionLegDetails
 from trading_agents.state import CouncilState
 
 logger = logging.getLogger("agents.node.risk")
@@ -78,6 +80,7 @@ async def risk_officer_node(
         }
 
     asset = (state.get("context", {}) or {}).get("asset") or {}
+    is_option = bool(proposal.get("is_option", False))
     risk_proposal = RiskProposal(
         symbol=str(state["symbol"]),
         side=Side(str(proposal.get("side", "BUY")).upper()),
@@ -86,6 +89,8 @@ async def risk_officer_node(
         last_price=float(state.get("context", {}).get("last_price", 0.0) or 0.0),
         confidence=float(proposal.get("confidence", 0.0)),
         closes_intraday_position=False,  # Phase 0: agents only open new swings
+        is_option=is_option,
+        option=_option_details_from_proposal(proposal, symbol=str(state["symbol"])) if is_option else None,
         # Short-side inputs. ``stop_price`` is the sizer's, never the LLM's.
         stop_price=_opt_float(proposal.get("stop_loss")),
         shortable=_opt_bool(asset.get("shortable")),
@@ -144,9 +149,50 @@ async def risk_officer_node(
     return out
 
 
+def _option_details_from_proposal(proposal: dict[str, Any], *, symbol: str) -> OptionLegDetails:
+    """Rebuild the option leg the Drafter priced, from the persisted
+    proposal dict. Every field an options risk rule needs (premium inputs,
+    multiplier, liquidity/IV/earnings snapshot) must already be sitting in
+    the proposal by the time it gets here — the Drafter writes them all at
+    draft-time, since this node (like the executor's re-risk-check) only
+    ever reads the persisted proposal, never live state.
+    """
+    expiry_raw = proposal.get("expiry_date")
+    expiry = date.fromisoformat(str(expiry_raw)) if expiry_raw else date.today()
+    contract_type = cast(
+        Literal["call", "put"], proposal.get("contract_type") or "call"
+    )
+    action = cast(
+        Literal["buy_to_open", "sell_to_close"],
+        proposal.get("option_action") or "buy_to_open",
+    )
+    return OptionLegDetails(
+        underlying_symbol=symbol,
+        occ_symbol=str(proposal.get("occ_symbol", "")),
+        contract_type=contract_type,
+        strike=float(proposal.get("strike", 0.0)),
+        expiry=expiry,
+        multiplier=int(proposal.get("multiplier", 100)),
+        action=action,
+        open_interest=_opt_int(proposal.get("open_interest")),
+        volume=_opt_int(proposal.get("volume")),
+        bid=_opt_float(proposal.get("bid")),
+        ask=_opt_float(proposal.get("ask")),
+        implied_volatility=_opt_float(proposal.get("implied_volatility")),
+        days_to_earnings=_opt_int(proposal.get("days_to_earnings")),
+    )
+
+
 def _opt_float(v: object) -> float | None:
     try:
         return float(v)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _opt_int(v: object) -> int | None:
+    try:
+        return int(v)  # type: ignore[call-overload, no-any-return]
     except (TypeError, ValueError):
         return None
 
