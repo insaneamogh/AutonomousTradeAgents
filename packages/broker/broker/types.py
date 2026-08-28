@@ -2,14 +2,68 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 
 
 class Side(str, Enum):
     BUY = "BUY"
     SELL = "SELL"
+
+    # Options-only (Phase A: long calls/puts). BUY_TO_CLOSE/SELL_TO_OPEN are
+    # deliberately not defined yet — Phase A never constructs a short option
+    # leg, and adding them now would remove the type-level nudge that a
+    # short leg is a separate, later decision (Phase B/C).
+    BUY_TO_OPEN = "BUY_TO_OPEN"
+    SELL_TO_CLOSE = "SELL_TO_CLOSE"
+
+
+_OCC_RE = re.compile(r"^([A-Z]{1,6})(\d{2})(\d{2})(\d{2})([CP])(\d{8})$")
+
+
+@dataclass(frozen=True)
+class OccSymbol:
+    """A parsed OCC option symbol, e.g. ``AAPL260828C00250000``.
+
+    Format: ``{underlying}{YYMMDD expiry}{C|P}{strike * 1000, zero-padded
+    to 8 digits}``. ``raw`` is kept alongside the parsed fields so callers
+    never have to re-derive/re-concatenate the wire string by hand.
+    """
+
+    underlying: str
+    expiry: date
+    contract_type: str  # "call" | "put"
+    strike: float
+    raw: str
+
+    def __str__(self) -> str:
+        return self.raw
+
+    @classmethod
+    def parse(cls, occ: str) -> OccSymbol:
+        m = _OCC_RE.match(occ)
+        if m is None:
+            raise ValueError(f"not a valid OCC option symbol: {occ!r}")
+        underlying, yy, mm, dd, cp, strike_digits = m.groups()
+        return cls(
+            underlying=underlying,
+            expiry=date(2000 + int(yy), int(mm), int(dd)),
+            contract_type="call" if cp == "C" else "put",
+            strike=int(strike_digits) / 1000.0,
+            raw=occ,
+        )
+
+    @classmethod
+    def try_parse(cls, symbol: str) -> OccSymbol | None:
+        """Non-raising parse for call sites deciding "is this an option
+        order" (e.g. the bracket-on-options guard) — an exception is the
+        wrong control-flow tool for a routine shape check."""
+        try:
+            return cls.parse(symbol)
+        except ValueError:
+            return None
 
 
 class OrderType(str, Enum):
@@ -88,4 +142,12 @@ class Position:
     market_value: float
     unrealized_pl: float
     unrealized_pl_pct: float
+    multiplier: int = 1
+    """Contract multiplier — 1 for equities, 100 for standard US equity
+    options. ``market_value``/``unrealized_pl`` are already correctly
+    scaled by the broker; this field exists so callers converting
+    ``avg_entry_price`` (always per-share/per-contract-unit) into a
+    notional do ``qty * avg_entry_price * multiplier`` instead of
+    guessing."""
+    is_option: bool = False
     raw: dict = field(default_factory=dict)

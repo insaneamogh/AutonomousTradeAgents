@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 from pydantic import Field
@@ -31,6 +31,21 @@ class ApprovalProposalDto(CamelCaseModel):
     # a veto, not as False. Never populated by the LLM.
     shortable: bool | None = None
     easy_to_borrow: bool | None = None
+    # ── Options facts (Phase A: long calls/puts only; all optional so
+    # existing equity call sites/tests keep constructing this DTO
+    # unchanged) ──────────────────────────────────────────────────────
+    is_option: bool = False
+    # Restricting to these two literal values is a free, defense-in-depth
+    # 422 before engine.risk.evaluate() ever runs — complementary to, not
+    # a replacement for, the naked_short_forbidden risk rule, since
+    # engine.risk.types is deliberately Pydantic-free and gets no
+    # validation of its own at this boundary.
+    option_action: Literal["buy_to_open", "sell_to_close"] | None = None
+    occ_symbol: str | None = None
+    strike: float | None = None
+    expiry_date: date | None = None
+    contract_type: Literal["call", "put"] | None = None
+    multiplier: int = 1
     qty: int
     order_type: Literal["MARKET", "LIMIT"]
     limit_price: float | None = None

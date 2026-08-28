@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import Enum
+from typing import Literal
 
 from engine.env import env_flag
 
@@ -101,6 +102,52 @@ class RiskCaps:
     shorts are enabled; exposed as a cap so a backtest that models its own
     exits can turn it off explicitly rather than by accident."""
 
+    # ── Options caps (Phase A: long calls/puts only, no spreads/assignment) ──
+    options_disabled: bool = True
+    """Master switch. See ``RiskCaps.from_env`` — ``ALLOW_OPTIONS=1`` flips
+    this, and nothing else does. Entry-only: a closing SELL_TO_CLOSE is
+    never blocked by this flag, mirroring ``forbid_short_phase_0``'s own
+    de-risking-is-always-permitted carve-out."""
+
+    options_min_trading_level: int = 2
+    """Alpaca's own tiering is counter-intuitive: level 1 = assignment-
+    bearing structures (covered call / cash-secured put, Phase C); level 2
+    = long call/put (Phase A, what this gates); level 3 = spreads/
+    straddles (Phase B)."""
+
+    options_max_premium_pct: float = 1.0
+    """Single option position's premium-at-risk, as % of equity. The
+    options analogue of ``max_position_pct`` — the entire premium is the
+    max loss on a long option, so this number IS the position-size cap."""
+
+    options_max_total_premium_pct: float = 5.0
+    """All open long option premium combined, as % of equity. Phase A is
+    long-only/single-leg/bounded-loss by construction, so this one number
+    already caps the whole options book's worst case (100% of premium to
+    zero) — see ``docs/OPTIONS_PLAN.md`` for why portfolio greek caps are
+    deferred to Phase B/C rather than added here."""
+
+    options_min_dte: int = 7
+    options_max_dte: int = 60
+    """Days-to-expiry window for a new entry. Below 7: 0DTE/weekly gamma
+    risk. Above 60: capital parked too long in a decaying asset."""
+
+    options_min_open_interest: int = 100
+    options_min_volume: int = 10
+    options_max_relative_spread_pct: float = 8.0
+    """Liquidity floor read by ``illiquid_contract``: ``(ask-bid)/mid`` as
+    a percentage. On a 15-min-delayed indicative feed this is the single
+    most important number in the options rule set."""
+
+    options_earnings_blackout_days: int = 2
+    """No new options entry within this many days of the underlying's next
+    earnings — IV crush around a known event."""
+
+    options_expiry_sweep_dte: int = 2
+    """Read by the position manager's expiry sweep, not a risk-gate veto:
+    an open option position is force-closed at this DTE. Non-negotiable
+    per ``docs/OPTIONS_PLAN.md`` §2.6."""
+
     # Wash-sale (US tax informational warning)
     wash_sale_lookback_days: int = 30
     """IRS rule: closing at a loss + re-entering within 30 calendar days
@@ -135,22 +182,31 @@ class RiskCaps:
     def from_env(cls, **overrides: object) -> RiskCaps:
         """Default caps with the environment-configurable switches applied.
 
-        Only ONE switch is environment-driven today: ``ALLOW_SHORTS``.
-        Everything else stays a code-level default that a caller overrides
-        explicitly, because a risk cap that can be widened by an env var
-        nobody reviews is not a risk cap.
+        Exactly two switches are environment-driven today: ``ALLOW_SHORTS``
+        and ``ALLOW_OPTIONS``. Everything else stays a code-level default
+        that a caller overrides explicitly, because a risk cap that can be
+        widened by an env var nobody reviews is not a risk cap.
 
-        Shorts are **off unless ALLOW_SHORTS is truthy**. An unset, empty,
-        or typo'd value leaves ``forbid_short_phase_0=True`` — ``env_flag``
-        fails closed on anything it doesn't recognise, which is the
-        direction that cannot lose money by accident.
+        Both are **off unless truthy**. An unset, empty, or typo'd value
+        leaves ``forbid_short_phase_0=True`` / ``options_disabled=True`` —
+        ``env_flag`` fails closed on anything it doesn't recognise, which
+        is the direction that cannot lose money by accident.
         """
-        return cls(forbid_short_phase_0=not env_flag("ALLOW_SHORTS"), **overrides)  # type: ignore[arg-type]
+        return cls(
+            forbid_short_phase_0=not env_flag("ALLOW_SHORTS"),
+            options_disabled=not env_flag("ALLOW_OPTIONS"),
+            **overrides,  # type: ignore[arg-type]
+        )
 
     @property
     def shorts_enabled(self) -> bool:
         """Readable inverse of ``forbid_short_phase_0`` for call sites and logs."""
         return not self.forbid_short_phase_0
+
+    @property
+    def options_enabled(self) -> bool:
+        """Readable inverse of ``options_disabled`` for call sites and logs."""
+        return not self.options_disabled
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -165,6 +221,11 @@ class PortfolioPosition:
     avg_entry_price: float
     market_value: float
     sector: str | None = None
+    is_option: bool = False
+    multiplier: int = 1
+    """1 for equities, 100 for standard US equity options. ``market_value``
+    is already correctly scaled — this is for callers that need to convert
+    ``avg_entry_price`` into a notional themselves."""
 
 
 @dataclass(frozen=True)
@@ -210,10 +271,49 @@ class RiskContext:
     # window) are testable. None → rules read the real wall clock.
     now_utc: datetime | None = None
 
+    # Options account gating — read from the broker account, not the
+    # positions snapshot (parallels how other account-level state here is
+    # populated by the context provider).
+    options_trading_level: int | None = None
+
 
 # ─────────────────────────────────────────────────────────────────────
 # Proposal + Decision — input / output of the engine
 # ─────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class OptionLegDetails:
+    """Option-specific fields on a ``RiskProposal``. Present only when
+    ``RiskProposal.is_option`` is True.
+
+    ``dte`` is deliberately NOT a stored field — every rule that needs it
+    (``min_dte``/``max_dte``/``expiry_day_entry``) computes it fresh from
+    ``expiry`` + ``context.now_utc`` each time. A contract drafted at 8
+    DTE can be 3 DTE by the time it's approved and re-risk-checked days
+    later; a pre-computed value would silently under-protect exactly the
+    case these rules exist for.
+    """
+
+    underlying_symbol: str
+    occ_symbol: str
+    contract_type: Literal["call", "put"]
+    strike: float
+    expiry: date
+    multiplier: int = 100
+    action: Literal["buy_to_open", "sell_to_close"] = "buy_to_open"
+    """Phase A only — no short legs, so no other action value is ever
+    constructed. Belt-and-suspenders with the ``naked_short_forbidden``
+    risk rule, which does not depend on this restriction to hold."""
+    open_interest: int | None = None
+    volume: int | None = None
+    bid: float | None = None
+    ask: float | None = None
+    implied_volatility: float | None = None
+    days_to_earnings: int | None = None
+    """Computed once by the ``options_context`` feature block and copied
+    here at Drafter-time, so ``earnings_blackout`` can re-check it at
+    execution-time without a second fetch."""
 
 
 @dataclass(frozen=True)
@@ -228,6 +328,15 @@ class RiskProposal:
     estimated_notional: float
     last_price: float
     confidence: float
+
+    # ── Options inputs ───────────────────────────────────────────────
+    is_option: bool = False
+    option: OptionLegDetails | None = None
+    """Present only when ``is_option`` is True. Every field an options
+    risk rule needs at execution time (premium, multiplier, strike,
+    expiry, greeks) must be written here at Drafter-time — the executor's
+    re-risk-check reads the *persisted* proposal, not live state, so
+    anything missing here is gone by the time the risk gate re-runs."""
     # Whether this would close an existing same-day position (PDT scoring).
     closes_intraday_position: bool = False
     # India: True when the order will be placed as an intraday product

@@ -86,6 +86,12 @@ class Order(Base):
     stop_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 4), nullable=True)
     time_in_force: Mapped[str] = mapped_column(String(5), nullable=False, default="DAY")
 
+    is_option: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    multiplier: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    option_action: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    """``buy_to_open`` / ``sell_to_close`` (Phase A only). ``side`` above
+    stays plain "BUY"/"SELL" — the open/close nuance lives here."""
+
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
     filled_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     avg_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 4), nullable=True)
