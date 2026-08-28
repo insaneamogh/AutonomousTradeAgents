@@ -355,6 +355,134 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 ## Entries
 
+### 2026-08-28 — `9751cba0` fix(agents): thread is_option/OptionLegDetails into the live risk-gate node
+
+Connective-tissue fix between the two options-trading tracks (below),
+done directly rather than delegated, since it's the one file both
+tracks deliberately avoided touching to not conflict with each other.
+`risk_officer_node` built `RiskProposal` from `state["proposal"]` with
+zero awareness of the option fields the Drafter's options branch
+writes — meaning `RiskCaps.options_disabled` (the fail-closed master
+switch) was never consulted for a real options proposal in the live
+graph, and the entire options risk-rule package below would have been
+structurally unreachable. New `_option_details_from_proposal()`
+rebuilds `OptionLegDetails` from the persisted proposal dict, mirroring
+the same "every field a rule needs must already be in the proposal"
+contract the executor's own re-risk-check follows. Purely additive —
+an equity proposal (no `is_option` key) is completely unaffected.
+
+New `apps/agents/tests/test_risk_officer_options.py` (3 tests): equity
+unchanged, full options fields correctly rebuilt, minimal options
+fields default safely to `None` rather than crashing. Verified:
+`apps/agents/tests` 77→80 passed, 1 skipped (unchanged); mypy/ruff
+clean.
+
+### 2026-08-28 — `2f3277b4`+`7acec41b`+`70db7a9d` feat/fix(options,broker,orders): broker/risk/execution layer for Phase A
+
+The larger of the two parallel options-trading tracks, reviewed with
+high scrutiny (real order execution + risk-gating) before merge — read
+every diff directly, verified the P&L multiplier math by hand against
+the commit's own worked example, independently re-ran every test suite
+from a clean cherry-pick.
+
+**`2f3277b4` — the risk-rules package + dispatch.** New
+`packages/engine/engine/options/` (11 rules + `evaluate_option()`
+orchestrator + `to_risk_proposal()`, the one sanctioned `RiskProposal`
+constructor — confirmed it takes an already-built `OptionLegDetails`
+rather than a competing intermediate type, exactly matching what the
+other track was told to expect, so the two tracks' interfaces line up
+with no reconciliation needed). `engine.risk.engine.evaluate()` diverts
+any `is_option` proposal to `evaluate_option()` with a full early-return
+right after `drawdown_halt`, structurally excluding options from every
+equity-only rule rather than trusting each one to self-gate correctly.
+Verified by hand, not just by reading the docstring: every rule with an
+open/close distinction (`min_dte`, `expiry_day_entry`, `illiquid_contract`,
+etc.) actually self-gates on `option.action != "buy_to_open"` *inside its
+own function body* — not merely in the orchestrator's audit-trail
+bookkeeping — which is what makes a close genuinely always possible
+rather than accidentally vetoable. Includes a defensive guard I hadn't
+asked for and like: `evaluate_option()` fails closed with a named
+`options_malformed_proposal` veto if a hand-built proposal somehow has
+`is_option=True` but `option=None`, rather than trusting every rule
+below to independently handle that case.
+
+Test highlight: `test_options_proposal_never_reaches_equity_only_rules`
+patches all 6 equity-only rules with call-counting spies and asserts
+zero calls (not just "happened to pass") for a deliberately-absurd
+options proposal — the dispatch is proven structural, not coincidental.
+42 new tests.
+
+**`7acec41b` — Alpaca broker options support.** `BUY_TO_OPEN`/
+`SELL_TO_CLOSE` → `(OrderSide, PositionIntent)` mapping (Alpaca keeps
+these as two separate request fields); a bracket-on-options guard
+(`OptionBracketNotSupportedError`) as the last line of defense before
+an opaque 422, since Alpaca's `OrderClass` only allows `simple`/`mleg`
+for `us_option`; `get_options_trading_level()` added to
+`BrokerInterface` (Alpaca real, Zerodha always `None` — no options
+concept in Kite) so `RiskContext.options_trading_level` has an actual
+data source. `paper=True` hardcoded in the two new contract-lookup
+functions matches the existing `lookup_asset` precedent exactly (not a
+new gap — checked). 8 new tests.
+
+**`70db7a9d` — options-aware execution, close, sweep, and P&L math.**
+The one genuinely load-bearing finding: Alpaca cannot bracket a
+single-leg option order at all, so the live-trading gate built for the
+short-selling feature ("an unprotected live order is refused, not
+silently demoted") would have refused every live options order,
+always — that gate's premise (a broker bracket was an available
+alternative) never held for options. Now: `use_bracket` is forced
+`False` for options and the refusal check doesn't apply to them at all,
+surfaced instead as an informational flag
+(`options_agent_managed_exit_no_broker_bracket`) — a confirmed,
+deliberate Phase A trade-off, not a silent gap. Options are always
+priced/executed as `LIMIT` (never `MARKET`), which also correctly
+falls out as `TimeInForce.DAY` (never `GTC`) with no separate branch
+needed, since that ternary was already keyed off `use_bracket`.
+`_close_position` gains an options branch (always `SELL_TO_CLOSE`,
+always `LIMIT`) and correctly keeps `orders.side` as plain `"SELL"`
+rather than the 13-character `SELL_TO_CLOSE` broker-wire value, which
+would have overflowed the DB column's 4-char width. New
+`sweep_expiring_options_for_user()` force-closes any option position
+within `options_expiry_sweep_dte`, wired into the same reconciler tick
+as the existing time-stop/signal closer.
+
+Three P&L spots were off by the multiplier entirely (a $2.50→$3.00 move
+on 1 contract computing as $0.50, not $50) and one was a genuine unit
+mismatch beyond a missing factor (a multiplier-scaled `market_value`
+subtracted directly against a per-contract `avg_entry_price`) — verified
+the corrected formulas by hand against the commit's own worked example
+and confirmed they resolve to the right dollar figure. 18 new tests
+across `test_positions_service.py` (first-ever unit coverage of that
+file), `test_order_sync.py`, `test_position_manager.py`, plus the
+options mirror of the short-selling feature's own bracket-refusal
+regression test.
+
+**Verified independently after cherry-pick** (and after cleanly
+recovering from an unrelated self-inflicted `git stash`/`pop` accident
+that surfaced and then required dropping a long-stale, already-superseded
+stash entry from an earlier session — no data lost, confirmed by content
+comparison against the real merged commits it duplicated): full combined
+suite (`apps/api`+`apps/agents`+`packages/engine`+`packages/broker`)
+**661 passed, 9 skipped** (+69 from this track, +3 from the
+`risk_officer_options` fix above, 0 regressions); ruff clean on every
+file this track actually touched (`executor.py` even went from 9→8
+pre-existing errors); mypy shows zero errors on every production file
+touched or created — the only errors anywhere are pre-existing,
+already-tolerated test-helper looseness in files this track didn't
+touch.
+
+**Left open, disclosed rather than silently skipped:** the reconciler's
+own `PortfolioPosition` construction (`reconciler_fleet.py`'s
+`UserBrokerPoller` / `engine/reconciler/poller.py`) still doesn't thread
+`is_option`/`multiplier` through — the live risk-gate path (executor's
+`_build_risk_context`) is fixed and correct, but the reconciler's
+slower-moving position-display snapshot isn't yet. Also open: council-time
+`RiskContext.options_trading_level` — neither `MockRiskContextProvider`
+nor `PostgresRiskContextProvider` populates it yet (a different code path
+from the executor's, which this track did fix), meaning
+`options_level_insufficient` would still veto every options proposal
+unconditionally at council time until that's closed. Both are next.
+
 ### 2026-08-28 — `4061f3af`+`a0420d63` feat(agents): attribute LLM calls to their council run and decision
 
 The last wiring-gap item, and the riskiest one in the batch (schema
