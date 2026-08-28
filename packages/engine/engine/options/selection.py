@@ -59,13 +59,25 @@ whose count drops to zero names the rejection reason):
      input there scores 0.5, it never disqualifies). An options Phase-A
      entry is different: buying a contract this system cannot price is not
      a neutral unknown, it is a decision to enter blind, and this module
-     refuses to make that decision. A full IV-plausibility-vs-realized-vol
-     band (docs/OPTIONS_PLAN.md §2.2's "outside a plausible band") is
-     deferred — it needs the underlying's realized vol as an input, which
-     ``ContractSelectionInputs`` does not carry, and is not part of what
-     this function was asked to implement.
+     refuses to make that decision.
+  6. ``iv_realized_vol_band`` — the other half of ``docs/OPTIONS_PLAN.md``
+     §2.2's IV-sanity criterion ("outside a plausible band vs the
+     underlying's own realised vol"), no longer deferred now that
+     ``ContractSelectionInputs.realized_vol_pct`` carries it. Buying rich
+     IV into a quiet underlying is a bad trade even when the direction is
+     right. Unlike ``iv_present``, a MISSING comparator (``realized_vol_pct
+     is None``) is a fact about the analysis environment, not about the
+     contract, and is a neutral pass here — matching
+     ``trading_agents.strategies.fit``'s general missing-input convention,
+     not ``iv_present``'s own stricter one. **Unit landmine, worth stating
+     plainly**: ``ContractQuote.implied_volatility`` is a decimal fraction
+     (e.g. ``0.28``) while ``realized_vol_pct`` is already in percent units
+     (e.g. ``25.0``) — the comparison multiplies IV by 100 first. Getting
+     this wrong makes every real contract look ~100x mispriced and would
+     silently re-disable this stage the same way the chain-fetch bug this
+     package's sibling commits fixed did, just one filter later.
 
-Tie-break among whatever survives all five stages: tightest relative
+Tie-break among whatever survives all six stages: tightest relative
 spread first, then highest open interest. A candidate with no bid/ask (so
 no computable spread) sorts last on the spread key — never preferred over
 one with a verified tight market.
@@ -106,6 +118,13 @@ _MIN_OPEN_INTEREST = 100
 _MIN_VOLUME = 10
 _MAX_RELATIVE_SPREAD_PCT = 8.0
 
+# ── IV-vs-realized-vol plausibility band (see module docstring §6) ───────
+# Provisional judgment calls, not derived from data — this is paper-only
+# (TRADING_MODE=paper) for the foreseeable future; revisit before any real
+# money depends on this stage.
+_IV_REALIZED_VOL_FLOOR_MULT = 0.3
+_IV_REALIZED_VOL_CEIL_MULT = 3.0
+
 # Named reasons, in filter order — the FIRST of these whose stage emptied
 # the funnel is the rejection reason. Order matters: it is also the order
 # the stages actually run in.
@@ -115,6 +134,7 @@ _STAGE_REJECTION_REASONS: dict[str, str] = {
     "delta_band": "no_delta_in_band",
     "liquidity": "no_liquid_contract",
     "iv_present": "no_iv",
+    "iv_realized_vol_band": "iv_outside_plausible_band",
 }
 
 
@@ -151,6 +171,14 @@ class ContractSelectionInputs:
     convention elsewhere (e.g. ``engine.risk.rules.mis_square_off``) — this
     function never calls ``datetime.now()`` itself."""
     days_to_earnings: int | None = None
+    realized_vol_pct: float | None = None
+    """Underlying's own realized vol, ANNUALIZED PERCENT units (e.g. 25.0
+    == 25%) — same convention as ``engine.features.quant.compute_quant``'s
+    ``realized_vol_pct`` (lives under ``ctx["quant"]``, not
+    ``ctx["options_context"]`` — a distinct dict). ``None`` skips the
+    ``iv_realized_vol_band`` stage (neutral pass) — see module docstring
+    §6 for why this differs from ``iv_present``'s own stricter handling of
+    a missing IV."""
 
 
 @dataclass(frozen=True)
@@ -182,6 +210,16 @@ def _relative_spread_pct(bid: float, ask: float) -> float | None:
     if mid <= 0:
         return None
     return (ask - bid) / mid * 100.0
+
+
+def _iv_within_plausible_band(iv: float, realized_vol_pct: float) -> bool:
+    """``iv`` is a decimal fraction (e.g. 0.28); ``realized_vol_pct`` is
+    already in percent units (e.g. 25.0) — see module docstring §6's
+    "unit landmine" note for why the ``* 100.0`` below is not optional."""
+    if realized_vol_pct <= 0:
+        return True  # nothing sane to compare against — don't reject on a degenerate input
+    ratio = (iv * 100.0) / realized_vol_pct
+    return _IV_REALIZED_VOL_FLOOR_MULT <= ratio <= _IV_REALIZED_VOL_CEIL_MULT
 
 
 def _passes_liquidity(quote: ContractQuote) -> bool:
@@ -255,6 +293,16 @@ def select_contract(inputs: ContractSelectionInputs) -> ContractSelectionResult:
     if remaining:
         remaining = [c for c in remaining if c.implied_volatility is not None]
     funnel["iv_present"] = len(remaining)
+
+    if remaining and inputs.realized_vol_pct is not None:
+        realized_vol_pct = inputs.realized_vol_pct
+        remaining = [
+            c
+            for c in remaining
+            if c.implied_volatility is not None
+            and _iv_within_plausible_band(c.implied_volatility, realized_vol_pct)
+        ]
+    funnel["iv_realized_vol_band"] = len(remaining)
 
     if not remaining:
         for stage, reason in _STAGE_REJECTION_REASONS.items():

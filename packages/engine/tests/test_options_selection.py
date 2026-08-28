@@ -55,6 +55,7 @@ def _inputs(
     direction: Literal["long", "short"] = "long",
     conviction: float = 0.8,
     days_to_earnings: int | None = None,
+    realized_vol_pct: float | None = None,
 ) -> ContractSelectionInputs:
     # 0.8 is high-conviction (band [0.45, 0.65]), matching _quote()'s own
     # default delta=0.50 — tests exercising the conviction/delta-band
@@ -66,6 +67,7 @@ def _inputs(
         candidates=candidates,
         now=_NOW,
         days_to_earnings=days_to_earnings,
+        realized_vol_pct=realized_vol_pct,
     )
 
 
@@ -314,7 +316,9 @@ def test_no_candidates_at_all_is_a_named_hold() -> None:
 
 def test_funnel_counts_reported_for_a_full_ladder() -> None:
     """One candidate survives every stage -> funnel counts step down to 1
-    and stay there (nothing "revives" after being filtered)."""
+    and stay there (nothing "revives" after being filtered). No
+    realized_vol_pct given -> iv_realized_vol_band is a neutral pass,
+    same count carried through."""
     result = select_contract(_inputs((_quote(),)))
     assert result.selected is not None
     assert result.funnel_counts == {
@@ -324,7 +328,60 @@ def test_funnel_counts_reported_for_a_full_ladder() -> None:
         "delta_band": 1,
         "liquidity": 1,
         "iv_present": 1,
+        "iv_realized_vol_band": 1,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────
+# iv_realized_vol_band — docs/OPTIONS_PLAN.md §2.2's IV-sanity criterion,
+# the half `iv_present` alone doesn't cover.
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_iv_realized_vol_band_unit_consistency_check() -> None:
+    """The landmine, written first: IV is a decimal fraction (0.25),
+    realized_vol_pct is already in percent units (25.0) — a ratio of
+    exactly 1.0 (fair-priced) must PASS. Getting the unit conversion
+    backwards would make this fail and silently re-disable the stage."""
+    quote = _quote(implied_volatility=0.25)
+    result = select_contract(_inputs((quote,), realized_vol_pct=25.0))
+    assert result.selected is not None
+    assert result.funnel_counts["iv_realized_vol_band"] == 1
+
+
+def test_iv_realized_vol_band_rejects_iv_too_rich_vs_realized() -> None:
+    """IV at 4.5x realized vol (above the 3.0x ceiling) — buying rich IV
+    into a quiet underlying, even on the right directional call."""
+    quote = _quote(implied_volatility=0.90)
+    result = select_contract(_inputs((quote,), realized_vol_pct=20.0))
+    assert result.selected is None
+    assert result.rejection_reason == "iv_outside_plausible_band"
+    assert result.funnel_counts["iv_realized_vol_band"] == 0
+
+
+def test_iv_realized_vol_band_rejects_iv_too_cheap_vs_realized() -> None:
+    """IV at 0.1x realized vol (below the 0.3x floor)."""
+    quote = _quote(implied_volatility=0.03)
+    result = select_contract(_inputs((quote,), realized_vol_pct=30.0))
+    assert result.selected is None
+    assert result.rejection_reason == "iv_outside_plausible_band"
+
+
+def test_iv_realized_vol_band_none_realized_vol_is_a_neutral_pass() -> None:
+    """No realized-vol comparator available -> a fact about the analysis
+    environment, not the contract; must not reject (unlike iv_present's
+    own stricter handling of a genuinely missing IV)."""
+    quote = _quote(implied_volatility=0.90)  # would fail the band if checked
+    result = select_contract(_inputs((quote,), realized_vol_pct=None))
+    assert result.selected is not None
+
+
+def test_iv_realized_vol_band_zero_realized_vol_is_a_neutral_pass() -> None:
+    """A degenerate realized_vol_pct (<=0) has nothing sane to compare
+    against — must not reject on it."""
+    quote = _quote(implied_volatility=0.90)
+    result = select_contract(_inputs((quote,), realized_vol_pct=0.0))
+    assert result.selected is not None
 
 
 def test_rejection_reason_names_the_first_stage_that_emptied() -> None:

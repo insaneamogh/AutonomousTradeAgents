@@ -362,6 +362,11 @@ async def _draft_option_proposal(
     ctx = state.get("context") or {}
     options_ctx = ctx.get("options_context") or {}
     raw_days_to_earnings = options_ctx.get("days_to_earnings")
+    # NOT options_context — realized_vol_pct is computed by compute_quant
+    # and lives under the separate ctx["quant"] block (see
+    # engine.options.selection.ContractSelectionInputs.realized_vol_pct's
+    # own docstring for why this distinction matters).
+    raw_realized_vol_pct = ctx.get("quant", {}).get("realized_vol_pct")
 
     candidates = await _fetch_option_candidates(symbol)
     selection = select_contract(
@@ -372,6 +377,7 @@ async def _draft_option_proposal(
             candidates=candidates,
             now=datetime.now(UTC),
             days_to_earnings=int(raw_days_to_earnings) if raw_days_to_earnings is not None else None,
+            realized_vol_pct=float(raw_realized_vol_pct) if raw_realized_vol_pct is not None else None,
         )
     )
 
