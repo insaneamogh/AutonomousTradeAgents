@@ -1,10 +1,11 @@
 """Options-specific AlpacaBroker behavior — Phase A (long calls/puts only).
 
-Covers three things: the BUY_TO_OPEN/SELL_TO_CLOSE side + position_intent
-mapping, the bracket-on-options guard, and options positions surfacing
-is_option/multiplier correctly. See ``test_alpaca.py``'s own module
-docstring for why the websockets.legacy DeprecationWarning is suppressed
-around the first import of ``broker.alpaca`` in this package's test suite.
+Covers four things: the BUY_TO_OPEN/SELL_TO_CLOSE side + position_intent
+mapping, the bracket-on-options guard, options positions surfacing
+is_option/multiplier correctly, and get_options_trading_level reading the
+real Alpaca account field. See ``test_alpaca.py``'s own module docstring
+for why the websockets.legacy DeprecationWarning is suppressed around the
+first import of ``broker.alpaca`` in this package's test suite.
 """
 
 from __future__ import annotations
@@ -19,6 +20,8 @@ with warnings.catch_warnings():
         "ignore", message="websockets.legacy is deprecated", category=DeprecationWarning
     )
     from broker.alpaca import AlpacaBroker, OptionBracketNotSupportedError
+
+from alpaca.trading.models import TradeAccount
 
 from broker.types import OrderRequest, OrderType, Side, TimeInForce
 
@@ -177,3 +180,70 @@ def test_position_with_no_asset_class_defaults_to_not_an_option() -> None:
     position = broker._position_from_alpaca(raw)
     assert position.is_option is False
     assert position.multiplier == 1
+
+
+# ─────────────────────────────────────────────────────────────────────
+# get_options_trading_level — reads a real field on the real Alpaca
+# account model. Previously untested anywhere in this package: an audit
+# pass over the options test suite for the same blind-spot pattern the
+# chain-fetch bug exhibited (see fable5findings.md's build log) found this
+# one gap. Unlike that bug, the field name itself was already
+# live-verified correct (docs/OPTIONS_PLAN.md §0) — this closes the
+# coverage gap, it does not fix an active bug.
+# ─────────────────────────────────────────────────────────────────────
+
+
+class _FakeClient:
+    """Stand-in for the REAL ``TradingClient`` instance ``AlpacaBroker``
+    already constructed in ``__init__`` — unlike the module-level functions
+    tested elsewhere in this package (``lookup_asset``, etc.), which build
+    a fresh client per call and so are patchable via the CLASS on
+    ``alpaca.trading.client``, ``get_options_trading_level`` calls
+    ``self._client.get_account()`` on the instance the broker already
+    holds. Patching the class after construction wouldn't touch that
+    already-set attribute — swapping ``broker._client`` directly is the
+    correct seam here."""
+
+    def __init__(self, account: object) -> None:
+        self._account = account
+
+    def get_account(self) -> object:
+        return self._account
+
+
+@pytest.mark.asyncio
+async def test_get_options_trading_level_reads_the_real_account_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Confirmed via the installed alpaca-py model itself:
+    TradeAccount.model_fields includes options_trading_level literally —
+    this is real attribute access via getattr, reading a field that
+    genuinely exists, not a guessed name."""
+    broker = _broker()
+    monkeypatch.setattr(
+        broker, "_client", _FakeClient(TradeAccount.model_construct(options_trading_level=3))
+    )
+
+    level = await broker.get_options_trading_level()
+
+    assert level == 3
+
+
+@pytest.mark.asyncio
+async def test_get_options_trading_level_none_on_an_unapproved_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The field is genuinely absent/None on an account that never applied
+    for options approval — this is a real account state, not an error, so
+    the getattr default (not a raise) is the correct behavior here, unlike
+    the chain-fetch bug's silent getattr-masks-a-real-mismatch case."""
+    broker = _broker()
+    monkeypatch.setattr(
+        broker,
+        "_client",
+        _FakeClient(TradeAccount.model_construct(options_trading_level=None)),
+    )
+
+    level = await broker.get_options_trading_level()
+
+    assert level is None
