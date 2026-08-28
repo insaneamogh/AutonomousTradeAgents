@@ -355,6 +355,61 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 ## Entries
 
+### 2026-08-28 — `ba2fbbf1` test(broker): cover get_options_trading_level against the real Alpaca account field
+
+Part 3 of the options "actually works" plan: audited the rest of the
+options test suite for the same blind-spot pattern the chain-fetch bug
+exhibited (idealized mocks masking a real integration seam), rather than
+assuming it was the only instance.
+
+**Clean, no changes needed** (read fully, not skimmed):
+- `packages/engine/tests/test_options_risk.py` — builds `OptionLegDetails`
+  directly (our own internal shape, via `to_risk_proposal`, the one
+  sanctioned constructor) and runs it through the real
+  `engine.risk.evaluate()`. No Alpaca/broker boundary anywhere in this
+  file; its `monkeypatch` calls are all structural spies on the engine's
+  OWN dispatch module, not external-shape mocking.
+- `packages/engine/tests/test_risk_context_options.py` — either pure
+  provider-default logic, or `_parse_positions` reading OUR OWN persisted
+  Postgres row shape (plain dicts we designed, not an external API's
+  shape a mismatch could sneak into).
+- `packages/engine/tests/test_reconciler.py`'s options tests — correctly
+  mock at the `BrokerInterface` abstraction (a `MagicMock` broker
+  returning this repo's own `broker.types.Position`), which is the RIGHT
+  seam for testing `AlpacaBrokerPoller`'s own orchestration logic. The
+  actual Alpaca-shape mapping lives one layer down, in `AlpacaBroker`
+  itself — correctly out of this file's job to cover.
+
+**One adjacent gap found and fixed, in the same spirit but not literally
+one of the three named files**: reading `test_reconciler.py`'s own
+`get_options_trading_level` test led to checking whether the underlying
+broker method it mocks around had ANY coverage of its own — it had zero,
+anywhere in `packages/broker`. Confirmed via the real installed
+`alpaca-py` model (`TradeAccount.model_fields`) that
+`options_trading_level` is a genuinely real, correctly-named field (also
+independently corroborated by `docs/OPTIONS_PLAN.md` §0's own live
+account measurement) — so, unlike the chain-fetch bug, this closes a
+coverage gap rather than fixing an active bug; the existing
+`getattr(acct, "options_trading_level", None)` is the CORRECT choice here
+(the field is genuinely absent on an account that never applied for
+options approval — a real account state, not a shape mismatch to guard
+against).
+
+Had to use a different patching seam than every other test in this file:
+`get_options_trading_level` reads `self._client` — already constructed
+for real in `AlpacaBroker.__init__` — not a fresh per-call client like
+`lookup_asset`/`list_option_contracts`/`list_option_chain_quotes`. The
+first attempt patched the `TradingClient` class (this package's usual
+convention) and the test made a REAL network call and failed with a real
+`401 unauthorized` — caught immediately by actually running the test
+rather than assuming the patch took effect. Fixed by swapping
+`broker._client` directly with a fake instance.
+
+New tests (`packages/broker/tests/test_alpaca_options.py`, +2): reads a
+real value, and `None` on an account with the field genuinely absent.
+Verified: full broker suite **45 passed**; `ruff check`/`ruff format
+--check`/`mypy` clean.
+
 ### 2026-08-28 — `d3d5190b` feat(engine,agents): thread realized_vol_pct into contract selection — iv_outside_plausible_band stage
 
 Part 2 of the options "actually picks up good trades" plan (Part 1 —
