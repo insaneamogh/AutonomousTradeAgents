@@ -275,14 +275,10 @@ than done, either because it's out of this session's scope or because the
 investigation that found it came back lower-confidence-of-a-clean-fix. Listed
 here once, in one place, instead of only as inline asides inside each entry.
 
-1. **`eslint` and `jest` are declared but non-functional, repo-wide.**
-   `pnpm lint`'s JS half fails outright — root `package.json` pins
-   `eslint@^9` (flat-config only) but no `eslint.config.js` exists anywhere.
-   `pnpm --filter @app/mobile test` fails the same way — the script runs
-   `jest`, but `jest` isn't installed as a dependency anywhere in the
-   workspace and there's no `jest.config.*`. Pre-existing, unrelated to
-   anything touched this session; means JS lint/test have been giving zero
-   signal on every recent change, this session's included.
+1. ~~**`eslint` and `jest` are declared but non-functional, repo-wide.**~~
+   **Resolved 2026-08-25 (`938821c2`).** Root `eslint.config.mjs` (flat
+   config) + `jest-expo`/`ts-jest` per package now actually run; see the
+   build-log entry below for exact lint/test counts left open by design.
 2. **3 mypy nits in `apps/api/app/services/auth/postgres_auth_store.py`**
    (lines ~129, 181, 237) — a `User | None` assigned into a
    narrower-inferred `User` slot across two branches, and `.rowcount` read
@@ -355,9 +351,207 @@ here once, in one place, instead of only as inline asides inside each entry.
 | P2.13 Sentry / structured logs / rate limiting | ❌ Open | needs a Sentry DSN; not wired |
 | P2.14 Docs truth-up + delete legacy dirs | 🟡 Partial | legacy dirs untracked + RUNBOOK updated; CLAUDE.md/PLAN.md Zerodha/LiteLLM drift still to reconcile by the user |
 
-**Scope decisions locked this build:** instruments = US stocks/ETFs only (options/futures out); exits = Alpaca **bracket** (broker-enforced stop/target) **+** agent early-exit/time-stop for `exit_mode=agent`; entries always human-approved; Zerodha stays dark for v1.
+**Scope decisions locked this build:** instruments = US stocks/ETFs, ~~options/futures out~~ (**updated 2026-08-28**: options Phase A — long calls/puts only, no spreads/assignment — now in scope; see `CLAUDE.md` and the entry at the top of the log below; futures still out); exits = Alpaca **bracket** (broker-enforced stop/target) **+** agent early-exit/time-stop for `exit_mode=agent` (options Phase A has no broker bracket available — see the options build-log entries once they land); entries always human-approved; Zerodha stays dark for v1.
 
 ## Entries
+
+### 2026-08-28 — `6878d1d6` docs: move options trading in-scope for v1, correct stale phase marker
+
+Demo-readiness work (Google Sign-In, Alpaca connection persistence, the
+3 live-reported UI bugs) is done. Per explicit user decision, this
+repo's next phase is options trading (Phase A: long calls/puts only, no
+spreads or assignment) plus the production-grade wiring-gap fixes
+tracked in this log — not broader compliance/RIA work, which stays
+parked per `PLAN.md` §14. `CLAUDE.md`'s scope table updated accordingly,
+and its "Phase 0 — you are here" marker (stale for a long time — paper
+trading has been live end-to-end since well before this entry) moved to
+Phase 4 with an honest caveat that real capital isn't enabled yet. This
+entry also closes out a backfill: the 7 commits below it (`936c0dab`
+through `ef37a200`) landed without build-log entries during the prior
+session; entries added now from their actual commit messages/diffs, not
+guessed. The options-trading and wiring-gap-fix work itself lands in
+its own later entries as it's built, per three parallel design agents
+(options broker/risk/execution-safety, options sizing/features/
+agent-council/UI, wiring-gap audit re-verification).
+
+### 2026-08-27 — `ef37a200` fix(agents): stop equity=0.0 and last_price=0.0 collapsing to fixture defaults
+
+Found while writing the drafter HOLD-reasoning tests below, flagged as a
+follow-up and fixed directly rather than left open: `ctx.get(
+"portfolio_equity", 100_000.0) or 100_000.0` treats a genuinely-zero
+value the same as an absent one (`0.0` is falsy), so a fully-drawn-down
+account would silently size a new trade against the fake $100k fixture
+instead of hitting `atr_position_size`'s own `account_equity <= 0`
+zero-qty refusal. Same bug on `last_price=0.0`, and the identical
+`or`-collapse pattern in `risk_officer.py`'s mock-provider equity read
+(dev/CI path only — the Postgres production path was unaffected).
+`provider.py`'s own `equity_resolver` fallback was checked and is fine —
+it already uses an explicit `equity <= 0` check with a loud warning log,
+not an `or`-collapse. Both fixed sites now distinguish "key absent"
+(fixture applies) from "key present but zero" (reaches the sizer/risk
+context as a real zero, correctly triggering a downstream refusal).
+
+557 passed, 9 skipped (4 new regression tests) —
+`apps/agents/trading_agents/nodes/{drafter,risk_officer}.py`.
+
+### 2026-08-27 — `9b607b2d` fix(dashboard): stop calling every HOLD a risk veto in the activity feed
+
+Caught while visually verifying the previous entry's live deploy, one
+screen over from the same bug class: the Dashboard's "Agent Activity"
+panel read "GLD Vetoed — risk rule fired" for GLD, TSLA, CRM, GOOP, UNH —
+every one a strategy-fit or Drafter HOLD, none of which ever reached the
+risk officer. `_decision_to_activity` branched on bare `not
+row.risk_approved`, true for a HOLD exactly as much as for a real veto,
+with a fallback string that asserted a rule ran when none did. Now
+branches on `risk_veto_rule` actually being set — exactly "a named rule
+refused a drafted proposal," matching the veto-ledger fix two entries
+below. Also fixed in passing: `side` defaulted to `"BUY"` via
+`.get("side", "BUY")` for every HOLD (a HOLD's `proposal` column is
+empty/null), mislabeling the activity row's direction.
+
+### 2026-08-27 — `24dd4d42` feat(decisions): browse every council pass, and explain every HOLD
+
+User-reported: "58 decisions in window" on Strategies with no way to open
+any of them, and NVDA flipping BUY → HOLD with zero explanation.
+
+**New `GET /api/v1/decisions`** — paginated, filterable by symbol/action —
+plus a Decisions screen reachable from a "View all" link on Strategies'
+count, since every council pass writes a row whether or not it becomes a
+proposal, but the only prior way to reach one was `/approvals/pending`
+(still-pending) or `/positions` (approved) — a strategy-fit HOLD, the
+majority of any sweep, was invisible the instant the sweep moved past it.
+
+**The real root cause of "no explanation," a write bug not a display
+bug:** `PostgresDecisionLog` wrote `entry.raw_state` (the whole `{regime,
+proposal, analyst_subset, degraded_nodes}` envelope) into
+`agent_decisions.proposal` whenever there was no approved proposal — and
+that envelope is a non-empty dict even when its own nested `proposal` key
+is null. `biography_service` read `if proposal:` as "a real proposal
+exists," true for every HOLD, so `.get("rationale")`/`.get("side")`
+against the wrong dict came back empty — the real explanation never
+reached the row at all. Fixed at the write site (store
+`raw_state["proposal"]`, not the envelope) and hardened the read site
+against historical rows already written the old way (`proposal["side"]`,
+not bare truthiness) — confirmed this alone fixes old rows with no re-run
+needed.
+
+**The Drafter's own HOLD explanation was being discarded** —
+`drafter_node` read the model's bear-case reasoning on a HOLD and then
+threw it away. `drafter_rationale`/`bull_case`/`bear_case` now survive
+both a model HOLD and a sizer-zeroed-qty HOLD (each distinguished from a
+parse-failure HOLD, which has nothing to explain), surfaced in the
+theater's live drafter card and the trade biography.
+
+**Per-analyst output was fetched but never rendered** — the timeline API
+already returned each analyst's role/score/confidence/thesis; the UI
+dropped it. Extracted the duplicated-inline `TimelineCard` into a shared
+`TradeBiography.tsx`, now rendering the full breakdown for every event,
+not just approved ones.
+
+Verified live against historical rows already in the DB (no re-run
+needed): NVDA/UNH/WMT/GLD/XOM all show their real reason (no-strategy-fit
+/ drafter-said-no / parse-failure / a real BUY thesis) instead of a bare
+"Council [proposed/held] HOLD X". 550 passed, 9 skipped (11 new tests).
+
+### 2026-08-27 — `f5048d47` fix(orders,ui): cancel unfilled orders, fix cold-run error text, fix Close overflow
+
+Three bugs found from live use, bundled in one commit.
+
+- **Cancel an unfilled order.** No way existed to stop a trade that was
+  approved but hadn't filled yet — `close_position_now` refused with
+  `no_open_position` (technically correct, unhelpful outside market
+  hours, where an order can sit accepted-but-unfilled for hours). Now
+  dispatches to a new `cancel_pending_order_now` when `fill_qty` is null:
+  cancels the broker-side entry order (which takes its bracket's OCO
+  children with it, since they aren't live until the parent fills) and
+  updates the order row immediately rather than waiting for the next
+  reconciler tick. Both position screens reuse the existing Close
+  button/endpoint, now reading "Cancel order" for a `pending_fill` row.
+- **Wrong "agent server may be cold" message.** `runErrorMessage` only
+  handled this app's own `assert_tradable` 422 (`{detail: "<string>"}`) —
+  FastAPI's own pydantic validation 422s with `{detail: [{msg, ...}]}`, an
+  array, which is exactly the case where the server said precisely what
+  was wrong. Now handles both 422 shapes and echoes any other HTTP
+  status, reserving "cold"/network wording for when there's no `status`
+  on the error at all.
+- **Close-button overflow.** Positions' table (8 data + 1 action column)
+  had no horizontal scroll region, so once the trade-biography panel
+  opened beside it and the card shrank to 8/12 width, the table
+  overflowed and clipped the Close/Cancel button instead of scrolling.
+  Wrapped in `overflow-x: auto`, matching this repo's own
+  wide-content-scrolls-in-its-own-region convention.
+
+541 passed, 9 skipped (2 new cancel tests); tsc clean; mobile jest clean.
+
+### 2026-08-27 — `e0e05fb8` feat(positions): surface approved orders awaiting a fill
+
+User-reported: approved a KO trade and it never showed up in Positions.
+Not a bug in the order itself — Alpaca correctly had it queued
+(`status: "new"`) for the next market open — but the app had no surface
+for that state at all: `/approvals/pending` drops a proposal the instant
+it's decided, `/positions` only listed decisions with `fill_qty IS NOT
+NULL`, and `/orders` has no GET endpoint. An approved order was invisible
+from the moment of approval until the moment it filled, which outside
+market hours can be hours.
+
+`list_open_positions` now also returns approved-but-unfilled decisions as
+`status: "pending_fill"` (qty from the proposal, no entry price/mark/P&L
+— none exist yet), cross-referenced against the newest `orders` row per
+decision to exclude ones that already died (rejected/canceled/expired) —
+without that check, a dead order would show as "awaiting fill" forever
+instead of correctly disappearing. Both position screens render the
+state distinctly: an "AWAITING FILL" badge, "not filled yet" in place of
+a price, no Close button.
+
+Verified against the live deployment: the user's 5 pending approvals
+(KO, SPY, JNJ, UNP, CVX) now list correctly. 539 passed, 9 skipped; tsc
+clean.
+
+### 2026-08-27 — `a5a90cf0` fix(auth): de-dupe concurrent refresh() calls so one token race can't kill the session
+
+User-reported: "Approve" sometimes fails with a generic error and the
+proposal doesn't execute, no server-side error in the Railway logs —
+pointing at the client dying before the request landed.
+
+Root cause: refresh tokens are single-use and rotate server-side via
+compare-and-swap. The dashboard runs 4-5 independently polling queries
+(positions/scanner/health/review, every 30-60s) against a 15-minute
+access token, so two or more in-flight requests commonly hit a 401 in
+the same tick. `authStore.refresh()` had no concurrency guard — each
+caller read the same stored refresh token and POSTed it independently.
+The first won the rotation; the second's already-spent token looked like
+a replay to the server, which doesn't just reject it — it revokes the
+whole session. The losing caller saw `superseded`, wiped the credential,
+and silently signed the user out mid-session; whatever request happened
+to lose the race is what the user saw fail (an Approve tap, in this
+report).
+
+Fix: share one in-flight refresh promise across all concurrent callers,
+so every 401 in the same tick waits on the same network call and gets
+the same outcome — this app's own polling can no longer manufacture a
+replay against itself. A genuine attacker replaying an old token after a
+real rotation is untouched: still exactly one caller with a stale token,
+still caught and revoked.
+
+16 authStore tests pass (2 new), 23 mobile tests pass, tsc clean.
+
+### 2026-08-27 — `936c0dab` fix(scheduler): honour the user's curated watchlist, not just the env var
+
+`daily_cron.cli()` had always preferred the `user_watchlist` table over
+`AGENT_CRON_WATCHLIST`, but the in-process `CouncilScheduler` — the path
+that actually runs in production — read only the env var. Curating a
+watchlist in the app therefore changed nothing: both the baseline sweep
+and the deterministic scanner kept working off whatever the env var
+said, and `/scanner/status` reported the env list's size as the
+watchlist size (the stale note this entry resolves, struck through
+above). `_watchlist()` becomes async and loads the curated list for the
+cron user, falling back to env on an empty list or any load failure (an
+unreachable table must not stop the sweep from running at all);
+`configured_watchlist()` follows suit so `scanner_status` reports the
+size it actually scans.
+
+537 passed, 9 skipped —
+`apps/api/app/services/council/{scanner_status,scheduler}.py`.
 
 ### 2026-08-27 — `f856858c`+`deb07bc9`+`69b8e7df`+`d66584be` fix: four silent failures found by running the live stack, not the tests
 
@@ -424,8 +618,8 @@ drafted proposal".
 - Named risk vetoes are 0 because the book holds one position — the
   concentration, correlation-cluster and max-open-positions rules cannot
   bite until positions accumulate. The ledger fills as trades are taken.
-- `scanner/status` reports `watchlistSize` from the env var, not the
-  45-symbol DB watchlist.
+- ~~`scanner/status` reports `watchlistSize` from the env var, not the
+  45-symbol DB watchlist.~~ Resolved 2026-08-27 (`936c0dab`).
 - Alpaca order history that predates our decision rows is not imported,
   so the NVDA bracket shows as unmanaged with no order row behind it.
 
