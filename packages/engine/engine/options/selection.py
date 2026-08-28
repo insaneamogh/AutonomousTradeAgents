@@ -1,0 +1,288 @@
+"""Deterministic contract selection — thesis + chain snapshot → one contract.
+
+``docs/OPTIONS_PLAN.md`` §2.2 is the spec this implements. Filter-then-
+tiebreak, no LLM, no I/O: every input arrives already fetched
+(``ContractSelectionInputs.candidates``) and every output is either exactly
+one contract or a named HOLD reason plus the funnel counts that produced it.
+Never falls back to an equity path — that decision belongs to the caller
+(the Drafter), and it is a HOLD, not a substitution.
+
+Filter stages, in order (each stage's surviving count is recorded in
+``ContractSelectionResult.funnel_counts`` for audit, and the FIRST stage
+whose count drops to zero names the rejection reason):
+
+  1. ``contract_type`` — a "long" (bullish) thesis wants a CALL; a "short"
+     (bearish) thesis wants a PUT. Phase A never sells anything to open
+     (see ``engine.risk.types.OptionLegDetails.action`` — always
+     ``buy_to_open``); "short" here is only about which contract TYPE
+     expresses the bearish view, never about opening a short option leg.
+  2. ``dte_window`` — 21-60 DTE is the risk engine's OUTER guardrail
+     (``RiskCaps.options_min_dte``/``options_max_dte``, deliberately wider,
+     re-checked independently at approval time). This module's own window
+     is narrower and for a different reason: 21-45 DTE, deliberately NOT
+     0-7 DTE, because theta decay dominates and greeks are frequently
+     missing close to expiry, and deliberately not run all the way to 60,
+     to leave room above the selection window for the position to roll
+     before it re-enters the risk engine's own boundary. The two numbers
+     are intentionally NOT the same constant reused twice — one is a
+     selection heuristic, the other is an authoritative veto — so this
+     module hardcodes its own 21/45, it does not import ``RiskCaps``.
+  3. ``delta_band`` — higher conviction buys closer to the money (higher
+     |delta|, more directional exposure per contract); lower conviction
+     buys further OTM (lower |delta|, cheaper, more convex). The exact
+     bands (conviction >= 0.7 -> |delta| in [0.45, 0.65]; below that ->
+     [0.25, 0.45]) are a deliberately simple two-tier judgment call, not a
+     continuous function — the task this implements asked for "a
+     reasonable banding", not a research result, and a two-tier band is
+     easy to audit from a funnel count in a way a continuous formula is
+     not. A candidate with no reported delta fails this stage: the same
+     "a hard filter cannot verify what it cannot see" logic as
+     ``iv_present`` below, just not singled out in the module docstring
+     because — unlike IV — nothing else in this codebase leads a reader to
+     expect a missing delta to pass neutrally.
+  4. ``liquidity`` — reject `open_interest < 100`, `volume < 10`, or (when
+     both bid and ask are present) relative spread `(ask-bid)/mid > 8%`.
+     Missing OI/volume fails the floor (can't prove liquidity you can't
+     see); a missing bid or ask only skips the spread arm of this check
+     (there is no mid to compute it from) — OI/volume still apply on
+     their own. These numbers intentionally match
+     ``RiskCaps.options_min_open_interest`` / ``options_min_volume`` /
+     ``options_max_relative_spread_pct`` defaults, because they are the
+     same real-world floor; they are hardcoded here rather than imported
+     because ``select_contract``'s signature (fixed by spec) takes only
+     ``ContractSelectionInputs`` — the risk engine's copy remains the
+     authoritative, independently re-verified enforcement point.
+  5. ``iv_present`` — missing IV is an outright REJECTION at this stage,
+     not a neutral pass-through. This is a DELIBERATE divergence from
+     ``trading_agents.strategies.fit``'s "missing feature -> NEUTRAL"
+     convention (see that module's ``_Features``/``_ramp`` — a missing
+     input there scores 0.5, it never disqualifies). An options Phase-A
+     entry is different: buying a contract this system cannot price is not
+     a neutral unknown, it is a decision to enter blind, and this module
+     refuses to make that decision. A full IV-plausibility-vs-realized-vol
+     band (docs/OPTIONS_PLAN.md §2.2's "outside a plausible band") is
+     deferred — it needs the underlying's realized vol as an input, which
+     ``ContractSelectionInputs`` does not carry, and is not part of what
+     this function was asked to implement.
+
+Tie-break among whatever survives all five stages: tightest relative
+spread first, then highest open interest. A candidate with no bid/ask (so
+no computable spread) sorts last on the spread key — never preferred over
+one with a verified tight market.
+
+``ContractSelectionInputs.days_to_earnings`` is NOT a filter input here —
+nothing in the five stages above reads it. It exists on this dataclass
+purely so ``select_contract`` (the only place ``OptionLegDetails`` gets
+constructed) can copy it straight into the ``OptionLegDetails`` it returns,
+for the ``earnings_blackout`` risk rule to re-check later. The value
+itself is computed once by the ``options_context`` feature block and
+carried in by the Drafter — see ``trading_agents.nodes.drafter``.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import date, datetime
+from typing import Literal
+
+from engine.risk.types import OptionLegDetails
+
+Direction = Literal["long", "short"]
+ContractType = Literal["call", "put"]
+
+# ── Selection-specific DTE window (see module docstring §2 for why this is
+# NOT RiskCaps.options_min_dte/options_max_dte) ────────────────────────────
+_DTE_MIN = 21
+_DTE_MAX = 45
+
+# ── Delta bands by conviction (see module docstring §3) ───────────────────
+_HIGH_CONVICTION_THRESHOLD = 0.7
+_HIGH_CONVICTION_DELTA_BAND = (0.45, 0.65)
+_LOW_CONVICTION_DELTA_BAND = (0.25, 0.45)
+
+# ── Liquidity floor (mirrors RiskCaps.options_* defaults — see module
+# docstring §4 for why they are hardcoded here rather than imported) ──────
+_MIN_OPEN_INTEREST = 100
+_MIN_VOLUME = 10
+_MAX_RELATIVE_SPREAD_PCT = 8.0
+
+# Named reasons, in filter order — the FIRST of these whose stage emptied
+# the funnel is the rejection reason. Order matters: it is also the order
+# the stages actually run in.
+_STAGE_REJECTION_REASONS: dict[str, str] = {
+    "contract_type": "no_matching_contract_type",
+    "dte_window": "no_expiry_in_window",
+    "delta_band": "no_delta_in_band",
+    "liquidity": "no_liquid_contract",
+    "iv_present": "no_iv",
+}
+
+
+@dataclass(frozen=True)
+class ContractQuote:
+    """One candidate contract's market snapshot — whatever the chain-fetch
+    step (``trading_agents.nodes.drafter``'s chain adapter, pending the
+    options broker track) got back for one strike/expiry combination."""
+
+    occ_symbol: str
+    contract_type: ContractType
+    strike: float
+    expiry: date
+    bid: float | None
+    ask: float | None
+    open_interest: int | None
+    volume: int | None
+    delta: float | None
+    implied_volatility: float | None
+
+
+@dataclass(frozen=True)
+class ContractSelectionInputs:
+    underlying_symbol: str
+    direction: Direction
+    """"short" here means a PUT is wanted for a bearish thesis — Phase A is
+    still long-only on the OPTION itself (buy_to_open); this is about which
+    contract TYPE to buy, never about opening a short option leg."""
+    conviction: float
+    """0..1, from the council's confidence."""
+    candidates: tuple[ContractQuote, ...]
+    now: datetime
+    """Injectable clock, matching this repo's ``now_utc``-injection
+    convention elsewhere (e.g. ``engine.risk.rules.mis_square_off``) — this
+    function never calls ``datetime.now()`` itself."""
+    days_to_earnings: int | None = None
+
+
+@dataclass(frozen=True)
+class ContractSelectionResult:
+    selected: OptionLegDetails | None
+    """None = no viable contract; HOLD with ``rejection_reason`` named."""
+    rejection_reason: str | None = None
+    """Set when ``selected`` is None — one of the named reasons in
+    ``_STAGE_REJECTION_REASONS`` (or ``"no_candidates"`` when the chain
+    fetch returned nothing at all). Never a bare "failed"."""
+    funnel_counts: dict[str, int] = field(default_factory=dict)
+    """Candidates remaining after each filter stage, keyed by stage name,
+    for auditability — e.g. ``{"total": 40, "contract_type": 22,
+    "dte_window": 12, "delta_band": 5, "liquidity": 2, "iv_present": 2}``."""
+
+
+def _dte(expiry: date, now: datetime) -> int:
+    return (expiry - now.date()).days
+
+
+def _delta_band(conviction: float) -> tuple[float, float]:
+    if conviction >= _HIGH_CONVICTION_THRESHOLD:
+        return _HIGH_CONVICTION_DELTA_BAND
+    return _LOW_CONVICTION_DELTA_BAND
+
+
+def _relative_spread_pct(bid: float, ask: float) -> float | None:
+    mid = (bid + ask) / 2.0
+    if mid <= 0:
+        return None
+    return (ask - bid) / mid * 100.0
+
+
+def _passes_liquidity(quote: ContractQuote) -> bool:
+    if quote.open_interest is None or quote.open_interest < _MIN_OPEN_INTEREST:
+        return False
+    if quote.volume is None or quote.volume < _MIN_VOLUME:
+        return False
+    if quote.bid is not None and quote.ask is not None:
+        spread_pct = _relative_spread_pct(quote.bid, quote.ask)
+        if spread_pct is None or spread_pct > _MAX_RELATIVE_SPREAD_PCT:
+            return False
+    return True
+
+
+def _tie_break_key(quote: ContractQuote) -> tuple[float, int]:
+    """Tightest relative spread first, then highest OI.
+
+    A missing bid/ask (no computable spread) sorts as worst (``inf``) —
+    never preferred over a candidate with a verified tight market. OI sorts
+    descending, so it is negated (the key as a whole sorts ascending).
+    """
+    spread_pct = (
+        _relative_spread_pct(quote.bid, quote.ask)
+        if quote.bid is not None and quote.ask is not None
+        else None
+    )
+    oi = quote.open_interest or 0
+    return (spread_pct if spread_pct is not None else float("inf"), -oi)
+
+
+def _tie_break(candidates: list[ContractQuote]) -> ContractQuote:
+    return min(candidates, key=_tie_break_key)
+
+
+def select_contract(inputs: ContractSelectionInputs) -> ContractSelectionResult:
+    """Filter ``inputs.candidates`` down to one contract, or a named HOLD.
+
+    Pure function of its inputs — no I/O, no wall-clock read (``inputs.now``
+    is the clock). See the module docstring for the five filter stages and
+    the tie-break.
+    """
+    funnel: dict[str, int] = {"total": len(inputs.candidates)}
+    remaining: list[ContractQuote] = list(inputs.candidates)
+
+    if not remaining:
+        return ContractSelectionResult(
+            selected=None, rejection_reason="no_candidates", funnel_counts=funnel
+        )
+
+    wanted_type: ContractType = "call" if inputs.direction == "long" else "put"
+    remaining = [c for c in remaining if c.contract_type == wanted_type]
+    funnel["contract_type"] = len(remaining)
+
+    if remaining:
+        remaining = [
+            c for c in remaining if _DTE_MIN <= _dte(c.expiry, inputs.now) <= _DTE_MAX
+        ]
+    funnel["dte_window"] = len(remaining)
+
+    if remaining:
+        lo, hi = _delta_band(inputs.conviction)
+        remaining = [
+            c for c in remaining if c.delta is not None and lo <= abs(c.delta) <= hi
+        ]
+    funnel["delta_band"] = len(remaining)
+
+    if remaining:
+        remaining = [c for c in remaining if _passes_liquidity(c)]
+    funnel["liquidity"] = len(remaining)
+
+    if remaining:
+        remaining = [c for c in remaining if c.implied_volatility is not None]
+    funnel["iv_present"] = len(remaining)
+
+    if not remaining:
+        for stage, reason in _STAGE_REJECTION_REASONS.items():
+            if funnel.get(stage) == 0:
+                return ContractSelectionResult(
+                    selected=None, rejection_reason=reason, funnel_counts=funnel
+                )
+        # Unreachable given the stages above always run in this fixed order
+        # and each is recorded — but an empty result must never surface
+        # with no name attached, so fall back to the most common cause.
+        return ContractSelectionResult(
+            selected=None, rejection_reason="no_liquid_contract", funnel_counts=funnel
+        )
+
+    winner = _tie_break(remaining)
+    selected = OptionLegDetails(
+        underlying_symbol=inputs.underlying_symbol,
+        occ_symbol=winner.occ_symbol,
+        contract_type=winner.contract_type,
+        strike=winner.strike,
+        expiry=winner.expiry,
+        multiplier=100,
+        action="buy_to_open",
+        open_interest=winner.open_interest,
+        volume=winner.volume,
+        bid=winner.bid,
+        ask=winner.ask,
+        implied_volatility=winner.implied_volatility,
+        days_to_earnings=inputs.days_to_earnings,
+    )
+    return ContractSelectionResult(selected=selected, rejection_reason=None, funnel_counts=funnel)
