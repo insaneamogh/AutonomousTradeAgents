@@ -355,6 +355,99 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 ## Entries
 
+### 2026-08-28 — `6c79d573`+`8a71deb3`+`39f9f78f`+`0f84435d`+`6e607c10`+`8378cd1f` feat(options,agents,ui): sizing/contract-selection/agent-council/UI layer for Phase A
+
+The other parallel options-trading track — reviewed with the same
+scrutiny as the broker/risk one above, and this pass is why the plan's
+"cross-track end-to-end verification" step existed: it caught a real bug
+neither track could have caught testing its own half in isolation.
+
+**`6c79d573` — deterministic contract selection + premium sizing.** New
+`packages/engine/engine/options/{selection,sizing}.py`. `select_contract()`
+runs a 5-stage filter-then-tiebreak (contract type by thesis direction →
+21-45 DTE window, deliberately narrower than and independent of
+`RiskCaps.options_min_dte`/`max_dte` — one is a selection heuristic, the
+other an authoritative re-verified veto, intentionally not the same
+constant reused twice → delta band by conviction → liquidity floor →
+IV presence) over a chain snapshot, returning one `OptionLegDetails`
+(`action="buy_to_open"` hardcoded, matching Phase A) or a named HOLD
+reason with per-stage funnel counts. `options_position_size()` is
+premium-at-risk floor division, replacing ATR entirely for this path;
+deliberately does not self-enforce the portfolio-aggregate cap (the risk
+engine's job, mirroring `short_unbounded_loss_cap`'s own precedent).
+77 new tests. Resolved an `__init__.py` add/add conflict against the
+broker/risk track's own package init at cherry-pick time — clean union,
+both halves complementary.
+
+**`8a71deb3` — wired into strategy_fit/drafter + options_context.**
+`strategy_fit_node` stamps `instrument="option"` only when `ALLOW_OPTIONS`
+AND a per-run `instrument_preference` are both set and a strategy actually
+won — every existing return path unchanged. `drafter_node`'s options
+branch forces `side="BUY"` unconditionally, even for a bearish thesis
+(which buys a PUT, never sells anything to open) — confirmed load-bearing
+by reading `engine.risk.rules._short.opens_short` myself: it fires on
+`Side.SELL` alone, and an options proposal's `stop_price=None` would
+otherwise look exactly like the "short with no stop" case
+`short_requires_stop` exists to catch. No chain / no liquid contract /
+zeroed sizer ever falls back to equity sizing — each is a named HOLD.
+Caught its own real bug before it shipped: `runtime.py::_to_proposal_dto()`
+would have silently dropped every option field at the JSONB-persistence
+boundary (Pydantic ignores unmapped keys) — the identical bug class the
+short-selling work spent 5 commits chasing — fixed in the same commit,
+not left for later. New `OptionsContextProvider`/`MinimalOptionsContextProvider`
+wired into `RealFeatureProvider`'s existing concurrent `_optional_blocks`
+gather. 11 new tests, including a cross-boundary regression pinning that
+an options proposal never satisfies `short_requires_stop`.
+
+**The one real bug this review caught, fixed in a follow-up commit
+(`8378cd1f`)**: the options drafter set `order_type="MARKET"` and never
+wrote a `limit_price` key into the proposal dict at all. The broker/risk
+track's executor (reviewed and merged earlier the same day) forces every
+options order to `LIMIT` regardless of what the proposal says, and reads
+`proposal.limit_price` straight into the broker layer's `LimitOrderRequest`
+with **no None-guard** — unlike its `STOP`/`STOP_LIMIT` siblings, which do
+raise on a missing price. Every real options order would have reached
+Alpaca as a limit order with no limit and failed outright. Neither track
+could have caught this testing its own half in isolation — exactly the
+failure mode the plan's cross-track verification step exists for. Fixed:
+`order_type="LIMIT"`, `limit_price=ask` (already computed and in scope
+two lines above for `estimated_notional`). New assertions in the existing
+long-call test regression-guard both fields explicitly.
+
+**`39f9f78f` — watchlist `asset_class` widening.** `String(10)` was
+already wide enough (no migration). `Literal["equity"]` →
+`Literal["equity","option"]` at the schema/store/router/TS layers;
+`WatchlistStore.add()` now actually persists the real value instead of
+hardcoding `"equity"`. Resolved a second add/add conflict in
+`approvals.py` at cherry-pick time — both tracks had independently added
+the identical 6 option-snapshot fields; kept one copy.
+
+**`0f84435d`** — a 2-line ruff cleanup, no behavior change.
+
+**`6e607c10` — option-aware UI.** Mobile `pick/[id].tsx`/`positions.tsx`,
+desktop `Positions.tsx`/`PickDetail.tsx`, and a mobile watchlist
+equity/option toggle — all reusing existing primitives (`DirectionPill`,
+`Pill`/`PlanCell`/`CheckRow`), zero new component vocabulary, every
+branch keyed off `isOption`/`contractType` rather than `side` (always
+`"BUY"` for an option). Honestly disclosed limitation: no live option
+proposal could reach the UI to screenshot yet (that needed the
+`limit_price` fix above plus the `instrument_preference` wiring still to
+come), so light/dark coverage was verified by auditing className pairs
+instead of a live render — reasonable given the actual blocker, followed
+up below.
+
+**Verified independently after cherry-pick** (2 conflicts resolved as
+above): full combined suite 667→722 passed, 9 skipped (+55 new tests,
+0 regressions, exactly matching the claimed count); ruff clean; mypy
+delta zero on every file this track touched (confirmed via `git show`
+baseline comparisons, file by file).
+
+**Left open, now unblocked:** wiring `run_council()`'s `instrument_preference`
+to a real caller (deliberately left to me by this track's own choice —
+"a product call," not theirs to make) so the feature is reachable outside
+a hand-built test state, and a live visual check of the option-aware UI
+now that a real option proposal can actually reach it. Both next.
+
 ### 2026-08-28 — `6dd0e96a` fix(engine): populate options_trading_level end-to-end at council time
 
 Second connective-tissue fix, same reasoning as the one below it: neither
