@@ -355,6 +355,82 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 ## Entries
 
+### 2026-08-28 — `8e6f98a3`+`a46756ad`+`19c54133`+`0f3728ba`+`7f6aa413`+`d727bdf1` feat(mcp_server): read/propose-only MCP server for the Alpaca hackathon
+
+New workspace member `apps/mcp_server/` — six MCP tools, every one a thin
+adapter over an already-existing service-layer function, built for
+lablab.ai's "Alpaca AI Trading Agents Hackathon" (required tech: Alpaca's
+Trading API, MCP server, CLI). Per the user's explicit decision, this
+wraps THIS APP'S OWN safe pipeline rather than Alpaca's own MCP server
+(which exposes real order-placement tools directly to an LLM) — the
+actual differentiator, not a compliance checkbox.
+
+**Tools**: `run_council_pass` (the centerpiece — runs the real
+deterministic council for a symbol and returns the full rationale;
+never executes or auto-approves), `list_positions`, `list_recent_decisions`,
+`get_scanner_status`, `get_veto_ledger` (the "here's why the risk gate
+said no" showcase — surfaces named `veto_rule` identifiers directly),
+`list_watchlist`. **Will never build, stated prominently in the code and
+README**: `place_order`, `approve_proposal`, `execute_trade`,
+`cancel_order`, `close_position` — nothing in this package reaches
+`packages/engine/risk` → `packages/broker`. Confirmed by reading every
+tool: zero broker imports, zero execution calls.
+
+**A real SDK-version finding, not an assumption**: the design brief
+(researched a day earlier) assumed `mcp.server.fastmcp.FastMCP`. The
+version `uv add "mcp[cli]"` actually resolves — confirmed independently
+in my own environment too, not just the subagent's — is `mcp==2.1.1`,
+which no longer ships that module at all; it points at
+`mcp.server.mcpserver.MCPServer` as the v2 replacement. Confirmed via a
+real client round trip over stdio (`mcp.client.Client` +
+`mcp.StdioServerParameters`, `tools/list`/`tools/call`), not just reading
+the error message. The MCP ecosystem is moving fast enough that a
+day-old web-researched assumption was already stale — worth remembering
+next time this package needs touching.
+
+**A real prompt-injection gap caught beyond the brief's own sample
+code**: `run_council_pass` calls `run_council()` directly with no
+Pydantic model in front of it, unlike the FastAPI route
+(`apps/api/app/routers/agent.py`), which validates `symbol` against
+`SYMBOL_RE` before it ever reaches a council node's LLM prompt (a
+documented channel — `f"Ticker: {state['symbol']}"` — per that route's
+own docstring). The brief's sketch code only `.upper()`-normalized the
+symbol, which would have silently reopened that hole for this tool
+specifically. Fixed with the same regex + a dedicated test
+(`test_run_council_pass_rejects_invalid_symbol`).
+
+**One fix outside the new package**: `apps/api/app/` was the one
+workspace member missing a `py.typed` marker (`broker`/`engine`/
+`trading_agents` all have one) — invisible until `mcp_server` became the
+first package to cross-import `app.*` under mypy strict. Verified myself,
+independently: removed the marker and re-ran the full-workspace mypy
+check — identical 360 errors/77 files with or without it, confirming
+it's genuinely isolated, not a source of new noise elsewhere.
+
+Also caught and correctly handled: two of the five wrapped functions
+(`decisions_list.list_decisions`, `ghost_service.build_veto_ledger`)
+don't self-guard on `USE_POSTGRES` — their routers do instead (one 404s).
+An MCP tool has no HTTP layer to raise a 404 through, so both adapters
+replicate the guard directly and return an honest empty payload plus
+`postgres_backed: false` instead of letting an exception reach an LLM
+caller mid-conversation.
+
+**Verified independently after cherry-pick**: full combined suite
+(`apps/api`+`apps/agents`+`packages/engine`+`packages/broker`+
+`apps/mcp_server`) 725→**736 passed**, 9 skipped (+11 new, 0
+regressions); `ruff check`/`ruff format --check`/`mypy` (strict) all
+clean on the new package; the `mcp==2.1.1` resolution reproduced
+independently, not just trusted from the subagent's report.
+
+**Left open, disclosed**: no `equity_resolver` wired into
+`run_council_pass` (an MCP caller has no authenticated session to
+resolve real broker equity from — a Postgres-backed run through this
+tool sizes against the synthetic-feature equity fixture, not real
+equity); the MCP Inspector's web UI was never interactively exercised
+(no browser in that sandbox) — substituted a real client-library round
+trip instead, which the subagent argued is stronger evidence than a
+manual Inspector click-through, and this review agrees.
+
 ### 2026-08-28 — `a4209592` test(agents): cross-track end-to-end proof + live UI verification — Phase A complete
 
 Closes out options trading Phase A. Two pieces:
