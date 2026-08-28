@@ -39,6 +39,11 @@ class MockRiskContextProvider:
     daily_pnl_pct: float = 0.0
     drawdown_halted: bool = False
     drawdown_halt_reason: str | None = None
+    options_trading_level: int | None = 3
+    """Defaults to 3 (Alpaca's own "spreads + long/short singles" tier —
+    see docs/OPTIONS_PLAN.md's live-account check), not None, so
+    mock-mode/CI can exercise the options path without extra wiring.
+    Override to test ``options_level_insufficient`` explicitly."""
 
     async def fetch(self, *, user_id: str | None = None) -> RiskContext:
         return RiskContext(
@@ -52,4 +57,5 @@ class MockRiskContextProvider:
             daily_pnl_pct=self.daily_pnl_pct,
             drawdown_halted=self.drawdown_halted,
             drawdown_halt_reason=self.drawdown_halt_reason,
+            options_trading_level=self.options_trading_level,
         )

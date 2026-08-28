@@ -30,6 +30,7 @@ class RawAccountState:
     cash: float
     buying_power: float
     open_positions: tuple[PortfolioPosition, ...] = ()
+    options_trading_level: int | None = None
     raw: dict[str, object] = field(default_factory=dict)
 
 
@@ -54,6 +55,11 @@ class MockBrokerPoller:
     cash: float = 100_000.0
     buying_power: float = 200_000.0
     positions: tuple[PortfolioPosition, ...] = ()
+    options_trading_level: int | None = 3
+    """Defaults to 3 (Alpaca's own "spreads + long/short singles" tier —
+    see docs/OPTIONS_PLAN.md's live-account check) rather than None, so
+    mock-mode/CI can exercise the options path without extra wiring.
+    Override to test ``options_level_insufficient`` explicitly."""
     name: str = "mock"
 
     async def get_account_state(self) -> RawAccountState:
@@ -62,6 +68,7 @@ class MockBrokerPoller:
             cash=self.cash,
             buying_power=self.buying_power,
             open_positions=tuple(self.positions),
+            options_trading_level=self.options_trading_level,
             raw={"source": "mock", "equity": self.equity},
         )
 
@@ -80,6 +87,7 @@ class AlpacaBrokerPoller:
     async def get_account_state(self) -> RawAccountState:
         equity = await self.broker.get_account_equity()
         bp = await self.broker.get_buying_power()
+        options_trading_level = await self.broker.get_options_trading_level()
         broker_positions = await self.broker.list_positions()
         positions = tuple(
             PortfolioPosition(
@@ -88,6 +96,8 @@ class AlpacaBrokerPoller:
                 avg_entry_price=p.avg_entry_price,
                 market_value=p.market_value,
                 sector=None,  # resolved in the risk rules via assets.sector_for
+                is_option=p.is_option,
+                multiplier=p.multiplier,
             )
             for p in broker_positions
         )
@@ -98,5 +108,6 @@ class AlpacaBrokerPoller:
             cash=cash,
             buying_power=bp,
             open_positions=positions,
+            options_trading_level=options_trading_level,
             raw={"source": "alpaca", "equity": equity, "buying_power": bp},
         )

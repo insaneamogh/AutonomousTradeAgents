@@ -236,10 +236,17 @@ class PositionsSnapshot(Base):
     cash: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     buying_power: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
 
-    # List of {symbol, qty, avg_entry_price, market_value, sector?}.
+    # List of {symbol, qty, avg_entry_price, market_value, sector?, is_option?, multiplier?}.
     open_positions: Mapped[list[dict]] = mapped_column(JSONB, nullable=False, default=list)
 
     daily_pnl: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
     daily_pnl_pct: Mapped[Decimal | None] = mapped_column(Numeric(6, 3), nullable=True)
+
+    options_trading_level: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    """Alpaca's account-level options approval tier (0-3), refreshed each
+    reconciler tick from ``broker.get_options_trading_level()``. Read by
+    ``PostgresRiskContextProvider`` into ``RiskContext.options_trading_level``
+    — the council-time counterpart to the executor's own live broker call
+    for the same value."""
 
     raw: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

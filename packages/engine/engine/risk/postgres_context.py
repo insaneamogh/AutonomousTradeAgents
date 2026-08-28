@@ -57,6 +57,8 @@ def _parse_positions(rows: list[dict]) -> list[PortfolioPosition]:
                     avg_entry_price=float(r.get("avg_entry_price", 0) or 0),
                     market_value=float(r.get("market_value", 0) or 0),
                     sector=r.get("sector"),
+                    is_option=bool(r.get("is_option", False)),
+                    multiplier=int(r.get("multiplier", 1) or 1),
                 )
             )
         except (TypeError, ValueError):
@@ -231,6 +233,7 @@ class PostgresRiskContextProvider:
             drawdown_halted=bool(breaker and breaker.status == "halted"),
             drawdown_halt_reason=(breaker.halt_reason if breaker else None),
             drawdown_halted_at=(breaker.halted_at.date() if breaker and breaker.halted_at else None),
+            options_trading_level=snapshot.options_trading_level,
         )
 
     @staticmethod

@@ -52,6 +52,57 @@ async def test_mock_poller_defaults_to_healthy_account() -> None:
     assert state.open_positions == ()
 
 
+async def test_mock_poller_defaults_options_trading_level_to_3() -> None:
+    """Defaults to 3 (not None) so mock-mode/CI can exercise the options
+    path without extra wiring — see docs/OPTIONS_PLAN.md's live-account
+    check for why 3 is the realistic value."""
+    state = await MockBrokerPoller().get_account_state()
+    assert state.options_trading_level == 3
+
+
+async def test_mock_poller_options_trading_level_is_overridable() -> None:
+    state = await MockBrokerPoller(options_trading_level=0).get_account_state()
+    assert state.options_trading_level == 0
+
+
+async def test_alpaca_poller_fetches_options_trading_level_and_position_flags() -> None:
+    """AlpacaBrokerPoller must call get_options_trading_level() and thread
+    is_option/multiplier onto PortfolioPosition — without this,
+    RiskContext.options_trading_level is always None at council time and
+    options_level_insufficient vetoes every options proposal
+    unconditionally, regardless of the real account's approval tier."""
+    from broker.types import Position
+    from engine.reconciler.poller import AlpacaBrokerPoller
+
+    broker = MagicMock()
+    broker.get_account_equity = AsyncMock(return_value=50_000.0)
+    broker.get_buying_power = AsyncMock(return_value=100_000.0)
+    broker.get_options_trading_level = AsyncMock(return_value=2)
+    broker.list_positions = AsyncMock(
+        return_value=[
+            Position(
+                symbol="AAPL260828C00250000",
+                qty=2,
+                avg_entry_price=3.20,
+                market_value=640.0,
+                unrealized_pl=0.0,
+                unrealized_pl_pct=0.0,
+                multiplier=100,
+                is_option=True,
+            ),
+        ]
+    )
+
+    poller = AlpacaBrokerPoller(broker=broker)
+    state = await poller.get_account_state()
+
+    assert state.options_trading_level == 2
+    assert len(state.open_positions) == 1
+    pos = state.open_positions[0]
+    assert pos.is_option is True
+    assert pos.multiplier == 100
+
+
 # ─────────────────────────────────────────────────────────────────────
 # evaluate_breaker — pure logic via mocked sessions
 # ─────────────────────────────────────────────────────────────────────

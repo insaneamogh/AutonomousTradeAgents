@@ -50,11 +50,14 @@ async def write_snapshot(
                 "avg_entry_price": p.avg_entry_price,
                 "market_value": p.market_value,
                 "sector": p.sector,
+                "is_option": p.is_option,
+                "multiplier": p.multiplier,
             }
             for p in state.open_positions
         ],
         daily_pnl=Decimal(str(round(daily_pnl, 2))),
         daily_pnl_pct=Decimal(str(round(daily_pnl_pct, 3))),
+        options_trading_level=state.options_trading_level,
         raw=dict(state.raw),
     )
     session.add(snapshot)
