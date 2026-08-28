@@ -355,6 +355,53 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 ## Entries
 
+### 2026-08-28 — `cbe4bec6` fix(agents): drafter's options chain fetch now calls the real endpoint instead of a phantom one
+
+**Layer 3 of 3 — options trading is no longer inert.** This is the
+behavior-changing commit: `trading_agents.nodes.drafter._fetch_option_candidates`
+now delegates to `engine.options.contracts.fetch_option_candidates`
+(layer 2, which calls `broker.alpaca.list_option_chain_quotes` — layer 1,
+the correct chain-SNAPSHOT endpoint) instead of the broken direct call to
+`list_option_contracts` with a made-up field-mapping adapter
+(`_to_contract_quote`, deleted). See the two build-log entries immediately
+below for the full root-cause story; short version: the old code called
+the wrong Alpaca client entirely and read attribute names that don't
+exist on the real response, so every real options run silently HELD with
+`no_candidates` forever, regardless of signal quality — invisible across
+736 passing tests because none of them exercised a real Alpaca shape.
+
+**The new test that actually proves this** —
+`test_drafter_options_path_end_to_end_through_real_alpaca_shapes` in
+`apps/agents/tests/test_options_drafter.py` — is the one every other test
+in that file (and the ones removed today) could not be: it does **not**
+monkeypatch `_fetch_option_candidates`. It patches only the two real
+Alpaca SDK client classes (`OptionHistoricalDataClient`, `TradingClient`)
+with realistic fixtures built via `model_construct` on the real pydantic
+models, and drives the actual, unmocked `_fetch_option_candidates ->
+engine.options.contracts.fetch_option_candidates -> broker.alpaca` path.
+Asserts a real `BUY` proposal comes out of `drafter_node` with the
+correct `occ_symbol`/`contract_type`/`strike`/`bid`/`ask`/
+`implied_volatility`/`open_interest`/`volume` — everything that
+`OccSymbol.try_parse` and the two merged Alpaca calls were supposed to
+produce, genuinely produced. (Note: `delta` isn't asserted here — it's
+used only transiently by `select_contract`'s delta-band filter and was
+never a field on the persisted `OptionLegDetails`/proposal; confirmed by
+reading that dataclass directly rather than assuming.)
+
+Every pre-existing test in this file is unchanged and still passes —
+they're valid, focused coverage of `select_contract`'s own logic in
+isolation; they just stop being the *only* coverage of the Alpaca
+boundary. Verified: full `apps/agents` suite 95→**96** (95 passed + 1
+skipped), `ruff check` clean, `mypy` delta zero on the touched region
+(the file already carried pre-existing, unrelated mypy debt — confirmed
+via the actual diff hunks that none of the reported errors fall inside
+lines this commit touched).
+
+**Options trading Phase A can now genuinely reach a real Alpaca account.**
+Next up per the approved plan: the realized-vol-vs-IV sanity check
+(`docs/OPTIONS_PLAN.md` §2.2's deferred second half), then an audit pass
+over the remaining options test files for the same blind-spot pattern.
+
 ### 2026-08-28 — `c6ebc324` feat(engine): add options/contracts.fetch_option_candidates — chain fetch + OI merge + ContractQuote mapping
 
 Layer 2 of 3 fixing the options chain-fetch inertness bug (see the layer-1
