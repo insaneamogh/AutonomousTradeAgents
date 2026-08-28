@@ -238,6 +238,15 @@ async def test_options_drafter_produces_long_call_with_is_option_true(
     assert p["multiplier"] == 100
     assert p["side"] == "BUY"
     assert p["qty"] >= 1
+    # Always LIMIT with a real limit_price — never MARKET, and never a
+    # LIMIT order with no price. The broker layer builds a LimitOrderRequest
+    # straight off limit_price with no None-guard (unlike STOP/STOP_LIMIT,
+    # which do raise on a missing price), so an unset value here would
+    # reach Alpaca as an invalid order — this regression-guards exactly
+    # that bug.
+    assert p["order_type"] == "LIMIT"
+    assert p["limit_price"] == p["ask"]
+    assert p["limit_price"] is not None
     # Alpaca has no options bracket — must not promise an exit plan it
     # cannot keep.
     assert p["stop_loss"] is None

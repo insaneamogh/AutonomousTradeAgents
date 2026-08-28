@@ -426,7 +426,18 @@ async def _draft_option_proposal(
             "direction": direction,
             "opens_short": False,
             "qty": sizing.qty,
-            "order_type": "MARKET",
+            # Always LIMIT, never MARKET — docs/OPTIONS_PLAN.md explicitly
+            # recommends against market orders on a 15-min-delayed
+            # indicative feed, and the executor forces this regardless of
+            # what's written here. limit_price is NOT optional for an
+            # options order: the broker layer builds a LimitOrderRequest
+            # straight off this field with no None-guard (unlike its
+            # STOP/STOP_LIMIT siblings, which do raise on a missing
+            # price) — an unset limit_price here would reach Alpaca as a
+            # limit order with no limit, which fails outright. `ask` is
+            # the quoted premium this contract was selected/sized against.
+            "order_type": "LIMIT",
+            "limit_price": ask,
             "estimated_notional": estimated_notional,
             # Alpaca has no bracket for options (docs/OPTIONS_PLAN.md §3) —
             # populating either would promise an exit plan this order type
