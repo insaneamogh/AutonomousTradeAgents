@@ -21,7 +21,7 @@ import asyncio
 import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -34,6 +34,7 @@ from app.services.council.mock_store import MockStore
 from app.services.orders import executor as executor_mod
 from app.services.orders.execution_claim import reset_execution_claims_for_tests
 from app.services.orders.executor import RiskInputs, execute_proposal
+from broker.types import Side as BrokerSide
 from engine.risk import (
     DbRiskState,
     PortfolioPosition,
@@ -65,6 +66,8 @@ class _FakePosition:
     market_value: float
     unrealized_pl: float = 0.0
     unrealized_pl_pct: float = 0.0
+    multiplier: int = 1
+    is_option: bool = False
 
 
 @dataclass
@@ -89,12 +92,16 @@ class _FakeBroker:
     positions: list[Any] = field(default_factory=list)
     placed: list[_FakeOrder] = field(default_factory=list)
     place_delay: float = 0.0
+    options_trading_level: int | None = None
 
     async def get_account_equity(self) -> float:
         return self.equity
 
     async def get_buying_power(self) -> float:
         return self.buying_power
+
+    async def get_options_trading_level(self) -> int | None:
+        return self.options_trading_level
 
     async def list_positions(self) -> list[Any]:
         return list(self.positions)
@@ -437,6 +444,84 @@ def test_live_agent_buy_without_bracket_is_refused(
         assert result.risk_blocked is True
         assert result.risk_veto_rule == "bracket_legs_required"
         assert broker.placed == []
+
+    asyncio.run(run())
+
+
+def _option_proposal(
+    *,
+    occ_symbol: str = "AAPL260901C00250000",
+    qty: int = 1,
+    limit_price: float = 2.50,
+    conviction: int = 4,
+) -> ApprovalProposalDto:
+    # Far enough out that this stays inside the [7, 60] DTE window no
+    # matter which day this test actually runs on.
+    expiry = (datetime.now(UTC) + timedelta(days=45)).date()
+    return ApprovalProposalDto(
+        id=f"agent-test-{occ_symbol.lower()}",
+        symbol=occ_symbol,
+        side="BUY",
+        is_option=True,
+        option_action="buy_to_open",
+        occ_symbol=occ_symbol,
+        strike=250.0,
+        expiry_date=expiry,
+        contract_type="call",
+        multiplier=100,
+        open_interest=500,
+        volume=100,
+        bid=2.45,
+        ask=2.55,
+        implied_volatility=0.28,
+        days_to_earnings=None,
+        qty=qty,
+        order_type="LIMIT",
+        limit_price=limit_price,
+        estimated_notional=qty * limit_price * 100,
+        rationale="test",
+        bull_case="test bull",
+        bear_case="test bear",
+        risk_level=2,
+        conviction_level=conviction,
+        proposed_at=datetime.now(UTC),
+    )
+
+
+def test_live_agent_options_buy_without_bracket_is_not_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The options mirror of test_live_agent_buy_without_bracket_is_refused
+    above: Alpaca cannot bracket a single-leg option order at all — no
+    broker-side stop/target is ever possible for one — so the "unprotected
+    live order is refused" gate (built for the short-selling feature) must
+    NOT apply to options. Unfixed, this branch would refuse every live
+    options order, always, unconditionally, since an option proposal never
+    carries stop_loss/target_price in the first place.
+    """
+
+    async def run() -> None:
+        monkeypatch.setenv("TRADING_MODE", "live")
+        monkeypatch.setenv("LIVE_TRADING_ENABLED", "1")
+        monkeypatch.setenv("ALLOW_OPTIONS", "1")
+        broker = _FakeBroker(equity=100_000.0, options_trading_level=3)
+        _patch_broker(monkeypatch, broker, is_paper=False)
+        _patch_risk_inputs(monkeypatch, RiskInputs(council_confidence=0.9))
+
+        store = MockStore()
+        dto = _option_proposal()
+        await store.append_pending(dto)
+
+        result = await execute_proposal(
+            user_id=USER_ID, proposal_id=dto.id, store=store, exit_mode="agent"
+        )
+
+        assert result.risk_blocked is False
+        assert result.risk_veto_rule != "bracket_legs_required"
+        assert len(broker.placed) == 1
+        placed = broker.placed[0]
+        assert placed.side == BrokerSide.BUY_TO_OPEN
+        assert "options_agent_managed_exit_no_broker_bracket" in result.informational_flags
 
     asyncio.run(run())
 

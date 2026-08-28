@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import date as _date
 from typing import TYPE_CHECKING
 
 from app.schemas.approvals import ApprovalProposalDto
@@ -63,10 +64,12 @@ from app.services.orders.paper_broker import get_paper_store, trading_mode
 # load. ``broker.alpaca`` pulls in alpaca-py which may not be uv-sync'd
 # yet, so the AlpacaBroker reference is type-only here + via the lazy
 # import in app.services.broker.broker_use.
-from broker.types import OrderRequest, OrderType, Side, TimeInForce
+from broker.types import OccSymbol, OrderRequest, OrderType, Side, TimeInForce
 from engine.env import env_flag
+from engine.options.contracts import contract_type_of, to_risk_proposal
 from engine.risk import (
     DbRiskState,
+    OptionLegDetails,
     PortfolioPosition,
     RiskCaps,
     RiskContext,
@@ -142,6 +145,29 @@ async def execute_proposal(
                 risk_caps=risk_caps, exit_mode=exit_mode,
             )
         except BrokerUnavailableError as exc:
+            if proposal.is_option:
+                # The in-memory simulator has no concept of contracts,
+                # multiplier, or expiry — it books equity-shaped fills
+                # only. Falling back to it for an option would silently
+                # trade the wrong instrument shape, so options proposals
+                # never fall back: refuse with a named, risk-blocked
+                # response instead.
+                logger.info(
+                    "executor[paper]: no usable broker connection (%s) — "
+                    "refusing the options order rather than falling back "
+                    "to the equity-only in-memory simulator", exc,
+                )
+                return ExecuteResponse(
+                    order=None,
+                    risk_blocked=True,
+                    risk_reason=(
+                        "Options orders require a connected Alpaca account — "
+                        "the in-memory paper simulator cannot model contracts, "
+                        "multiplier, or expiry. Connect a broker to trade options."
+                    ),
+                    risk_veto_rule="options_requires_broker_connection",
+                    informational_flags=[],
+                )
             logger.info(
                 "executor[paper]: no usable broker connection (%s) — "
                 "falling back to the in-memory simulator", exc,
@@ -204,43 +230,67 @@ async def _execute_via_broker(
         # A SELL-to-open (short) needs and gets a bracket exactly like a
         # BUY-to-open (long) — the inverted geometry (stop above entry) is
         # already correct by the time it reaches here (engine.sizing.atr).
-        use_bracket = (
-            exit_mode == "agent"
-            and proposal.stop_loss is not None
-            and proposal.target_price is not None
-        )
-        if exit_mode == "agent" and not use_bracket:
-            if not conn.is_paper:
-                # Real money: REFUSE rather than silently demote. Without
-                # broker-side legs the position manager's time-stop is the
-                # only exit, and it dies with our process — the approval
-                # card promised a stop the broker would honor. This applies
-                # to a short exactly as much as a long: an unprotected live
-                # short has UNBOUNDED downside with nothing watching it.
+        #
+        # Options are structurally excluded from all of this: Alpaca cannot
+        # bracket a single-leg option order at all — OrderClass only
+        # allows simple/mleg for us_option (see broker.alpaca's
+        # OptionBracketNotSupportedError) — so use_bracket is never even
+        # computed as if a broker bracket were possible, and the
+        # live-refusal check below (added for the short-selling feature:
+        # "an unprotected live order is refused, not silently demoted")
+        # does not apply — that refusal assumes a broker bracket was an
+        # available alternative, which for options it structurally is
+        # not. Unchanged, this code would refuse every live options order,
+        # always, unconditionally. This is a confirmed, deliberate Phase A
+        # trade-off (no broker-side stop-loss safety net if the app
+        # process is down — mitigated by tight premium-at-risk sizing,
+        # since the max loss is already bounded and known at entry, plus
+        # the mandatory expiry-day sweep in position_manager.py).
+        extra_informational_flags: list[str] = []
+        if proposal.is_option:
+            use_bracket = False
+            if exit_mode == "agent":
+                extra_informational_flags.append(
+                    "options_agent_managed_exit_no_broker_bracket"
+                )
+        else:
+            use_bracket = (
+                exit_mode == "agent"
+                and proposal.stop_loss is not None
+                and proposal.target_price is not None
+            )
+            if exit_mode == "agent" and not use_bracket:
+                if not conn.is_paper:
+                    # Real money: REFUSE rather than silently demote. Without
+                    # broker-side legs the position manager's time-stop is the
+                    # only exit, and it dies with our process — the approval
+                    # card promised a stop the broker would honor. This applies
+                    # to a short exactly as much as a long: an unprotected live
+                    # short has UNBOUNDED downside with nothing watching it.
+                    logger.warning(
+                        "executor: live agent-mode %s %s BLOCKED — no "
+                        "stop_loss/target_price to bracket with.",
+                        proposal.side, proposal.symbol,
+                    )
+                    return ExecuteResponse(
+                        order=None,
+                        risk_blocked=True,
+                        risk_reason=(
+                            "Agent-managed entry has no stop-loss/target to place "
+                            "as broker-side protective legs. Live orders are not "
+                            "placed unprotected — re-run the council, or approve "
+                            "with exit_mode='manual' to own the close yourself."
+                        ),
+                        risk_veto_rule="bracket_legs_required",
+                        informational_flags=list(risk_decision.informational_flags),
+                    )
+                # Paper: warn only, so demos on an incomplete proposal still run.
                 logger.warning(
-                    "executor: live agent-mode %s %s BLOCKED — no "
-                    "stop_loss/target_price to bracket with.",
+                    "executor[paper]: agent-mode %s %s placed WITHOUT a bracket "
+                    "(missing stop_loss/target_price) — broker-side protection "
+                    "absent; relying on the time-stop only.",
                     proposal.side, proposal.symbol,
                 )
-                return ExecuteResponse(
-                    order=None,
-                    risk_blocked=True,
-                    risk_reason=(
-                        "Agent-managed entry has no stop-loss/target to place "
-                        "as broker-side protective legs. Live orders are not "
-                        "placed unprotected — re-run the council, or approve "
-                        "with exit_mode='manual' to own the close yourself."
-                    ),
-                    risk_veto_rule="bracket_legs_required",
-                    informational_flags=list(risk_decision.informational_flags),
-                )
-            # Paper: warn only, so demos on an incomplete proposal still run.
-            logger.warning(
-                "executor[paper]: agent-mode %s %s placed WITHOUT a bracket "
-                "(missing stop_loss/target_price) — broker-side protection "
-                "absent; relying on the time-stop only.",
-                proposal.side, proposal.symbol,
-            )
 
         # 3. Claim the proposal BEFORE touching the broker. Two concurrent
         # approvals both found it pending; exactly one may place an order.
@@ -294,9 +344,22 @@ async def _execute_via_broker(
             order = await broker.place_order(
                 OrderRequest(
                     symbol=proposal.symbol,
-                    side=Side(proposal.side),
+                    side=_broker_side_for(proposal),
                     qty=adjusted_qty,
-                    order_type=OrderType.MARKET if proposal.order_type == "MARKET" else OrderType.LIMIT,
+                    # Options are ALWAYS priced/executed as LIMIT, never
+                    # MARKET — this repo's own docs/OPTIONS_PLAN.md
+                    # explicitly recommends against market orders on a
+                    # 15-min-delayed indicative feed. Overrides whatever
+                    # proposal.order_type says for an option.
+                    order_type=(
+                        OrderType.LIMIT
+                        if proposal.is_option
+                        else (
+                            OrderType.MARKET
+                            if proposal.order_type == "MARKET"
+                            else OrderType.LIMIT
+                        )
+                    ),
                     limit_price=proposal.limit_price,
                     time_in_force=TimeInForce.GTC if use_bracket else TimeInForce.DAY,
                     client_order_id=client_order_id,
@@ -361,7 +424,7 @@ async def _execute_via_broker(
         broker_order_id=order.broker_order_id,
         client_order_id=order.client_order_id or _client_order_id_for(proposal.id),
         symbol=order.symbol,
-        side=order.side.value if hasattr(order.side, "value") else str(order.side),
+        side=_generic_side(order.side),
         qty=order.qty,
         requested_qty=proposal.qty,
         order_type=proposal.order_type,
@@ -372,7 +435,7 @@ async def _execute_via_broker(
         is_paper=conn.is_paper,
         submitted_at=order.submitted_at,
         risk_reason="risk re-eval passed",
-        informational_flags=list(risk_decision.informational_flags),
+        informational_flags=list(risk_decision.informational_flags) + extra_informational_flags,
     )
 
 
@@ -606,12 +669,15 @@ async def _build_risk_context(broker: "BrokerInterface", *, user_id: str) -> Ris
             avg_entry_price=p.avg_entry_price,
             market_value=p.market_value,
             sector=sector_for(p.symbol),
+            is_option=p.is_option,
+            multiplier=p.multiplier,
         )
         for p in broker_positions
     )
     cash = max(0.0, equity - sum(p.market_value for p in positions))
 
     db_state = await _load_db_state_or_fail(user_id, equity)
+    options_trading_level = await broker.get_options_trading_level()
 
     return RiskContext(
         account_equity=equity,
@@ -625,6 +691,7 @@ async def _build_risk_context(broker: "BrokerInterface", *, user_id: str) -> Ris
         drawdown_halted=db_state.drawdown_halted,
         drawdown_halt_reason=db_state.drawdown_halt_reason,
         drawdown_halted_at=db_state.drawdown_halted_at,
+        options_trading_level=options_trading_level,
     )
 
 
@@ -719,7 +786,6 @@ def _re_run_risk(
     regulatory rules gate on.
     """
     inputs = inputs or RiskInputs()
-    last_price = proposal.estimated_notional / max(proposal.qty, 1)
     confidence = (
         inputs.council_confidence
         if inputs.council_confidence is not None
@@ -728,6 +794,12 @@ def _re_run_risk(
         # rows predate persisting the real value; load_risk_inputs logs it.
         else proposal.conviction_level / 5.0
     )
+
+    if proposal.is_option:
+        risk_proposal: RiskProposal = _option_risk_proposal(proposal, confidence, inputs)
+        return evaluate(risk_proposal, context, caps, specialists=inputs.specialists)
+
+    last_price = proposal.estimated_notional / max(proposal.qty, 1)
     risk_proposal = RiskProposal(
         symbol=proposal.symbol,
         side=RiskSide(proposal.side),
@@ -746,6 +818,113 @@ def _re_run_risk(
         easy_to_borrow=proposal.easy_to_borrow,
     )
     return evaluate(risk_proposal, context, caps, specialists=inputs.specialists)
+
+
+def _option_risk_proposal(
+    proposal: ApprovalProposalDto, confidence: float, inputs: RiskInputs
+) -> RiskProposal:
+    """Build the options ``RiskProposal`` for the executor's re-risk-check.
+
+    Unlike the equity path, the premium comes from ``proposal.limit_price``
+    — the authoritative per-contract premium options are always
+    priced/executed at (see the LIMIT-only order construction in
+    ``_execute_via_broker``) — never a reverse-computed
+    ``estimated_notional / qty``, which is wrong for options twice over: it
+    is a per-SHARE equity price, not a per-CONTRACT premium, and it carries
+    no multiplier. Falls back to ``proposal.ask`` (the last quoted ask at
+    draft time) only if a limit price was somehow never set.
+
+    Every ``OptionLegDetails`` field is read straight off the persisted DTO
+    (which mirrors that type field-for-field — see
+    ``ApprovalProposalDto``'s options block) rather than re-fetching the
+    chain: the executor's re-risk-check re-verifies against what was
+    ALREADY known at drafting time, the same "re-run against the same
+    inputs the council used" contract ``load_risk_inputs`` documents for
+    confidence/specialist scores.
+    """
+    occ = proposal.occ_symbol or proposal.symbol
+    parsed = OccSymbol.try_parse(occ)
+    action = proposal.option_action or "buy_to_open"
+
+    option = OptionLegDetails(
+        underlying_symbol=parsed.underlying if parsed is not None else occ,
+        occ_symbol=occ,
+        contract_type=(
+            proposal.contract_type
+            if proposal.contract_type is not None
+            else contract_type_of(parsed.contract_type if parsed is not None else "call")
+        ),
+        strike=(
+            proposal.strike
+            if proposal.strike is not None
+            else (parsed.strike if parsed is not None else 0.0)
+        ),
+        expiry=(
+            proposal.expiry_date
+            if proposal.expiry_date is not None
+            else (parsed.expiry if parsed is not None else _date.today())
+        ),
+        multiplier=proposal.multiplier or 100,
+        action=action,
+        open_interest=proposal.open_interest,
+        volume=proposal.volume,
+        bid=proposal.bid,
+        ask=proposal.ask,
+        implied_volatility=proposal.implied_volatility,
+        days_to_earnings=proposal.days_to_earnings,
+    )
+    premium_per_contract = (
+        proposal.limit_price if proposal.limit_price is not None else (proposal.ask or 0.0)
+    )
+    return to_risk_proposal(
+        symbol=occ,
+        side=RiskSide.BUY if action == "buy_to_open" else RiskSide.SELL,
+        qty=proposal.qty,
+        estimated_notional=proposal.estimated_notional,
+        last_price=premium_per_contract,
+        confidence=confidence,
+        option=option,
+        closes_intraday_position=inputs.closes_intraday_position,
+        is_intraday=inputs.is_intraday,
+    )
+
+
+def _broker_side_for(proposal: ApprovalProposalDto) -> Side:
+    """The broker-wire ``Side`` for this proposal.
+
+    Options use the two options-only values (``BUY_TO_OPEN``/
+    ``SELL_TO_CLOSE``), keyed off ``option_action`` — not the bare equity
+    ``Side(proposal.side)`` mapping, which only knows BUY/SELL. Alpaca
+    needs the open/close nuance on the wire (it drives ``position_intent``
+    — see ``broker.alpaca``). This function does not itself validate that
+    ``option_action`` is one of the two Phase A values — a risk-blocked
+    proposal never reaches here, and ``naked_short_forbidden`` is what
+    guarantees the value at the risk gate, unconditionally.
+    """
+    if proposal.is_option:
+        return (
+            Side.BUY_TO_OPEN if proposal.option_action == "buy_to_open" else Side.SELL_TO_CLOSE
+        )
+    return Side(proposal.side)
+
+
+_GENERIC_SIDE = {
+    "BUY": "BUY",
+    "SELL": "SELL",
+    "BUY_TO_OPEN": "BUY",
+    "SELL_TO_CLOSE": "SELL",
+}
+
+
+def _generic_side(side: object) -> str:
+    """Collapse a broker-wire ``Side`` (BUY/SELL/BUY_TO_OPEN/SELL_TO_CLOSE)
+    down to the plain BUY/SELL the ``OrderResponse`` DTO's ``side`` field
+    is typed to — mirrors ``orders.side``'s own "stays plain BUY/SELL, the
+    open/close nuance lives elsewhere" contract (see the options
+    migration's docstring) at the API response boundary.
+    """
+    raw = side.value if hasattr(side, "value") else str(side)
+    return _GENERIC_SIDE.get(raw, raw)
 
 
 def _client_order_id_for(proposal_id: str) -> str:

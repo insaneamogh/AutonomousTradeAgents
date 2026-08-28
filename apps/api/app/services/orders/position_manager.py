@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import desc, select, update
@@ -43,6 +43,8 @@ from sqlalchemy import desc, select, update
 from app.services.broker.broker_use import with_broker_client
 from app.services.orders.executor import _build_risk_context
 from app.services.orders.order_store import persist_linked_order_submit, persist_order_result
+from engine.options.expiry import dte
+from engine.risk import RiskCaps
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -52,6 +54,7 @@ logger = logging.getLogger("api.position_manager")
 _CLOSE_REASON_LABEL = {
     "agent_time": "time stop reached",
     "agent_signal": "council flipped to SELL",
+    "agent_expiry": "closing ahead of expiry",
 }
 
 # Mirrors the drafter / ghost evaluator horizon map — used only when an
@@ -111,6 +114,113 @@ async def manage_positions_for_user(
             except Exception:
                 logger.exception(
                     "position_manager: close failed for %s (%s)",
+                    decision.symbol, decision.id,
+                )
+                continue
+            if initiated:
+                closes += 1
+        return closes
+
+
+def _coerce_expiry_date(value: object) -> date | None:
+    """Best-effort parse of a persisted proposal's expiry field — JSONB
+    round-trips a Python ``date`` as an ISO-8601 string. Returns None on
+    anything unparseable rather than raising, since a malformed/missing
+    expiry must not crash the sweep for every OTHER user's positions."""
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value[:10])
+        except ValueError:
+            return None
+    return None
+
+
+async def sweep_expiring_options_for_user(
+    *,
+    user_id: str,
+    session_factory: async_sessionmaker,
+    caps: RiskCaps | None = None,
+) -> int:
+    """One pass: force-close every agent-managed OPTION position within
+    ``caps.options_expiry_sweep_dte`` days of expiry.
+
+    Automatic by default, not a surfaced decision — matches "deterministic
+    code disposes." Per docs/OPTIONS_PLAN.md §2.6, an open option
+    approaching expiry must never be left to Alpaca's own auto-exercise (a
+    $500 option silently becoming a $30,000 share position overnight) or
+    to simply expire worthless through inattention. Silence must not be a
+    decision.
+
+    Mirrors ``manage_positions_for_user``'s exact shape: same
+    session-per-user pattern, same re-entrance guard
+    (``_has_in_flight_close``), same ``_close_position`` path — only the
+    exit condition (DTE, not time-stop/signal) and the close reason
+    (``"agent_expiry"``) differ. Deliberately does NOT reuse
+    ``_exit_reason`` — expiry is an unconditional trigger, not one more
+    condition in that function's time-stop/signal-exit branching.
+    """
+    from engine.db.models import AgentDecision
+
+    caps = caps or RiskCaps.from_env()
+    uid = uuid.UUID(user_id)
+    now = datetime.now(UTC)
+
+    async with session_factory() as session:
+        stmt = (
+            select(AgentDecision)
+            .where(AgentDecision.user_id == uid)
+            .where(AgentDecision.user_response == "approved")
+            .where(AgentDecision.fill_qty.is_not(None))
+            .where(AgentDecision.closed_at.is_(None))
+            .where(AgentDecision.exit_mode == "agent")
+        )
+        open_decisions = (await session.execute(stmt)).scalars().all()
+
+        if not open_decisions:
+            return 0
+
+        closes = 0
+        for decision in open_decisions:
+            proposal = decision.proposal or {}
+            is_option = bool(proposal.get("isOption", proposal.get("is_option", False)))
+            if not is_option:
+                continue
+
+            expiry = _coerce_expiry_date(
+                proposal.get("expiryDate", proposal.get("expiry_date"))
+            )
+            if expiry is None:
+                logger.warning(
+                    "sweep_expiring_options_for_user: %s (%s) is flagged "
+                    "is_option but has no parseable expiry — skipping the "
+                    "sweep check rather than closing blind.",
+                    decision.symbol, decision.id,
+                )
+                continue
+
+            if dte(expiry, now) > caps.options_expiry_sweep_dte:
+                continue
+
+            if await _has_in_flight_close(session, decision.id):
+                logger.debug(
+                    "sweep_expiring_options_for_user: close already in "
+                    "flight for %s (%s) — skipping",
+                    decision.symbol, decision.id,
+                )
+                continue
+
+            try:
+                initiated = await _close_position(
+                    session_factory,
+                    user_id=user_id,
+                    decision=decision,
+                    reason="agent_expiry",
+                )
+            except Exception:
+                logger.exception(
+                    "sweep_expiring_options_for_user: close failed for %s (%s)",
                     decision.symbol, decision.id,
                 )
                 continue
@@ -305,7 +415,7 @@ async def _close_position(
     decision,
     reason: str,
 ) -> bool:
-    """Risk-gate → cancel resting legs → market order → persist → notify.
+    """Risk-gate → cancel resting legs → order → persist → notify.
 
     The close side is derived from the HELD position, never assumed: a
     long (positive qty) closes with a SELL, a short (negative qty) closes
@@ -317,9 +427,27 @@ async def _close_position(
     ``shortable``/``easy_to_borrow``). The observable failure was worse than
     silent: a short could never be closed through this path AT ALL, agent
     or manual — every attempt logged "close VETOED" forever.
+
+    An OPTION position closes on its own branch, mirroring the shape of
+    that same short-side fix: Phase A never holds a short option leg to
+    cover, so the broker side is always SELL_TO_CLOSE, never a "buy to
+    cover"; the order is always LIMIT (never MARKET — docs/OPTIONS_PLAN.md
+    explicitly recommends against market orders on a 15-min-delayed
+    indicative feed), priced off the freshly-fetched broker position's own
+    mark — ``_build_risk_context`` just called ``broker.list_positions()``
+    moments earlier, which is as fresh a quote as this codebase has for a
+    position's current value, the same source the equity branch above
+    already uses for its own ``last_price``.
+
+    ``orders.side`` itself always stays plain "BUY"/"SELL" (the DB column
+    is 4 chars wide and pre-dates options) — the open/close nuance for an
+    options order lives in the separate ``option_action`` column, not in
+    ``side``. The BROKER-wire side (``Side.SELL_TO_CLOSE``) is a distinct
+    value from the DB-column side ("SELL") for exactly this reason.
     """
-    from broker.types import OrderRequest, OrderType, Side, TimeInForce
-    from engine.risk import RiskProposal, evaluate
+    from broker.types import OccSymbol, OrderRequest, OrderType, Side, TimeInForce
+    from engine.options.contracts import contract_type_of, to_risk_proposal
+    from engine.risk import OptionLegDetails, RiskProposal, evaluate
     from engine.risk import Side as RiskSide
 
     qty = int(decision.fill_qty or 0)
@@ -327,6 +455,10 @@ async def _close_position(
         return False
     symbol = decision.symbol.upper()
     client_order_id = f"agent-close-{decision.id}"
+    # getattr, not decision.proposal — some callers (older fixtures, a
+    # minimal decision-like object) may not carry a proposal attribute at
+    # all; treat that exactly like an empty proposal rather than crashing.
+    stored_proposal = getattr(decision, "proposal", None) or {}
 
     async with with_broker_client(user_id, broker="alpaca") as (broker, conn):
         risk_ctx = await _build_risk_context(broker, user_id=user_id)
@@ -337,26 +469,70 @@ async def _close_position(
             ),
             None,
         )
-        is_short = held is not None and held.qty < 0
-        close_side = RiskSide.BUY if is_short else RiskSide.SELL
-        broker_close_side = Side.BUY if is_short else Side.SELL
-        last_price = (
-            held.market_value / held.qty
-            if held is not None
-            else (float(decision.fill_avg_price or 0) or 1.0)
+        is_option = held.is_option if held is not None else bool(
+            stored_proposal.get("isOption", stored_proposal.get("is_option", False))
         )
-        risk_decision = evaluate(
-            RiskProposal(
+        multiplier = 1
+
+        if is_option:
+            multiplier = (
+                held.multiplier if held is not None
+                else int(stored_proposal.get("multiplier", 1) or 1)
+            )
+            db_side = "SELL"
+            broker_close_side = Side.SELL_TO_CLOSE
+            order_type = OrderType.LIMIT
+            last_price = (
+                held.market_value / (held.qty * multiplier)
+                if held is not None and held.qty != 0
+                else (float(decision.fill_avg_price or 0) or 1.0)
+            )
+            occ = OccSymbol.try_parse(symbol)
+            option = OptionLegDetails(
+                underlying_symbol=occ.underlying if occ is not None else symbol,
+                occ_symbol=symbol,
+                contract_type=(
+                    contract_type_of(occ.contract_type) if occ is not None
+                    else contract_type_of(str(stored_proposal.get("contractType", "call")))
+                ),
+                strike=(
+                    occ.strike if occ is not None
+                    else float(stored_proposal.get("strike", 0.0) or 0.0)
+                ),
+                expiry=occ.expiry if occ is not None else date.today(),
+                multiplier=multiplier,
+                action="sell_to_close",
+            )
+            risk_proposal: RiskProposal = to_risk_proposal(
+                symbol=symbol,
+                side=RiskSide.SELL,
+                qty=qty,
+                estimated_notional=round(qty * last_price * multiplier, 2),
+                last_price=last_price,
+                confidence=1.0,  # exits aren't conviction-gated
+                option=option,
+            )
+        else:
+            is_short = held is not None and held.qty < 0
+            close_side = RiskSide.BUY if is_short else RiskSide.SELL
+            broker_close_side = Side.BUY if is_short else Side.SELL
+            db_side = broker_close_side.value
+            order_type = OrderType.MARKET
+            last_price = (
+                held.market_value / held.qty
+                if held is not None
+                else (float(decision.fill_avg_price or 0) or 1.0)
+            )
+            risk_proposal = RiskProposal(
                 symbol=symbol,
                 side=close_side,
                 qty=qty,
                 estimated_notional=round(qty * last_price, 2),
                 last_price=last_price,
                 confidence=1.0,  # exits aren't conviction-gated
-            ),
-            risk_ctx,
-            None,
-        )
+            )
+
+        risk_decision = evaluate(risk_proposal, risk_ctx, None)
         if not risk_decision.approved:
             logger.warning(
                 "position_manager: close VETOED for %s — %s (%s)",
@@ -377,9 +553,13 @@ async def _close_position(
             decision_id=decision.id,
             client_order_id=client_order_id,
             symbol=symbol,
-            side=broker_close_side.value,
+            side=db_side,
             qty=qty,
             is_paper=conn.is_paper,
+            order_type=order_type.value,
+            is_option=is_option,
+            multiplier=multiplier,
+            option_action="sell_to_close" if is_option else None,
         )
 
         order = await broker.place_order(
@@ -387,7 +567,8 @@ async def _close_position(
                 symbol=symbol,
                 side=broker_close_side,
                 qty=qty,
-                order_type=OrderType.MARKET,
+                order_type=order_type,
+                limit_price=round(last_price, 2) if order_type is OrderType.LIMIT else None,
                 time_in_force=TimeInForce.DAY,
                 client_order_id=client_order_id,
             )

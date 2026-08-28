@@ -114,12 +114,16 @@ class _FakeBroker:
     is_paper: bool = True
     name: str = "alpaca"
     placed: list[_PlacedOrder] = field(default_factory=list)
+    options_trading_level: int | None = None
 
     async def get_account_equity(self) -> float:
         return self.equity
 
     async def get_buying_power(self) -> float:
         return self.buying_power
+
+    async def get_options_trading_level(self) -> int | None:
+        return self.options_trading_level
 
     async def list_positions(self) -> list[Any]:
         return []

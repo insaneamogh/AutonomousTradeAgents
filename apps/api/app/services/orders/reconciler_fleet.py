@@ -192,6 +192,22 @@ class ReconcilerFleet:
             except Exception:
                 logger.exception("fleet: position manager failed for user=%s", uid)
 
+            try:
+                from app.services.orders.position_manager import (
+                    sweep_expiring_options_for_user,
+                )
+
+                expiry_closes = await sweep_expiring_options_for_user(
+                    user_id=uid, session_factory=self.session_factory
+                )
+                if expiry_closes:
+                    logger.info(
+                        "fleet: expiry sweep initiated %d close(s) for %s",
+                        expiry_closes, uid,
+                    )
+            except Exception:
+                logger.exception("fleet: options expiry sweep failed for user=%s", uid)
+
         return reconciled
 
     async def run_forever(self) -> None:

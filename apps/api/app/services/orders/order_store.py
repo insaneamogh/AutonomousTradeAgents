@@ -117,6 +117,9 @@ async def persist_order_submit(
                 ),
                 status="pending",
                 is_paper=is_paper,
+                is_option=proposal.is_option,
+                multiplier=proposal.multiplier,
+                option_action=proposal.option_action,
             )
             .on_conflict_do_nothing(constraint="uq_orders_client_order_id")
         )
@@ -144,6 +147,9 @@ async def persist_linked_order_submit(
     qty: int,
     is_paper: bool,
     order_type: str = "MARKET",
+    is_option: bool = False,
+    multiplier: int = 1,
+    option_action: str | None = None,
 ) -> uuid.UUID | None:
     """Pending ``orders`` row for an order that already knows its decision
     (the position manager's closes). Same idempotency + fail-closed
@@ -181,6 +187,9 @@ async def persist_linked_order_submit(
                 order_type=order_type,
                 status="pending",
                 is_paper=is_paper,
+                is_option=is_option,
+                multiplier=multiplier,
+                option_action=option_action,
             )
             .on_conflict_do_nothing(constraint="uq_orders_client_order_id")
         )

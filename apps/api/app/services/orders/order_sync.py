@@ -188,6 +188,12 @@ async def _apply_decision_lifecycle(session: AsyncSession, order_row: object) ->
         return
 
     entry_side = str((decision.proposal or {}).get("side", "BUY"))
+    # Contract multiplier — 100 for a standard US equity option, 1 for
+    # equities (the default, so every non-option row is untouched). Read
+    # off the decision's OWN persisted proposal JSONB, not a DB column —
+    # the ``orders.multiplier`` column exists for reporting/querying, not
+    # this read path.
+    multiplier = int((decision.proposal or {}).get("multiplier", 1) or 1)
 
     if order_row.side == entry_side:
         decision.fill_qty = int(order_row.filled_qty)
@@ -205,11 +211,17 @@ async def _apply_decision_lifecycle(session: AsyncSession, order_row: object) ->
             qty = min(int(order_row.filled_qty), int(decision.fill_qty))
             # A long profits when price rises (exit - entry); a short
             # profits when price falls (entry - exit) — the mirror image,
-            # keyed off the ENTRY side, not the exit fill's side.
+            # keyed off the ENTRY side, not the exit fill's side. Both
+            # entry/exit prices are already per-contract-unit (Alpaca's
+            # own avg_fill_price, never pre-multiplied) — the multiplier
+            # only enters when converting that per-unit move into a total
+            # dollar P&L, exactly like the equity case's implicit x1.
             signed_move = (
                 (entry - exit_price) if entry_side == "SELL" else (exit_price - entry)
             )
-            decision.realized_pnl = (signed_move * Decimal(qty)).quantize(Decimal("0.01"))
+            decision.realized_pnl = (
+                signed_move * Decimal(qty) * Decimal(multiplier)
+            ).quantize(Decimal("0.01"))
         decision.closed_at = order_row.filled_at or datetime.now(UTC)
         if decision.close_reason is None:
             decision.close_reason = "user_manual"
@@ -321,17 +333,24 @@ async def _detect_external_closes(
             continue
 
         entry_side = str((decision.proposal or {}).get("side", "BUY"))
-        approx_exit = await _last_snapshot_mark(session, uid, symbol)
+        multiplier = int((decision.proposal or {}).get("multiplier", 1) or 1)
+        approx_exit = await _last_snapshot_mark(session, uid, symbol, multiplier=multiplier)
         realized: Decimal | None = None
         if approx_exit is not None and decision.fill_avg_price is not None and decision.fill_qty:
             # Same entry-side-keyed sign flip as the ordinary close path —
-            # a short realizes (entry - exit), not (exit - entry).
+            # a short realizes (entry - exit), not (exit - entry). Both
+            # sides of the subtraction are per-contract-unit at this point
+            # (``_last_snapshot_mark`` already divided its mark by the
+            # multiplier) — this is where that per-unit move becomes a
+            # total dollar P&L.
             signed_move = (
                 (decision.fill_avg_price - approx_exit)
                 if entry_side == "SELL"
                 else (approx_exit - decision.fill_avg_price)
             )
-            realized = (signed_move * Decimal(int(decision.fill_qty))).quantize(Decimal("0.01"))
+            realized = (
+                signed_move * Decimal(int(decision.fill_qty)) * Decimal(multiplier)
+            ).quantize(Decimal("0.01"))
 
         await session.execute(
             update(AgentDecision)
@@ -350,10 +369,17 @@ async def _detect_external_closes(
 
 
 async def _last_snapshot_mark(
-    session: AsyncSession, uid: uuid.UUID, symbol: str
+    session: AsyncSession, uid: uuid.UUID, symbol: str, *, multiplier: int = 1
 ) -> Decimal | None:
     """Most recent snapshot price for a symbol — the best exit-price proxy
-    we have for a close that happened outside our order flow."""
+    we have for a close that happened outside our order flow.
+
+    ``multiplier`` is supplied by the caller (read off the decision's own
+    persisted proposal — see ``_detect_external_closes``), not looked up
+    from the snapshot's own position dict: a single source for the number
+    keeps the divide here and the multiply at the call site from ever
+    disagreeing about which multiplier they mean.
+    """
     from engine.db.models import PositionsSnapshot
 
     stmt = (
@@ -373,8 +399,11 @@ async def _last_snapshot_mark(
             # short, per Alpaca's convention) — abs() on both turns that
             # into the same positive per-share price a long would produce,
             # instead of excluding every short from ever getting a mark.
+            # market_value is already multiplier-scaled (a total dollar
+            # value); dividing by qty alone would overstate an option's
+            # per-contract price by the multiplier.
             if qty != 0 and mv != 0:
-                return Decimal(str(round(abs(mv) / abs(qty), 4)))
+                return Decimal(str(round(abs(mv) / (abs(qty) * multiplier), 4)))
     return None
 
 

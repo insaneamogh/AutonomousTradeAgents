@@ -46,6 +46,18 @@ class ApprovalProposalDto(CamelCaseModel):
     expiry_date: date | None = None
     contract_type: Literal["call", "put"] | None = None
     multiplier: int = 1
+    # Liquidity + pricing snapshot at Drafter-time — mirrors
+    # ``engine.risk.types.OptionLegDetails`` field-for-field so the
+    # executor's execution-time re-risk-check (``illiquid_contract``,
+    # ``iv_unavailable``, ``earnings_blackout``) can rebuild the SAME
+    # ``OptionLegDetails`` it re-verifies against, reading this DTO back
+    # off the persisted decision row rather than re-fetching the chain.
+    open_interest: int | None = None
+    volume: int | None = None
+    bid: float | None = None
+    ask: float | None = None
+    implied_volatility: float | None = None
+    days_to_earnings: int | None = None
     qty: int
     order_type: Literal["MARKET", "LIMIT"]
     limit_price: float | None = None

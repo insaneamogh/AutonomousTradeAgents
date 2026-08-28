@@ -106,6 +106,8 @@ class _FakePosition:
     market_value: float
     unrealized_pl: float = 0.0
     unrealized_pl_pct: float = 0.0
+    multiplier: int = 1
+    is_option: bool = False
 
 
 @dataclass
@@ -128,12 +130,20 @@ class _FakeCloseBroker:
     positions: list[Any] = field(default_factory=list)
     placed: list[Any] = field(default_factory=list)
     canceled: list[str] = field(default_factory=list)
+    options_trading_level: int | None = None
+    requests: list[Any] = field(default_factory=list)
+    """Full submitted OrderRequest per call — placed/_FakeCloseOrder only
+    decomposes the fields the pre-options tests needed (side, qty); the
+    options tests also need order_type/limit_price, hence this."""
 
     async def get_account_equity(self) -> float:
         return 100_000.0
 
     async def get_buying_power(self) -> float:
         return 100_000.0
+
+    async def get_options_trading_level(self) -> int | None:
+        return self.options_trading_level
 
     async def list_positions(self) -> list[Any]:
         return list(self.positions)
@@ -143,6 +153,7 @@ class _FakeCloseBroker:
         return 0
 
     async def place_order(self, request: Any) -> _FakeCloseOrder:
+        self.requests.append(request)
         order = _FakeCloseOrder(
             broker_order_id="alp-close-0001",
             client_order_id=request.client_order_id,
@@ -251,6 +262,246 @@ async def test_close_position_closes_a_long_with_a_sell(
     placed = broker.placed[0]
     assert placed.side == Side.SELL
     assert placed.qty == 10
+
+
+async def test_close_position_closes_an_option_with_sell_to_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An option position's own branch: Phase A never holds a short option
+    leg to cover, so the close is always SELL_TO_CLOSE — never a "buy to
+    cover", regardless of the held qty's sign. The order must be LIMIT
+    (never MARKET), priced off the freshly-fetched position's own mark
+    (divided by the multiplier, not the raw market_value/qty)."""
+    broker = _FakeCloseBroker(
+        positions=[
+            _FakePosition(
+                symbol="AAPL260828C00250000",
+                qty=1,
+                avg_entry_price=2.50,
+                market_value=300.0,  # 1 contract * $3.00 mark * 100
+                multiplier=100,
+                is_option=True,
+            )
+        ]
+    )
+    conn = SimpleNamespace(id="conn-1", is_paper=True)
+
+    @asynccontextmanager
+    async def fake_broker_cm(_user_id, *, broker_=None, store=None, **_kw):
+        yield broker, conn
+
+    monkeypatch.setattr(position_manager_mod, "with_broker_client", fake_broker_cm)
+
+    decision = SimpleNamespace(
+        id=uuid.uuid4(),
+        symbol="AAPL260828C00250000",
+        fill_qty=1,
+        fill_avg_price=2.50,
+        proposal={"isOption": True, "multiplier": 100},
+    )
+
+    session_cm = _FakeSessionCM()
+    initiated = await _close_position(
+        lambda: session_cm,
+        user_id="00000000-0000-0000-0000-000000000001",
+        decision=decision,
+        reason="agent_expiry",
+    )
+
+    assert initiated is True
+    assert len(broker.placed) == 1
+    placed = broker.placed[0]
+    assert placed.side == Side.SELL_TO_CLOSE
+    assert placed.qty == 1
+
+    request = broker.requests[0]
+    assert request.order_type.value == "LIMIT"
+    # market_value(300) / (qty(1) * multiplier(100)) = 3.00 per contract.
+    assert request.limit_price == 3.00
+
+
+async def test_close_position_option_falls_back_to_proposal_when_unheld(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The broker already shows this position as flat (e.g. expired/
+    exercised) — is_option/multiplier must still be read, from the
+    decision's OWN persisted proposal, so the close still routes as an
+    option close rather than silently defaulting to the equity branch."""
+    broker = _FakeCloseBroker(positions=[])  # nothing held at the broker
+    conn = SimpleNamespace(id="conn-1", is_paper=True)
+
+    @asynccontextmanager
+    async def fake_broker_cm(_user_id, *, broker_=None, store=None, **_kw):
+        yield broker, conn
+
+    monkeypatch.setattr(position_manager_mod, "with_broker_client", fake_broker_cm)
+
+    decision = SimpleNamespace(
+        id=uuid.uuid4(),
+        symbol="AAPL260828C00250000",
+        fill_qty=1,
+        fill_avg_price=2.50,
+        proposal={"isOption": True, "multiplier": 100},
+    )
+
+    session_cm = _FakeSessionCM()
+    initiated = await _close_position(
+        lambda: session_cm,
+        user_id="00000000-0000-0000-0000-000000000001",
+        decision=decision,
+        reason="agent_expiry",
+    )
+
+    assert initiated is True
+    placed = broker.placed[0]
+    assert placed.side == Side.SELL_TO_CLOSE
+
+
+# ─────────────────────────────────────────────────────────────────────
+# sweep_expiring_options_for_user — the mandatory pre-expiry force-close
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _sweep_decision(*, symbol: str, is_option: bool, expiry_offset_days: int) -> SimpleNamespace:
+    expiry = (datetime.now(UTC) + timedelta(days=expiry_offset_days)).date().isoformat()
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        symbol=symbol,
+        fill_qty=1,
+        proposal={"isOption": is_option, "expiryDate": expiry, "multiplier": 100},
+    )
+
+
+class _ScalarsResult:
+    def __init__(self, rows: list[object]) -> None:
+        self._rows = rows
+
+    def scalars(self) -> _ScalarsResult:
+        return self
+
+    def all(self) -> list[object]:
+        return self._rows
+
+
+class _ScalarOneResult:
+    def __init__(self, value: object) -> None:
+        self._value = value
+
+    def scalar_one_or_none(self) -> object:
+        return self._value
+
+
+async def test_sweep_expiring_options_closes_only_near_expiry_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Filters to is_option=True AND dte <= options_expiry_sweep_dte (2):
+    a near-expiry option closes, a far-expiry option and an equity
+    decision (however close to some notion of "expiry") do not."""
+    from app.services.orders.position_manager import sweep_expiring_options_for_user
+
+    near = _sweep_decision(symbol="AAPL260828C00250000", is_option=True, expiry_offset_days=1)
+    far = _sweep_decision(symbol="MSFT260930C00400000", is_option=True, expiry_offset_days=30)
+    equity = _sweep_decision(symbol="NVDA", is_option=False, expiry_offset_days=1)
+
+    session = MagicMock()
+    session.execute = AsyncMock(
+        side_effect=[
+            _ScalarsResult([near, far, equity]),  # the open-decisions query
+            _ScalarOneResult(None),  # _has_in_flight_close for `near` only
+        ]
+    )
+    session_cm = _FakeSessionCM()
+    session_cm.session = session
+
+    closed: list[str] = []
+
+    async def _fake_close(_session_factory, *, user_id, decision, reason):
+        closed.append(decision.symbol)
+        assert reason == "agent_expiry"
+        return True
+
+    monkeypatch.setattr(position_manager_mod, "_close_position", _fake_close)
+
+    count = await sweep_expiring_options_for_user(
+        user_id="00000000-0000-0000-0000-000000000001",
+        session_factory=lambda: session_cm,
+    )
+
+    assert count == 1
+    assert closed == ["AAPL260828C00250000"]
+
+
+async def test_sweep_expiring_options_skips_when_already_in_flight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.orders.position_manager import sweep_expiring_options_for_user
+
+    near = _sweep_decision(symbol="AAPL260828C00250000", is_option=True, expiry_offset_days=0)
+
+    session = MagicMock()
+    session.execute = AsyncMock(
+        side_effect=[
+            _ScalarsResult([near]),
+            _ScalarOneResult(object()),  # an in-flight close already exists
+        ]
+    )
+    session_cm = _FakeSessionCM()
+    session_cm.session = session
+
+    called = False
+
+    async def _fake_close(*_a, **_kw):
+        nonlocal called
+        called = True
+        return True
+
+    monkeypatch.setattr(position_manager_mod, "_close_position", _fake_close)
+
+    count = await sweep_expiring_options_for_user(
+        user_id="00000000-0000-0000-0000-000000000001",
+        session_factory=lambda: session_cm,
+    )
+
+    assert count == 0
+    assert called is False
+
+
+async def test_sweep_expiring_options_skips_unparseable_expiry_rather_than_closing_blind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A malformed/missing expiry must not be treated as "already expired"
+    — skip the sweep check for that row rather than force-closing on bad
+    data."""
+    from app.services.orders.position_manager import sweep_expiring_options_for_user
+
+    bad = SimpleNamespace(
+        id=uuid.uuid4(),
+        symbol="AAPL260828C00250000",
+        fill_qty=1,
+        proposal={"isOption": True, "expiryDate": None},
+    )
+
+    session = MagicMock()
+    session.execute = AsyncMock(side_effect=[_ScalarsResult([bad])])
+    session_cm = _FakeSessionCM()
+    session_cm.session = session
+
+    called = False
+
+    async def _fake_close(*_a, **_kw):
+        nonlocal called
+        called = True
+        return True
+
+    monkeypatch.setattr(position_manager_mod, "_close_position", _fake_close)
+
+    count = await sweep_expiring_options_for_user(
+        user_id="00000000-0000-0000-0000-000000000001",
+        session_factory=lambda: session_cm,
+    )
+
+    assert count == 0
+    assert called is False
 
 
 # ─────────────────────────────────────────────────────────────────────

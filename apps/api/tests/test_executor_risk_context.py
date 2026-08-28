@@ -50,6 +50,8 @@ class _FakePosition:
     market_value: float
     unrealized_pl: float = 0.0
     unrealized_pl_pct: float = 0.0
+    multiplier: int = 1
+    is_option: bool = False
 
 
 @dataclass
@@ -73,12 +75,16 @@ class _FakeBroker:
     buying_power: float = 200_000.0
     positions: list[_FakePosition] = field(default_factory=list)
     placed: list[_FakeOrder] = field(default_factory=list)
+    options_trading_level: int | None = None
 
     async def get_account_equity(self) -> float:
         return self.equity
 
     async def get_buying_power(self) -> float:
         return self.buying_power
+
+    async def get_options_trading_level(self) -> int | None:
+        return self.options_trading_level
 
     async def list_positions(self) -> list[_FakePosition]:
         return list(self.positions)

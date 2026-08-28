@@ -146,14 +146,28 @@ def _from_decision(
     # A pending-fill row has no fill yet, so it reports the proposal's
     # planned qty rather than a fill_qty that is NULL by definition.
     entry = float(d.fill_avg_price) if d.fill_avg_price is not None else None  # type: ignore[attr-defined]
-    last = marks.get(d.symbol.upper()) if status == "open" else None  # type: ignore[attr-defined]
+    # Contract multiplier — 100 for a standard US equity option, 1 (a
+    # no-op) for everything else. ``marks`` is keyed off a RAW
+    # abs(market_value)/abs(qty) (see list_open_positions) that is still
+    # multiplier-inflated for an option; dividing it back out here — using
+    # the SAME multiplier this decision's own proposal carries — is what
+    # keeps this the one and only place that number gets corrected,
+    # instead of also (wrongly) correcting it where the snapshot itself
+    # was parsed, which would use a possibly-out-of-sync multiplier from a
+    # different source (the reconciler snapshot, not this decision).
+    multiplier = int(proposal.get("multiplier", 1) or 1)
+    raw_last = marks.get(d.symbol.upper()) if status == "open" else None  # type: ignore[attr-defined]
+    last = raw_last / multiplier if raw_last is not None else None
     qty = int(d.fill_qty) if d.fill_qty is not None else int(proposal.get("qty", 0) or 0)  # type: ignore[attr-defined]
-    # fill_qty is always a non-negative share COUNT (an order's filled
-    # quantity, not a signed position) — a short's unrealized P&L is the
-    # mirror of a long's: it gains when price FALLS, so the sign flips on
-    # direction rather than on the sign of qty.
+    # fill_qty is always a non-negative share/contract COUNT (an order's
+    # filled quantity, not a signed position) — a short's unrealized P&L
+    # is the mirror of a long's: it gains when price FALLS, so the sign
+    # flips on direction rather than on the sign of qty. The multiplier
+    # applies here too — ``last``/``entry`` are both per-contract-unit at
+    # this point, so converting to a total dollar P&L needs qty x multiplier,
+    # exactly like the equity case's implicit x1.
     unrealized = (
-        round((-1.0 if is_short else 1.0) * (last - entry) * qty, 2)
+        round((-1.0 if is_short else 1.0) * (last - entry) * qty * multiplier, 2)
         if (last is not None and entry is not None and qty)
         else None
     )
@@ -206,10 +220,16 @@ def _unmanaged(
         is_short = qty < 0
         entry = pos.get("avg_entry_price")
         mv = float(pos.get("market_value", 0) or 0)
-        last = round(abs(mv) / abs(qty), 4) if qty and mv else None
+        # An unmanaged position has no decision/proposal to read a
+        # multiplier from — the snapshot's own position dict is the only
+        # source available, unlike the managed path above (which reads it
+        # off the decision instead of the snapshot, for exactly the
+        # single-source reason explained there).
+        multiplier = int(pos.get("multiplier", 1) or 1)
+        last = round(abs(mv) / (abs(qty) * multiplier), 4) if qty and mv else None
         entry_f = float(entry) if entry is not None else None
         unrealized = (
-            round((-1.0 if is_short else 1.0) * (last - entry_f) * abs(qty), 2)
+            round((-1.0 if is_short else 1.0) * (last - entry_f) * abs(qty) * multiplier, 2)
             if (last is not None and entry_f is not None)
             else None
         )
