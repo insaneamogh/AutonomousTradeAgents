@@ -6,8 +6,12 @@ Ordering rationale (catastrophic / state-level → direction eligibility →
 trim → aggregate exposure → informational). Market-specific rules self-gate
 on the symbol's market (US = bare symbols, IN = NSE:/BSE:/NFO:/… prefixes —
 see ``markets.py``); the short rules self-gate on whether the proposal
-actually opens a short (see ``rules/_short.py``):
+actually opens a short (see ``rules/_short.py``). An options proposal
+diverts entirely to ``engine.options.risk.evaluate_option`` right after
+step 1 (see the ``proposal.is_option`` branch below) and never reaches
+steps 2-17 — it has its own equivalent sequence, described in that module:
    1. drawdown_halt              account-level circuit breaker
+   1.5. [OPTIONS] full early-return to evaluate_option — see below
    2. forbid_short_phase_0       category block before anything else
    3. shortable_check            [SHORT] can we even borrow it
    4. short_requires_stop        [SHORT] no stop leg → no short
@@ -108,6 +112,20 @@ def evaluate(
         return d
     if d is None:
         passed.append("drawdown_halt")
+
+    # ── 1.5. Divert options proposals to their own pipeline ─────────
+    # Full early-return: an options proposal must NEVER reach any of the
+    # equity-only rules below (position_size_cap, sector_concentration,
+    # single_name_concentration, correlation_cap, derivative_notional_cap,
+    # lot_size_block, the short-side rules, ...). engine.options.risk
+    # runs its own sequence instead — see that module.
+    if proposal.is_option:
+        # Lazy import: an equity-only deployment (ALLOW_OPTIONS=0, the
+        # default) must not need the options package's dependencies
+        # importable at all just because engine.risk.engine was imported.
+        from engine.options.risk import evaluate_option
+
+        return evaluate_option(working, context, caps, specialists=specialists)
 
     # ── 2. Forbid short (long-only unless ALLOW_SHORTS) ─────────────
     d = forbid_short_phase_0(working, context, caps)

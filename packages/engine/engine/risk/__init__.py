@@ -30,6 +30,13 @@ The informational ``wash_sale`` rule runs LAST and only contributes flags
     wash_sale_warning             ← INFORMATIONAL flag only; closes §6.2
 
 PLAN.md §6.2 deterministic risk-rule list is complete as of (r).
+
+An options proposal (``RiskProposal.is_option``) diverts entirely, right
+after ``drawdown_halt``, to ``engine.options.risk.evaluate_option`` — see
+``engine.options`` for that rule set (options_disabled, naked_short_forbidden,
+options_level_insufficient, expiry_day_entry, min_dte, max_dte,
+illiquid_contract, iv_unavailable, earnings_blackout, max_premium_pct,
+max_total_premium_pct, plus five equity rules reused unmodified).
 """
 
 from engine.risk.assets import cluster_for, sector_for
@@ -44,6 +51,7 @@ from engine.risk.postgres_context import (
 from engine.risk.rules import covers_short_only, held_long_qty, held_short_qty, opens_short
 from engine.risk.types import (
     ClosedTrade,
+    OptionLegDetails,
     PortfolioPosition,
     RiskCaps,
     RiskContext,
@@ -57,6 +65,7 @@ __all__ = [
     "ClosedTrade",
     "DbRiskState",
     "MockRiskContextProvider",
+    "OptionLegDetails",
     "PortfolioPosition",
     "PostgresRiskContextProvider",
     "RiskCaps",
