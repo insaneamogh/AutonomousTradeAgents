@@ -5,7 +5,7 @@ description = "US-first autonomous trading agent — workspace root"
 requires-python = ">=3.12"
 
 [tool.uv.workspace]
-members = ["apps/api", "apps/agents", "packages/broker", "packages/engine"]
+members = ["apps/api", "apps/agents", "apps/mcp_server", "packages/broker", "packages/engine"]
 
 # Toolchain the Makefile targets shell out to (`make test` / `lint` /
 # `typecheck`). These were configured below ([tool.pytest.ini_options],
@@ -56,7 +56,7 @@ ignore = [
 # The workspace packages. Without this ruff sorts them in with PyPI deps
 # (``engine`` lands between ``alembic`` and ``sqlalchemy``), which makes the
 # local-vs-external split invisible at a glance.
-known-first-party = ["app", "broker", "engine", "trading_agents"]
+known-first-party = ["app", "broker", "engine", "mcp_server", "trading_agents"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -76,5 +76,5 @@ warn_unused_ignores = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["apps/api/tests", "apps/agents/tests", "packages/broker/tests", "packages/engine/tests"]
+testpaths = ["apps/api/tests", "apps/agents/tests", "apps/mcp_server/tests", "packages/broker/tests", "packages/engine/tests"]
 filterwarnings = ["error"]

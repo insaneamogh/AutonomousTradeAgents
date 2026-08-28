@@ -1,0 +1,23 @@
+[project]
+name = "mcp_server"
+version = "0.0.1"
+description = "MCP server: thin read/propose-only adapters over the council + service layer. Never places, approves, or cancels an order."
+requires-python = ">=3.12"
+dependencies = [
+  "mcp[cli]",
+  "agents",
+  "api",
+  "engine",
+]
+
+[tool.uv.sources]
+agents = { workspace = true }
+api = { workspace = true }
+engine = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["mcp_server"]
