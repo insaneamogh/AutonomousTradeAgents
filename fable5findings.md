@@ -355,6 +355,97 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 ## Entries
 
+### 2026-08-28 — `4061f3af`+`a0420d63` feat(agents): attribute LLM calls to their council run and decision
+
+The last wiring-gap item, and the riskiest one in the batch (schema
+migration + touches the trading-decision persistence layer) — reviewed
+with matching scrutiny before merge. Every `llm_calls` row was writing
+with `agent_decision_id`/`user_id` unconditionally NULL: no way to
+answer "which LLM calls produced decision X" or "what did user Y's
+trading cost in LLM spend."
+
+**The naive fix — write the real `agent_decisions.id` at LLM-call
+time — would have made things worse, not better, and the subagent
+caught this before writing any code.** `agent_decisions.id` isn't
+assigned until strictly *after* every LLM call in a pass completes
+(`run_council()` awaits the whole graph before `decision_log.record()`
+ever runs); `llm_calls.agent_decision_id` carries a live, non-deferrable
+FK, so writing a not-yet-existent id into it would raise
+`ForeignKeyViolation` on every insert for that pass — silently
+swallowed by the existing best-effort try/except, turning today's
+100%-present-but-unattributed rows into 100%-silently-dropped ones.
+
+**Real fix**: a run-scoped `council_run_id` (UUID, deliberately no FK)
+generated once per `run_council()` call, before any LLM call, carried
+on every `LedgerEntry` written during that pass via new passthrough
+kwargs on `LLM.complete()`/`complete_json()`. Once the decision row
+commits, a best-effort `backfill_decision_id()` UPDATE (guarded by
+`AND agent_decision_id IS NULL`, so a row some other path already
+attributed is never clobbered) attaches the real id to every row
+sharing that run's `council_run_id`. `DecisionEntry.id`'s default
+factory changed from an opaque `"dec-<hex>"` string to a real UUID, and
+`_to_decision_entry` now passes `id=council_run_id` explicitly — so the
+decision row's own PK, the ledger correlation id, and the backfill
+target are all one value with no extra lookup. `reflection.py` gets
+`user_id` but deliberately not `council_run_id`/`agent_decision_id` —
+one reflection call grades many decisions at once, so a 1:1 link would
+be false precision, not a gap.
+
+**A genuine inconsistency in my own brief, caught and correctly
+resolved by the subagent, not by me**: I'd specified `complete()`/
+`complete_json()` gain only `agent_decision_id`+`user_id` kwargs, but
+also required threading `council_run_id` through those same calls —
+there's no way to satisfy both without either inventing a third kwarg
+or routing `council_run_id` through `agent_decision_id` (which would
+reintroduce the exact FK-violation bug this whole design exists to
+avoid). It added a third kwarg (`council_run_id`) rather than force
+the wrong shape, flagged the deviation explicitly in its own commit
+message, and reasoned through why the alternative was actively unsafe
+rather than just picking one silently.
+
+**One real regression found and fixed along the way**: `test_node_guards.py`'s
+`ScriptedLLM` test double had a narrow `complete()` signature with no
+`**kwargs` catch-all (unlike this suite's other LLM doubles, which
+already use one for exactly this forward-compatibility reason) — broke
+immediately across 9 tests the moment the new kwargs were added. Fixed
+by matching the existing convention.
+
+**Migration numbering collision, fixed at merge time (expected, not a
+subagent error)**: this work and the same day's options-foundation work
+were built in parallel worktrees, both chaining a new migration off
+`0012_decision_reasoning` as "0013". Since the options migration
+(`0013_options_orders`) landed on `main` first, renumbered this one to
+`0014_llm_calls_run_id` and re-pointed its `down_revision` — confirmed
+via `alembic history` and an offline `--sql` dry-run across both
+migrations in sequence that the chain resolves and the DDL is correct
+and in order.
+
+Verified independently after cherry-pick: `apps/agents/tests` 77
+passed / 1 skipped; full combined suite (`apps/api`+`apps/agents`+
+`packages/engine`+`packages/broker`) 589 passed / 9 skipped; ruff clean
+on every touched file; mypy on `apps/agents`+`packages/engine` 144
+errors both before and after (pre-existing, untouched-test-helper
+debt — zero net new). The new end-to-end test
+(`test_run_council_attributes_every_llm_call_to_its_run_and_user`)
+runs a real mock council pass and asserts every `llm_calls` row shares
+one `council_run_id` equal to the returned decision id, and that
+`user_id` populates on every row — a hard failure against the
+pre-change code on all three counts, not a shape check.
+
+**Left open, disclosed by the subagent rather than assumed away**: the
+migration was verified via `alembic history` + an offline `--sql`
+dry-run only — no live Postgres was available in that sandbox to
+confirm a real apply-and-query round trip. Worth one live check before
+this is relied on in production, though the offline evidence (chain
+resolves, DDL is exactly the expected `ADD COLUMN ... UUID` + `CREATE
+INDEX`, no FK) is strong.
+
+**This closes out the wiring-gap audit's three code items** (docs
+fixes, veto-label consolidation, LLM-call attribution — the "watchlist
+already fixed" and "RUNBOOK/HANDOFF redirect" items needed no further
+code, only the backfill/redirect already covered in the entry above).
+Only the options-trading track (Part 1 of the plan) remains open.
+
 ### 2026-08-28 — `20154ac9`+`73f44007`+`618b77fb` feat/fix/refactor: options shared-types foundation + two wiring-gap fixes
 
 First implementation work of the production-grade phase (plan at
