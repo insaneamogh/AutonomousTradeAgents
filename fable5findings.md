@@ -355,6 +355,44 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 ## Entries
 
+### 2026-08-28 — `6dd0e96a` fix(engine): populate options_trading_level end-to-end at council time
+
+Second connective-tissue fix, same reasoning as the one below it: neither
+`MockRiskContextProvider` nor `PostgresRiskContextProvider` ever
+populated `RiskContext.options_trading_level` — a different code path
+from the executor's `_build_risk_context` (already fixed by the
+broker/risk track below). Without this, `options_level_insufficient`
+would veto every options proposal unconditionally at council time,
+regardless of the real account's approval tier, since `None` never
+clears `>= caps.options_min_trading_level`.
+
+Mirrors exactly how `account_equity`/`buying_power` already flow through
+this same reconciler → snapshot → provider pipeline: `AlpacaBrokerPoller`
+now also calls `broker.get_options_trading_level()`; the value rides
+`RawAccountState` → a new nullable `positions_snapshot.options_trading_level`
+column (migration `0015`, chained after `0014`) →
+`PostgresRiskContextProvider` reads it back. `MockRiskContextProvider`/
+`MockBrokerPoller` both default to 3 (Alpaca's "spreads + long/short
+singles" tier, per `docs/OPTIONS_PLAN.md`'s live-account check) instead
+of `None`, so mock-mode/CI exercises the options path without extra
+wiring, while staying overridable to test the insufficient-level veto.
+
+Also closed, while in the same files: the broker/risk track's own
+disclosed follow-up — `AlpacaBrokerPoller` now threads `is_option`/
+`multiplier` onto `PortfolioPosition` too, and the snapshot round-trip
+(`write_snapshot`/`_parse_positions`) carries both — the reconciler's
+slower-moving position-display path is now multiplier-aware, matching
+the live risk-gate path the executor already had right.
+
+New: 3 tests in `test_reconciler.py`, 3 in new
+`test_risk_context_options.py`. Verified: full combined suite 661→667
+passed, 9 skipped (unchanged); migration chain resolves; ruff clean;
+mypy delta zero (confirmed via `git show <commit>:<file> | mypy --stdin`
+baseline comparisons against the pre-fix commit — deliberately not
+`git stash`, after a `git stash`/`pop` mid-review popped an unrelated,
+long-forgotten stash entry from earlier in this same session and had to
+be cleanly unwound; see the entry below for that incident).
+
 ### 2026-08-28 — `9751cba0` fix(agents): thread is_option/OptionLegDetails into the live risk-gate node
 
 Connective-tissue fix between the two options-trading tracks (below),
