@@ -355,6 +355,58 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 ## Entries
 
+### 2026-08-28 — `a4209592` test(agents): cross-track end-to-end proof + live UI verification — Phase A complete
+
+Closes out options trading Phase A. Two pieces:
+
+**The capstone cross-track test.** New
+`test_run_council_options_proposal_reaches_evaluate_option_and_is_approved`
+in `test_council_mock.py`: mocks the chain fetch to return one liquid
+contract (the exact fixture the options-drafter unit tests already
+validated in isolation), runs the REAL `drafter_node` through the REAL
+`run_council()`/`risk_officer_node` path, and asserts the result comes
+back `risk_approved` with no veto. This is the one thing neither options
+track could prove on its own — each tested its own half against a
+hand-built fixture — and it was structurally impossible to prove until
+both tracks plus the `risk_officer_node`/`options_trading_level` glue
+fixes existed together. Passed on the first run: every seam this session
+spent effort reconciling by hand actually agrees.
+
+Also hardened the two `instrument_preference` tests added earlier the
+same day: they'd asserted a specific `final_action` ("BUY") for NVDA, but
+synthetic features are hash-seeded per (symbol, day) — the same reason
+`test_mock_council_produces_buy_proposal_for_nvda` already uses a
+deliberately loose assertion. Replaced with the same structural-spy proof
+(was the chain fetch called at all) so these can't flake on a different
+calendar date.
+
+**Live UI verification**, closing the disclosed gap from the sizing/UI
+track's own report ("no live simulator/browser session survived far
+enough to screenshot an actual option-shaped proposal"). Confirmed:
+this dev environment has no real Alpaca keys configured, so a genuinely
+live options chain fetch — and therefore a real option-shaped Positions/
+PickDetail row — isn't reachable here regardless of code; that part of
+the gap stays open until real credentials exist somewhere this can run.
+What IS reachable without a backend option feed — the watchlist equity/
+option toggle — was live-verified instead: started `dev-api` +
+`mobile-web`, logged in via the dev-token flow, reached the toggle via
+Settings → "Manage the agent watchlist" (JS-dispatched clicks, since the
+Browser pane wasn't compositing frames for coordinate/ref-based input
+this session), and read real computed styles directly. Confirmed the
+exact fix (`border-cta bg-cta/10 dark:border-cta-dark dark:bg-cta-dark/10`,
+not the original bug's `accent-primary`) is present, the toggle's
+selected state switches correctly between the two options, and — using
+the app's own in-page theme control, since emulating `prefers-color-scheme`
+alone didn't move this app's explicit light/system/dark theme state —
+the `dark:` variants resolve to real, distinct, sensible dark-mode colors
+rather than silently reusing the light-mode value.
+
+Verified: full combined suite 724→725 passed, 9 skipped; mypy delta zero
+(9 pre-existing errors, unchanged count); ruff clean.
+
+**Phase A (options trading, long calls/puts only) is now fully merged,
+tested, and live-verified end to end.** Next: the hackathon MCP server.
+
 ### 2026-08-28 — `e1ddf7ef` feat(agents,api): wire instrument_preference to a real caller
 
 The last piece of Phase A's cross-track glue: both options tracks
