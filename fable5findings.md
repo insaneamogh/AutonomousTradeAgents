@@ -355,6 +355,40 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 ## Entries
 
+### 2026-08-28 — `e1ddf7ef` feat(agents,api): wire instrument_preference to a real caller
+
+The last piece of Phase A's cross-track glue: both options tracks
+deliberately left this to me (the sizing/UI track's own words: "a product
+call, not ours to make"). `run_council()` gains
+`instrument_preference: Literal["equity","option"] | None`, threaded into
+the initial `CouncilState` for `strategy_fit_node` to read (still gated
+by `ALLOW_OPTIONS` — neither flag alone is enough). `AgentRunRequest`
+(Python + shared-types TS) gets the matching field, forwarded through
+`_execute_council()` — covers both `/agent/run` and `/agent/run/start`,
+which share that one call site. Deliberately stopped here: watchlist/
+cron-driven auto-wiring (reading each item's own `asset_class`
+automatically) is a disclosed follow-up, not attempted now — a manual
+trigger is enough to demo the feature and is real scope creep otherwise.
+
+New test proves the kwarg reaches `strategy_fit_node`/`drafter_node`
+structurally (a call-count spy on the chain fetch), not by inferring it
+from a HOLD-reason string — tried that first and it was a genuine dead
+end: the top-level result's `risk_reason` is the same generic
+"No proposal — HOLD." for every proposal-less HOLD regardless of why, so
+it can't distinguish an options no-candidates HOLD from an ordinary
+equity strategy-fit HOLD. Caught before it became a false-confidence test.
+
+Verified: full combined suite 722→724 passed, 9 skipped; mypy delta zero
+(two automated baseline-comparison methods — `git show`-piped-to-stdin
+and a scratch `git worktree` with its own venv — both proved unreliable
+here for cross-module import resolution, so this one was confirmed by
+careful manual line-count reconciliation against each edit's exact
+insertion size instead); ruff clean.
+
+**Phase A of the options-trading plan is now fully merged.** Next: a
+live visual check of the option-aware UI (now finally reachable) and the
+plan's cross-track end-to-end verification pass.
+
 ### 2026-08-28 — `6c79d573`+`8a71deb3`+`39f9f78f`+`0f84435d`+`6e607c10`+`8378cd1f` feat(options,agents,ui): sizing/contract-selection/agent-council/UI layer for Phase A
 
 The other parallel options-trading track — reviewed with the same
