@@ -355,6 +355,59 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 ## Entries
 
+### 2026-08-28 — `d3d5190b` feat(engine,agents): thread realized_vol_pct into contract selection — iv_outside_plausible_band stage
+
+Part 2 of the options "actually picks up good trades" plan (Part 1 —
+the chain-fetch inertness fix — is the three entries below this one).
+`engine/options/selection.py`'s own docstring had admitted its
+`iv_present` stage only implements half of `docs/OPTIONS_PLAN.md` §2.2
+point 4 — null-IV rejection, not "or outside a plausible band vs the
+underlying's own realised vol." Buying rich IV into a quiet underlying is
+a bad trade even when the direction is right, and the missing input
+(`realized_vol_pct`) turned out to already be computed by
+`engine.features.quant.compute_quant` — it just wasn't threaded through.
+
+New sixth stage, `iv_realized_vol_band`, appended *after* `iv_present` so
+the existing `"no_iv"` reason and every test pinned to it are untouched.
+`ContractSelectionInputs.realized_vol_pct: float | None = None` — missing
+is a neutral pass (a fact about the analysis environment, not the
+contract), unlike `iv_present`'s own stricter handling of a genuinely
+missing IV.
+
+**The unit landmine**, stated loudly in the module docstring and pinned
+by the FIRST test written for this stage before any boundary case:
+`ContractQuote.implied_volatility` is a decimal fraction (`0.28`) while
+`realized_vol_pct` is already in percent units (`25.0`, confirmed from
+existing fixtures) — the comparison multiplies IV by `100.0` first.
+Getting this backwards would make every real contract look ~100x
+mispriced and silently re-disable the stage the same way the chain-fetch
+bug did, just one filter later — exactly the class of mistake this
+session has been hunting all day. Band multipliers (0.3x floor, 3.0x
+ceiling) are provisional judgment calls, not derived from data, named as
+such in the code — reasonable to ship as-is since this stays paper-only
+for the foreseeable future, but flagged for anyone revisiting before real
+capital depends on it.
+
+Threaded in `drafter._draft_option_proposal`: `ctx.get("quant",
+{}).get("realized_vol_pct")` — **note, called out explicitly because it's
+an easy place to get wrong**: this lives under `ctx["quant"]`, a
+DIFFERENT dict from `ctx["options_context"]` (which only carries
+`days_to_earnings`/`iv_rank`/`atm_iv`/etc.) — the Plan-agent design pass
+caught this exact mix-up in my own framing before any code was written.
+
+Tests (`packages/engine/tests/test_options_selection.py`, +6): the unit
+consistency check first (`iv=0.25, realized_vol_pct=25.0` → ratio 1.0 →
+passes), too-rich rejection, too-cheap rejection, `None` and `<=0`
+realized-vol neutral-pass cases. One pre-existing exact-funnel-dict
+assertion (`test_funnel_counts_reported_for_a_full_ladder`) updated to
+include the new stage key — a real, expected update given a stage was
+added, not a masked regression. Verified: full engine suite **292
+passed**, `apps/agents` options-drafter suite still green
+(`realized_vol_pct` absent in its fixtures → neutral pass, unaffected);
+`ruff check`/`mypy` clean on all three touched files (one single-line
+pre-existing mypy error in `drafter.py`, confirmed via the diff hunks to
+be untouched by this or any of today's other commits).
+
 ### 2026-08-28 — `cbe4bec6` fix(agents): drafter's options chain fetch now calls the real endpoint instead of a phantom one
 
 **Layer 3 of 3 — options trading is no longer inert.** This is the
