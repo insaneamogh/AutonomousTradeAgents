@@ -355,6 +355,85 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 ## Entries
 
+### 2026-08-28 — `5b10d0d3` feat(broker): add list_option_chain_quotes wrapping the real Alpaca chain-snapshot endpoint
+
+**Root-cause finding: options trading Phase A is architecturally complete
+(736 tests passing) and 100% inert against a real Alpaca account.** The
+user asked to make options trading "actually work and pick up good
+trades" and to re-check test accuracy — investigating found exactly why
+it doesn't, verified against the real code and the installed
+`alpaca-py==0.43.4` SDK, not assumed:
+
+- `docs/OPTIONS_PLAN.md` §0 specifies and live-verified (2026-08-26, real
+  paper keys) the chain-SNAPSHOT endpoint
+  (`/v1beta1/options/snapshots/{underlying}`,
+  `OptionHistoricalDataClient.get_option_chain`) — bid/ask/greeks/IV
+  bundled per contract.
+- What the options Broker/Risk track actually built
+  (`list_option_contracts` in `broker/alpaca.py`) wraps a **different**
+  Alpaca client entirely: `TradingClient.get_option_contracts`
+  (`/v2/options/contracts`), contract *metadata only*. Confirmed directly
+  against the real `alpaca.trading.models.OptionContract` class: no bid,
+  ask, delta, implied_volatility, or volume field exists on it at all.
+- The consumer (`drafter._fetch_option_candidates`/`_to_contract_quote`)
+  also passed a bare `str` where the function requires `list[str]`, and
+  read attribute names (`occ_symbol`, `bid`, `ask`, `delta`,
+  `implied_volatility`) that don't exist on the real model via
+  `getattr(..., None)` — every real contract silently became `None` and
+  was filtered out. Net effect: `select_contract` always saw zero
+  candidates, every options proposal HOLDs with `no_candidates`
+  regardless of signal quality, unconditionally.
+- **Nothing caught this.** Grepped the whole repo: zero tests exercised
+  `list_option_contracts`, `_fetch_option_candidates`, or
+  `_to_contract_quote` — every options test monkeypatches the chain-fetch
+  directly with hand-built, idealized data. This is the concrete shape of
+  "tests that aren't accurate": not wrong assertions, a suite that never
+  touches the one seam that talks to Alpaca.
+
+A dedicated Plan-agent design pass (Phase 2 of plan mode) independently
+re-verified all of the above against the real installed SDK models
+(`OptionsSnapshot`/`Quote`/`OptionsGreeks`/`Trade` — confirmed via
+`.model_fields`) before any code was written, and caught two things this
+session's own framing had wrong: `realized_vol_pct` lives in
+`ctx["quant"]`, not `ctx["options_context"]`; and comparing IV (a decimal
+fraction) against `realized_vol_pct` (already in percent units) needs an
+explicit ×100 conversion or a later stage would silently re-break
+everything a third time. Full design in
+`C:\Users\amogpatil\.claude\plans\prancy-meandering-rainbow.md`.
+
+**This commit is layer 1 of 3** (net-new, unwired, zero risk to anything
+running today): `ChainQuote` NamedTuple + `list_option_chain_quotes()` in
+`packages/broker/broker/alpaca.py`, calling the correct
+`OptionHistoricalDataClient.get_option_chain`. Maps the real response
+using **real attribute access, never `getattr`-with-a-default** — a
+future SDK field rename must raise loudly in a test, not silently
+degrade a filter stage until every candidate vanishes three layers away.
+`contract_type`/`strike`/`expiry` are parsed from the OCC symbol via the
+existing `OccSymbol.try_parse()` (confirmed: `OptionsSnapshot` has no
+separate fields for these). New `ALPACA_OPTIONS_FEED` env var
+(`opra`/`indicative`), fails closed to `INDICATIVE` — the free Basic tier
+every account already has.
+
+Tests (`packages/broker/tests/test_alpaca_options_chain.py`, 9 new) build
+fixtures from the REAL alpaca-py pydantic models via `model_construct`
+(a genuine instance of the real class, not a loose dict) — including the
+exact contract `docs/OPTIONS_PLAN.md` §0 measured live
+(`AAPL260828P00305000`, δ -0.2790, IV 0.2644). Covers: real-fixture field
+mapping, `greeks=None`/`latest_quote=None`/`latest_trade=None` (deep-ITM
+per the plan doc's own observed fact), an unparseable OCC key skipped
+without sinking the batch, broker failure → `[]`, default/overridden feed
+tier, expiry-window pass-through. Verified: full broker suite 34→**43
+passed**, `ruff check`/`ruff format --check`/`mypy` clean (4 pre-existing
+mypy errors elsewhere in the file, unchanged).
+
+**Left open, by design — layers 2 and 3 land next**: this function has no
+caller yet. `open_interest` isn't on this endpoint at all (only on
+`list_option_contracts`, which stays unchanged) — merging the two is
+`engine/options/contracts.py`'s job next. There is no cumulative
+daily-volume field on either endpoint; the plan's chosen proxy
+(`latest_trade.size`, a real but imperfect single-trade size) lands with
+that same next commit.
+
 ### 2026-08-28 — `8e6f98a3`+`a46756ad`+`19c54133`+`0f3728ba`+`7f6aa413`+`d727bdf1` feat(mcp_server): read/propose-only MCP server for the Alpaca hackathon
 
 New workspace member `apps/mcp_server/` — six MCP tools, every one a thin
