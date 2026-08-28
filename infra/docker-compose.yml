@@ -1,4 +1,4 @@
-# Local dev infrastructure. Production runs on Fly.io with managed addons.
+# Local dev infrastructure. Production runs on Railway with managed addons.
 # Usage: `make infra-up` / `make infra-down`.
 
 services:

@@ -93,7 +93,7 @@ Three plausible models, decision deferred to post-paper-trading:
                           │  HTTPS + WSS
                           ▼
 ┌──────────────────────────────────────────────────────────────┐
-│   API GATEWAY  (FastAPI on Fly.io)                           │
+│   API GATEWAY  (FastAPI on Railway)                          │
 │   - Auth, rate limit, request validation                     │
 └──────────────────────────────────────────────────────────────┘
                           │
@@ -417,7 +417,7 @@ Ranked by differentiation value:
 | LLM routing | LiteLLM proxy | Swap Haiku/Sonnet/Opus per node, cost ledger |
 | Data | Postgres + TimescaleDB + Redis | Boring, proven |
 | Queue | River (Postgres) or Celery+Redis | River is simpler for solo dev |
-| Deployment | Fly.io for API | Handles long-running well |
+| Deployment | Railway for API | Handles long-running well |
 | Observability | Better Stack + Sentry | Both have generous free tiers |
 | Secrets | Doppler | Don't `.env` this |
 | CI/CD | GitHub Actions + EAS | Standard |

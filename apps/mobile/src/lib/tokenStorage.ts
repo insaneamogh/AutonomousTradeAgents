@@ -10,8 +10,9 @@
  *                       If the app is killed, the next launch re-derives it
  *                       from the stored refresh.
  *
- * This matches PLAN.md §3 and the apps/api/AUTH.md DO NOT list. Storing the
- * access token at rest would let a device-snapshot attacker replay it
+ * This matches PLAN.md §3. (A doc that used to spell out a DO NOT list for
+ * this was dropped in a docs consolidation and was not replaced.) Storing
+ * the access token at rest would let a device-snapshot attacker replay it
  * silently for the next 15 minutes; the refresh token, on the other hand,
  * is single-use-with-rotation + server-revocable so its leak is bounded.
  */

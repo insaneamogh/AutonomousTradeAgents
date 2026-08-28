@@ -172,7 +172,7 @@ async def main(symbol: str, base_url: str, email: str) -> int:
             log.warning(
                 "No active Alpaca connection on this user. "
                 "Either complete /broker/connect/alpaca/{start,callback} in the mobile app first, "
-                "OR (smoke shortcut) wire your ALPACA_API_KEY/SECRET via the env-key path documented in docs/RUNBOOK.md."
+                "OR (smoke shortcut) wire your ALPACA_API_KEY/SECRET via the env-key path documented in docs/README.md."
             )
             return 3
 

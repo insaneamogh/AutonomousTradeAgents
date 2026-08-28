@@ -24,7 +24,7 @@ from engine.db.session import _coerce_to_async_dialect
 
 config = context.config
 
-# Allow DATABASE_URL env to override alembic.ini for CI / Fly.io / Railway.
+# Allow DATABASE_URL env to override alembic.ini for CI / Railway.
 # Railway-style URLs come in as ``postgresql://...`` (sync form); we coerce
 # them to the async dialect here so the engine binds correctly.
 if (env_url := os.environ.get("DATABASE_URL")) is not None:

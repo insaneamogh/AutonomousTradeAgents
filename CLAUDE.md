@@ -51,7 +51,7 @@ If a request implies any "Out" item, confirm before building.
 | Broker | Custom abstraction with Alpaca implementation |
 | Data | Postgres + TimescaleDB + Redis |
 | Storage | S3 / Cloudflare R2 (artifacts, agent conversation logs) |
-| Deploy | Fly.io (API + agents), EAS (mobile) |
+| Deploy | Railway (API + agents), EAS (mobile) |
 | Observability | Sentry + Better Stack + LiteLLM cost ledger |
 | Secrets | Doppler |
 | Repo | pnpm workspaces + Turborepo (JS), uv workspaces (Python) |

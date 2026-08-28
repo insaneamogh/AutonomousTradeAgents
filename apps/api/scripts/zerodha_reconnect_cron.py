@@ -1,21 +1,25 @@
 """Zerodha daily-reconnect reminder cron.
 
 Kite Connect access tokens are flushed ~06:00 IST every morning and there
-are no refresh tokens — the user must re-login each trading day (see
-apps/api/AUTH.md, "Zerodha (Kite Connect) connect flow"). This script
-pushes a "reconnect before market open" notification to every user who
-has an active zerodha connection with an expired token.
+are no refresh tokens — the user must re-login each trading day. Nothing
+in the repo currently documents that connect/token-refresh flow in detail
+— the doc that once covered it was dropped in a docs consolidation and
+was not replaced. This script pushes a "reconnect before market open"
+notification to every user who has an active zerodha connection with an
+expired token.
 
-Schedule it ONCE per weekday at 09:00 IST (03:30 UTC) — before NSE opens
-at 09:15 IST:
+There is no automatic scheduler for this script. Zerodha is parked/
+out-of-scope for v1 (see CLAUDE.md), so unlike the daily council cron
+(``apps/api/app/services/council/scheduler.py``) nothing invokes this
+in-process or otherwise — run it manually, or wire it to an operator's
+own cron, targeting once per weekday at 09:00 IST (03:30 UTC), before
+NSE opens at 09:15 IST.
 
-  GitHub Actions:  schedule: - cron: '30 3 * * 1-5'
-  Fly machines:    fly machine schedule against this script
-
-Idempotency: deliberately none beyond the expiry check. The scheduler
-fires once daily; re-running by hand re-sends the reminder, which is the
-behavior an operator doing a manual nudge actually wants. (A valid,
-unexpired token still short-circuits to a skip unless --force.)
+Idempotency: deliberately none beyond the expiry check. Whatever triggers
+a run is expected to fire at most once a day in the ordinary case;
+re-running by hand re-sends the reminder, which is the behavior an
+operator doing a manual nudge actually wants. (A valid, unexpired token
+still short-circuits to a skip unless --force.)
 
 Usage:
 

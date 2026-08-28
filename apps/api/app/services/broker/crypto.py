@@ -1,9 +1,10 @@
 """Symmetric encryption for at-rest broker tokens.
 
 Backed by ``cryptography.fernet`` (AES-128 in CBC + HMAC-SHA256 + URL-safe
-base64). PLAN.md §3 + apps/api/AUTH.md require broker refresh tokens to be
-encrypted at rest; this is the helper every write to
-``broker_connections.encrypted_*`` goes through.
+base64). PLAN.md §3 requires broker refresh tokens to be encrypted at
+rest; this is the helper every write to ``broker_connections.encrypted_*``
+goes through. (A doc that used to detail this further was dropped in a
+docs consolidation and was not replaced.)
 
 Why we don't roll this ourselves:
   - Unlike HMAC-SHA256 (which is one line on stdlib primitives), symmetric

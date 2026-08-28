@@ -10,15 +10,18 @@ Idempotency:
     decided that day. This makes the script safe for both
     cron-on-clock scheduling AND ad-hoc operator-fired retries.
 
-Two ways to schedule this in production:
+In production this is invoked by ``CouncilScheduler``
+(``apps/api/app/services/council/scheduler.py``), an in-process asyncio
+background task started from the FastAPI lifespan — not an external
+cron. It's off by default (``COUNCIL_SCHEDULER_ENABLED=0``); once
+enabled it runs a baseline sweep of the full watchlist at fixed times
+(``COUNCIL_SCAN_TIMES_UTC``) plus an optional trigger loop
+(``SCANNER_ENABLED=1``) that wakes the council only when a cheap
+deterministic scan trips a named rule. See that module's docstring for
+the full config surface.
 
-  1. **GitHub Actions** — `.github/workflows/daily_council.yml` with
-     `schedule: - cron: '15 13 * * 1-5'` (13:15 UTC = 9:15 EST market
-     open). Wires the secrets from the repo's secret store.
-
-  2. **Fly machines** — `fly machine schedule` against this script.
-
-See ``docs/RUNBOOK.md`` for the exact wiring snippets.
+This script itself remains useful for manual/ad-hoc runs. See
+``docs/README.md`` for deploy + operational context.
 
 Usage:
 
