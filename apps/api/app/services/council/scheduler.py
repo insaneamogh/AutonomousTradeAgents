@@ -98,8 +98,8 @@ def _env_watchlist() -> list[str]:
     )
 
 
-async def _watchlist() -> list[str]:
-    """The user's curated watchlist, else the env/default list.
+async def _watchlist_with_instruments() -> tuple[list[str], dict[str, str]]:
+    """The curated watchlist as ``(symbols, {symbol: asset_class})``.
 
     ``daily_cron.cli()`` has always preferred the ``user_watchlist`` table
     — "tell the agent what you're interested in, it tracks those" — but
@@ -108,19 +108,32 @@ async def _watchlist() -> list[str]:
     the app changed nothing: the scanner and the baseline sweep kept
     working off whatever the env var said.
 
+    The ``asset_class`` half is what makes options reachable from a
+    scheduled run at all — without it every sweep is an equity sweep no
+    matter what the row says. Env-derived symbols carry no asset_class, so
+    they map to equity, which is the safe default.
+
     Falls back to env on any load failure. An unreachable table must not
     stop the sweep from running at all.
     """
     from trading_agents.jobs.daily_cron import _load_user_watchlist
 
     if not _flag("USE_POSTGRES"):
-        return _env_watchlist()
+        return _env_watchlist(), {}
     try:
         curated = await _load_user_watchlist(_cron_user())
     except Exception:
         logger.exception("user watchlist load failed — using the env list")
-        return _env_watchlist()
-    return curated or _env_watchlist()
+        return _env_watchlist(), {}
+    if not curated:
+        return _env_watchlist(), {}
+    return [sym for sym, _ in curated], {sym: ac for sym, ac in curated}
+
+
+async def _watchlist() -> list[str]:
+    """Symbols only — for callers that don't care about the instrument."""
+    symbols, _ = await _watchlist_with_instruments()
+    return symbols
 
 
 async def configured_watchlist() -> list[str]:
@@ -294,7 +307,7 @@ class CouncilScheduler:
         from trading_agents.jobs.daily_cron import SymbolScanContext
         from trading_agents.jobs.daily_cron import main as cron_main
 
-        symbols = await _watchlist()
+        symbols, instruments = await _watchlist_with_instruments()
         result = await scanner.scan(symbols)  # type: ignore[attr-defined]
 
         self.last_scan_at = result.scanned_at
@@ -358,6 +371,7 @@ class CouncilScheduler:
             skip_ghost_eval=True,
             skip_reflect=True,
             scan_context=scan_context,
+            instrument_by_symbol=instruments,
         )
         self.last_run_at = started
         self.last_result = {"exit_code": code, "symbols": len(selected), "triggered": 1}
@@ -372,11 +386,13 @@ class CouncilScheduler:
         from trading_agents.jobs.daily_cron import main as cron_main
 
         user_id = _cron_user()
-        watchlist = await _watchlist()
+        watchlist, instruments = await _watchlist_with_instruments()
 
         logger.info("council scan starting — %d symbols", len(watchlist))
         started = datetime.now(UTC)
-        code = await cron_main(user_id, watchlist, force=False)
+        code = await cron_main(
+            user_id, watchlist, force=False, instrument_by_symbol=instruments
+        )
         self.last_run_at = started
         self.last_result = {"exit_code": code, "symbols": len(watchlist)}
         logger.info("council scan finished — exit=%s", code)

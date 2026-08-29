@@ -181,9 +181,15 @@ async def _run_one(
     force: bool,
     feature_provider,
     push_tasks: list,
+    instrument: str = "equity",
 ) -> dict:
     """Run the council for a single symbol. Skips if already decided
     today unless ``force=True``.
+
+    ``instrument`` comes from the watchlist row's ``asset_class``. It is the
+    only thing that lets a scheduled pass draft an option: ``strategy_fit``
+    requires BOTH ``ALLOW_OPTIONS`` and an "option" preference before it
+    will set ``instrument`` on the state.
     """
     if not force and await _already_decided_today(user_id, symbol):
         log.info("skip %s — already decided today", symbol)
@@ -196,6 +202,7 @@ async def _run_one(
         feature_provider=feature_provider,
         decision_log=get_decision_log(),
         confidence_store=get_confidence_store(),
+        instrument_preference=("option" if instrument == "option" else "equity"),
     )
     log.info(
         "%s: final_action=%s strategy=%s confidence=%.2f decision_id=%s",
@@ -225,6 +232,7 @@ async def main(
     skip_ghost_eval: bool = False,
     skip_reflect: bool = False,
     scan_context: Mapping[str, SymbolScanContext] | None = None,
+    instrument_by_symbol: Mapping[str, str] | None = None,
 ) -> int:
     """Run the council across ``watchlist``. Returns a process exit code.
 
@@ -232,6 +240,12 @@ async def main(
     covers only the symbols that tripped a deterministic rule and forwards
     the rule identifiers to the analysts. A scheduled full sweep passes
     None and behaves exactly as before.
+
+    ``instrument_by_symbol`` maps a symbol to its watchlist ``asset_class``
+    ("equity" | "option"); anything absent defaults to equity. Threaded as a
+    side mapping rather than by changing ``watchlist``'s element type,
+    exactly like ``scan_context`` above — every existing caller that passes
+    a plain ``list[str]`` keeps working untouched.
 
     ``force`` and ``skip_calendar_gate`` are deliberately independent
     knobs, not two spellings of the same thing:
@@ -297,6 +311,7 @@ async def main(
                     force=force,
                     feature_provider=feature_provider,
                     push_tasks=push_tasks,
+                    instrument=(instrument_by_symbol or {}).get(symbol, "equity"),
                 )
             )
         except Exception as exc:
@@ -431,16 +446,21 @@ async def _run_cli(
     # The user's curated watchlist (user_watchlist table) overrides the
     # static default when it exists — that's the product: "tell the agent
     # what you're interested in, it tracks those."
+    instrument_by_symbol: dict[str, str] = {}
     if env_flag("USE_POSTGRES"):
         try:
-            user_symbols = await _load_user_watchlist(user_id)
+            curated = await _load_user_watchlist(user_id)
         except Exception:  # fall back to the CLI/default list
             log.exception("user watchlist load failed — using default list")
-            user_symbols = []
-        if user_symbols:
-            log.info("using user watchlist (%d symbols): %s",
-                     len(user_symbols), ",".join(user_symbols))
-            symbols = user_symbols
+            curated = []
+        if curated:
+            symbols = [sym for sym, _ in curated]
+            instrument_by_symbol = {sym: ac for sym, ac in curated}
+            n_opt = sum(1 for ac in instrument_by_symbol.values() if ac == "option")
+            log.info(
+                "using user watchlist (%d symbols, %d options): %s",
+                len(symbols), n_opt, ",".join(symbols),
+            )
 
     return await main(
         user_id,
@@ -448,11 +468,19 @@ async def _run_cli(
         force=force,
         skip_ghost_eval=skip_ghost_eval,
         skip_reflect=skip_reflect,
+        instrument_by_symbol=instrument_by_symbol,
     )
 
 
-async def _load_user_watchlist(user_id: str) -> list[str]:
-    """Active user_watchlist symbols, alphabetical. Empty when uncurated."""
+async def _load_user_watchlist(user_id: str) -> list[tuple[str, str]]:
+    """Active ``(symbol, asset_class)`` pairs, alphabetical. Empty when
+    uncurated.
+
+    ``asset_class`` was persisted and surfaced in the UI from the start but
+    never read back here, so a watchlist row marked 'option' still produced
+    an equity council pass. It is the seam that makes options reachable from
+    the scheduler at all.
+    """
     import uuid as _uuid
 
     from sqlalchemy import select
@@ -463,13 +491,13 @@ async def _load_user_watchlist(user_id: str) -> list[str]:
     factory = async_session_factory()
     async with factory() as session:
         stmt = (
-            select(UserWatchlistItem.symbol)
+            select(UserWatchlistItem.symbol, UserWatchlistItem.asset_class)
             .where(UserWatchlistItem.user_id == _uuid.UUID(user_id))
             .where(UserWatchlistItem.active.is_(True))
             .order_by(UserWatchlistItem.symbol)
         )
-        rows = (await session.execute(stmt)).scalars().all()
-    return [str(s).upper() for s in rows]
+        rows = (await session.execute(stmt)).all()
+    return [(str(sym).upper(), str(ac or "equity")) for sym, ac in rows]
 
 
 if __name__ == "__main__":

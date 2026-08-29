@@ -505,3 +505,85 @@ async def test_drafter_options_path_end_to_end_through_real_alpaca_shapes(
     assert p["open_interest"] == 500
     assert p["volume"] == 25
     assert p["qty"] >= 1
+
+
+# ─────────────────────────────────────────────────────────────────────
+# The watchlist -> options reachability seam
+#
+# `instrument_preference` had exactly one production caller (the /agent/run
+# route) and no client ever sent it, so no scheduled or scanner-triggered
+# run could produce an option. `user_watchlist.asset_class` was persisted
+# and surfaced in the UI from the start but never read back. These pin the
+# wiring that closes that gap.
+# ─────────────────────────────────────────────────────────────────────
+
+
+async def test_run_one_forwards_option_instrument_to_the_council(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from trading_agents.jobs import daily_cron
+
+    captured: dict[str, object] = {}
+
+    async def _fake_run_council(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {"final_action": "HOLD", "proposal": None}
+
+    monkeypatch.setattr(daily_cron, "run_council", _fake_run_council)
+    monkeypatch.setattr(
+        daily_cron, "_already_decided_today", AsyncMock(return_value=False)
+    )
+
+    await daily_cron._run_one(
+        "00000000-0000-0000-0000-000000000001", "NVDA", object(),
+        force=True, feature_provider=None, push_tasks=[], instrument="option",
+    )
+    assert captured["instrument_preference"] == "option"
+
+
+async def test_run_one_defaults_to_equity(monkeypatch: pytest.MonkeyPatch) -> None:
+    from trading_agents.jobs import daily_cron
+
+    captured: dict[str, object] = {}
+
+    async def _fake_run_council(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {"final_action": "HOLD", "proposal": None}
+
+    monkeypatch.setattr(daily_cron, "run_council", _fake_run_council)
+    monkeypatch.setattr(
+        daily_cron, "_already_decided_today", AsyncMock(return_value=False)
+    )
+
+    await daily_cron._run_one(
+        "00000000-0000-0000-0000-000000000001", "NVDA", object(),
+        force=True, feature_provider=None, push_tasks=[],
+    )
+    assert captured["instrument_preference"] == "equity"
+
+
+async def test_main_routes_each_symbol_by_its_own_asset_class(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A mixed watchlist must route per-row, not all-or-nothing."""
+    from trading_agents.jobs import daily_cron
+
+    seen: list[tuple[str, str]] = []
+
+    async def _fake_run_one(_uid, symbol, _llm, *, instrument="equity", **_kw):
+        seen.append((symbol, instrument))
+        return {"symbol": symbol, "skipped": False}
+
+    monkeypatch.setattr(daily_cron, "_run_one", _fake_run_one)
+    monkeypatch.setattr(daily_cron, "resolve_feature_provider", lambda **_kw: None)
+
+    await daily_cron.main(
+        "00000000-0000-0000-0000-000000000001",
+        ["SPY", "MSFT"],
+        force=True,
+        skip_calendar_gate=True,
+        skip_ghost_eval=True,
+        skip_reflect=True,
+        instrument_by_symbol={"SPY": "option"},  # MSFT absent -> equity
+    )
+    assert seen == [("SPY", "option"), ("MSFT", "equity")]
