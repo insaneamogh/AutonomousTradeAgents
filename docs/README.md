@@ -229,6 +229,25 @@ uv run --package agents python -m trading_agents.jobs.daily_cron --force
 | `AGENTS_REQUIRE_REAL_LLM` | off | `1` = refuse to run on canned MOCK responses |
 | `AGENTS_REQUIRE_REAL_DATA` | off | `1` = refuse to run on synthetic features |
 | `DRAWDOWN_HALT_THRESHOLD_PCT` | `-3.0` | Circuit breaker trip point |
+| `ALLOW_OPTIONS` | **off** | `1` = the council may draft options. Off ⇒ `options_disabled` vetoes every option. Both this **and** a watchlist row's `asset_class='option'` are required |
+| `ALLOW_SHORTS` | **off** | `1` = the fit node scores short directions. Off ⇒ `forbid_short_phase_0` vetoes every short |
+
+Both safety switches **fail closed** — an unset, empty, or misspelled value leaves them
+off. That is the direction that cannot lose money by accident.
+
+### Options data-quality floors (tunable without a redeploy)
+
+| Var | Default | Meaning |
+|---|---|---|
+| `OPTIONS_MIN_OPEN_INTEREST` | `100` | Real OI, from `/v2/options/contracts`. The actual liquidity gate |
+| `OPTIONS_MIN_VOLUME` | `1` | **Not** daily volume — a last-trade-size proxy (alpaca-py's `OptionsSnapshot` drops the `dailyBar` block). `0` disables it |
+| `OPTIONS_MAX_SPREAD_PCT` | `12.0` | `(ask-bid)/mid`. Widened from 8 because the 15-min delayed indicative book reads wider than the one an order fills against |
+
+These are **calibration against a delayed feed**, not loss limits — getting them wrong
+means the agent refuses everything, not that it risks too much. The loss limits
+(`options_max_premium_pct`, `options_max_total_premium_pct`, `max_position_pct`,
+`daily_drawdown_halt_pct`) are deliberately **code-level and not env-tunable**: a cap
+that an unreviewed env var can widen is not a cap.
 
 Mobile needs `EXPO_PUBLIC_API_URL` in `apps/mobile/.env`.
 

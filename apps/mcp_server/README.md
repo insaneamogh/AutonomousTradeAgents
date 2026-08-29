@@ -5,16 +5,53 @@ read-only / propose-only tools**, each a thin adapter over a function
 that already exists in this codebase. No new business logic beyond
 return-shape flattening.
 
-Built for lablab.ai's "Alpaca AI Trading Agents Hackathon" (required tech:
-Alpaca's Trading API, MCP server, CLI). This is **our own** MCP server
-wrapping the existing safe pipeline — deliberately **not** Alpaca's own
-MCP server, which exposes real order-placement tools directly to an LLM.
-That would violate this codebase's one architectural rule (see the root
+This is **our own** MCP server, wrapping the existing safe pipeline. It
+upholds the codebase's one architectural rule (see the root
 [`CLAUDE.md`](../../CLAUDE.md)):
 
 > **Agents propose, deterministic code disposes.** Agents never call
 > broker APIs directly — every order routes through
 > `packages/engine/risk` → `packages/broker`.
+
+---
+
+## ⚠️ This does NOT satisfy the hackathon's MCP requirement
+
+**Read this before assuming the requirement is covered.**
+
+The rule is: *"projects must utilize either **Alpaca's** MCP server or its
+CLI tools."* This server points the other way — it exposes **our council
+TO** an MCP client. Necessary direction for our product; wrong direction
+for the requirement. Shipping only this risks eligibility.
+
+An earlier version of this README argued that adopting Alpaca's MCP server
+would violate the propose/dispose rule, because it "exposes real
+order-placement tools directly to an LLM." **That premise is incorrect.**
+Alpaca's server supports `ALPACA_TOOLSETS` filtering, so a session can be
+mounted with market-data toolsets and **no `trading` toolset at all**:
+
+| Session | `ALPACA_TOOLSETS` | Can place an order? |
+|---|---|---|
+| research | `options-data,stock-data,assets,news` | **No — the tool is not loaded** |
+| execution | `trading,account` | Yes, and only downstream of `engine.risk` |
+
+Far from violating the rule, that *strengthens* it: the boundary stops
+being a prompt instruction and becomes a capability boundary enforced by
+the vendor's own config. "The analyst agents cannot place an order,
+because `place_option_order` is not in their tool list" is a materially
+stronger claim than "we told them not to" — and it is the strongest
+available answer to the several competing entries claiming the same
+architecture as prompt-level policy.
+
+**So: keep this server** (an agent that is itself MCP-addressable is a
+genuine bonus), **and additionally** consume Alpaca's own MCP server
+and/or CLI. See [`docs/HACKATHON.md`](../../docs/HACKATHON.md) §5 for the
+integration design and plug points.
+
+**The generalisable lesson:** when a requirement comes from an external
+spec, open the spec and quote it before building against it. This was a
+coherent argument built on an unverified premise about a third-party
+tool's capabilities — cheap to check, expensive to get wrong.
 
 ## Will never build
 

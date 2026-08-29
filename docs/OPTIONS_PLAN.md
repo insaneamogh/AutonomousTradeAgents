@@ -1,6 +1,17 @@
 # Options Trading — Design Plan
 
-**Status:** proposal, not built. Hand to an agent when you want it.
+**Status: SUPERSEDED IN PART — most of Phases 0-2 shipped 2026-08-28/29.**
+This document is the original design rationale and is still the best explanation of
+*why* the options rules are shaped the way they are. It is **not** an accurate
+statement of what exists. For current state, open [`HACKATHON.md`](HACKATHON.md) §6
+and the build log in [`../fable5findings.md`](../fable5findings.md).
+
+Known drift in this document:
+- The env flag is **`ALLOW_OPTIONS`**, not `OPTIONS_ENABLED` (which exists nowhere).
+- Selection constants have moved for the hackathon window: DTE 10-45 (was 21-45),
+  overlapping delta bands, spread cap 12% (was 8%), volume floor 1 (was 10).
+- `earnings_blackout` is built but **permanently inert** — Alpaca publishes no
+  earnings calendar. §2.5's assumption that this is wireable is wrong.
 **Prerequisite reading:** `CLAUDE.md` (the prime rule), `PLAN.md` §11 (phase order).
 
 ---
@@ -235,7 +246,7 @@ refuse an otherwise-fine direction when the options are priced badly.
 |---|---|---|
 | **0** | `engine/options/` skeleton, OCC parse/build, chain fetch, greeks fallback, **tests only — no trading** | Chain + greeks read reliably for 20 symbols |
 | **1** | Selection + sizing + risk rules, wired into a **backtest/dry-run only** | Rules demonstrably veto: illiquid, no-IV, oversized, 0DTE |
-| **2** | Paper execution, long call/put only, behind `OPTIONS_ENABLED=0` default | 2 weeks paper with expiry sweep working |
+| **2** | Paper execution, long call/put only, behind `ALLOW_OPTIONS=0` default | 2 weeks paper with expiry sweep working |
 | **3** | Expiry/assignment automation + UI (chain view, greeks on pick detail, expiry countdown) | — |
 | **4** | Vertical spreads | Phase 3 stable |
 

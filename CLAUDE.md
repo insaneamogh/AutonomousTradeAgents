@@ -1,127 +1,283 @@
 # Agent Collaboration Guide — Autonomous Trading App
 
-Read this before writing code.
+**Read this fully before writing any code. Then read [`docs/HACKATHON.md`](docs/HACKATHON.md).**
 
 ---
 
-## The product
+## 0. Who you are — identify yourself in every commit
 
-US-first autonomous trading agent app. Users hand over a broker session (Alpaca); the agent council proposes trades; deterministic Python decides, sizes, executes; the mobile app surfaces approvals and logs every decision for audit.
+Two different models work on this repo, on two different accounts, in alternating
+sessions. The user hits a 5-hour limit on one and hands over to the other. Neither of
+you can see the other's conversation. **The git log is the only channel between you.**
 
-**Pivot from TradeMatrix** (a stock-scoring platform). The old scoring engine and the old `agent-middleware` (9 Managed-Agents-API agents) are **out of scope** for v1. Don't reference them in new code.
+Every commit message MUST end with an identity trailer:
 
-Full plan: [`PLAN.md`](PLAN.md). Full design system: [`DESIGN.md`](DESIGN.md).
+| If you are… | Use this trailer |
+|---|---|
+| Claude **Opus** (primary session) | `ID:MODEL1REAL` |
+| Claude **Sonnet** (handover session) | `ID:MODEL2OFF` |
+| Any other model | `ID:MODEL2OFF` |
+
+Put it on its own line, last, after the `Co-Authored-By:` line:
+
+```
+fix(options): stop vetoing every options proposal
+
+<body>
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+ID:MODEL1REAL
+```
+
+**Do not guess.** If you are not certain which model you are, you are `ID:MODEL2OFF`.
+
+### Before you start any session
+
+```bash
+git log --oneline -20                       # what happened while you were away
+git log -1 --format=%B                      # full message of the last commit
+sed -n '/^# Build log/,/^### /p' fable5findings.md | head -60
+```
+
+The last commit's body and the newest `fable5findings.md` entry are written *for you*.
+They will tell you what is done, what is verified, and what is left open. Read them
+instead of re-deriving context or asking the user to repeat themselves.
+
+### Before you end a session
+
+Leave the next model a landing pad. Append to `fable5findings.md` (see §6) covering:
+what you changed, **what you actually verified vs. what you only believe**, and what is
+still open. If you ran out of budget mid-task, say exactly where you stopped.
 
 ---
 
-## The one architectural rule
+## 1. What we are doing right now
+
+**Competing in the Alpaca AI Trading Agents Hackathon. Deadline: Fri Sep 4, 11:00 AM
+EDT.** Full brief, requirements, competitive landscape, and day plan:
+**[`docs/HACKATHON.md`](docs/HACKATHON.md) — read it before touching anything.**
+
+The 20-second version:
+
+- Our entry is **"The Refusal Ledger"** — we are the only team measuring, in dollars,
+  what the agent's *refusals* were worth. Ghost P&L is the product, not a side feature.
+- **Options trading is a hard requirement.** So is using **Alpaca's own MCP server or
+  CLI** (see §2 — this one has already been got wrong once).
+- Judged on: P&L Performance · Technology Implementation · Creativity · Presentation.
+- ~4 trading sessions of runway. P&L is variance-dominated over that window; the
+  Refusal Ledger is what makes the entry strong regardless of which way P&L lands.
+
+---
+
+## 2. The MCP requirement — read this twice
+
+The hackathon rule is: *"projects must utilize either **Alpaca's** MCP server or its
+CLI tools."*
+
+`apps/mcp_server/` exposes **our council TO Claude**. That is the opposite direction.
+It is a well-built, well-tested, read-only server and it is genuinely nice to have —
+but **it does not satisfy the requirement**, and shipping only that risks eligibility.
+
+- **Keep `apps/mcp_server/`.** It is a bonus ("our agent is itself MCP-addressable").
+  Do not delete it.
+- **Additionally** consume Alpaca's own tooling:
+  - MCP server: `uvx alpaca-mcp-server` (65 tools, `ALPACA_TOOLSETS` scoping,
+    `place_option_order`, `get_option_chain`, `get_option_snapshot` with Greeks)
+  - CLI: `github.com/alpacahq/cli` — explicitly built for "long-running agent sessions,
+    cron jobs and CI", which is exactly `apps/api/app/services/council/scheduler.py`
+
+**The lesson, generalised — this is the rule that would have prevented it:** when a
+requirement comes from an external spec, *open the spec and quote it* before building.
+Do not build against a plausible reading of a requirement you have not read. Cheap to
+check, expensive to get wrong.
+
+---
+
+## 3. The one architectural rule
 
 **Agents propose, deterministic code disposes.**
 
-- Agents never call broker APIs directly. Every order routes through `packages/engine/risk` → `packages/broker`.
+- Agents never call broker APIs directly. Every order routes through
+  `packages/engine/risk` → `packages/broker`.
 - Agents never originate raw data fetches. They receive pre-computed feature dicts.
-- LLM output is **never** the kill-switch. Risk vetoes are deterministic Python with named rules (`pdt_block`, `daily_drawdown_halt`, `max_position_pct_trim`, etc.).
-- Strategy code generated by an LLM is sandbox-tested → versioned artifact → loaded at runtime. Never `eval()` LLM output in the live path.
+- LLM output is **never** the kill-switch. Risk vetoes are deterministic Python with
+  named rules (`pdt_block`, `max_premium_pct`, `illiquid_contract`, …).
+- Never `eval()` LLM output in the live path.
 
-If a feature request would put LLM output inside a risk decision or execution path, push back.
+If a feature request would put LLM output inside a risk decision or execution path,
+push back.
 
----
-
-## v1 scope — what's IN, what's OUT
-
-| In v1 | Out of v1 |
-|---|---|
-| US equities + ETFs; options Phase A (long calls/puts only, no spreads/assignment) | Options Phase B (spreads) / Phase C (cash-secured puts, covered calls, assignment) |
-| Alpaca paper, then live | Zerodha / Upstox / IBKR |
-| Swing trades (1–10 day holds, daily bars) | Intraday (v1.5), India (v2) |
-| LangGraph state-machine council | Mixture-of-experts learned routing |
-| Self-approval per trade + auto-window | Performance-fee pricing (RIA trigger) |
-
-If a request implies any "Out" item, confirm before building.
+**Note for the hackathon:** this framing alone is now commoditised — at least five
+competitors claim it. It is still how we build; it is no longer what makes us
+distinctive. The Refusal Ledger is.
 
 ---
 
-## Tech stack (locked)
+## 4. How to work here — the standard this repo is held to
+
+This codebase has repeatedly shipped bugs that a passing test suite did not catch. Every
+rule below exists because something real got through.
+
+### 4.1 A test that passes before your fix proves nothing
+
+**Always revert your fix and confirm the new test fails.** Then restore it.
+
+Three separate bugs shipped behind green tests here:
+- The options capstone test had a `HOLD` escape hatch that `return`ed before its
+  assertions ran. 100% of options proposals were being vetoed in production while it
+  stayed green.
+- Two executor fixtures set `symbol` to the OCC string, making `symbol` and
+  `occ_symbol` indistinguishable — so reading the wrong field still produced the
+  right value.
+
+If you cannot make your test fail by breaking the code, you have not written a test.
+
+### 4.2 Do not trust docstrings, comments, or plan docs
+
+Verified wrong in this repo, all found by checking:
+- `MinimalOptionsContextProvider`'s docstring says to compute `days_to_earnings` from
+  corporate actions. `features/corporate_actions.py` states plainly that Alpaca
+  publishes **no earnings calendar**. The docstring is wrong.
+- `CLAUDE.md` itself claimed LiteLLM routing that does not exist anywhere in the code.
+- `docs/OPTIONS_PLAN.md` says "Status: proposal, not built" — most of it shipped.
+- `strategy_confidence.py` describes an LLM Selector node that was deleted.
+
+Read the code. When a doc and the code disagree, the code wins — then fix the doc.
+
+### 4.3 Measure against reality, don't reason about it
+
+The liquidity gate was rejecting 89% of valid option contracts. No amount of reading
+found it; one call to the live chain did:
+
+```
+volume>=10 via last_trade_size:  18 → 2      (the bug)
+volume>=10 via real daily volume: 18 → 18
+```
+
+You have live Alpaca paper keys. Before changing a threshold, dump the funnel and see
+what actually survives. `ContractSelectionResult.funnel_counts` exists for this.
+
+### 4.4 The same number in two places will bite you
+
+`options_min_volume` lives in BOTH `selection.py` (a heuristic) and `RiskCaps` (the
+authoritative veto). Loosening one leaves the other rejecting a layer later — the trap
+`selection.py`'s own docstring warns about. Before changing a threshold, grep for it.
+
+### 4.5 Say what you actually verified
+
+Distinguish these, always:
+- "Verified live: a council pass returns `BUY NVDA260909C00225000, 4 @ $2.17`"
+- "Tests pass, but I could not test the live fill because the market is closed"
+- "I believe this is right but did not check"
+
+The user values an honest "I didn't verify that" far above a confident guess. If tests
+fail, say so and paste the output. If you skipped something, say which and why.
+
+### 4.6 Fix the cause, not the symptom
+
+When something looks broken, find *why* before patching. The empty-dashboard bug was
+not a UI bug — `PostgresDecisionLog` was writing a debug envelope into the `proposal`
+column, and that envelope is truthy even when empty, so every HOLD read as "a real
+proposal exists" and rendered blank. Patching the UI would have hidden it.
+
+### 4.7 Scope discipline
+
+Do the task asked. If you find a real problem outside that scope, **say so and keep
+going** — don't silently widen the change, and don't silently drop part of the ask. If
+something is genuinely blocked, finish everything else and state plainly what you left
+and why.
+
+---
+
+## 5. Tech stack (locked)
 
 | Layer | Choice |
 |---|---|
-| Mobile | React Native + Expo (managed) + NativeWind + Zustand + TanStack Query + Reanimated 3 |
+| Mobile | React Native + Expo + NativeWind + Zustand + TanStack Query |
+| Desktop web | Separate tree under `apps/mobile/src/desktop/` (Platinum Glass design system) |
 | API | FastAPI + Pydantic v2 + SQLAlchemy 2.0 async + Alembic |
-| Agents | LangGraph + LiteLLM proxy (Haiku 4.5 / Sonnet 4.6 / Opus 4.7 per node) |
-| Broker | Custom abstraction with Alpaca implementation |
-| Data | Postgres + TimescaleDB + Redis |
-| Storage | S3 / Cloudflare R2 (artifacts, agent conversation logs) |
-| Deploy | Railway (API + agents), EAS (mobile) |
-| Observability | Sentry + Better Stack + LiteLLM cost ledger |
-| Secrets | Doppler |
+| Agents | LangGraph + **direct Anthropic SDK** (`apps/agents/trading_agents/llm.py`) |
+| Broker | Custom abstraction, Alpaca implementation (`packages/broker`) |
+| Data | Postgres + Redis · Alpaca (bars, chains, orders) · FRED (macro) |
+| Deploy | Railway (`railway up --service AutonomousTradeAgents --detach`) |
 | Repo | pnpm workspaces + Turborepo (JS), uv workspaces (Python) |
 
----
+`litellm` is in the lockfile but **imported zero times**. There is no provider
+abstraction; `LLM.complete()` calls Anthropic directly. Don't cite LiteLLM in docs.
 
-## Code conventions
-
-### Python
-- `ruff` for lint+format, `mypy` strict, `pytest` for tests
-- Async-first (FastAPI, SQLAlchemy async, aiohttp)
-- Dataclasses or Pydantic models for typed boundaries — no untyped dicts crossing module boundaries
-- Every public function has a docstring; comments are rare and explain WHY only
-- Every risk rule has a named identifier (`veto_rule: str`) for audit logs
-
-### TypeScript / React Native
-- `tsc --noEmit` must pass; strict mode on
-- `eslint` (airbnb-typescript + react-native) + `prettier`
-- NativeWind classes via the `cn()` helper in `packages/ui/src/utils.ts`
-- Components use **design tokens only** — no raw hex, no raw spacing literals
-- Every interactive element: `accessibilityLabel`, 44pt minimum tap target
-
-### Design system enforcement (from `DESIGN.md`)
-- Approve button uses `accent-primary`, **never** `gain`/green. Green is reserved for fills + positive P&L.
-- All numerals use Inter with `font-variant-numeric: tabular-nums`.
-- Drawdown circuit-breaker UI uses the `danger` token with a persistent banner that requires explicit acknowledgement.
-- Light + Dark must both be tested before any UI commit.
+**Council cost:** 5 LLM calls/pass (Router+Technical on Haiku; Fundamental, Macro,
+Drafter on Sonnet), max 10 with the one re-ask. ~$0.04/pass. `strategy_fit` and
+`risk_officer` are deterministic — zero LLM. Cost is not a constraint here; don't
+spend hackathon time optimising it.
 
 ---
 
-## Phase order — don't skip ahead
+## 6. Git hygiene
 
-Per `PLAN.md` §11:
+- **Land work on `main` directly.** No feature branches unless the user asks.
+- Conventional Commits (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`).
+- Small, focused, one logical change.
+- Never `--no-verify`, never `--force`, never `reset --hard` without explicit
+  instruction.
+- Never commit secrets. `.env` is gitignored; use `.env.example`.
+- **End every commit with your identity trailer (§0).**
 
-1. **Phase 0** — Skeleton + Alpaca paper smoke test + broker abstraction + minimal schema.
-2. **Phase 1** — Event-driven backtester + risk engine (PDT, drawdown, concentration, sizing) + reconciler + 5 hand-coded reference strategies.
-3. **Phase 2** — LangGraph agent council on paper trading.
-4. **Phase 3** — Mobile app v0.
-5. **Phase 4** — Paper trading with founder + 2-3 trusted users + small real capital. _You are here — paper trading is live end-to-end on the founder's own account (real Alpaca paper connection, Postgres-backed, Google Sign-In); real capital not yet enabled (`TRADING_MODE=paper` throughout). Current focus: options trading Phase A + the production-grade wiring-gap fixes tracked in `fable5findings.md`'s build log._
-6. **Phase 5/6** — Beta + public.
+### Commit messages are the handover protocol
 
-**Don't build agents before the backtester ships.** Don't ship live trading before Phase 4 paper-validation is in.
-
----
-
-## Git hygiene
-
-- Branch: **land work on `main`.** The user wants changes committed and pushed to `main` directly — do not open a separate feature branch unless the user explicitly asks for one. (`main` is the working + default branch.)
-- Commits: small, focused, one logical change. Conventional Commits prefix (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`).
-- Never `--no-verify`, never `--force`, never `reset --hard` without explicit user instruction.
-- Don't commit secrets. `.env` is gitignored — use `.env.example` for templates.
+The other model reads these instead of asking the user to repeat themselves. A good
+message here answers: what was broken, *how you know*, why the fix is right, and what
+you verified. The recent options commits are the reference standard — match them.
 
 ### Build log — keep `fable5findings.md` current (REQUIRED)
 
-**After every commit, append an entry to the "Build log" section at the bottom of [`fable5findings.md`](fable5findings.md)** so future agents can pick up where the last one left off without re-deriving context. One entry per commit (or per coherent group of commits in a single turn):
+**After every commit, append to the "Build log" section** of
+[`fable5findings.md`](fable5findings.md). The commit isn't done until the entry exists.
 
 ```
-### <date> — <commit short-sha> <conventional-commit subject>
-- What changed and why (1–4 bullets).
-- Files/areas touched.
-- Anything left open / follow-ups.
+### <date> — <short-sha> <conventional-commit subject>
+- What changed and why.
+- What you VERIFIED, and how (command / output).
+- Anything left open.
 ```
 
-This is the running history of what's been built on top of the original audit. Treat it as part of the commit: the commit isn't "done" until the log entry is written. The audit sections above the build log are the original findings — don't rewrite them; append below.
+Newest entries go at the top of the build log. Don't rewrite the audit sections above
+it — append below the `# Build log` heading.
 
 ---
 
-## Working with the user
+## 7. Verification commands
 
-- The user writes detailed plans (`PLAN.md`, `DESIGN.md`) before asking for code. Align with the plan; flag conflicts before implementing.
-- Push back on plan items that look wrong with reasoning. Don't sycophant.
-- Open questions in `PLAN.md` §14 (solo vs co-founder, Deloitte compliance, RIA registration) are real — don't fill them in unilaterally.
-- The user values honest assessments over progress reports. If something is broken or risky, say so.
+```bash
+# Full Python suite — 757 passing, 9 skipped as of 2026-08-29
+.venv/bin/python -m pytest apps/agents apps/api packages/ -q
+
+# apps/mcp_server needs `uv sync --all-packages` first, else it fails collection
+.venv/bin/python -m pytest apps/ packages/ -q
+
+# Lint (9 pre-existing errors — check the baseline before blaming yourself)
+.venv/bin/python -m ruff check <paths>
+
+# TypeScript
+pnpm -s exec tsc --noEmit -p apps/mobile/tsconfig.json
+pnpm --filter mobile exec jest --silent
+
+# Deploy
+railway up --service AutonomousTradeAgents --detach
+railway variables --service AutonomousTradeAgents --set "KEY=value"
+```
+
+**Check the baseline before attributing a failure to your change:** `git stash`, re-run,
+`git stash pop`. Several ruff and mypy errors here predate you.
+
+---
+
+## 8. Working with the user
+
+- They write detailed plans first. Align with them; flag conflicts before implementing.
+- **Push back with reasoning when something looks wrong. Don't sycophant.** They have
+  explicitly said they value honest assessments over progress reports.
+- They are often testing against the live deployment while you work — a bug they report
+  is real, current, and worth reproducing before theorising.
+- Don't fill in genuinely open questions unilaterally.
+- **You may not execute trades**, even on paper. Placing/approving orders is the user's
+  action. Build and verify the path; hand them the click.

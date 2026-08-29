@@ -332,6 +332,36 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 > Everything below the audit (§1–§8) is the running history of what's been built on top of it. **Per CLAUDE.md: every commit appends an entry here** so the next agent can resume without re-deriving context. Newest first. Don't edit the audit above; append here.
 
+## 📍 Start here if you are a model picking up this repo
+
+Two models work on this codebase in alternating sessions on two different accounts,
+because the user hits a 5-hour limit on one and hands over to the other. **You cannot
+see the other model's conversation. This file and the git log are the only channel
+between you.** The user should never have to repeat context that is already written
+here.
+
+**Read, in this order:**
+
+1. [`CLAUDE.md`](CLAUDE.md) — §0 tells you which identity trailer to put on your
+   commits (`ID:MODEL1REAL` for Opus, `ID:MODEL2OFF` for Sonnet or anything else).
+   §4 is the engineering standard this repo is held to; it is not boilerplate — every
+   rule in it exists because a real bug shipped past a green test suite.
+2. [`docs/HACKATHON.md`](docs/HACKATHON.md) — **what we are actually doing right now**
+   and why. Deadline, hard requirements, our positioning, and an explicit "do not do
+   these" list.
+3. The newest entries below, and `git log -1 --format=%B`. They are written for you.
+
+**The single most useful habit:** when an entry says *"Verified live: …"*, that claim
+was actually executed and its output pasted. When it says *"left open"*, that work is
+genuinely not done. Trust the distinction and preserve it in your own entries —
+separate what you verified from what you believe.
+
+**Current mission in one line:** we are entered in the Alpaca AI Trading Agents
+Hackathon (deadline **Fri Sep 4, 11:00 AM EDT**) as *"The Refusal Ledger"* — the only
+team measuring, in dollars, what the agent's refusals were worth. Options trading and
+use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
+`docs/HACKATHON.md` §5 for the MCP requirement, which has already been misread once.
+
 ## Roadmap status (from §7)
 
 | Item | Status | Where |
