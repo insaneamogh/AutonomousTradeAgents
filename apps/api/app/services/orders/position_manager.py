@@ -460,12 +460,22 @@ async def _close_position(
     # all; treat that exactly like an empty proposal rather than crashing.
     stored_proposal = getattr(decision, "proposal", None) or {}
 
+    # ``symbol`` is the UNDERLYING on an options decision (that is what
+    # agent_decisions.symbol stores, and what the cron dedup, ghost marking
+    # and the UI all read). Everything that talks to the BROKER — the
+    # open-position match, OCC parsing, resting-order cancel, and the close
+    # order itself — must use the contract. Alpaca keys option positions by
+    # OCC, so matching on the underlying finds nothing and an agent-managed
+    # option could never be closed.
+    _occ_stored = stored_proposal.get("occSymbol") or stored_proposal.get("occ_symbol")
+    wire_symbol = str(_occ_stored).upper() if _occ_stored else symbol
+
     async with with_broker_client(user_id, broker="alpaca") as (broker, conn):
         risk_ctx = await _build_risk_context(broker, user_id=user_id)
         held = next(
             (
                 p for p in risk_ctx.open_positions
-                if p.symbol.upper() == symbol and p.qty != 0
+                if p.symbol.upper() == wire_symbol and p.qty != 0
             ),
             None,
         )
@@ -487,10 +497,10 @@ async def _close_position(
                 if held is not None and held.qty != 0
                 else (float(decision.fill_avg_price or 0) or 1.0)
             )
-            occ = OccSymbol.try_parse(symbol)
+            occ = OccSymbol.try_parse(wire_symbol)
             option = OptionLegDetails(
                 underlying_symbol=occ.underlying if occ is not None else symbol,
-                occ_symbol=symbol,
+                occ_symbol=wire_symbol,
                 contract_type=(
                     contract_type_of(occ.contract_type) if occ is not None
                     else contract_type_of(str(stored_proposal.get("contractType", "call")))
@@ -504,7 +514,7 @@ async def _close_position(
                 action="sell_to_close",
             )
             risk_proposal: RiskProposal = to_risk_proposal(
-                symbol=symbol,
+                symbol=wire_symbol,
                 side=RiskSide.SELL,
                 qty=qty,
                 estimated_notional=round(qty * last_price * multiplier, 2),
@@ -540,7 +550,7 @@ async def _close_position(
             )
             return False
 
-        canceled = await broker.cancel_open_orders(symbol)
+        canceled = await broker.cancel_open_orders(wire_symbol)
         if canceled:
             logger.info(
                 "position_manager: canceled %d resting orders on %s before close",
@@ -552,7 +562,7 @@ async def _close_position(
             broker_connection_id=conn.id,
             decision_id=decision.id,
             client_order_id=client_order_id,
-            symbol=symbol,
+            symbol=wire_symbol,
             side=db_side,
             qty=qty,
             is_paper=conn.is_paper,
@@ -564,7 +574,7 @@ async def _close_position(
 
         order = await broker.place_order(
             OrderRequest(
-                symbol=symbol,
+                symbol=wire_symbol,
                 side=broker_close_side,
                 qty=qty,
                 order_type=order_type,

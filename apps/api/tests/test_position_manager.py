@@ -294,10 +294,15 @@ async def test_close_position_closes_an_option_with_sell_to_close(
 
     decision = SimpleNamespace(
         id=uuid.uuid4(),
-        symbol="AAPL260828C00250000",
+        # UNDERLYING on the row; the contract lives on the proposal.
+        symbol="AAPL",
         fill_qty=1,
         fill_avg_price=2.50,
-        proposal={"isOption": True, "multiplier": 100},
+        proposal={
+            "isOption": True,
+            "multiplier": 100,
+            "occSymbol": "AAPL260828C00250000",
+        },
     )
 
     session_cm = _FakeSessionCM()
@@ -318,6 +323,14 @@ async def test_close_position_closes_an_option_with_sell_to_close(
     assert request.order_type.value == "LIMIT"
     # market_value(300) / (qty(1) * multiplier(100)) = 3.00 per contract.
     assert request.limit_price == 3.00
+
+    # THE SEAM. Alpaca keys option positions and orders by OCC, so every
+    # broker-facing use must be the contract while the decision row keeps the
+    # underlying. Matching the held position on "AAPL" finds nothing, and an
+    # agent-managed option could then never be closed at all.
+    assert request.symbol == "AAPL260828C00250000"
+    assert request.symbol != decision.symbol
+    assert broker.canceled == ["AAPL260828C00250000"]
 
 
 async def test_close_position_option_falls_back_to_proposal_when_unheld(
@@ -362,13 +375,33 @@ async def test_close_position_option_falls_back_to_proposal_when_unheld(
 # ─────────────────────────────────────────────────────────────────────
 
 
-def _sweep_decision(*, symbol: str, is_option: bool, expiry_offset_days: int) -> SimpleNamespace:
+def _sweep_decision(
+    *,
+    symbol: str,
+    is_option: bool,
+    expiry_offset_days: int,
+    occ_symbol: str | None = None,
+) -> SimpleNamespace:
+    """``symbol`` is the UNDERLYING; ``occ_symbol`` is the contract.
+
+    An options decision row stores the underlying (that is what the cron
+    dedup, ghost marking and the UI read) and carries the OCC string on the
+    proposal. Defaulting ``occ_symbol`` to ``symbol`` keeps the equity
+    fixtures unchanged.
+    """
     expiry = (datetime.now(UTC) + timedelta(days=expiry_offset_days)).date().isoformat()
+    proposal: dict[str, object] = {
+        "isOption": is_option,
+        "expiryDate": expiry,
+        "multiplier": 100,
+    }
+    if is_option:
+        proposal["occSymbol"] = occ_symbol or symbol
     return SimpleNamespace(
         id=uuid.uuid4(),
         symbol=symbol,
         fill_qty=1,
-        proposal={"isOption": is_option, "expiryDate": expiry, "multiplier": 100},
+        proposal=proposal,
     )
 
 

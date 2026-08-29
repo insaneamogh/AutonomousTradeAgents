@@ -321,6 +321,14 @@ async def _execute_via_broker(
         # ~24h, so a retry of this whole function won't double-submit, and
         # the DB insert is ON CONFLICT DO NOTHING on the same key.
         client_order_id = _client_order_id_for(proposal.id)
+        # The symbol that goes on the WIRE. Domain code (agent_decisions.symbol,
+        # the daily-cron dedup, ghost marking, every UI list) keeps the
+        # UNDERLYING; only the broker call takes the OCC contract string.
+        # Sending proposal.symbol for an option would place an EQUITY order on
+        # the underlying at the option's premium price — and the
+        # OptionBracketNotSupportedError guard would silently no-op too, since
+        # OccSymbol.try_parse("NVDA") is None.
+        wire_symbol = _wire_symbol_for(proposal)
         try:
             order_row_id = await persist_order_submit(
                 user_id=user_id,
@@ -343,7 +351,7 @@ async def _execute_via_broker(
         try:
             order = await broker.place_order(
                 OrderRequest(
-                    symbol=proposal.symbol,
+                    symbol=wire_symbol,
                     side=_broker_side_for(proposal),
                     qty=adjusted_qty,
                     # Options are ALWAYS priced/executed as LIMIT, never
@@ -820,6 +828,24 @@ def _re_run_risk(
     return evaluate(risk_proposal, context, caps, specialists=inputs.specialists)
 
 
+def _wire_symbol_for(proposal: ApprovalProposalDto) -> str:
+    """The symbol the BROKER is addressed with.
+
+    Deliberately not the same thing as ``proposal.symbol``. Domain code keeps
+    the UNDERLYING everywhere — ``agent_decisions.symbol``, the daily-cron's
+    one-decision-per-(user, symbol, day) dedup, ghost marking against daily
+    closes, and every UI list all read it, and an OCC string breaks each of
+    them in a different way. The OCC contract string appears only here, on the
+    wire, and in broker-position matching (Alpaca keys option positions by
+    OCC).
+
+    Equities are unaffected: ``occ_symbol`` is None for them.
+    """
+    if proposal.is_option:
+        return proposal.occ_symbol or proposal.symbol
+    return proposal.symbol
+
+
 def _option_risk_proposal(
     proposal: ApprovalProposalDto, confidence: float, inputs: RiskInputs
 ) -> RiskProposal:
@@ -842,7 +868,7 @@ def _option_risk_proposal(
     inputs the council used" contract ``load_risk_inputs`` documents for
     confidence/specialist scores.
     """
-    occ = proposal.occ_symbol or proposal.symbol
+    occ = _wire_symbol_for(proposal)
     parsed = OccSymbol.try_parse(occ)
     action = proposal.option_action or "buy_to_open"
 

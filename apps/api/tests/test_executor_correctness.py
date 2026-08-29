@@ -451,16 +451,23 @@ def test_live_agent_buy_without_bracket_is_refused(
 def _option_proposal(
     *,
     occ_symbol: str = "AAPL260901C00250000",
+    underlying: str = "AAPL",
     qty: int = 1,
     limit_price: float = 2.50,
     conviction: int = 4,
 ) -> ApprovalProposalDto:
+    # ``symbol`` is the UNDERLYING and ``occ_symbol`` is the contract — the
+    # convention the council actually produces (runtime._to_proposal_dto).
+    # This fixture used to set both to the OCC string, which made the two
+    # indistinguishable and is why nothing caught the executor placing an
+    # EQUITY order on the underlying at the option's premium price.
+    #
     # Far enough out that this stays inside the [7, 60] DTE window no
     # matter which day this test actually runs on.
     expiry = (datetime.now(UTC) + timedelta(days=45)).date()
     return ApprovalProposalDto(
         id=f"agent-test-{occ_symbol.lower()}",
-        symbol=occ_symbol,
+        symbol=underlying,
         side="BUY",
         is_option=True,
         option_action="buy_to_open",
@@ -521,6 +528,15 @@ def test_live_agent_options_buy_without_bracket_is_not_refused(
         assert len(broker.placed) == 1
         placed = broker.placed[0]
         assert placed.side == BrokerSide.BUY_TO_OPEN
+        # THE SEAM. The council writes symbol=underlying / occ_symbol=contract;
+        # the broker must be addressed with the CONTRACT. Sending the
+        # underlying here places an equity order at the option's premium
+        # price — and the OptionBracketNotSupportedError guard silently
+        # no-ops too, because OccSymbol.try_parse("AAPL") is None. No test
+        # spanned this before; the fixture set both fields to the same
+        # string so the two were indistinguishable.
+        assert placed.symbol == dto.occ_symbol
+        assert placed.symbol != dto.symbol
         assert "options_agent_managed_exit_no_broker_bracket" in result.informational_flags
 
     asyncio.run(run())
