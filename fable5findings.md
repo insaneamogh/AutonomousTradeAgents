@@ -385,6 +385,37 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-29 — `add7346a` docs: model handover protocol + hackathon brief + MCP correction
+
+Process change, not a code change. Two models alternate on this repo across
+5-hour limits on separate accounts and cannot see each other's
+conversations; the user was re-explaining context at every handover.
+
+- **Commit identity trailer is now mandatory**: `ID:MODEL1REAL` (Opus) or
+  `ID:MODEL2OFF` (Sonnet / anything else). Unsure ⇒ MODEL2OFF.
+- **`CLAUDE.md` rewritten** around handover (§0) and a new engineering
+  standard (§4) derived entirely from bugs that shipped past a green suite
+  here: revert-test your tests, don't trust docstrings, measure against the
+  live API, watch for one threshold in two authoritative places, and state
+  what you verified vs. what you believe.
+- **`docs/HACKATHON.md` (new)** — deadline, the four hard eligibility
+  requirements, the Refusal Ledger positioning and why the obvious framing is
+  already claimed by five competitors, and a do-not-do list.
+- **`README.md` (new, root)** — judge-facing. Honest limitations section.
+- **MCP record corrected** in `apps/mcp_server/README.md`. Its argument that
+  Alpaca's MCP server would violate propose/dispose rested on a false premise:
+  `ALPACA_TOOLSETS` allows mounting market-data tools with no `trading`
+  toolset, which strengthens the boundary rather than weakening it. Keep our
+  server; it just doesn't satisfy the requirement alone.
+- Documented `ALLOW_OPTIONS`/`ALLOW_SHORTS` + the three tunable options floors
+  in `docs/README.md`; marked `docs/OPTIONS_PLAN.md` partly superseded (it
+  still said "proposal, not built" and cited a nonexistent `OPTIONS_ENABLED`).
+
+**Verified:** 757 passed, 9 skipped; all cross-doc links resolve.
+**Left open:** unchanged from the entry below — fresh paper account +
+options level ≥ 2, reconciler tick ordering, Alpaca MCP/CLI integration,
+ghost-marking options against option bars.
+
 ### 2026-08-29 — `0b824cbb`+`64979a8c`+`56a06779` fix(options): the three blockers that made options unreachable
 
 Repositioning for the Alpaca AI Trading Agents hackathon (deadline Sep 4,
