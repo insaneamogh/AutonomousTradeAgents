@@ -104,19 +104,40 @@ ContractType = Literal["call", "put"]
 
 # ── Selection-specific DTE window (see module docstring §2 for why this is
 # NOT RiskCaps.options_min_dte/options_max_dte) ────────────────────────────
-_DTE_MIN = 21
+# Floor is 10, not the 7 of ``RiskCaps.options_min_dte``: ``min_dte`` measures
+# from ``context.now_utc`` while selection measures from its own
+# ``datetime.now(UTC)``, so a UTC-boundary crossing between the two gives an
+# off-by-one veto at exactly 7. 10 leaves a 3-day buffer, and still clears the
+# ``options_expiry_sweep_dte = 2`` sweep for a contract opened late in the week.
+_DTE_MIN = 10
 _DTE_MAX = 45
 
 # ── Delta bands by conviction (see module docstring §3) ───────────────────
+# The bands OVERLAP deliberately. They used to be disjoint at 0.45, which made
+# a delta-0.50 contract — at the money, and therefore the deepest open interest
+# and tightest book on the board — reachable only when the Drafter's confidence
+# cleared 0.7. It usually doesn't, so the single most liquid strike was the one
+# routinely excluded. Conviction still widens the band; neither tier can now
+# exclude ATM.
 _HIGH_CONVICTION_THRESHOLD = 0.7
-_HIGH_CONVICTION_DELTA_BAND = (0.45, 0.65)
-_LOW_CONVICTION_DELTA_BAND = (0.25, 0.45)
+_HIGH_CONVICTION_DELTA_BAND = (0.40, 0.70)
+_LOW_CONVICTION_DELTA_BAND = (0.25, 0.55)
 
 # ── Liquidity floor (mirrors RiskCaps.options_* defaults — see module
 # docstring §4 for why they are hardcoded here rather than imported) ──────
 _MIN_OPEN_INTEREST = 100
-_MIN_VOLUME = 10
-_MAX_RELATIVE_SPREAD_PCT = 8.0
+# NOT a daily-volume floor. ``ContractQuote.volume`` is populated from the
+# snapshot's LAST TRADE SIZE (see contracts.py) — the size of one print,
+# typically 1-5 lots — because the alpaca-py ``OptionsSnapshot`` model drops
+# the ``dailyBar`` block that carries real volume. Measured against the live
+# SPY chain, a floor of 10 rejected 16 of 18 contracts that had already
+# cleared DTE, delta and IV; real daily volume would have kept all 18. So this
+# now means only "the contract has traded at all", and open interest (which IS
+# real, from /v2/options/contracts) carries the liquidity judgment.
+_MIN_VOLUME = 1
+# Widened from 8.0: the free tier's indicative feed is 15 minutes delayed, so
+# the quoted book reads wider than the one you would actually fill against.
+_MAX_RELATIVE_SPREAD_PCT = 12.0
 
 # ── IV-vs-realized-vol plausibility band (see module docstring §6) ───────
 # Provisional judgment calls, not derived from data — this is paper-only
@@ -225,7 +246,10 @@ def _iv_within_plausible_band(iv: float, realized_vol_pct: float) -> bool:
 def _passes_liquidity(quote: ContractQuote) -> bool:
     if quote.open_interest is None or quote.open_interest < _MIN_OPEN_INTEREST:
         return False
-    if quote.volume is None or quote.volume < _MIN_VOLUME:
+    # Guarded on ``> 0`` so the floor can be switched off entirely. Without
+    # it, setting _MIN_VOLUME to 0 would still hard-fail every contract whose
+    # volume is None, which is the common case on a thin last-trade proxy.
+    if _MIN_VOLUME > 0 and (quote.volume is None or quote.volume < _MIN_VOLUME):
         return False
     if quote.bid is not None and quote.ask is not None:
         spread_pct = _relative_spread_pct(quote.bid, quote.ask)

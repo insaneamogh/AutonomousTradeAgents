@@ -81,12 +81,34 @@ async def risk_officer_node(
 
     asset = (state.get("context", {}) or {}).get("asset") or {}
     is_option = bool(proposal.get("is_option", False))
+    # ``last_price`` means "the price one unit of the thing being risked
+    # costs". For equities that is the share price; for an option it is the
+    # per-CONTRACT premium. Passing the underlying's share price here made
+    # ``max_premium_pct`` compute premium = last_price * multiplier, turning
+    # a $229 underlying into a $22,900 "premium" and vetoing every single
+    # options proposal the council ever produced (live: "68.71% of equity,
+    # cap 1.00%" on a position whose real premium was 0.96%).
+    #
+    # Same rule the executor's re-risk-check already documents in
+    # ``_option_risk_proposal``: the premium is ``limit_price`` (the ask the
+    # contract was selected and sized against), never a reverse-computed
+    # ``estimated_notional / qty``, which is a per-share equity price
+    # carrying no multiplier.
+    underlying_last = float(state.get("context", {}).get("last_price", 0.0) or 0.0)
+    if is_option:
+        last_price = (
+            _opt_float(proposal.get("limit_price"))
+            or _opt_float(proposal.get("ask"))
+            or 0.0
+        )
+    else:
+        last_price = underlying_last
     risk_proposal = RiskProposal(
         symbol=str(state["symbol"]),
         side=Side(str(proposal.get("side", "BUY")).upper()),
         qty=int(proposal.get("qty", 0)),
         estimated_notional=float(proposal.get("estimated_notional", 0.0)),
-        last_price=float(state.get("context", {}).get("last_price", 0.0) or 0.0),
+        last_price=last_price,
         confidence=float(proposal.get("confidence", 0.0)),
         closes_intraday_position=False,  # Phase 0: agents only open new swings
         is_option=is_option,
@@ -124,7 +146,14 @@ async def risk_officer_node(
     if decision.adjusted_qty is not None and decision.adjusted_qty != risk_proposal.qty:
         new_proposal = dict(proposal)
         new_proposal["qty"] = decision.adjusted_qty
-        new_proposal["estimated_notional"] = round(decision.adjusted_qty * risk_proposal.last_price, 2)
+        # An option's notional is qty * premium * multiplier — dropping the
+        # multiplier understates it 100x. This is not cosmetic: the veto
+        # ledger sums ``estimatedNotional`` into ``blocked_notional``, which
+        # is a headline number on the Refusal Ledger.
+        trim_multiplier = int(proposal.get("multiplier", 100)) if is_option else 1
+        new_proposal["estimated_notional"] = round(
+            decision.adjusted_qty * risk_proposal.last_price * trim_multiplier, 2
+        )
         new_proposal["rationale"] = (
             (proposal.get("rationale") or "")
             + f" (Risk trim: {risk_proposal.qty}→{decision.adjusted_qty})"

@@ -109,13 +109,13 @@ def test_no_matching_contract_type_is_a_named_hold() -> None:
 
 
 def test_dte_just_below_window_is_excluded() -> None:
-    result = select_contract(_inputs((_quote(dte=20),)))
+    result = select_contract(_inputs((_quote(dte=9),)))
     assert result.selected is None
     assert result.rejection_reason == "no_expiry_in_window"
 
 
 def test_dte_at_lower_boundary_is_included() -> None:
-    result = select_contract(_inputs((_quote(dte=21),)))
+    result = select_contract(_inputs((_quote(dte=10),)))
     assert result.selected is not None
 
 
@@ -134,12 +134,12 @@ def test_dte_computed_fresh_not_trusted_precomputed() -> None:
     """A quote's ``expiry`` alone determines DTE — there is no separate
     stored dte field to trust or distrust; this pins that the boundary is
     evaluated against ``inputs.now``, not any value baked into the fixture."""
-    later_now = _NOW + timedelta(days=10)
+    later_now = _NOW + timedelta(days=25)
     inputs = ContractSelectionInputs(
         underlying_symbol="AAPL",
         direction="long",
         conviction=0.5,
-        candidates=(_quote(dte=30),),  # 30 DTE from _NOW -> 20 DTE from later_now
+        candidates=(_quote(dte=30),),  # 30 DTE from _NOW -> 5 DTE from later_now
         now=later_now,
     )
     result = select_contract(inputs)
@@ -204,26 +204,44 @@ def test_liquidity_accepts_open_interest_at_the_floor() -> None:
 
 
 def test_liquidity_rejects_low_volume() -> None:
-    result = select_contract(_inputs((_quote(volume=9),)))
+    # The floor is 1 ("has it traded at all"), not a daily-volume gate —
+    # ContractQuote.volume is a last-trade-size proxy. Only an untraded
+    # contract fails.
+    result = select_contract(_inputs((_quote(volume=0),)))
+    assert result.selected is None
+    assert result.rejection_reason == "no_liquid_contract"
+
+
+def test_liquidity_rejects_missing_volume() -> None:
+    result = select_contract(_inputs((_quote(volume=None),)))
     assert result.selected is None
     assert result.rejection_reason == "no_liquid_contract"
 
 
 def test_liquidity_accepts_volume_at_the_floor() -> None:
-    result = select_contract(_inputs((_quote(volume=10),)))
+    result = select_contract(_inputs((_quote(volume=1),)))
+    assert result.selected is not None
+
+
+def test_liquidity_accepts_thin_last_print_that_the_old_floor_rejected() -> None:
+    """Regression: a last-trade size of 9 used to fail a floor of 10.
+    Measured against the live SPY chain that rejected 16 of 18 contracts
+    which had already cleared DTE, delta and IV."""
+    result = select_contract(_inputs((_quote(volume=9),)))
     assert result.selected is not None
 
 
 def test_liquidity_rejects_wide_relative_spread() -> None:
-    # mid = 3.00, spread = 0.30 -> 10% > 8% cap
-    result = select_contract(_inputs((_quote(bid=2.85, ask=3.15),)))
+    # mid = 3.00, spread = 0.42 -> 14% > 12% cap
+    result = select_contract(_inputs((_quote(bid=2.79, ask=3.21),)))
     assert result.selected is None
     assert result.rejection_reason == "no_liquid_contract"
 
 
 def test_liquidity_accepts_tight_relative_spread() -> None:
-    # mid = 3.00, spread = 0.20 -> 6.67% < 8% cap
-    result = select_contract(_inputs((_quote(bid=2.90, ask=3.10),)))
+    # mid = 3.00, spread = 0.30 -> 10% < 12% cap (the 15-min delayed
+    # indicative book reads wider than the one an order fills against)
+    result = select_contract(_inputs((_quote(bid=2.85, ask=3.15),)))
     assert result.selected is not None
 
 

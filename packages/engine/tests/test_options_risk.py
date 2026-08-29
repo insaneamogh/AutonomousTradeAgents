@@ -14,6 +14,7 @@ now-injection convention that ``engine.options.expiry`` reuses.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, date, datetime
 
 import pytest
@@ -292,11 +293,38 @@ def test_illiquid_contract_blocks_missing_open_interest() -> None:
     assert d.veto_rule == "illiquid_contract"
 
 
-def test_illiquid_contract_blocks_low_volume() -> None:
-    opt = _option(volume=5)  # floor is 10; OI stays compliant
+def test_illiquid_contract_blocks_untraded_contract() -> None:
+    # Floor is 1 ("has it traded at all"), not a daily-volume gate:
+    # OptionLegDetails.volume carries a last-trade-size proxy because
+    # alpaca-py's OptionsSnapshot drops the dailyBar block. Open interest
+    # is the real liquidity judgment and stays compliant here.
+    opt = _option(volume=0)
     d = evaluate(_entry(option=opt), _ctx(), ENABLED)
     assert not d.approved
     assert d.veto_rule == "illiquid_contract"
+
+
+def test_illiquid_contract_blocks_missing_volume() -> None:
+    d = evaluate(_entry(option=_option(volume=None)), _ctx(), ENABLED)
+    assert not d.approved
+    assert d.veto_rule == "illiquid_contract"
+
+
+def test_illiquid_contract_allows_thin_last_print() -> None:
+    """Regression pin, mirroring ``selection._passes_liquidity``: a
+    last-trade size of 5 used to fail a floor of 10 here *after* selection
+    had already accepted it, so loosening only the selection side would
+    have been undone one layer later."""
+    d = evaluate(_entry(option=_option(volume=5)), _ctx(), ENABLED)
+    assert d.approved
+
+
+def test_volume_floor_is_disableable() -> None:
+    """``options_min_volume=0`` must switch the gate off entirely, including
+    for a None volume — the reason both call sites guard on ``> 0``."""
+    caps = replace(ENABLED, options_min_volume=0)
+    d = evaluate(_entry(option=_option(volume=None)), _ctx(), caps)
+    assert d.approved
 
 
 def test_illiquid_contract_blocks_wide_spread() -> None:

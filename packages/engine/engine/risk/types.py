@@ -16,6 +16,41 @@ from typing import Literal
 from engine.env import env_flag
 
 
+def _env_int(name: str, default: int) -> int:
+    """Env override for a data-quality floor. Malformed input keeps the
+    default — a typo must never silently widen a gate."""
+    import logging
+    import os
+
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logging.getLogger("engine.risk").warning(
+            "ignoring malformed %s=%r — keeping %r", name, raw, default
+        )
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    """Float twin of ``_env_int``. Same fail-to-default contract."""
+    import logging
+    import os
+
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logging.getLogger("engine.risk").warning(
+            "ignoring malformed %s=%r — keeping %r", name, raw, default
+        )
+        return default
+
+
 class Side(str, Enum):
     BUY = "BUY"
     SELL = "SELL"
@@ -133,11 +168,19 @@ class RiskCaps:
     risk. Above 60: capital parked too long in a decaying asset."""
 
     options_min_open_interest: int = 100
-    options_min_volume: int = 10
-    options_max_relative_spread_pct: float = 8.0
+    options_min_volume: int = 1
+    """NOT a daily-volume floor — 0 disables it. ``OptionLegDetails.volume``
+    carries the snapshot's LAST TRADE SIZE (one print, typically 1-5 lots),
+    because alpaca-py's ``OptionsSnapshot`` model drops the ``dailyBar``
+    block that holds real volume. A floor of 10 rejected 16 of 18 live SPY
+    contracts that had already cleared DTE, delta and IV. Open interest above
+    is the real liquidity gate; this only asserts the contract has traded."""
+    options_max_relative_spread_pct: float = 12.0
     """Liquidity floor read by ``illiquid_contract``: ``(ask-bid)/mid`` as
     a percentage. On a 15-min-delayed indicative feed this is the single
-    most important number in the options rule set."""
+    most important number in the options rule set — and the delay is also
+    why it is 12 rather than 8: the quoted book reads wider than the one an
+    order would actually fill against."""
 
     options_earnings_blackout_days: int = 2
     """No new options entry within this many days of the underlying's next
@@ -182,19 +225,38 @@ class RiskCaps:
     def from_env(cls, **overrides: object) -> RiskCaps:
         """Default caps with the environment-configurable switches applied.
 
-        Exactly two switches are environment-driven today: ``ALLOW_SHORTS``
-        and ``ALLOW_OPTIONS``. Everything else stays a code-level default
-        that a caller overrides explicitly, because a risk cap that can be
-        widened by an env var nobody reviews is not a risk cap.
+        Two switches: ``ALLOW_SHORTS`` and ``ALLOW_OPTIONS``. Both are **off
+        unless truthy** — an unset, empty, or typo'd value leaves
+        ``forbid_short_phase_0=True`` / ``options_disabled=True``, because
+        ``env_flag`` fails closed on anything it doesn't recognise, which is
+        the direction that cannot lose money by accident.
 
-        Both are **off unless truthy**. An unset, empty, or typo'd value
-        leaves ``forbid_short_phase_0=True`` / ``options_disabled=True`` —
-        ``env_flag`` fails closed on anything it doesn't recognise, which
-        is the direction that cannot lose money by accident.
+        Three DATA-QUALITY floors are also env-tunable:
+        ``OPTIONS_MIN_OPEN_INTEREST``, ``OPTIONS_MIN_VOLUME``,
+        ``OPTIONS_MAX_SPREAD_PCT``. These describe how good a quote has to be
+        before we will trade against it — they are calibration against a
+        15-minute-delayed indicative feed, not limits on how much can be
+        lost, and getting them wrong means the agent refuses everything
+        rather than risking too much.
+
+        **The loss limits stay code-level and are deliberately NOT
+        env-tunable**: ``options_max_premium_pct``,
+        ``options_max_total_premium_pct``, ``max_position_pct``,
+        ``daily_drawdown_halt_pct``. A risk cap that can be widened by an
+        env var nobody reviews is not a risk cap — and these are exactly the
+        ones there is a live incentive to quietly widen. Changing them
+        requires a reviewed code change.
         """
         return cls(
             forbid_short_phase_0=not env_flag("ALLOW_SHORTS"),
             options_disabled=not env_flag("ALLOW_OPTIONS"),
+            options_min_open_interest=_env_int(
+                "OPTIONS_MIN_OPEN_INTEREST", cls.options_min_open_interest
+            ),
+            options_min_volume=_env_int("OPTIONS_MIN_VOLUME", cls.options_min_volume),
+            options_max_relative_spread_pct=_env_float(
+                "OPTIONS_MAX_SPREAD_PCT", cls.options_max_relative_spread_pct
+            ),
             **overrides,  # type: ignore[arg-type]
         )
 

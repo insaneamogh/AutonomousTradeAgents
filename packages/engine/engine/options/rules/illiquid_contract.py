@@ -46,8 +46,13 @@ def illiquid_contract(
             veto_rule="illiquid_contract",
         )
 
+    # ``> 0`` guard mirrors ``selection._passes_liquidity``: the floor must be
+    # switchable off, and without this a floor of 0 would still hard-fail on a
+    # None volume. See that function for why this figure is a last-trade-size
+    # proxy rather than real daily volume, and why open interest above carries
+    # the actual liquidity judgment.
     vol = option.volume
-    if vol is None or vol < caps.options_min_volume:
+    if caps.options_min_volume > 0 and (vol is None or vol < caps.options_min_volume):
         return RiskDecision(
             approved=False,
             reason=(
