@@ -355,6 +355,106 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 ## Entries
 
+### 2026-08-29 — `0b824cbb`+`64979a8c`+`56a06779` fix(options): the three blockers that made options unreachable
+
+Repositioning for the Alpaca AI Trading Agents hackathon (deadline Sep 4,
+11:00 ET). Options are a hard requirement there, and the audit found the
+options track was fully built but had **never once produced a tradeable
+proposal**. Three independent blockers, each of which alone was fatal.
+
+**1. `0b824cbb` — the premium was the underlying's share price.**
+`risk_officer.py` passed `context.last_price` (~$229 for NVDA) as
+`RiskProposal.last_price`. `max_premium_pct` computes
+`premium_per_contract = last_price * multiplier`, so a $229 stock became a
+$22,900 "premium" and every options proposal was vetoed at "68.71% of
+equity (cap 1.00%)" — real premium was 0.96%. For $100k equity this vetoed
+any underlying above ~$10. The executor's own `_option_risk_proposal`
+already documents the exact trap and does it right; the council-side node
+did the equivalent wrong thing with nothing pinning it. Same class of bug
+on the trim path's `estimated_notional` (multiplier dropped, 100x
+understated — and that figure feeds `blocked_notional` on the veto ledger).
+
+Also in this commit, the liquidity gate: `ContractQuote.volume` is
+populated from the snapshot's LAST TRADE SIZE, because alpaca-py's
+`OptionsSnapshot` model drops the `dailyBar` block carrying real volume
+(`SNAPSHOT_MAPPING` renames it but the pydantic model has no such field —
+verified at runtime). **Measured against the live SPY chain, a floor of 10
+rejected 16 of 18 contracts that had already cleared DTE, delta and IV.**
+Floor drops to 1; open interest (real, from `/v2/options/contracts`,
+populated 90/100 with values 137-722) carries the liquidity judgment. Both
+call sites now guard on `> 0` so the gate is switchable off — without that
+a floor of 0 still hard-failed on a None volume. Fixed in `selection`,
+`rules/illiquid_contract` AND `RiskCaps`; fixing one leaves the others
+vetoing a layer later.
+
+Sized for a 4-session window: delta bands now OVERLAP (they were disjoint
+at 0.45, so delta-0.50 — at the money, deepest OI, tightest book — needed
+conviction > 0.7, which the drafter rarely clears); DTE floor 21 -> 10;
+spread cap 8% -> 12%. `RiskCaps.from_env` gains env overrides for the three
+DATA-QUALITY floors only — the LOSS limits stay code-level per that
+method's own stated principle.
+
+**2. `64979a8c` — the broker was addressed by the underlying.**
+An approved options order went to Alpaca as an EQUITY order on the
+underlying at the option's premium price, and the
+`OptionBracketNotSupportedError` guard silently no-opped because
+`OccSymbol.try_parse("AAPL")` is None. The close path was worse: it matched
+the held broker position on the underlying, but Alpaca keys option
+positions by OCC — so an agent-managed option could **never be closed at
+all**, by time-stop, signal, or the expiry sweep.
+
+`runtime._to_proposal_dto` was already correct (`symbol`=underlying,
+`occSymbol`=contract). Added `_wire_symbol_for()` as the single decider and
+a `wire_symbol` local in `_close_position`. Domain code keeps the
+underlying everywhere — the cron's per-(user, symbol, day) dedup, ghost
+marking against daily closes, and every UI list read it, and an OCC string
+breaks each differently.
+
+**Why no test caught either:** both fixtures set `symbol` to the OCC
+string, so the two fields were indistinguishable and the wrong one still
+produced the right value. Corrected to the real convention and added seam
+assertions on entry and close, each verified to FAIL when the fix is
+reverted.
+
+**3. `56a06779` — options were unreachable from every automated path.**
+`instrument_preference` had one production caller (`/agent/run`) and no
+client ever sent it. The scheduler routes through `daily_cron.main`, which
+never passed it, so no scheduled or scanner-triggered pass could produce an
+option. Meanwhile `user_watchlist.asset_class` had been persisted, migrated
+and UI-toggleable from the start — and never read back.
+`_load_user_watchlist` now returns `(symbol, asset_class)` pairs and
+`main` takes an optional `instrument_by_symbol` mapping, threaded as a side
+mapping keyed by symbol exactly like `scan_context` so no existing
+`list[str]` caller breaks. `scheduler._watchlist()` split into
+`_watchlist_with_instruments()` + a symbols-only wrapper.
+
+**Also un-vacuumed the capstone test.**
+`test_run_council_options_proposal_reaches_evaluate_option_and_is_approved`
+had a HOLD escape hatch that returned early, so its approval assertions
+never ran — that is precisely what hid blocker 1. Its justification ("the
+fit node can legitimately HOLD") was false: `_hash_seed` keys on the symbol
+only, so "NVDA" deterministically yields fit 0.787. Hatch removed, plus an
+assertion on the premium arithmetic itself. Verified to fail when blocker 1
+is reintroduced.
+
+**Verified live (Sat, market closed, real paper keys):**
+- Selection funnel now selects on every symbol tried:
+  `SPY 4128 -> 2064 calls -> 1843 DTE -> 130 delta -> 3 liquid -> OK`;
+  NVDA and AAPL likewise. Before, the volume proxy took this to zero.
+- Full council end-to-end against the REAL Alpaca chain:
+  `BUY NVDA260909C00225000, 4 @ $2.17 = $868 = 0.868% of $100k,
+  15 risk rules passed, approved`.
+
+757 passed, 9 skipped. Ruff clean on touched files.
+
+**Left open:** fresh hackathon paper account (reused accounts are
+ineligible); Alpaca's own MCP server / CLI integration (a hard eligibility
+requirement — our `apps/mcp_server` exposes us TO Claude, which is the
+opposite direction); ghost-marking options against option bars rather than
+equity closes; `_cold_boot_fallback` does not set `options_trading_level`,
+so the reconciler must tick once before the first options pass or
+`options_level_insufficient` vetoes everything.
+
 ### 2026-08-28 — `ba2fbbf1` test(broker): cover get_options_trading_level against the real Alpaca account field
 
 Part 3 of the options "actually works" plan: audited the rest of the

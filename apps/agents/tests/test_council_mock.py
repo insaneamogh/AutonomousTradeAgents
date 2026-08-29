@@ -333,21 +333,32 @@ async def test_run_council_options_proposal_reaches_evaluate_option_and_is_appro
 
     result = await run_council(symbol="NVDA", llm=llm, instrument_preference="option")
 
-    if result["final_action"] == "HOLD":
-        # The deterministic strategy-fit node (unrelated to options) can
-        # legitimately find no setup at all on a given synthetic-feature
-        # day — that's a real, valid outcome this test cannot control,
-        # not a failure of the options wiring. Only fail loudly if the
-        # HOLD came from the options path itself finding no candidates
-        # (which would mean the fixture above stopped clearing selection).
-        assert result["proposal"] is None
-        return
-
+    # NO HOLD escape hatch. `features.synthetic._hash_seed` keys on the
+    # SYMBOL ONLY, so "NVDA" deterministically produces the same feature
+    # dict on every run and every day — it yields sma_crossover long at
+    # fit 0.787, far above MIN_FIT_TO_TRADE (0.45). The "the fit node can
+    # legitimately HOLD" justification this test used to carry was simply
+    # false for this fixture, and the early `return` it guarded meant the
+    # approval assertions below NEVER EXECUTED. That is what hid a live
+    # bug where risk_officer passed the underlying's share price as the
+    # per-contract premium, so `max_premium_pct` vetoed 100% of real
+    # options proposals ("68.71% of equity, cap 1.00%") while this test
+    # stayed green.
     assert result["final_action"] == "BUY"
     proposal = result["proposal"]
     assert proposal is not None
     assert proposal["isOption"] is True
     assert proposal["occSymbol"] == "NVDA_TEST_CALL"
+    # `symbol` stays the UNDERLYING; only the wire carries the contract.
+    assert proposal["symbol"] == "NVDA"
+    # The arithmetic that the premium-units bug got wrong: qty * ask *
+    # multiplier, NOT qty * underlying_price * multiplier. Without this
+    # line a regression to the underlying still passes as long as the
+    # resulting trim happens to round to >= 1 contract.
+    assert proposal["estimatedNotional"] == pytest.approx(
+        proposal["qty"] * 3.20 * 100, abs=0.01
+    )
+    assert result["risk_approved"] is True
 
     # The actual capstone assertions: it was RISK-EVALUATED (not skipped),
     # and it came back approved via the options pipeline specifically.
