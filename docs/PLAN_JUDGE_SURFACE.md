@@ -118,7 +118,7 @@ judge who sees the banner reads it as deliberate.
 
 ---
 
-## 1b. "Couldn't reach the agent server" on the FIRST council run
+## 1b. ~~"Couldn't reach the agent server" on the FIRST council run~~ — FIXED 2026-08-30
 
 Reported 2026-08-30: clicking **Run** the first time shows
 *"Couldn't reach the agent server — check your connection and try again."*
@@ -168,7 +168,18 @@ browser devtools **Network** tab open and read the failed row — `net::ERR_CONN
 REFUSED`, `net::ERR_FAILED`, or a stalled request each point somewhere different. One
 look settles it; guessing does not.
 
-### The fix — worth doing regardless of root cause
+### ✅ Shipped 2026-08-30
+
+`RequestOptions.retryOnNetworkError` retries once, 1s later, **only** when `fetch`
+itself rejected, and **only** on calls that opt in. `useStartCouncilRun` is the sole
+caller. The message no longer blames the user's connection.
+
+**The safety property is the tested one:** `orders/execute`, `approvals/decision` and
+`positions/close` do not pass the flag, so they are never re-sent. Revert-checked —
+making the retry unconditional fails the test that asserts an order-placing call
+fetches exactly once.
+
+### The original fix note — kept for context
 
 1. **Retry a status-less failure once, on this mutation only.** A rejected `fetch`
    means no response was received, so a single retry after ~1s is safe here: the

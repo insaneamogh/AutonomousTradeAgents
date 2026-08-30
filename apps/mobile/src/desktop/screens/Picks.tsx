@@ -185,7 +185,11 @@ function runErrorMessage(err: unknown): string {
   if (typeof e?.status === 'number') {
     return `The server refused the request (${e.status}). Try again.`;
   }
-  return 'Couldn\u2019t reach the agent server \u2014 check your connection and try again.';
+  // Reached only when the error carries NO status — `fetch` rejected and no
+  // response arrived — AND the one automatic network retry already failed.
+  // Deliberately no longer blames the caller's connection: the observed cause
+  // is our own container restarting, not their wifi.
+  return 'The server didn\u2019t respond \u2014 it may still be starting up. Try again in a moment.';
 }
 
 /** Kicks off a council run and drops the user straight into the theater. */

@@ -23,7 +23,18 @@ import { QK } from '@/lib/queryClient';
 export function useStartCouncilRun() {
   return useMutation<AgentRunStartResponse, Error, AgentRunRequest>({
     mutationFn: (body) =>
-      request<AgentRunStartResponse>('/api/v1/agent/run/start', { method: 'POST', body }),
+      request<AgentRunStartResponse>('/api/v1/agent/run/start', {
+        method: 'POST',
+        body,
+        // Safe here and nowhere else in this file: starting a council run
+        // places no order, so the worst case of a duplicate is one extra
+        // pass (~$0.04). Without it, a container restart mid-click shows a
+        // hard red error on the first thing a new visitor ever clicks —
+        // every QUERY on that screen already retries twice and heals, but
+        // mutations retry zero times, so this one call was the only place
+        // the blip was visible.
+        retryOnNetworkError: true,
+      }),
   });
 }
 

@@ -148,6 +148,20 @@ export interface RequestOptions {
    * intercepted. Used by /auth/refresh itself to avoid recursion.
    */
   skipAuth?: boolean;
+  /**
+   * Retry ONCE when `fetch` itself rejects — i.e. no HTTP response was
+   * ever received (connection refused/reset, DNS, a container restarting
+   * mid-flight). Never retries a response that arrived, whatever its
+   * status.
+   *
+   * OPT-IN PER CALL, and it must stay that way. TanStack retries queries
+   * twice by default but mutations zero times (`queryClient.ts`), which is
+   * the correct default precisely because `orders/execute`,
+   * `approvals/decision` and `positions/close` are mutations — silently
+   * re-sending one of those is how you place a trade twice. Only set this
+   * on a call where a duplicate is harmless.
+   */
+  retryOnNetworkError?: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -179,13 +193,23 @@ function currentAuth(): AuthSnapshot | null {
 // ─────────────────────────────────────────────────────────────────────
 
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  return _request<T>(path, options, /* retried */ false);
+  return _request<T>(path, options, /* retried */ false, /* networkRetried */ false);
 }
+
+/** A caller-initiated abort must never be retried — it is not a failure. */
+function isAbortError(err: unknown): boolean {
+  return (
+    err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError')
+  );
+}
+
+const NETWORK_RETRY_DELAY_MS = 1_000;
 
 async function _request<T>(
   path: string,
   options: RequestOptions,
   retried: boolean,
+  networkRetried: boolean,
 ): Promise<T> {
   const method = options.method ?? 'GET';
   if (isTradingRequest(path, method)) {
@@ -204,12 +228,28 @@ async function _request<T>(
     }
   }
 
-  const res = await fetch(url, {
-    method,
-    headers,
-    body: options.body != null ? JSON.stringify(options.body) : undefined,
-    signal: options.signal,
-  });
+  // `fetch` rejects ONLY when no response was received at all — connection
+  // refused/reset, DNS, or an abort. Anything the server actually answered,
+  // including a 502 from the edge proxy, resolves here and is handled below
+  // with its status intact. That distinction is what makes retrying this
+  // branch safe: the request demonstrably did not reach a handler.
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method,
+      headers,
+      body: options.body != null ? JSON.stringify(options.body) : undefined,
+      signal: options.signal,
+    });
+  } catch (err) {
+    if (isAbortError(err) || !options.retryOnNetworkError || networkRetried) throw err;
+    // One retry, after a beat. The observed cause is a container restart
+    // (Railway redeploy / cold start): the first click lands while the old
+    // process is gone and the new one is not listening yet, and a second
+    // attempt a moment later succeeds.
+    await new Promise((resolve) => setTimeout(resolve, NETWORK_RETRY_DELAY_MS));
+    return _request<T>(path, options, retried, /* networkRetried */ true);
+  }
 
   const text = await res.text();
   const body = text.length > 0 ? safeParse(text) : null;
@@ -225,7 +265,7 @@ async function _request<T>(
     if (auth) {
       const fresh = await auth.refresh();
       if (fresh) {
-        return _request<T>(path, options, /* retried */ true);
+        return _request<T>(path, options, /* retried */ true, networkRetried);
       }
     }
   }
