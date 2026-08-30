@@ -265,6 +265,14 @@ export const PLATINUM_CSS = `
   align-items: stretch;
 }
 .pg-cell { display: flex; min-width: 0; }
+/* The cell itself already opts out of min-width:auto so a grid track can
+   shrink. Its CHILD does not: .pg-cell is a flex container, and a flex item
+   defaults to min-width:auto, meaning it refuses to shrink below its own
+   content width. A wide child (the broker table on Settings) therefore grew
+   past the cell and painted over the card in the next grid column. Both
+   levels have to opt out for the track to actually clamp.
+   NOTE: this whole stylesheet is a TS template literal — no backticks. */
+.pg-cell > * { min-width: 0; }
 .pg-cell[data-span='3'] { grid-column: span 3 / span 3; }
 .pg-cell[data-span='4'] { grid-column: span 4 / span 4; }
 .pg-cell[data-span='5'] { grid-column: span 5 / span 5; }

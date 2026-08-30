@@ -165,7 +165,11 @@ export function SettingsScreen() {
                   {(connections.data ?? []).map((c) => (
                     <tr key={c.id}>
                       <td>
-                        <Row gap={8}>
+                        {/* Wraps: three side-by-side pills on a 7-of-12 cell
+                            is the widest thing in this table, and an
+                            unwrapped row is what forced the whole table
+                            wider than its card. */}
+                        <Row gap={8} style={{ flexWrap: 'wrap' }}>
                           <Numeral size={14} weight={600}>
                             {c.broker.toUpperCase()}
                           </Numeral>
