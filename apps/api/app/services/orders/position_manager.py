@@ -10,6 +10,15 @@ executes the parts a broker-side bracket can't:
                  SELL → close early. The council proposes (the signal);
                  this deterministic code disposes — no LLM output touches
                  the close mechanics, exactly like entries.
+  PREMIUM EXIT   (options only) the contract's own premium hit the
+                 take-profit or the stop. Alpaca cannot bracket a
+                 single-leg option — OrderClass allows only simple/mleg
+                 for us_option — so the broker-side stop/target that
+                 protects every equity entry is structurally unavailable
+                 and has to live here. Checked BEFORE the time stop: a
+                 position that already hit its target should not sit for
+                 two more sessions waiting on the calendar. See
+                 ``engine.options.exits``.
 
 Scope rules:
   - ONLY decisions with ``exit_mode='agent'``. Manual-mode positions are
@@ -43,6 +52,7 @@ from sqlalchemy import desc, select, update
 from app.services.broker.broker_use import with_broker_client
 from app.services.orders.executor import _build_risk_context
 from app.services.orders.order_store import persist_linked_order_submit, persist_order_result
+from engine.options.exits import option_exit_signal
 from engine.options.expiry import dte
 from engine.risk import RiskCaps
 
@@ -55,6 +65,8 @@ _CLOSE_REASON_LABEL = {
     "agent_time": "time stop reached",
     "agent_signal": "council flipped to SELL",
     "agent_expiry": "closing ahead of expiry",
+    "option_take_profit": "premium take-profit hit",
+    "option_stop_loss": "premium stop-loss hit",
 }
 
 # Mirrors the drafter / ghost evaluator horizon map — used only when an
@@ -66,6 +78,7 @@ async def manage_positions_for_user(
     *,
     user_id: str,
     session_factory: async_sessionmaker,
+    caps: RiskCaps | None = None,
 ) -> int:
     """One pass: close every agent-managed position whose exit condition
     fired. Returns the number of closes initiated."""
@@ -88,9 +101,19 @@ async def manage_positions_for_user(
         if not open_decisions:
             return 0
 
+        caps = caps or RiskCaps.from_env()
+        # Only pay for the broker read when an option is actually open.
+        has_option = any(
+            bool((d.proposal or {}).get("isOption", (d.proposal or {}).get("is_option", False)))
+            for d in open_decisions
+        )
+        option_pl_pct = await _option_pl_pct_by_symbol(user_id) if has_option else {}
+
         closes = 0
         for decision in open_decisions:
-            reason = await _exit_reason(session, decision, now)
+            reason = await _exit_reason(
+                session, decision, now, caps=caps, option_pl_pct=option_pl_pct
+            )
             if reason is None:
                 continue
             # Re-entrance guard: a SELL we placed on a prior tick may still
@@ -120,6 +143,40 @@ async def manage_positions_for_user(
             if initiated:
                 closes += 1
         return closes
+
+
+async def _option_pl_pct_by_symbol(user_id: str) -> dict[str, float]:
+    """Broker-reported unrealized P&L percent, keyed by OCC symbol.
+
+    Fetched ONCE per user pass rather than per position: the premium exit
+    needs a current mark, and a broker round trip inside the per-decision
+    loop would multiply the API calls by the size of the book.
+
+    The broker's own number is used rather than a mark computed here. It
+    is the same figure the user sees in Alpaca, it is already scaled by
+    the contract multiplier, and deriving our own from a 15-minute-delayed
+    quote would let a stale tick close a live position.
+
+    A broker failure returns {} — every option then reports no mark, and
+    ``option_exit_signal`` holds. Degrading to "don't close" is the only
+    safe direction: the time stop and the expiry sweep still run, so a
+    position is never left unmanaged, merely un-price-stopped for a tick.
+    """
+    try:
+        async with with_broker_client(user_id, broker="alpaca") as (broker, _conn):
+            positions = await broker.list_positions()
+    except Exception:
+        logger.warning(
+            "position_manager: could not read broker positions for premium exits "
+            "(user=%s) — holding every option this tick",
+            user_id, exc_info=True,
+        )
+        return {}
+    return {
+        p.symbol.upper(): float(p.unrealized_pl_pct)
+        for p in positions
+        if p.is_option and p.unrealized_pl_pct is not None
+    }
 
 
 def _coerce_expiry_date(value: object) -> date | None:
@@ -375,10 +432,42 @@ async def _has_in_flight_close(session, decision_id) -> bool:
     return (await session.execute(stmt)).scalar_one_or_none() is not None
 
 
-async def _exit_reason(session, decision, now: datetime) -> str | None:
-    """Which exit condition fired, if any. Deterministic reads only."""
-    # 1. Time stop — Phase 0 calendar days, consistent with PDT/idempotency.
+async def _exit_reason(
+    session,
+    decision,
+    now: datetime,
+    *,
+    caps: RiskCaps | None = None,
+    option_pl_pct: dict[str, float] | None = None,
+) -> str | None:
+    """Which exit condition fired, if any. Deterministic reads only.
+
+    Order matters. The premium exit is checked FIRST for options: a
+    contract that already hit its take-profit should not sit two more
+    sessions waiting for the calendar time stop, and one through its stop
+    should not keep bleeding theta for the same reason.
+    """
     proposal = decision.proposal or {}
+    caps = caps or RiskCaps.from_env()
+
+    # 0. Premium exit (options only). No broker mark -> no signal, and the
+    #    time stop below still applies; a missing price never closes.
+    if bool(proposal.get("isOption", proposal.get("is_option", False))):
+        occ = proposal.get("occSymbol") or proposal.get("occ_symbol")
+        if occ:
+            signal = option_exit_signal(
+                unrealized_pl_pct=(option_pl_pct or {}).get(str(occ).upper()),
+                take_profit_pct=caps.options_take_profit_pct,
+                stop_loss_pct=caps.options_stop_loss_pct,
+            )
+            if signal is not None:
+                logger.info(
+                    "position_manager: %s fired for %s (%s) — %s",
+                    signal.reason, decision.symbol, occ, signal.detail,
+                )
+                return signal.reason
+
+    # 1. Time stop — Phase 0 calendar days, consistent with PDT/idempotency.
     time_stop_days = int(
         proposal.get("timeStopDays")
         or _FALLBACK_TIME_STOP_BY_HORIZON.get(str(decision.horizon), 5)

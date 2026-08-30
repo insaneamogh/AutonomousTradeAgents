@@ -191,6 +191,24 @@ class RiskCaps:
     an open option position is force-closed at this DTE. Non-negotiable
     per ``docs/OPTIONS_PLAN.md`` §2.6."""
 
+    options_take_profit_pct: float = 60.0
+    """Close a long option once its PREMIUM is up this much (percent).
+
+    Read by the position manager's exit sweep, not by any risk-gate veto —
+    see ``engine.options.exits`` for why a price-based exit has to live in
+    our own sweep at all (Alpaca cannot bracket a single-leg option, so
+    the broker-side target that protects every equity entry does not
+    exist here)."""
+
+    options_stop_loss_pct: float = 50.0
+    """Close a long option once its PREMIUM has lost this much (positive
+    magnitude: 50.0 means "down 50%").
+
+    Tighter than the take-profit is wide, on purpose: a long option that
+    has not worked bleeds theta every day it sits. The measure is the
+    premium, not the underlying — on a 0.5-delta call this is roughly a 5%
+    adverse move in the stock."""
+
     # Wash-sale (US tax informational warning)
     wash_sale_lookback_days: int = 30
     """IRS rule: closing at a loss + re-entering within 30 calendar days
@@ -256,6 +274,16 @@ class RiskCaps:
             options_min_volume=_env_int("OPTIONS_MIN_VOLUME", cls.options_min_volume),
             options_max_relative_spread_pct=_env_float(
                 "OPTIONS_MAX_SPREAD_PCT", cls.options_max_relative_spread_pct
+            ),
+            # Env-tunable, unlike the premium CAPS above. An exit threshold
+            # only decides when to realize a position whose size was
+            # already bounded by those caps — it cannot increase maximum
+            # loss beyond the premium already paid. A cap can.
+            options_take_profit_pct=_env_float(
+                "OPTIONS_TAKE_PROFIT_PCT", cls.options_take_profit_pct
+            ),
+            options_stop_loss_pct=_env_float(
+                "OPTIONS_STOP_LOSS_PCT", cls.options_stop_loss_pct
             ),
             **overrides,  # type: ignore[arg-type]
         )

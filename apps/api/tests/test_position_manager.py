@@ -28,6 +28,7 @@ from app.services.orders.position_manager import (
     _has_in_flight_close,
 )
 from broker.types import Side
+from engine.risk import RiskCaps
 
 NOW = datetime(2026, 6, 12, 15, 0, tzinfo=UTC)
 
@@ -81,6 +82,87 @@ async def test_old_proposals_without_time_stop_use_horizon_fallback() -> None:
     decision.proposal = {}  # pre-0009 proposal shape
     reason = await _exit_reason(_session(False), decision, NOW)
     assert reason == "agent_time"  # 'short' horizon → 5d fallback
+
+
+# ── Premium exits (options only) ──────────────────────────────────────
+
+
+def _option_decision(*, days_held: int = 1, occ: str = "NVDA260918C00250000") -> SimpleNamespace:
+    d = _decision(days_held=days_held)
+    d.proposal = {"timeStopDays": 5, "isOption": True, "occSymbol": occ}
+    return d
+
+
+async def test_premium_take_profit_fires_before_the_time_stop() -> None:
+    """Ordering is the point: a contract already at its target must not sit
+    two more sessions waiting on the calendar."""
+    reason = await _exit_reason(
+        _session(False),
+        _option_decision(days_held=1),
+        NOW,
+        caps=RiskCaps(options_take_profit_pct=60.0, options_stop_loss_pct=50.0),
+        option_pl_pct={"NVDA260918C00250000": 72.4},
+    )
+    assert reason == "option_take_profit"
+
+
+async def test_premium_stop_loss_fires() -> None:
+    reason = await _exit_reason(
+        _session(False),
+        _option_decision(days_held=1),
+        NOW,
+        caps=RiskCaps(options_take_profit_pct=60.0, options_stop_loss_pct=50.0),
+        option_pl_pct={"NVDA260918C00250000": -58.0},
+    )
+    assert reason == "option_stop_loss"
+
+
+async def test_option_inside_both_thresholds_still_holds() -> None:
+    reason = await _exit_reason(
+        _session(False),
+        _option_decision(days_held=1),
+        NOW,
+        caps=RiskCaps(options_take_profit_pct=60.0, options_stop_loss_pct=50.0),
+        option_pl_pct={"NVDA260918C00250000": 12.0},
+    )
+    assert reason is None
+
+
+async def test_missing_broker_mark_falls_through_to_the_time_stop() -> None:
+    """A broker read that failed must not close anything on its own — but
+    it also must not disable the exits that don't need a price."""
+    reason = await _exit_reason(
+        _session(False),
+        _option_decision(days_held=9),
+        NOW,
+        caps=RiskCaps(options_take_profit_pct=60.0, options_stop_loss_pct=50.0),
+        option_pl_pct={},
+    )
+    assert reason == "agent_time"
+
+
+async def test_premium_exit_is_keyed_on_the_occ_symbol_not_the_underlying() -> None:
+    """The broker keys option positions by OCC. Matching on `NVDA` would
+    read the equity position's P&L — a real number for the wrong asset."""
+    reason = await _exit_reason(
+        _session(False),
+        _option_decision(days_held=1),
+        NOW,
+        caps=RiskCaps(options_take_profit_pct=60.0, options_stop_loss_pct=50.0),
+        option_pl_pct={"NVDA": 90.0},
+    )
+    assert reason is None
+
+
+async def test_equity_position_is_never_premium_exited() -> None:
+    reason = await _exit_reason(
+        _session(False),
+        _decision(days_held=1),
+        NOW,
+        caps=RiskCaps(options_take_profit_pct=60.0, options_stop_loss_pct=50.0),
+        option_pl_pct={"NVDA": 90.0},
+    )
+    assert reason is None
 
 
 async def test_in_flight_close_guard_detects_pending_sell() -> None:
