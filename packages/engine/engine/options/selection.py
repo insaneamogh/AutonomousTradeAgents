@@ -37,16 +37,21 @@ whose count drops to zero names the rejection reason):
   3. ``delta_band`` — higher conviction buys closer to the money (higher
      |delta|, more directional exposure per contract); lower conviction
      buys further OTM (lower |delta|, cheaper, more convex). The exact
-     bands (conviction >= 0.7 -> |delta| in [0.40, 0.70]; below that ->
-     [0.25, 0.55]) are a deliberately simple two-tier judgment call, not a
+     bands (conviction >= 0.7 -> |delta| in [0.35, 0.75]; below that ->
+     [0.25, 0.65]) are a deliberately simple two-tier judgment call, not a
      continuous function — the task this implements asked for "a
      reasonable banding", not a research result, and a two-tier band is
      easy to audit from a funnel count in a way a continuous formula is
-     not. A candidate with no reported delta fails this stage: the same
-     "a hard filter cannot verify what it cannot see" logic as
-     ``iv_present`` below, just not singled out in the module docstring
-     because — unlike IV — nothing else in this codebase leads a reader to
-     expect a missing delta to pass neutrally.
+     not. Widened once more 2026-08-30 for the contest window (docs/
+     PLAN_AGGRESSIVE_PROFILE.md §2 — "more delta per premium dollar; upper
+     strikes are also the more liquid near-ATM ones") and then FROZEN —
+     ``docs/HACKATHON.md`` §8 does not permit changing these constants
+     again after Monday's open, so funnel counts stay comparable across
+     the contest's trading days. A candidate with no reported delta fails
+     this stage: the same "a hard filter cannot verify what it cannot see"
+     logic as ``iv_present`` below, just not singled out in the module
+     docstring because — unlike IV — nothing else in this codebase leads a
+     reader to expect a missing delta to pass neutrally.
   4. ``liquidity`` — reject `open_interest < 100`, `volume < 1`, or (when
      both bid and ask are present) relative spread `(ask-bid)/mid > 12%`.
      Open interest is the REAL gate here. ``volume`` carries a floor of
@@ -135,9 +140,16 @@ _DTE_MAX = 45
 # cleared 0.7. It usually doesn't, so the single most liquid strike was the one
 # routinely excluded. Conviction still widens the band; neither tier can now
 # exclude ATM.
+#
+# Widened once more 2026-08-30 (was [0.40,0.70]/[0.25,0.55]) for the contest
+# window — docs/PLAN_AGGRESSIVE_PROFILE.md §2: more delta per premium dollar,
+# and the upper strikes this reaches are also the more liquid near-ATM ones.
+# FROZEN after this: docs/HACKATHON.md §8 does not permit touching these
+# constants again once Monday's open has happened, so funnel counts stay
+# comparable day over day across the contest window.
 _HIGH_CONVICTION_THRESHOLD = 0.7
-_HIGH_CONVICTION_DELTA_BAND = (0.40, 0.70)
-_LOW_CONVICTION_DELTA_BAND = (0.25, 0.55)
+_HIGH_CONVICTION_DELTA_BAND = (0.35, 0.75)
+_LOW_CONVICTION_DELTA_BAND = (0.25, 0.65)
 
 # ── Liquidity floor (mirrors RiskCaps.options_* defaults — see module
 # docstring §4 for why they are hardcoded here rather than imported) ──────

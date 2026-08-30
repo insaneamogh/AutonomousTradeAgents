@@ -222,6 +222,51 @@ async def test_instrument_absent_on_hold_even_with_both_set(
 
 
 # ─────────────────────────────────────────────────────────────────────
+# strategy_fit_node's two distinct HOLD rationales — genuinely-no-fit vs.
+# too-thin-to-call-tradable (docs/PLAN_AGGRESSIVE_PROFILE.md §4)
+# ─────────────────────────────────────────────────────────────────────
+
+
+async def test_hold_rationale_names_thin_evidence_not_the_fit_floor() -> None:
+    """An empty/near-empty feature dict must not read like "best was X at
+    0.60, holding" — that phrasing is only correct for a genuinely
+    sub-floor score, and 0.60 clears MIN_FIT_TO_TRADE. The node must say
+    the data was too thin instead, and the fit block must carry
+    ``usable_features: False`` + a reason for the audit row/UI.
+    """
+    state = {"symbol": "EMPTY", "context": {}}
+    out = await strategy_fit_mod.strategy_fit_node(state)
+
+    assert out["selected_strategy"] is None
+    assert out["final_action"] == "HOLD"
+    assert "clears the fit floor" not in out["selector_rationale"]
+    assert "too thin to trade" in out["selector_rationale"]
+
+    fit = out["strategy_fit"]
+    assert fit["usable_features"] is False
+    assert fit["unusable_reason"]
+    assert fit["winner"] is None
+    assert fit["ranked"], "the nominal ranking must still be there for the audit row"
+
+
+async def test_hold_rationale_still_names_the_fit_floor_for_real_data() -> None:
+    """The pre-existing, genuinely-no-fit case (rich technicals + quant,
+    every precondition unsatisfied) must be completely unaffected — same
+    wording, ``usable_features: True``, no ``unusable_reason`` key at all.
+    """
+    state = {"symbol": "NOFIT", "context": _no_fit_features()}
+    out = await strategy_fit_mod.strategy_fit_node(state)
+
+    assert out["selected_strategy"] is None
+    assert out["final_action"] == "HOLD"
+    assert "clears the fit floor" in out["selector_rationale"]
+
+    fit = out["strategy_fit"]
+    assert fit["usable_features"] is True
+    assert "unusable_reason" not in fit
+
+
+# ─────────────────────────────────────────────────────────────────────
 # drafter_node's options branch
 # ─────────────────────────────────────────────────────────────────────
 

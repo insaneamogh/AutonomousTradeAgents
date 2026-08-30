@@ -8,7 +8,7 @@ contexts (CLI, backtester, batch jobs).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from enum import Enum
 from typing import Literal
@@ -49,6 +49,37 @@ def _env_float(name: str, default: float) -> float:
             "ignoring malformed %s=%r — keeping %r", name, raw, default
         )
         return default
+
+
+_KNOWN_RISK_PROFILES = ("conservative", "aggressive_paper")
+
+
+def _select_risk_profile(raw: str) -> str:
+    """Env override for which REVIEWED ``RiskCaps`` profile applies.
+
+    Same fail-to-default contract as ``_env_int``/``_env_float``: an unset
+    or unrecognised value keeps ``"conservative"`` — a typo in a Railway
+    variable must never silently select the wider profile.
+
+    This selects between two profiles that are themselves reviewed, in
+    git, and diffable (a bare ``RiskCaps()`` vs. ``RiskCaps.aggressive_paper()``)
+    — it never supplies a widened number directly. See
+    ``docs/PLAN_AGGRESSIVE_PROFILE.md`` §3 for why that distinction is the
+    whole point: a risk cap that can be widened by an env var nobody
+    reviews is not a risk cap, but an env var that only ever picks between
+    two reviewed profiles cannot express a number nobody looked at.
+    """
+    import logging
+
+    name = raw.strip().lower()
+    if not name:
+        return "conservative"
+    if name in _KNOWN_RISK_PROFILES:
+        return name
+    logging.getLogger("engine.risk").warning(
+        "ignoring unknown RISK_PROFILE=%r — keeping 'conservative'", raw
+    )
+    return "conservative"
 
 
 class Side(str, Enum):
@@ -272,14 +303,88 @@ class RiskCaps:
     New intraday entries after this cutoff have no time to work — blocked."""
 
     @classmethod
+    def aggressive_paper(cls, **overrides: object) -> RiskCaps:
+        """Paper-account profile for the fixed-window contest.
+
+        See ``docs/PLAN_AGGRESSIVE_PROFILE.md`` for the full reasoning —
+        this is the reviewed profile it specifies, nothing more. Every
+        number below is a diffable delta against the conservative default
+        (a bare ``RiskCaps()``); dispatched via ``RISK_PROFILE=
+        aggressive_paper`` (see ``from_env`` and ``_select_risk_profile``),
+        never via an env var that supplies a number directly — that
+        distinction is the whole point (see ``_select_risk_profile``'s
+        docstring).
+
+        Widens exactly six numbers:
+          - ``options_max_premium_pct`` 1.0 -> 2.5 and
+            ``options_max_total_premium_pct`` 5.0 -> 12.0 — the plan's own
+            §1 finding is that 1.0% was not really "small risk", it was a
+            silent sizing-floor bug: at $100k equity, ANY contract priced
+            above $10.00 floored to zero contracts and the pass became an
+            un-ledgered HOLD. 2.5%/12.0% is the reviewed ceiling; do not
+            raise further without re-deriving the halt-coupling argument
+            below.
+          - ``min_council_confidence`` 0.50 -> 0.42 and
+            ``min_specialist_avg_score`` 45.0 -> 40.0 — opens marginal
+            setups the conservative floors would refuse outright.
+          - ``options_stop_loss_pct`` 50.0 -> 40.0 — "cut losers early".
+          - ``max_correlation_cluster`` 3 -> 4 — binds later as more
+            capital deploys.
+
+        Deliberately UNCHANGED — see the two ``test_aggressive_profile_
+        leaves_*_alone`` tests, which pin exactly this:
+          - ``max_position_pct`` (equity). A long option's max loss is the
+            premium; an equity position's max loss is the notional. The
+            aggression is concentrated where the loss is bounded by
+            construction.
+          - ``daily_drawdown_halt_pct`` (-3.0). This is the one that
+            actually matters most: "the whole options book to zero costs
+            12% of equity" is only tolerable as a MULTI-DAY worst case.
+            What keeps it from being a single-day worst case is this halt.
+            Widening the premium cap and holding the halt fixed is one
+            coupled decision, not two independent ones.
+
+        The take-profit row in the plan's own numbers table (a trailing
+        ratchet replacing the fixed +60%) is deliberately NOT here — that
+        is ``docs/PLAN_EXIT_AGENT.md``'s ratchet knobs, a separate
+        workstream landing its own fields on this class.
+        """
+        # Merged as a dict (not passed as sibling keyword args) so an
+        # explicit override of one of THESE SAME six fields replaces the
+        # profile's value instead of colliding with it as a duplicate
+        # keyword argument.
+        values: dict[str, object] = {
+            "options_max_premium_pct": 2.5,
+            "options_max_total_premium_pct": 12.0,
+            "min_council_confidence": 0.42,
+            "min_specialist_avg_score": 40.0,
+            "options_stop_loss_pct": 40.0,
+            "max_correlation_cluster": 4,
+        }
+        values.update(overrides)
+        return cls(**values)  # type: ignore[arg-type]
+
+    @classmethod
     def from_env(cls, **overrides: object) -> RiskCaps:
         """Default caps with the environment-configurable switches applied.
 
-        Two switches: ``ALLOW_SHORTS`` and ``ALLOW_OPTIONS``. Both are **off
-        unless truthy** — an unset, empty, or typo'd value leaves
-        ``forbid_short_phase_0=True`` / ``options_disabled=True``, because
-        ``env_flag`` fails closed on anything it doesn't recognise, which is
-        the direction that cannot lose money by accident.
+        ``RISK_PROFILE`` (default ``"conservative"``) selects the BASE
+        profile — ``"conservative"`` (a bare ``RiskCaps()``) or
+        ``"aggressive_paper"`` (``RiskCaps.aggressive_paper()``), via
+        ``_select_risk_profile``. This is a choice between two REVIEWED,
+        in-git, diffable profiles, never a raw number: setting
+        ``RISK_PROFILE`` cannot express a cap nobody looked at, which is
+        exactly what the "loss limits stay code-level" paragraph below is
+        protecting against. An unrecognised value falls back to
+        conservative and logs a warning — the same fail-to-default
+        contract ``_env_int``/``_env_float`` already use.
+
+        On top of whichever base profile applies, two switches: ``ALLOW_SHORTS``
+        and ``ALLOW_OPTIONS``. Both are **off unless truthy** — an unset,
+        empty, or typo'd value leaves ``forbid_short_phase_0=True`` /
+        ``options_disabled=True``, because ``env_flag`` fails closed on
+        anything it doesn't recognise, which is the direction that cannot
+        lose money by accident.
 
         Three DATA-QUALITY floors are also env-tunable:
         ``OPTIONS_MIN_OPEN_INTEREST``, ``OPTIONS_MIN_VOLUME``,
@@ -295,7 +400,8 @@ class RiskCaps:
         ``daily_drawdown_halt_pct``. A risk cap that can be widened by an
         env var nobody reviews is not a risk cap — and these are exactly the
         ones there is a live incentive to quietly widen. Changing them
-        requires a reviewed code change.
+        requires a reviewed code change (a new/edited profile classmethod
+        above, not an env-supplied number).
 
         The ratchet knobs (``options_ratchet_enabled`` and its three
         thresholds) are exit thresholds too, same reasoning as
@@ -306,37 +412,42 @@ class RiskCaps:
         malformed value here keeps the ratchet active; the one way back to
         the old flat take-profit is an explicit falsy value.
         """
-        return cls(
+        import os
+
+        profile = _select_risk_profile(os.environ.get("RISK_PROFILE", ""))
+        base = cls.aggressive_paper() if profile == "aggressive_paper" else cls()
+        return replace(
+            base,
             forbid_short_phase_0=not env_flag("ALLOW_SHORTS"),
             options_disabled=not env_flag("ALLOW_OPTIONS"),
             options_min_open_interest=_env_int(
-                "OPTIONS_MIN_OPEN_INTEREST", cls.options_min_open_interest
+                "OPTIONS_MIN_OPEN_INTEREST", base.options_min_open_interest
             ),
-            options_min_volume=_env_int("OPTIONS_MIN_VOLUME", cls.options_min_volume),
+            options_min_volume=_env_int("OPTIONS_MIN_VOLUME", base.options_min_volume),
             options_max_relative_spread_pct=_env_float(
-                "OPTIONS_MAX_SPREAD_PCT", cls.options_max_relative_spread_pct
+                "OPTIONS_MAX_SPREAD_PCT", base.options_max_relative_spread_pct
             ),
             # Env-tunable, unlike the premium CAPS above. An exit threshold
             # only decides when to realize a position whose size was
             # already bounded by those caps — it cannot increase maximum
             # loss beyond the premium already paid. A cap can.
             options_take_profit_pct=_env_float(
-                "OPTIONS_TAKE_PROFIT_PCT", cls.options_take_profit_pct
+                "OPTIONS_TAKE_PROFIT_PCT", base.options_take_profit_pct
             ),
             options_stop_loss_pct=_env_float(
-                "OPTIONS_STOP_LOSS_PCT", cls.options_stop_loss_pct
+                "OPTIONS_STOP_LOSS_PCT", base.options_stop_loss_pct
             ),
             options_ratchet_enabled=env_flag(
-                "OPTIONS_RATCHET_ENABLED", default=cls.options_ratchet_enabled
+                "OPTIONS_RATCHET_ENABLED", default=base.options_ratchet_enabled
             ),
             options_trail_arm_pct=_env_float(
-                "OPTIONS_TRAIL_ARM_PCT", cls.options_trail_arm_pct
+                "OPTIONS_TRAIL_ARM_PCT", base.options_trail_arm_pct
             ),
             options_trail_giveback_pct=_env_float(
-                "OPTIONS_TRAIL_GIVEBACK_PCT", cls.options_trail_giveback_pct
+                "OPTIONS_TRAIL_GIVEBACK_PCT", base.options_trail_giveback_pct
             ),
             options_hard_take_profit_pct=_env_float(
-                "OPTIONS_HARD_TAKE_PROFIT_PCT", cls.options_hard_take_profit_pct
+                "OPTIONS_HARD_TAKE_PROFIT_PCT", base.options_hard_take_profit_pct
             ),
             **overrides,  # type: ignore[arg-type]
         )

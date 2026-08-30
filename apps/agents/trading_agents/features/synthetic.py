@@ -39,6 +39,30 @@ def synthetic_features(symbol: str, horizon: str = "short") -> dict[str, Any]:
             "trend_position_score": round(40.0 + seed * 40.0, 1),
             "volume_ratio_20d": round(0.8 + seed * 0.6, 2),
         },
+        # Real feature passes carry a "quant" block (engine.features.quant
+        # .compute_quant()) alongside "technicals" — price_zscore_20,
+        # atr_zscore, donchian_pct, sharpe, the trailing returns,
+        # realized_vol_pct, corr_benchmark. This mock predates that block
+        # and never grew one, which made every quant-driven FitComponent
+        # (zscore_stretch, risk_adjusted, donchian_edge, vol_regime_calm, …)
+        # sit at NEUTRAL for every offline/CI pass — a real gap, just a
+        # historically harmless one until ``best_strategy``'s evidence gate
+        # (docs/PLAN_AGGRESSIVE_PROFILE.md §4) started reading "no quant
+        # block at all" as indistinguishable from a genuine data outage.
+        # Filled in here so the offline path exercises the same shape a
+        # real pass does, deterministic per-symbol like everything else in
+        # this module.
+        "quant": {
+            "price_zscore_20": round(-1.5 + seed * 3.0, 3),
+            "atr_zscore": round(-1.0 + seed * 2.0, 3),
+            "donchian_pct": round(seed * 100.0, 1),
+            "sharpe": round(-0.5 + seed * 2.0, 3),
+            "ret_21d_pct": round(-5.0 + seed * 14.0, 2),
+            "ret_63d_pct": round(-8.0 + seed * 24.0, 2),
+            "ret_252d_pct": round(-15.0 + seed * 55.0, 2),
+            "realized_vol_pct": round(15.0 + seed * 35.0, 1),
+            "corr_benchmark": round(0.2 + seed * 0.6, 3),
+        },
         "fundamentals": {
             "quality_score": round(40.0 + seed * 40.0, 1),
             "business_quality_score": round(45.0 + seed * 35.0, 1),
