@@ -34,6 +34,13 @@ truth, never recompute or second-guess them:
     with high kurtosis argues for a wider stop or a smaller size.
   - relative_strength_rank (0-100) is this name's cross-sectional rank in the
     scanned watchlist over the same window.
+  - Candlestick pattern scores are 0-1, already ATR-NORMALISED (a pattern on a
+    range smaller than half the average true range scores ~0) and already
+    TREND-CONTEXT-GATED (a hammer scores high in a downtrend and near zero in
+    an uptrend). Do not re-apply the trend yourself — that would double-count
+    it. top_pattern names the strongest formation on the most recent bars.
+    High compression with everything else low means a coil: that is a setup,
+    not a direction.
   - Scan triggers, when present, are the deterministic conditions that woke
     the council for this symbol right now. Say in your thesis whether the
     price action confirms or contradicts them.

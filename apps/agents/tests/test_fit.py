@@ -58,12 +58,22 @@ def test_blind_weight_fraction_still_works_on_an_empty_dict() -> None:
     scorer directly on ``_Features({})`` and must keep doing so completely
     unchanged — NEUTRAL component scores, a real fraction, never a
     refusal and never an exception. ``rank_strategies`` is the shared path
-    underneath it and must show the same real (not gated) number the plan
-    measured: an empty dict scores ``rsi_mean_reversion`` at 0.60. The
-    ranking must keep reporting that score even after ``best_strategy``
-    (tested below) starts refusing to call it a winner — if a future
-    change "helpfully" moved the gate down into ``score_strategy`` or
-    ``rank_strategies``, this is what would catch it.
+    underneath it and must show the same real (not gated) number — if a
+    future change "helpfully" moved the gate down into ``score_strategy``
+    or ``rank_strategies``, this is what would catch it.
+
+    **0.60 -> 0.587, updated by docs/PLAN_CANDLE_PATTERNS.md.** The plan
+    measured 0.60 before ``rsi_mean_reversion`` grew its fifth component
+    (``candle_reversal_confirms``, weight 0.15). That component degrades to
+    NEUTRAL (0.5) on this empty dict (no ``patterns`` block), same as three
+    of the original four — but adding ANY weight to the denominator shifts
+    the renormalised mean even when the new term itself is neutral:
+    ``(0.6 + 0.5*0.15) / 1.15 = 0.5870``, confirmed against the live code,
+    not just this arithmetic. `|0.60 - 0.587| = 0.013`, comfortably under
+    the 0.03 "barely moves the fit" bound
+    ``test_absent_patterns_block_barely_moves_the_fit`` (test_fit_patterns.py)
+    checks directly — this number moving a little, on every strategy's
+    every symbol, is the documented, intentional cost of the feature.
     """
     for sid in STRATEGY_REGISTRY:
         frac = blind_weight_fraction(sid)
@@ -72,7 +82,7 @@ def test_blind_weight_fraction_still_works_on_an_empty_dict() -> None:
     ranked = rank_strategies({})
     assert ranked, "an empty dict must still produce a full, real ranking"
     assert ranked[0].strategy_id == "rsi_mean_reversion"
-    assert ranked[0].score == pytest.approx(0.60, abs=0.01)
+    assert ranked[0].score == pytest.approx(0.587, abs=0.001)
 
 
 # ─────────────────────────────────────────────────────────────────────

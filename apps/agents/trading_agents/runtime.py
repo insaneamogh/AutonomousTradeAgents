@@ -283,7 +283,7 @@ def _to_proposal_dto(state: CouncilState) -> dict[str, Any] | None:
 # large and mostly redundant with the analyst theses; these four are the
 # ones the thesis view actually renders and the ones a post-mortem needs to
 # reconstruct what the machine was looking at.
-_SNAPSHOT_BLOCKS = ("technicals", "quant", "news", "events", "liquidity", "asset")
+_SNAPSHOT_BLOCKS = ("technicals", "quant", "patterns", "news", "events", "liquidity", "asset")
 
 
 def _reasoning_block(final: CouncilState) -> dict[str, Any]:
