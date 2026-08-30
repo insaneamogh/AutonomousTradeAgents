@@ -26,6 +26,16 @@ export interface BrokerConnection {
    * still configured.
    */
   connectionSource: 'environment' | 'oauth';
+  /**
+   * Per-connection consent for the auto-approve sweeper (see
+   * `docs/PLAN_AUTO_APPROVE.md`). When true — AND the server's
+   * `AUTO_APPROVE_ENABLED` flag is on — the reconciler's sweeper may
+   * execute a pending proposal on this connection with no human tap, up
+   * to the daily cap, stamping `approvalMode: 'auto'` on the decision row.
+   * Paper-only is enforced server-side (plan §2, gate 2) and is NOT
+   * something this flag can override.
+   */
+  autoApproveConsent: boolean;
   createdAt: string;
   lastUsedAt: string | null;
 }
@@ -55,6 +65,44 @@ export function useRevokeBrokerConnection() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: brokerConnectionsKey(userId) });
+    },
+  });
+}
+
+export interface SetAutoApproveConsentArgs {
+  connectionId: string;
+  enabled: boolean;
+}
+
+/**
+ * Arm/disarm the auto-approve sweeper for one connection
+ * (`docs/PLAN_AUTO_APPROVE.md`).
+ *
+ * Deliberately NOT optimistic. This flips a real "the agent may open a
+ * position with no human in the loop" switch, so the UI must only ever
+ * show what the server actually persisted — never a local guess. Callers
+ * should render a busy/pending state from `isPending` rather than
+ * flipping local state ahead of the response; on failure there is
+ * nothing to revert, because nothing was changed ahead of time — the
+ * cached connection (and therefore the calling pill) simply still shows
+ * its last-known-good `autoApproveConsent` value, and `isError` is there
+ * to surface the failure.
+ */
+export function useSetAutoApproveConsent() {
+  const queryClient = useQueryClient();
+  const userId = useAuthStore((s) => s.user?.userId ?? null);
+
+  return useMutation({
+    mutationFn: ({ connectionId, enabled }: SetAutoApproveConsentArgs) =>
+      request<BrokerConnection>(
+        `/api/v1/broker/connections/${connectionId}/auto-approve-consent`,
+        { method: 'POST', body: { enabled } },
+      ),
+    onSuccess: (updated) => {
+      queryClient.setQueryData<BrokerConnection[]>(brokerConnectionsKey(userId), (prev) =>
+        prev ? prev.map((c) => (c.id === updated.id ? updated : c)) : prev,
+      );
+      void queryClient.invalidateQueries({ queryKey: brokerConnectionsKey(userId) });
     },
   });
 }

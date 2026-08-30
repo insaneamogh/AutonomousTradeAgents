@@ -78,6 +78,15 @@ export const PLATINUM_CSS = `
   --pg-bear-text: #bf0715;
   --pg-bear-wash: rgba(191, 7, 21, 0.09);
 
+  /* Warning — elevated-risk / "requires attention" state. Same semantic
+     slot as 'warning' in the mobile DESIGN.md token set (§2), so the two
+     design systems agree on what this MEANS even though every other hex
+     in this file is Platinum-Glass-specific. Introduced for the
+     auto-approve mode control (docs/PLAN_AUTO_APPROVE.md) — nothing else
+     needs it yet, but it's a real named token, not an inline hex. */
+  --pg-warn: #b45309;
+  --pg-warn-wash: rgba(180, 83, 9, 0.10);
+
   --pg-error: #ba1a1a;
   --pg-error-container: #ffdad6;
 
@@ -148,6 +157,9 @@ export const PLATINUM_CSS = `
   --pg-bear: #ffb2b8;
   --pg-bear-text: #ffb2b8;
   --pg-bear-wash: rgba(255, 178, 184, 0.10);
+
+  --pg-warn: #f59e0b;
+  --pg-warn-wash: rgba(245, 158, 11, 0.12);
 
   --pg-error: #ffb4ab;
   --pg-error-container: #93000a;
@@ -362,7 +374,22 @@ export const PLATINUM_CSS = `
 }
 .pg-pill--bull { background-color: var(--pg-bull-wash); color: var(--pg-bull-text); }
 .pg-pill--bear { background-color: var(--pg-bear-wash); color: var(--pg-bear-text); }
+.pg-pill--warn { background-color: var(--pg-warn-wash); color: var(--pg-warn); }
 .pg-pill--glow { box-shadow: 0 0 15px rgba(0, 227, 131, 0.2); }
+
+/* A '.pg-pill' that is also a real <button> — same shape/type as a
+   read-only pill, but interactive (used by the auto-approve mode
+   control). Kept separate from '.pg-pill' itself so every existing
+   non-interactive pill stays exactly as it was. */
+.pg-pill-btn {
+  min-height: 44px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: opacity 150ms ease, transform 120ms ease;
+}
+.pg-pill-btn:hover:not(:disabled) { opacity: 0.85; }
+.pg-pill-btn:active:not(:disabled) { transform: scale(0.97); }
+.pg-pill-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* ── Buttons (§9) ─────────────────────────────────────────────────── */
 .pg-btn {
