@@ -48,18 +48,33 @@ from typing import Any, Literal
 
 Direction = Literal["long", "short"]
 
-MIN_FIT_TO_TRADE = 0.45
+MIN_FIT_TO_TRADE = 0.42
 """Floor on the final (prior-adjusted) score. Below it the council HOLDs
 without spending a single LLM call.
 
-Why 0.45 and not 0.5: a component mean is a soft measure and the strategies
-deliberately overlap, so a genuinely good setup rarely maxes every check —
-a clean uptrend breakout scores ~0.75, and demanding 0.5+ on every name
-would trade only the extremes. 0.45 is the level at which at least half the
-preconditions are materially satisfied. It is a policy number, so it lives
-here in one reviewable place rather than inline, and the cost/coverage
-trade-off it controls is measurable: raise it and fewer symbols reach the
-council, lower it and more do.
+Why 0.45 and not 0.5 (the original reasoning, still why this lives in the
+0.4-0.5 range at all): a component mean is a soft measure and the
+strategies deliberately overlap, so a genuinely good setup rarely maxes
+every check — a clean uptrend breakout scores ~0.75, and demanding 0.5+ on
+every name would trade only the extremes. 0.45 is the level at which at
+least half the preconditions are materially satisfied.
+
+Lowered to 0.42 for the contest window (docs/PLAN_AGGRESSIVE_PROFILE.md
+§2): opens the 0.42-0.45 band of marginal setups the council would
+otherwise never see, on the same "maximize P&L on a paper account with a
+fixed halt" reasoning behind ``RiskCaps.aggressive_paper()``.
+
+**Hard floor: 0.41.** ``blind_weight_fraction("vol_regime_switch")`` is
+exactly 0.400 — see ``test_blind_weight_stays_below_the_trade_floor``. At
+or below 0.40 that strategy would clear the trade gate on direction-blind
+checks alone (vol regime + ATR-not-stretched + idiosyncratic-vs-SPY — none
+of which can tell long from short), which is exactly the failure that
+measure exists to catch. 0.42 leaves margin above that floor; do not go
+lower without re-deriving it.
+
+It is a policy number, so it lives here in one reviewable place rather
+than inline, and the cost/coverage trade-off it controls is measurable:
+raise it and fewer symbols reach the council, lower it and more do.
 """
 
 PRIOR_FLOOR = 0.6
@@ -204,6 +219,61 @@ def _num(v: object) -> float | None:
 NEUTRAL = 0.5
 """Score for a check whose input is missing. Not 0: a strategy must not be
 penalised for history the data provider could not supply."""
+
+
+_EVIDENCE_QUANT_KEYS: tuple[str, ...] = (
+    "price_zscore_20",
+    "atr_zscore",
+    "donchian_pct",
+    "sharpe",
+    "ret_21d_pct",
+    "ret_63d_pct",
+    "ret_252d_pct",
+    "realized_vol_pct",
+    "corr_benchmark",
+)
+"""The quant keys the five scorers actually read. Used ONLY by
+``_has_usable_features`` below to count real evidence — not a scoring
+input list, and not read by any ``FitComponent`` check itself."""
+
+
+def _has_usable_features(features: Mapping[str, Any]) -> tuple[bool, str]:
+    """(usable, why_not). An empty/near-empty feature dict must not be
+    "tradable".
+
+    Measured 2026-08-30 (docs/PLAN_AGGRESSIVE_PROFILE.md §0):
+    ``best_strategy({})`` returns ``rsi_mean_reversion`` at 0.60 — not
+    0.50 — because ``not_a_trend_break`` reads
+    ``trend_regime != "downtrend"`` and the missing-value sentinel
+    ``"unknown"`` satisfies that as a genuine TRUE, not NEUTRAL. Raising
+    ``MIN_FIT_TO_TRADE`` does not fix this; only an explicit evidence gate
+    does.
+
+    Called from ``best_strategy`` ONLY. ``score_strategy``/
+    ``rank_strategies`` (and, through them, ``blind_weight_fraction``,
+    which calls the raw per-strategy scorer directly on
+    ``_Features({})``) must keep scoring a thin or empty dict exactly as
+    they always have — every component degrades to NEUTRAL on a missing
+    input, per this module's own "absence of evidence is not evidence of
+    a bad setup" convention. Only the outermost "is this tradable"
+    decision point gets to refuse on thin evidence.
+    """
+    tech = _block(features, "technicals")
+    if not tech:
+        return False, "no technicals reported"
+
+    trend_regime = str(tech.get("trend_regime", "unknown"))
+    if trend_regime in ("", "unknown"):
+        return False, f"trend_regime is {trend_regime!r}"
+
+    quant = _block(features, "quant")
+    present = sum(1 for k in _EVIDENCE_QUANT_KEYS if _num(quant.get(k)) is not None)
+    if present < 3:
+        return False, (
+            f"only {present}/{len(_EVIDENCE_QUANT_KEYS)} quant signals present (need >= 3)"
+        )
+
+    return True, ""
 
 
 def _ramp(value: float | None, *, low: float, high: float) -> float:
@@ -606,10 +676,17 @@ def best_strategy(
 ) -> tuple[StrategyFit | None, list[StrategyFit]]:
     """``(winner_or_None, full_ranking)``.
 
-    ``None`` means nothing cleared ``MIN_FIT_TO_TRADE`` — the caller HOLDs,
-    and does so before spending anything on an LLM.
+    ``None`` means either nothing cleared ``MIN_FIT_TO_TRADE``, or the
+    feature dict itself is too thin to call anything "tradable" at all —
+    see ``_has_usable_features``. Either way the caller HOLDs, and does so
+    before spending anything on an LLM. ``ranked`` is always the real
+    ranking (even on the evidence-gate path) so the audit row can still
+    show what the nominal winner would have been — see
+    ``trading_agents.nodes.strategy_fit``, which calls
+    ``_has_usable_features`` again to tell the two HOLD reasons apart.
     """
     ranked = rank_strategies(features, priors=priors, allow_shorts=allow_shorts)
-    if not ranked or not ranked[0].tradable:
+    usable, _why_not = _has_usable_features(features)
+    if not usable or not ranked or not ranked[0].tradable:
         return None, ranked
     return ranked[0], ranked
