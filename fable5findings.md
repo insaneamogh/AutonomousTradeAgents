@@ -623,11 +623,11 @@ the image change with the behavior-flip.
   reusing the same tag `deps`/`runtime` already use rather than introducing a fourth
   distinct base image) installs curl+ca-certificates, downloads the pinned Linux/amd64
   CLI release, verifies its sha256 against a checksum baked into the Dockerfile,
-  extracts just the `alpaca` binary, and asserts `alpaca --version` runs — so a bad
+  extracts just the `alpaca` binary, and asserts `alpaca version` runs (SUBCOMMAND — the `--version` flag form exits 1 with an auth error; corrected 2026-08-30) — so a bad
   download or a broken extraction fails the BUILD, not a runtime `alpaca clock` call in
   production (`railway.toml`: 3 restarts, 600s healthcheck timeout, four days from the
   deadline). Stage 3 (runtime) `COPY --from=alpaca-cli`s only the extracted binary and
-  re-asserts `alpaca --version` there too — the runtime image itself never gains curl
+  re-asserts `alpaca version` there too — the runtime image itself never gains curl
   or a Go toolchain, matching the plan's "no curl/wget today" constraint on that stage.
   `USE_ALPACA_CLI` stays `0` (`packages/engine/engine/features/clock.py`, `16986692`)
   — this commit only puts the binary in the image, it does not turn the behavior on.

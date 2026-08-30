@@ -135,7 +135,16 @@ RUN set -eu; \
 # broken extraction fails HERE, not the first time a live scan tick calls
 # `alpaca clock` in production — railway.toml gives a broken image only
 # 3 restarts and a 600s healthcheck window before the whole app goes down.
-RUN /usr/local/bin/alpaca --version
+#
+# `version` (subcommand), NOT `--version` (flag). This CLI does not set a
+# root-command Version, so `--version` falls through to a bare invocation,
+# demands credentials, and exits 1:
+#     alpaca --version -> {"error":"authentication required"}  exit 1
+#     alpaca version   -> 0.0.14                               exit 0
+# The flag form failed every build with an auth error that looks like a
+# secrets problem and is really a wrong-verb problem. Verified against the
+# real binary 2026-08-30. Do not "fix" this back to the flag.
+RUN /usr/local/bin/alpaca version
 
 # ─────────────────────────────────────────────────────────────────────
 # Stage 3 — runtime image
@@ -158,7 +167,7 @@ COPY --from=deps /usr/local /usr/local
 # because this is the copy that actually ships; it also catches a
 # COPY/PATH mistake the Stage 2 check couldn't see.
 COPY --from=alpaca-cli /usr/local/bin/alpaca /usr/local/bin/alpaca
-RUN alpaca --version
+RUN alpaca version
 
 WORKDIR /app
 

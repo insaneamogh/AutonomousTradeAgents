@@ -155,7 +155,11 @@ download, or a dedicated fetch stage with `COPY --from`.
 - **Verify locally with `docker build -f apps/api/Dockerfile .` before pushing.**
   `railway.toml` sets `restartPolicyMaxRetries = 3` and `healthcheckTimeout = 600` — a broken
   image takes the whole app down, four days from the deadline.
-- Add a build-time assertion (`RUN alpaca --version`, or whatever step 1 verified) **so a bad
+- Add a build-time assertion — **`RUN alpaca version`, the SUBCOMMAND, not `--version`.**
+  This CLI sets no root-command Version, so the flag form falls through to a bare
+  invocation, demands credentials and exits 1. It failed every build with
+  `{"error":"authentication required"}`, which reads like a secrets problem and is
+  really a wrong-verb problem. Verified against the real binary 2026-08-30 — **so a bad
   download fails the build, not the runtime.**
 - Keep `USE_ALPACA_CLI=0` in this commit. **The image change and the behaviour change must be
   independently revertible.**
