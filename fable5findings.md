@@ -385,6 +385,113 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-30 — D.4 (MCP client) assessed and deliberately NOT built — docs only, no commit
+
+**D.4 from `docs/PLAN_ALPACA_MCP.md`** is explicitly "the first thing to cut" and was
+attempted last, only after D.3 (`16986692`) and D.5 (`a9a8b820`) were both solid, per
+the plan's own build order. Assessed seriously rather than skipped on sight — here is
+what was actually checked, so the next model doesn't have to re-derive it:
+
+- **The `mcp` Python SDK is already available workspace-wide** — `apps/mcp_server`
+  depends on `mcp[cli]` already, and `python -m uv sync --all-packages` (run for the
+  D.3 baseline) installs it into this worktree's shared `.venv`. Confirmed importable:
+  `from mcp.client.stdio import stdio_client, StdioServerParameters; from mcp import
+  ClientSession` succeeds right now. So D.4 would NOT need a new third-party
+  dependency or a `uv.lock` regeneration for the SDK itself — a real risk the plan
+  worried about turned out not to apply, same shape as the `APCA_` env-var trap in
+  D.0 not materializing.
+- **`alpaca-mcp-server` exists on PyPI** (confirmed via `pypi.org/pypi/alpaca-mcp-
+  server/json`, latest `2.3.0`) and PyPI is reachable from this sandbox.
+- **What actually blocks a genuinely verified implementation:**
+  1. **No `uvx` binary in this sandbox** (`which uvx` → not found) — only `uv` itself,
+     invoked as `python -m uv`, which doesn't register a standalone `uvx` entry point
+     the way a `pip install uv` does. The plan's own client launches `uvx
+     alpaca-mcp-server` directly; I cannot exercise that exact invocation here to
+     prove it actually starts and speaks MCP.
+  2. **No real Alpaca credentials in this sandbox** to actually call `get_option_chain`
+     / `get_option_snapshot` against Alpaca's live data — and this session should not
+     be entering or requesting trading credentials into anything per its own operating
+     rules.
+  3. **The read-only tools' response SCHEMA was never verified, only their NAMES.**
+     D.0 confirmed `get_option_chain`/`get_option_snapshot`/etc. exist in the
+     `options-data` toolset (verbatim from the README), but not their JSON shape.
+     Building `apps/agents/trading_agents/mcp_client/alpaca_mcp.py`'s bridge into
+     `engine.options.contracts.ContractQuote` (`occ_symbol, contract_type, strike,
+     expiry, bid, ask, open_interest, volume, delta, implied_volatility` —
+     `packages/engine/engine/options/selection.py:179`) means mapping the MCP
+     response's actual field names/nesting/units onto those ten fields correctly.
+     Guessing that mapping without a real response to check against is exactly the
+     class of bug this repo has shipped before under green tests (CLAUDE.md §4.2/§4.3
+     — "do not trust a docstring", "measure against reality") — a bridge covered only
+     by mocked unit tests, never exercised against the real server, would be an
+     *inert-looking-functional* integration, not a verified one.
+- **Decision: skip D.4 this session.** Per the plan's own text, D.3 alone already
+  satisfies the hackathon's eligibility requirement ("MCP server OR CLI"), and per
+  `docs/PLAN_ALPACA_MCP.md` §5: *"Two half-working integrations is a worse submission
+  than one working one."* Building the client anyway, unable to verify it against the
+  real server, would produce exactly that — a plausible-looking `USE_ALPACA_MCP=1`
+  path nobody has confirmed actually works.
+- **For whoever picks this up next**, in an environment with `uvx`/network/real paper
+  keys available: run `uvx alpaca-mcp-server --help` (or start it and inspect a real
+  `get_option_chain` response) BEFORE writing the `ContractQuote` bridge, per the same
+  "open the spec, don't infer it" discipline `docs/PLAN_ALPACA_MCP.md` D.0 already
+  modeled for the CLI/MCP-server surface itself.
+
+### 2026-08-30 — `a9a8b820` chore(deploy): ship Alpaca's own CLI binary in the API image (D.5)
+
+**D.5 from `docs/PLAN_ALPACA_MCP.md`** — own commit, independently revertible from
+D.3's behavior change (`16986692`), per the plan's explicit instruction not to couple
+the image change with the behavior-flip.
+
+- **What changed and why:** new Stage 2 (`alpaca-cli`, base `python:3.12-slim` —
+  reusing the same tag `deps`/`runtime` already use rather than introducing a fourth
+  distinct base image) installs curl+ca-certificates, downloads the pinned Linux/amd64
+  CLI release, verifies its sha256 against a checksum baked into the Dockerfile,
+  extracts just the `alpaca` binary, and asserts `alpaca --version` runs — so a bad
+  download or a broken extraction fails the BUILD, not a runtime `alpaca clock` call in
+  production (`railway.toml`: 3 restarts, 600s healthcheck timeout, four days from the
+  deadline). Stage 3 (runtime) `COPY --from=alpaca-cli`s only the extracted binary and
+  re-asserts `alpaca --version` there too — the runtime image itself never gains curl
+  or a Go toolchain, matching the plan's "no curl/wget today" constraint on that stage.
+  `USE_ALPACA_CLI` stays `0` (`packages/engine/engine/features/clock.py`, `16986692`)
+  — this commit only puts the binary in the image, it does not turn the behavior on.
+- **What I VERIFIED, and how:**
+  - **Linux/amd64 release asset naming** — D.0 explicitly flagged this as not found in
+    the CLI's README and told this session to check the real GitHub Releases page
+    rather than guess a pattern. `gh api`/plain `curl` both failed in this sandbox (see
+    below), so fetched `api.github.com/repos/alpacahq/cli/releases/latest` via
+    PowerShell's `Invoke-RestMethod` instead: latest is `v0.0.14`, assets include
+    `cli_0.0.14_linux_amd64.tar.gz` (plus darwin/windows/arm64 siblings and a
+    `checksums.txt`) at
+    `.../releases/download/v0.0.14/cli_0.0.14_linux_amd64.tar.gz`.
+  - **Downloaded the actual asset and cross-checked it three independent ways**:
+    downloaded size (3,701,968 bytes) matches the API's own `size` field exactly;
+    `Get-FileHash -Algorithm SHA256` matches both the API's `digest` field AND the
+    release's own published `checksums.txt` line for this asset (all three agree on
+    `6c82ef31...ff2617` truncated here, full value in the Dockerfile); `tar -tzf` on
+    the real downloaded archive shows a flat layout (`LICENSE`, `README.md`, `alpaca`
+    — no subdirectory), confirming `tar -xzf ... -C /usr/local/bin alpaca` is the
+    correct extraction command as written.
+  - **Docker build NOT run.** `docker`/`podman`/`nerdctl` are not installed in this
+    sandbox — checked via both Bash (`which docker` → not found) and PowerShell
+    (`Get-Command docker` → not found, no `com.docker.service`/docker process running
+    either). **Not claiming a successful `docker build -f apps/api/Dockerfile .`** —
+    that step is still owed before this truly ships. What stands in for it: the
+    download/checksum/extract shell logic was proven against the real release URL via
+    the PowerShell steps above (a direct Bash `curl` to github.com hit a sandbox-local
+    Windows-schannel TLS quirk — `CRYPT_E_NO_REVOCATION_CHECK` / `SEC_E_INVALID_TOKEN`
+    — unrelated to how curl behaves inside the actual Linux build stage), plus manual
+    review of the Dockerfile's POSIX `sh` syntax (`sha256sum -c -` reads the check line
+    from stdin correctly; `tar`/`sha256sum` are both part of Debian's essential package
+    set, present in `python:3.12-slim` without an extra apt install).
+  - Full Python suite re-run after this Dockerfile-only commit: still **828 passed, 9
+    skipped**, unchanged from the D.3 entry above (expected — no Python touched).
+- **Anything left open:**
+  - **`docker build -f apps/api/Dockerfile .` still needs to run somewhere with
+    Docker available before this is truly proven** — flagged plainly rather than
+    assumed.
+  - D.4 (MCP client) — assessed, not built; see the entry below.
+
 ### 2026-08-30 — `16986692` feat(engine,api): Alpaca CLI clock behind `USE_ALPACA_CLI` (D.3)
 
 **D.3 from `docs/PLAN_ALPACA_MCP.md`** — picked up in a fresh worktree on top of
