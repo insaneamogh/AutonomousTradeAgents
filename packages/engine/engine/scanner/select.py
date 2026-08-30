@@ -15,6 +15,11 @@ Environment:
     SCANNER_ZSCORE_THRESHOLD   |price z-score| extreme. Default 2.0.
     SCANNER_DONCHIAN_BAND_PCT  Channel decile that counts as "approaching
                                the edge". Default 10.0.
+    USE_ALPACA_CLI             Layer the ``alpaca`` CLI in front of the
+                               scanner's market clock (see
+                               ``engine.features.clock.resolve_market_clock``).
+                               Default off — 0/unset behaves exactly as
+                               before this flag existed.
 
 Returns None when Alpaca data keys are absent, so MOCK-mode development and
 the test suite never need a network or a key — the caller treats None as
@@ -27,7 +32,7 @@ import logging
 import os
 
 from engine.features.bars import AlpacaDailyBarsProvider, intraday_provider_from_env
-from engine.features.clock import clock_from_env
+from engine.features.clock import resolved_clock_from_env
 from engine.scanner.cooldown import DEFAULT_COOLDOWN_MINUTES, TriggerCooldown
 from engine.scanner.engine import Scanner
 from engine.scanner.types import ScannerConfig
@@ -77,7 +82,7 @@ def scanner_from_env() -> Scanner | None:
     return Scanner(
         daily_bars=AlpacaDailyBarsProvider(api_key, secret),
         intraday=intraday,
-        clock=clock_from_env(),
+        clock=resolved_clock_from_env(),
         config=scanner_config_from_env(),
         cooldown=TriggerCooldown(
             _env_int("SCANNER_COOLDOWN_MINUTES", DEFAULT_COOLDOWN_MINUTES)

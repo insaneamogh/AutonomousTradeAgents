@@ -6,6 +6,7 @@ fetch data (PLAN.md §5.3). The agents package calls
 ``run_council``.
 """
 
+from engine.features.alpaca_cli import cli_clock
 from engine.features.bars import (
     AlpacaDailyBarsProvider,
     AlpacaIntradayBarsProvider,
@@ -19,7 +20,11 @@ from engine.features.clock import (
     AlpacaClock,
     ClockProvider,
     MarketClock,
+    ResolvingClock,
     clock_from_env,
+    resolve_market_clock,
+    resolved_clock_from_env,
+    use_alpaca_cli,
 )
 from engine.features.corporate_actions import (
     AlpacaCorporateActionsProvider,
@@ -133,7 +138,9 @@ __all__ = [
     "QuantFeatures",
     "QuoteProvider",
     "RealFeatureProvider",
+    "ResolvingClock",
     "atr_wilder",
+    "cli_clock",
     "clock_from_env",
     "compute_corporate_actions",
     "compute_liquidity",
@@ -152,10 +159,13 @@ __all__ = [
     "parse_corporate_actions",
     "relative_strength_ranks",
     "reset_fred_cache",
+    "resolve_market_clock",
+    "resolved_clock_from_env",
     "rsi_wilder",
     "sanitize_headline",
     "sector_relative_strength",
     "sma",
     "snapshot_provider_from_env",
     "us_market_session_bounds",
+    "use_alpaca_cli",
 ]

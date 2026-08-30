@@ -385,6 +385,210 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-30 — D.4 (MCP client) assessed and deliberately NOT built — docs only, no commit
+
+**D.4 from `docs/PLAN_ALPACA_MCP.md`** is explicitly "the first thing to cut" and was
+attempted last, only after D.3 (`16986692`) and D.5 (`a9a8b820`) were both solid, per
+the plan's own build order. Assessed seriously rather than skipped on sight — here is
+what was actually checked, so the next model doesn't have to re-derive it:
+
+- **The `mcp` Python SDK is already available workspace-wide** — `apps/mcp_server`
+  depends on `mcp[cli]` already, and `python -m uv sync --all-packages` (run for the
+  D.3 baseline) installs it into this worktree's shared `.venv`. Confirmed importable:
+  `from mcp.client.stdio import stdio_client, StdioServerParameters; from mcp import
+  ClientSession` succeeds right now. So D.4 would NOT need a new third-party
+  dependency or a `uv.lock` regeneration for the SDK itself — a real risk the plan
+  worried about turned out not to apply, same shape as the `APCA_` env-var trap in
+  D.0 not materializing.
+- **`alpaca-mcp-server` exists on PyPI** (confirmed via `pypi.org/pypi/alpaca-mcp-
+  server/json`, latest `2.3.0`) and PyPI is reachable from this sandbox.
+- **What actually blocks a genuinely verified implementation:**
+  1. **No `uvx` binary in this sandbox** (`which uvx` → not found) — only `uv` itself,
+     invoked as `python -m uv`, which doesn't register a standalone `uvx` entry point
+     the way a `pip install uv` does. The plan's own client launches `uvx
+     alpaca-mcp-server` directly; I cannot exercise that exact invocation here to
+     prove it actually starts and speaks MCP.
+  2. **No real Alpaca credentials in this sandbox** to actually call `get_option_chain`
+     / `get_option_snapshot` against Alpaca's live data — and this session should not
+     be entering or requesting trading credentials into anything per its own operating
+     rules.
+  3. **The read-only tools' response SCHEMA was never verified, only their NAMES.**
+     D.0 confirmed `get_option_chain`/`get_option_snapshot`/etc. exist in the
+     `options-data` toolset (verbatim from the README), but not their JSON shape.
+     Building `apps/agents/trading_agents/mcp_client/alpaca_mcp.py`'s bridge into
+     `engine.options.contracts.ContractQuote` (`occ_symbol, contract_type, strike,
+     expiry, bid, ask, open_interest, volume, delta, implied_volatility` —
+     `packages/engine/engine/options/selection.py:179`) means mapping the MCP
+     response's actual field names/nesting/units onto those ten fields correctly.
+     Guessing that mapping without a real response to check against is exactly the
+     class of bug this repo has shipped before under green tests (CLAUDE.md §4.2/§4.3
+     — "do not trust a docstring", "measure against reality") — a bridge covered only
+     by mocked unit tests, never exercised against the real server, would be an
+     *inert-looking-functional* integration, not a verified one.
+- **Decision: skip D.4 this session.** Per the plan's own text, D.3 alone already
+  satisfies the hackathon's eligibility requirement ("MCP server OR CLI"), and per
+  `docs/PLAN_ALPACA_MCP.md` §5: *"Two half-working integrations is a worse submission
+  than one working one."* Building the client anyway, unable to verify it against the
+  real server, would produce exactly that — a plausible-looking `USE_ALPACA_MCP=1`
+  path nobody has confirmed actually works.
+- **For whoever picks this up next**, in an environment with `uvx`/network/real paper
+  keys available: run `uvx alpaca-mcp-server --help` (or start it and inspect a real
+  `get_option_chain` response) BEFORE writing the `ContractQuote` bridge, per the same
+  "open the spec, don't infer it" discipline `docs/PLAN_ALPACA_MCP.md` D.0 already
+  modeled for the CLI/MCP-server surface itself.
+
+### 2026-08-30 — `a9a8b820` chore(deploy): ship Alpaca's own CLI binary in the API image (D.5)
+
+**D.5 from `docs/PLAN_ALPACA_MCP.md`** — own commit, independently revertible from
+D.3's behavior change (`16986692`), per the plan's explicit instruction not to couple
+the image change with the behavior-flip.
+
+- **What changed and why:** new Stage 2 (`alpaca-cli`, base `python:3.12-slim` —
+  reusing the same tag `deps`/`runtime` already use rather than introducing a fourth
+  distinct base image) installs curl+ca-certificates, downloads the pinned Linux/amd64
+  CLI release, verifies its sha256 against a checksum baked into the Dockerfile,
+  extracts just the `alpaca` binary, and asserts `alpaca --version` runs — so a bad
+  download or a broken extraction fails the BUILD, not a runtime `alpaca clock` call in
+  production (`railway.toml`: 3 restarts, 600s healthcheck timeout, four days from the
+  deadline). Stage 3 (runtime) `COPY --from=alpaca-cli`s only the extracted binary and
+  re-asserts `alpaca --version` there too — the runtime image itself never gains curl
+  or a Go toolchain, matching the plan's "no curl/wget today" constraint on that stage.
+  `USE_ALPACA_CLI` stays `0` (`packages/engine/engine/features/clock.py`, `16986692`)
+  — this commit only puts the binary in the image, it does not turn the behavior on.
+- **What I VERIFIED, and how:**
+  - **Linux/amd64 release asset naming** — D.0 explicitly flagged this as not found in
+    the CLI's README and told this session to check the real GitHub Releases page
+    rather than guess a pattern. `gh api`/plain `curl` both failed in this sandbox (see
+    below), so fetched `api.github.com/repos/alpacahq/cli/releases/latest` via
+    PowerShell's `Invoke-RestMethod` instead: latest is `v0.0.14`, assets include
+    `cli_0.0.14_linux_amd64.tar.gz` (plus darwin/windows/arm64 siblings and a
+    `checksums.txt`) at
+    `.../releases/download/v0.0.14/cli_0.0.14_linux_amd64.tar.gz`.
+  - **Downloaded the actual asset and cross-checked it three independent ways**:
+    downloaded size (3,701,968 bytes) matches the API's own `size` field exactly;
+    `Get-FileHash -Algorithm SHA256` matches both the API's `digest` field AND the
+    release's own published `checksums.txt` line for this asset (all three agree on
+    `6c82ef31...ff2617` truncated here, full value in the Dockerfile); `tar -tzf` on
+    the real downloaded archive shows a flat layout (`LICENSE`, `README.md`, `alpaca`
+    — no subdirectory), confirming `tar -xzf ... -C /usr/local/bin alpaca` is the
+    correct extraction command as written.
+  - **Docker build NOT run.** `docker`/`podman`/`nerdctl` are not installed in this
+    sandbox — checked via both Bash (`which docker` → not found) and PowerShell
+    (`Get-Command docker` → not found, no `com.docker.service`/docker process running
+    either). **Not claiming a successful `docker build -f apps/api/Dockerfile .`** —
+    that step is still owed before this truly ships. What stands in for it: the
+    download/checksum/extract shell logic was proven against the real release URL via
+    the PowerShell steps above (a direct Bash `curl` to github.com hit a sandbox-local
+    Windows-schannel TLS quirk — `CRYPT_E_NO_REVOCATION_CHECK` / `SEC_E_INVALID_TOKEN`
+    — unrelated to how curl behaves inside the actual Linux build stage), plus manual
+    review of the Dockerfile's POSIX `sh` syntax (`sha256sum -c -` reads the check line
+    from stdin correctly; `tar`/`sha256sum` are both part of Debian's essential package
+    set, present in `python:3.12-slim` without an extra apt install).
+  - Full Python suite re-run after this Dockerfile-only commit: still **828 passed, 9
+    skipped**, unchanged from the D.3 entry above (expected — no Python touched).
+- **Anything left open:**
+  - **`docker build -f apps/api/Dockerfile .` still needs to run somewhere with
+    Docker available before this is truly proven** — flagged plainly rather than
+    assumed.
+  - D.4 (MCP client) — assessed, not built; see the entry below.
+
+### 2026-08-30 — `16986692` feat(engine,api): Alpaca CLI clock behind `USE_ALPACA_CLI` (D.3)
+
+**D.3 from `docs/PLAN_ALPACA_MCP.md`** — picked up in a fresh worktree on top of
+D.0/D.1/D.2 (`1bd33849`, `40eae29b`, and the two docs commits above/below this one),
+all already merged to `main`; this entry does not repeat them.
+
+- **What changed and why:**
+  - New `packages/engine/engine/features/alpaca_cli.py`: `cli_clock()` runs
+    `alpaca clock` (the D.0-verified subcommand — no `get` suffix) via
+    `asyncio.create_subprocess_exec` with an argv list, never `shell=True`. Returns
+    `None` on ANY failure — missing binary, non-zero exit, timeout, unparseable JSON,
+    or any other unexpected exception — and never raises. The timeout path calls
+    `proc.kill()` **and** awaits `proc.wait()` (kill alone signals but doesn't reap);
+    skipping either leaks one zombie subprocess per scan tick on the 30s scheduler
+    loop. The subprocess `env=` is a plain `dict(os.environ)` passthrough — D.0
+    verified the CLI reads `ALPACA_API_KEY`/`ALPACA_SECRET_KEY` directly, so the
+    plan's own predicted `APCA_`-prefix remapping trap does not apply here.
+  - New `engine.features.clock.resolve_market_clock()`: three-step fallback, each
+    link reporting its own `source` — CLI (only when `USE_ALPACA_CLI=1`) → `AlpacaClock`
+    REST → local calendar. `use_alpaca_cli()` defaults OFF (same truthy-set convention
+    as `USE_POSTGRES` in `position_manager.py`), so every existing call site is
+    behaviourally unchanged until deliberately flipped. New `ResolvingClock`
+    (a `ClockProvider`) + `resolved_clock_from_env()` **replace** the bare
+    `clock_from_env()` that `engine.scanner.select.scanner_from_env()` was passing as
+    `Scanner.clock` — this is the part that makes the CLI step actually reachable from
+    a live scan rather than an unused function. Confirmed the wiring reaches the API:
+    `apps/api/app/services/council/scheduler.py` constructs its scanner via
+    `scanner_from_env()`, and `scanner_status.py`'s `_build()` already reads
+    `result.market_open_source` into `ScannerStatusResponse` (the `40eae29b` work) —
+    so `market_open_source: "alpaca_cli"` will reach the scanner-status API response
+    once `USE_ALPACA_CLI=1`, the judge-visible eligibility artifact the plan asks for.
+- **What I VERIFIED, and how:**
+  - **Measured the baseline myself, not trusted from a doc**: this worktree had no
+    `.venv`, so `python -m uv sync --all-packages` first, then `python -m uv run
+    pytest apps/agents apps/api packages/ -q` → **795 passed, 9 skipped** — matches
+    the plan's stated baseline exactly.
+  - **After the change: 828 passed, 9 skipped** — exactly +33, matching the 33 new
+    tests added across `tests/test_alpaca_cli.py` (11) and `tests/test_clock.py` (22).
+    Skip count unchanged.
+  - **Revert-checked per CLAUDE.md §4.1, four separate behaviors**, each restored
+    immediately after confirming a real, legible failure (not a vacuous pass):
+    1. Removed `proc.kill()`/`proc.wait()` from the timeout path →
+       `test_cli_clock_returns_none_on_timeout_and_kills_the_process` failed on
+       `assert proc.killed is True` (not just "result is None").
+    2. Removed the `except OSError` handler **and** the outer safety-net
+       `except Exception` (the safety net alone would have masked the missing
+       specific handler and given a false pass) →
+       `test_clock_falls_back_when_the_cli_binary_is_missing` failed with a real
+       `FileNotFoundError` propagating out of `cli_clock`.
+    3. Same double-removal for `except json.JSONDecodeError` →
+       `test_cli_clock_returns_none_on_unparseable_json` failed with a real
+       `json.decoder.JSONDecodeError: Expecting value` propagating.
+    4. Replaced `if use_alpaca_cli():` with `if True:` in `resolve_market_clock` →
+       `test_resolve_market_clock_never_touches_cli_when_flag_is_off` failed via an
+       `AssertionError`-raising spy (`cli_clock must not be called when
+       USE_ALPACA_CLI is off`).
+    All four restored and the full 828/9 re-confirmed green afterward.
+  - **`which alpaca` genuinely finds nothing in this dev sandbox** (confirmed via
+    `which alpaca` → exit 1), so
+    `test_cli_clock_returns_none_when_binary_is_genuinely_absent` exercises the real
+    `FileNotFoundError` path end to end, not a simulated one — this is the exact
+    dev-laptop scenario D.3 exists to handle silently.
+  - **ruff check + `ruff format --check` + `mypy` strict all clean** on every
+    touched/added source file (`alpaca_cli.py`, `clock.py`, `features/__init__.py`,
+    `scanner/select.py`, `scanner/engine.py` docstring-only). `ASYNC109` (async fn
+    with a `timeout` param) fired on `cli_clock` — this is the plan's own literal
+    signature (`cli_clock(*, timeout: float = 5.0)`), so suppressed with a one-line
+    `# noqa: ASYNC109` justification rather than reshaped away from the spec.
+  - **The repo-wide `ruff check apps/ packages/` finding count (252) is identical
+    before and after this change** (`git stash` / re-run / `stash pop`) — confirmed
+    none of it sits in a file this commit touches. (This is a materially larger
+    number than CLAUDE.md §7's "9 pre-existing errors" — that figure evidently comes
+    from a narrower invocation than a full `apps/ packages/` sweep; not investigated
+    further, out of scope here, flagging so the next model doesn't assume 9 is the
+    whole-repo number.)
+  - **Test-file `mypy` findings are pre-existing-pattern, not new debt**: both new
+    test files trip the same `"Module ... does not explicitly export attribute"`
+    finding that `test_features_macro.py` already has unfixed (verified by running
+    mypy on that file directly) — this repo does not hold test files to strict mypy,
+    consistent with CLAUDE.md §7 only listing `pytest`/`ruff` as required gates.
+- **Anything left open:**
+  - D.5 (Dockerfile) is the next commit, its own independently-revertible change per
+    the plan's own instruction — see the entry directly above/after this one.
+  - D.4 (MCP client) — deliberately not built this session; see the dedicated entry
+    for the reasoning (mcp SDK is already available workspace-wide, but no `uvx` in
+    this sandbox and no real Alpaca credentials to verify the actual `get_option_chain`
+    response shape against, so a faithful `ContractQuote` bridge could not be verified
+    rather than guessed).
+  - `alpaca clock`'s JSON shape is an inference (same `is_open`/`next_open`/
+    `next_close` fields as the REST `/v2/clock` payload, since the CLI wraps the same
+    Trading API and its README says JSON-out mirrors the API by default) — **not**
+    verified against a real running binary, since D.0 verified the flag/env/subcommand
+    surface but not the literal JSON shape, and this sandbox has no `alpaca` binary to
+    invoke for real. `_parse_cli_clock()` treats a payload missing the `is_open` key
+    as a parse failure (`None`) rather than guessing, so a wrong shape degrades safely
+    (silent fallback) instead of misreporting a made-up answer under a real-looking
+    `source="alpaca_cli"` label.
 ### 2026-08-30 — `f736c438` feat(risk,agents): aggressive paper profile for the contest window
 
 `ID:MODEL2OFF`. Picked up the handover from the four-plans commit below and built

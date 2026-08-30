@@ -17,6 +17,12 @@
 #     docker run -e PORT=8000 -e DATABASE_URL=postgresql://... \
 #                -e USE_POSTGRES=1 -e JWT_SECRET=... \
 #                -p 8000:8000 autotrader-api
+#
+# The image ships Alpaca's own `alpaca` CLI binary (Stage 2 below) — the
+# hackathon's "use Alpaca's own MCP server or CLI" eligibility requirement
+# (docs/PLAN_ALPACA_MCP.md). Shipping the binary is independent of using it:
+# `USE_ALPACA_CLI=0` by default (packages/engine/engine/features/clock.py),
+# so this image behaves exactly as before until that env var is set to `1`.
 
 # ─────────────────────────────────────────────────────────────────────
 # Stage 0 — web UI: Expo's static web export of apps/mobile (Platinum
@@ -85,7 +91,54 @@ RUN cd /tmp/workspace \
     && rm -rf /tmp/workspace /tmp/requirements.txt
 
 # ─────────────────────────────────────────────────────────────────────
-# Stage 2 — runtime image
+# Stage 2 — fetch the Alpaca CLI binary. Hackathon eligibility requirement:
+# "projects must utilize either Alpaca's own MCP server or its CLI tools"
+# (docs/PLAN_ALPACA_MCP.md). A dedicated stage so `runtime` below never
+# needs curl or a Go toolchain — only the verified, extracted `alpaca`
+# binary crosses over via COPY --from. USE_ALPACA_CLI stays 0 in this same
+# commit (packages/engine/engine/features/clock.py) — this stage only puts
+# the binary in the image, it does not turn the behavior on. Image change
+# and behavior change are independently revertible on purpose.
+# ─────────────────────────────────────────────────────────────────────
+FROM python:3.12-slim AS alpaca-cli
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pinned, not "latest" — the CLI's own README does not document linux/amd64
+# asset naming (verified absent at D.0, docs/PLAN_ALPACA_MCP.md), so this
+# was checked against the real GitHub Releases API
+# (`repos/alpacahq/cli/releases/latest`) on 2026-08-30 rather than guessed:
+# the linux/amd64 asset is `cli_0.0.14_linux_amd64.tar.gz`, and its sha256
+# below was cross-checked against that same release's own `checksums.txt`
+# (both agree). Bump both ARGs deliberately on a CLI upgrade — an unpinned
+# "latest" could silently start pulling a release this image was never
+# built or tested against, days before the hackathon deadline.
+ARG ALPACA_CLI_VERSION=0.0.14
+ARG ALPACA_CLI_SHA256=6c82ef31f94dd61aae1c90e40fc41fdfaf8111bd50e9a2780b9d8d304eb2ba66
+
+# Verifying the checksum here — not just trusting the download — means a
+# corrupted or substituted asset fails the BUILD immediately, not a
+# runtime `alpaca clock` call days later.
+RUN set -eu; \
+    asset="cli_${ALPACA_CLI_VERSION}_linux_amd64.tar.gz"; \
+    curl -fsSL -o "/tmp/${asset}" \
+        "https://github.com/alpacahq/cli/releases/download/v${ALPACA_CLI_VERSION}/${asset}"; \
+    echo "${ALPACA_CLI_SHA256}  /tmp/${asset}" | sha256sum -c -; \
+    tar -xzf "/tmp/${asset}" -C /usr/local/bin alpaca; \
+    chmod +x /usr/local/bin/alpaca; \
+    rm "/tmp/${asset}"
+
+# Build-time assertion (docs/PLAN_ALPACA_MCP.md D.5): a bad download or a
+# broken extraction fails HERE, not the first time a live scan tick calls
+# `alpaca clock` in production — railway.toml gives a broken image only
+# 3 restarts and a 600s healthcheck window before the whole app goes down.
+RUN /usr/local/bin/alpaca --version
+
+# ─────────────────────────────────────────────────────────────────────
+# Stage 3 — runtime image
 # ─────────────────────────────────────────────────────────────────────
 FROM python:3.12-slim AS runtime
 
@@ -99,6 +152,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy installed site-packages from the deps stage. ``/usr/local`` holds
 # the python install + the packages we just put down.
 COPY --from=deps /usr/local /usr/local
+
+# The Alpaca CLI binary from Stage 2 — see that stage's header comment for
+# why it's fetched separately. Re-asserted here (not just in Stage 2)
+# because this is the copy that actually ships; it also catches a
+# COPY/PATH mistake the Stage 2 check couldn't see.
+COPY --from=alpaca-cli /usr/local/bin/alpaca /usr/local/bin/alpaca
+RUN alpaca --version
 
 WORKDIR /app
 
