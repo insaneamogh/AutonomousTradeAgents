@@ -42,17 +42,18 @@ rows ARE the position ledger).
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import desc, select, update
+from sqlalchemy import desc, select, text, update
 
 from app.services.broker.broker_use import with_broker_client
 from app.services.orders.executor import _build_risk_context
 from app.services.orders.order_store import persist_linked_order_submit, persist_order_result
-from engine.options.exits import option_exit_signal
+from engine.options.exits import RatchetOutcome, option_exit_signal, option_ratchet_signal
 from engine.options.expiry import dte
 from engine.risk import RiskCaps
 
@@ -67,6 +68,7 @@ _CLOSE_REASON_LABEL = {
     "agent_expiry": "closing ahead of expiry",
     "option_take_profit": "premium take-profit hit",
     "option_stop_loss": "premium stop-loss hit",
+    "option_trail_stop": "trailing stop hit",
 }
 
 # Mirrors the drafter / ghost evaluator horizon map — used only when an
@@ -111,9 +113,35 @@ async def manage_positions_for_user(
 
         closes = 0
         for decision in open_decisions:
+            # Computed ONCE per decision per tick and threaded into
+            # `_exit_reason` below rather than recomputed there — the
+            # peak-persistence write after `_exit_reason` returns needs the
+            # SAME outcome, and a second independent computation could only
+            # ever agree with the first (both are pure), so the point of
+            # computing it once here is to have exactly one value in scope
+            # for both the close decision and the write, not a possible
+            # accuracy difference.
+            ratchet_outcome = _ratchet_outcome_for(decision, option_pl_pct, caps)
             reason = await _exit_reason(
-                session, decision, now, caps=caps, option_pl_pct=option_pl_pct
+                session, decision, now, caps=caps, option_pl_pct=option_pl_pct,
+                ratchet_outcome=ratchet_outcome,
             )
+            if ratchet_outcome is not None and ratchet_outcome.peak_advanced:
+                # Persisted regardless of whether this tick ALSO closes the
+                # position — the peak at the moment of close is still real
+                # audit history. Write only on advancement: at a 30s tick
+                # cadence across a whole session that is ~10 writes instead
+                # of ~800 (PLAN_EXIT_AGENT.md §4).
+                try:
+                    await _persist_option_exit_peak(
+                        session_factory, decision=decision, outcome=ratchet_outcome
+                    )
+                except Exception:
+                    logger.exception(
+                        "position_manager: failed to persist the option-exit "
+                        "peak for %s (%s) — continuing without it",
+                        decision.symbol, decision.id,
+                    )
             if reason is None:
                 continue
             # Re-entrance guard: a SELL we placed on a prior tick may still
@@ -177,6 +205,111 @@ async def _option_pl_pct_by_symbol(user_id: str) -> dict[str, float]:
         for p in positions
         if p.is_option and p.unrealized_pl_pct is not None
     }
+
+
+def _ratchet_outcome_for(
+    decision,
+    option_pl_pct: dict[str, float] | None,
+    caps: RiskCaps,
+) -> RatchetOutcome | None:
+    """The ``RatchetOutcome`` for one decision, or ``None`` when it is not a
+    ratchet candidate at all (not an option, no OCC symbol on the
+    proposal, or ``caps.options_ratchet_enabled`` is off) — callers fall
+    back to ``option_exit_signal`` in that case.
+
+    Pure given its inputs: reads the persisted peak from
+    ``decision.reasoning["option_exit"]["peak_pl_pct"]`` (already in hand
+    on the loaded row — no extra query) and the current mark from
+    ``option_pl_pct`` (already fetched once per user tick by
+    ``_option_pl_pct_by_symbol``). No I/O here.
+    """
+    if not caps.options_ratchet_enabled:
+        return None
+    proposal = decision.proposal or {}
+    if not bool(proposal.get("isOption", proposal.get("is_option", False))):
+        return None
+    occ = proposal.get("occSymbol") or proposal.get("occ_symbol")
+    if not occ:
+        return None
+    reasoning = getattr(decision, "reasoning", None) or {}
+    existing_state = reasoning.get("option_exit") or {}
+    return option_ratchet_signal(
+        unrealized_pl_pct=(option_pl_pct or {}).get(str(occ).upper()),
+        peak_pl_pct=existing_state.get("peak_pl_pct"),
+        arm_pct=caps.options_trail_arm_pct,
+        # RiskCaps stores this as a PERCENT of the peak (30.0); the pure
+        # function wants a FRACTION (0.30) — see its own docstring.
+        giveback_frac=caps.options_trail_giveback_pct / 100.0,
+        hard_take_profit_pct=caps.options_hard_take_profit_pct,
+        stop_loss_pct=caps.options_stop_loss_pct,
+    )
+
+
+def _option_exit_peak_update_stmt(*, decision_id, payload: dict) -> tuple[object, dict]:
+    """Builds the parameterized ``jsonb_set`` UPDATE for the high-water
+    mark — split out from the execute wrapper below so the emitted SQL and
+    its bound params are directly assertable in a test with no live
+    Postgres involved (this suite has no live-DB harness at all; every
+    existing test in this package mocks the session — see
+    ``fable5findings.md`` for why jsonb_set's actual runtime behavior is
+    verified by reasoning about documented Postgres semantics plus this
+    statement's shape, not by executing it against a real database).
+
+    ``COALESCE`` is REQUIRED: ``reasoning`` is nullable and
+    ``jsonb_set(NULL, ...)`` returns ``NULL`` in Postgres, which would
+    silently blank the whole column instead of writing to it.
+    ``create_missing=true`` (the literal ``true`` 4th argument) creates the
+    ``option_exit`` key the first time; every write after that replaces it.
+
+    This updates ONLY the ``option_exit`` key — ``jsonb_set`` never touches
+    sibling keys in the same JSONB column (``contract_funnel``,
+    ``strategy_fit``), which is the entire reason this exists instead of a
+    plain ``UPDATE ... SET reasoning = :payload``.
+    """
+    return (
+        text(
+            "UPDATE agent_decisions "
+            "SET reasoning = jsonb_set("
+            "COALESCE(reasoning, '{}'::jsonb), '{option_exit}', "
+            "CAST(:payload AS jsonb), true"
+            ") "
+            "WHERE id = :id"
+        ),
+        {"payload": json.dumps(payload, default=str), "id": str(decision_id)},
+    )
+
+
+async def _persist_option_exit_peak(
+    session_factory: async_sessionmaker,
+    *,
+    decision,
+    outcome: RatchetOutcome,
+) -> None:
+    """Writes the new high-water mark. Called only when
+    ``outcome.peak_advanced`` — see the call site in
+    ``manage_positions_for_user``.
+
+    The payload MERGES the fields this module owns (``peak_pl_pct``,
+    ``armed``, ``trail_line_pct``) over whatever already lives under the
+    ``option_exit`` key, rather than replacing it outright. Nothing in this
+    module writes ``consult_date``/``consults``/``last_consult_at``/``log``
+    yet (that is the exit agent's own future write, a separate piece of
+    work) — but if it ever does, a ratchet-only tick must not silently wipe
+    that consult history the next time the peak advances without a
+    consult happening on the same tick.
+    """
+    existing_state = (getattr(decision, "reasoning", None) or {}).get("option_exit") or {}
+    payload = {
+        **existing_state,
+        "version": 1,
+        "peak_pl_pct": outcome.peak_pl_pct,
+        "armed": outcome.armed,
+        "trail_line_pct": outcome.trail_line_pct,
+    }
+    stmt, params = _option_exit_peak_update_stmt(decision_id=decision.id, payload=payload)
+    async with session_factory() as session:
+        await session.execute(stmt, params)
+        await session.commit()
 
 
 def _coerce_expiry_date(value: object) -> date | None:
@@ -439,13 +572,23 @@ async def _exit_reason(
     *,
     caps: RiskCaps | None = None,
     option_pl_pct: dict[str, float] | None = None,
+    ratchet_outcome: RatchetOutcome | None = None,
 ) -> str | None:
     """Which exit condition fired, if any. Deterministic reads only.
 
     Order matters. The premium exit is checked FIRST for options: a
-    contract that already hit its take-profit should not sit two more
-    sessions waiting for the calendar time stop, and one through its stop
-    should not keep bleeding theta for the same reason.
+    contract that already hit its target should not sit two more sessions
+    waiting for the calendar time stop, and one through its stop should not
+    keep bleeding theta for the same reason.
+
+    ``ratchet_outcome``, when given, is the CALLER'S already-computed
+    ``RatchetOutcome`` for this decision (``manage_positions_for_user``
+    computes it once per tick and reuses it here and for the peak-write
+    that follows). When omitted — every direct-call site in this test file
+    included — it is computed fresh from ``decision``/``option_pl_pct``,
+    which is pure and gives the identical result; the parameter exists to
+    avoid a second I/O-free computation in the hot path, not because a
+    second computation would disagree.
     """
     proposal = decision.proposal or {}
     caps = caps or RiskCaps.from_env()
@@ -453,19 +596,32 @@ async def _exit_reason(
     # 0. Premium exit (options only). No broker mark -> no signal, and the
     #    time stop below still applies; a missing price never closes.
     if bool(proposal.get("isOption", proposal.get("is_option", False))):
-        occ = proposal.get("occSymbol") or proposal.get("occ_symbol")
-        if occ:
-            signal = option_exit_signal(
-                unrealized_pl_pct=(option_pl_pct or {}).get(str(occ).upper()),
-                take_profit_pct=caps.options_take_profit_pct,
-                stop_loss_pct=caps.options_stop_loss_pct,
+        if caps.options_ratchet_enabled:
+            outcome = (
+                ratchet_outcome if ratchet_outcome is not None
+                else _ratchet_outcome_for(decision, option_pl_pct, caps)
             )
-            if signal is not None:
+            if outcome is not None and outcome.action == "CLOSE":
                 logger.info(
                     "position_manager: %s fired for %s (%s) — %s",
-                    signal.reason, decision.symbol, occ, signal.detail,
+                    outcome.reason, decision.symbol,
+                    proposal.get("occSymbol") or proposal.get("occ_symbol"), outcome.detail,
                 )
-                return signal.reason
+                return outcome.reason
+        else:
+            occ = proposal.get("occSymbol") or proposal.get("occ_symbol")
+            if occ:
+                signal = option_exit_signal(
+                    unrealized_pl_pct=(option_pl_pct or {}).get(str(occ).upper()),
+                    take_profit_pct=caps.options_take_profit_pct,
+                    stop_loss_pct=caps.options_stop_loss_pct,
+                )
+                if signal is not None:
+                    logger.info(
+                        "position_manager: %s fired for %s (%s) — %s",
+                        signal.reason, decision.symbol, occ, signal.detail,
+                    )
+                    return signal.reason
 
     # 1. Time stop — Phase 0 calendar days, consistent with PDT/idempotency.
     time_stop_days = int(

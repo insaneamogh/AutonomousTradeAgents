@@ -385,6 +385,180 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-30 — e552ab73 feat(options): wire the trailing ratchet into the close path (A.2)
+
+Continuing `PLAN_EXIT_AGENT.md` in the same session as A.1 (previous entry, below).
+This is **A.2** — the plan's own build order (§7) puts a deploy-and-watch checkpoint
+right after these two, before any LLM code, and explicitly says stopping here to
+report back is expected. That's what this entry is.
+
+**What shipped:** the ratchet from A.1 now actually runs. `_exit_reason`'s options
+branch calls `_ratchet_outcome_for` (a new glue helper in
+`apps/api/app/services/orders/position_manager.py`) instead of `option_exit_signal`
+whenever `caps.options_ratchet_enabled` (default True) — flipping that flag back off
+reproduces the old flat-threshold behavior exactly, both directions covered by an
+explicit test. The high-water mark is real persisted state now: read from
+`decision.reasoning["option_exit"]["peak_pl_pct"]` (already on the loaded row, no
+extra query) and written back via `jsonb_set` — `COALESCE(reasoning, '{}'::jsonb)` so
+a null column doesn't get blanked, and the payload MERGES over whatever already lives
+under that key (so a future exit-agent's `consults`/`log` fields, once A.3 exists,
+survive a ratchet-only tick) rather than replacing the whole key. Written only when
+`RatchetOutcome.peak_advanced` — the plan's own ~10-writes-vs-~800-per-session math.
+`manage_positions_for_user` computes the `RatchetOutcome` exactly once per decision
+per tick and threads it into both the close decision and the write gate.
+`docs/OPTIONS_PLAYBOOK.md` §3/§4/§6 updated in the same commit (this repo's own §0
+rule) to describe the ratchet as current, not scheduled.
+
+**Verified, not assumed:**
+- 824 passed, 9 skipped (+15 from A.1's 809, zero regressions). `ruff check` clean
+  (one real `RUF059` unused-variable catch along the way, fixed). `mypy` on
+  `position_manager.py`: 16 errors total, but I checked the baseline properly this
+  time by piping `git show HEAD:<path>` (the pre-A.2, pre-A.1-touching-this-file
+  version) through mypy directly rather than assuming — **11 were already there**.
+  The 5 new ones are the identical two categories already all over this file
+  (untyped `decision`-shaped params, `async_sessionmaker`/`dict` missing generic
+  args) — matching the file's own established convention, not a new problem. Did
+  not attempt a file-wide mypy-strict cleanup; out of scope for this commit.
+- **No live Postgres anywhere in this suite** — confirmed by grep before assuming I
+  could test jsonb_set's real runtime behavior (`text|create_async_engine|sqlite` etc.
+  across every existing test file: zero hits; also confirmed no `docker`, no `psql`,
+  no `.venv` even existed in this worktree until I ran `uv sync` myself for the
+  baseline check in A.1). So `_option_exit_peak_update_stmt` is tested by asserting
+  the compiled SQL text and bound params directly (split from the execute wrapper
+  for exactly this reason), not by executing it. jsonb_set's actual behavior against
+  a real Postgres is NOT independently verified by me this session — it rests on
+  documented Postgres semantics (`jsonb_set(NULL, ...) IS NULL`, hence the COALESCE;
+  `create_missing=true` on the 4th positional arg) plus this statement's shape being
+  correct, which is exactly what the SQL-text tests pin. **Flagging this explicitly
+  as the one place in A.1+A.2 that is reasoned-about rather than executed against
+  the real database** — worth a real end-to-end check against a live Postgres
+  connection before trusting it in anger, same spirit as the plan's own ⚠️ about
+  `unrealized_plpc` timing.
+- **Per CLAUDE.md 4.1, actually broke and restored six things, not the usual
+  smaller number**, because A.2 has more moving parts than A.1's pure function:
+  jsonb_set -> whole-column overwrite (SQL tests failed); dropped COALESCE (failed);
+  dropped the existing-state merge in `_persist_option_exit_peak` (failed with a
+  `KeyError` on the preserved `consults` field — exactly the failure mode the merge
+  exists to prevent); dropped the `peak_advanced` gate in `manage_positions_for_user`
+  (failed — both test positions persisted instead of one); forced
+  `_ratchet_outcome_for` to ignore the persisted peak, both at its own level and
+  through `_exit_reason` (both failed); forced the disabled flag to be bypassed at
+  the `_exit_reason` level AND separately at the `_ratchet_outcome_for` level (both
+  independently caught — this confirmed the two checks are a real second layer, not
+  one masking the other, which I wasn't sure of until I tried breaking each alone).
+- **Found and fixed a latent bug in my own test while doing the peak-advanced
+  revert-check**, worth recording so nobody re-derives the same confusion: the new
+  `test_manage_positions_persists_the_peak_only_when_it_advanced` calls the REAL
+  `manage_positions_for_user`, which computes `now = datetime.now(UTC)` — the actual
+  wall clock — unlike every other test in this file, which passes the fixed
+  `NOW = datetime(2026, 6, 12, ...)` constant straight into `_exit_reason`. My first
+  draft used that same fixed constant for the fixture's `triggered_at`, which is
+  ~2 months in the past relative to whenever this suite actually runs, so the TIME
+  STOP fired regardless of the ratchet and `_close_position` was attempted (and
+  errored, harmlessly caught) on bare fixtures that don't have `fill_qty`. The
+  test's own assertions still happened to pass either way, but for a confused
+  reason. Fixed by setting `triggered_at`/`user_responded_at` to `datetime.now(UTC)
+  - timedelta(hours=1)` explicitly. Left a comment on the fixture explaining why,
+  since this is exactly the kind of thing that looks like flakiness later.
+
+**One existing test recalibrated, as flagged in the A.1 entry it would need to be:**
+`test_premium_take_profit_fires_before_the_time_stop` used pl=72.4% against the old
+flat 60% threshold; with the ratchet enabled by default that no longer closes (it
+arms the trail and holds — the entire point of this feature). Recalibrated to
+pl=160% (above the new 150% hard-take-profit backstop) to keep testing the same
+"fires before the time stop" ordering property; added
+`test_ratchet_arms_and_holds_instead_of_closing_at_the_old_flat_threshold` to cover
+the 72.4% HOLD case explicitly rather than let it go untested. Every other existing
+premium-exit test was hand-checked against both code paths (ratchet on/off) and
+needed no change — they all produce the identical result either way (stop-loss,
+inside-both-thresholds, missing-mark, wrong-occ-key, equity-never-premium-exited).
+
+**Left open, as the plan's own build order calls for:**
+- A.3 (the LLM exit agent node, prompt, mock branch, post-filter) and A.4
+  (`complete_tools()` + the four read-only tools + the 2-round loop) are unstarted.
+  Nothing about A.1+A.2 blocks them — `RatchetOutcome.may_consult` already exists and
+  is threaded through, just unread by anything yet.
+- The live-Postgres jsonb_set verification named above.
+- Per the plan's own §0: whether `unrealized_plpc` on an option position updates
+  promptly enough for a 30s loop is still an assumption, not something this session
+  could check (no live option position open). Check it Monday with one real
+  contract before trusting the trail's timeliness in anger.
+
+### 2026-08-30 — ecc22725 feat(options): trailing ratchet as a sibling exit rule (A.1)
+
+Picking up `PLAN_EXIT_AGENT.md` (queued item #2 in CLAUDE.md). This is **A.1 only** —
+the plan's own build order (§7) calls out A.1+A.2 as one shippable, revertible unit
+that lands *before* any LLM code, and explicitly says it's fine to stop and report back
+at that boundary. This entry is A.1; A.2 (the jsonb_set high-water-mark persistence +
+wiring the ratchet into `_exit_reason`) is the next commit, same session.
+
+**What shipped:** `option_ratchet_signal()` in `packages/engine/engine/options/exits.py`
+— a pure function, sibling to the existing `option_exit_signal` (untouched, all 10 of
+its own tests still green). State machine per the plan's §3 exactly: stop (rule 1) >
+hard take-profit backstop (rule 2) > proportional trail (rule 3, `peak * (1 -
+giveback_frac)`, only once armed at +35%) > hold. Four new `RiskCaps` fields
+(`options_ratchet_enabled` default **True**, `options_trail_arm_pct` 35.0,
+`options_trail_giveback_pct` 30.0, `options_hard_take_profit_pct` 150.0), all
+env-tunable, all wired into `from_env()`. **Nothing calls the new function yet** —
+`_exit_reason` still reads only `option_exit_signal`, so this commit is a pure
+no-op behaviorally. Confirmed by the full-suite count not moving beyond the new tests
+themselves (see below).
+
+**Verified, not assumed:**
+- Baseline reproduced myself before touching anything: `python -m uv sync
+  --all-packages` (no `.venv` existed yet in this worktree — first run here), then
+  `python -m uv run pytest apps/agents apps/api packages/ -q` -> **792 passed, 9
+  skipped**, matching PLAN_EXIT_AGENT.md §0's stated number exactly.
+- After: **809 passed, 9 skipped** (+17 new tests, zero regressions).
+- `ruff check` on all 4 touched files: clean. `mypy` on both production files (`exits.py`,
+  `types.py`): clean.
+- `ruff format --check` flags all 4 touched files — but I also ran it against two files
+  I did not touch at all (`position_manager.py`, `db/models/council.py`) and it flags
+  those identically (multi-line calls it wants collapsed, inline comments it wants
+  reformatted). This is pre-existing, repo-wide formatter drift — CLAUDE.md's own
+  verification section only lists `ruff check` as the enforced gate, not `ruff format`,
+  and this confirms why. Not introduced by this commit.
+- **Per CLAUDE.md 4.1, actually broke each of the plan's five named invariants in turn
+  and confirmed the matching test failed, then restored:** reordered rules 1/3 (stop
+  vs. trail) — `test_stop_wins_over_trail_on_a_gap_through_zero` failed exactly as
+  predicted (`option_trail_stop` instead of `option_stop_loss`); dropped the `armed`
+  guard on the trail check — `test_trail_does_not_fire_before_arming` failed (spurious
+  CLOSE); made `trail_line` read `pl` instead of `peak` —
+  `test_ratchet_closes_on_a_peak_retracement` failed (spurious HOLD through a real
+  retracement); let `peak` take `pl` directly instead of `max(prior, pl)` —
+  `test_peak_is_monotone_across_ticks` failed (peak regressed 40->30); coerced a
+  missing mark to `0.0` instead of early-returning —
+  `test_no_mark_holds_and_leaves_the_peak_alone` failed, and **worse than I expected**:
+  with a 45%-peak already-armed position, treating the missing mark as `0.0` doesn't
+  just fabricate a reading, it fires a spurious `option_trail_stop` close (0.0 reads as
+  "retraced to flat"). That one surprised me and is the strongest argument in this
+  commit for why "no mark, no fabricated data point" has to be an unconditional early
+  return rather than a coerce-and-fall-through.
+- Proportional-giveback formula checked against the plan's own two worked examples
+  (peak +80 -> line +56.0; peak +200 -> line +140.0) — both pass exactly.
+
+**Left open, deliberately, for the next commit (A.2, same session unless I run out of
+budget first):**
+- The high-water-mark persistence (`agent_decisions.reasoning->option_exit` via
+  `jsonb_set`, never a Python read-modify-write — the plan's §4 is explicit about why:
+  a whole-column overwrite would silently eat `contract_funnel`/`strategy_fit`).
+- Wiring `_exit_reason`/`manage_positions_for_user` so the ratchet actually runs instead
+  of `option_exit_signal` — this is where 3 of the existing premium-exit tests in
+  `test_position_manager.py` will need real, deliberate updates (not just left alone),
+  because `options_ratchet_enabled` defaults **True** and the ratchet's default hard-TP
+  (150%) is a materially different ceiling than the old flat one (60%) — a pl of 72.4%
+  that used to fire `option_take_profit` will instead arm the trail and HOLD. That is
+  the intended behavior change this whole plan exists to make; I'm flagging it here so
+  it isn't a surprise in the next diff.
+- `docs/OPTIONS_PLAYBOOK.md` §3/§4/§6 updates (the plan asks for the 30%-not-10%
+  giveback rationale to be disclosed there) — held for the A.2 commit deliberately,
+  since the playbook documents what the code *does*, and the ratchet doesn't actually
+  run yet as of this commit. Documenting it now would itself be a CLAUDE.md 4.2 case
+  (doc ahead of the code) for the few minutes between these two commits.
+- A.3 (the LLM exit agent) and A.4 (the tool harness) are unstarted. Not a regression —
+  the plan's own build order puts a deploy-and-watch checkpoint between A.1+A.2 and
+  these.
+
 ### 2026-08-30 — docs: `HACKATHON.md` §5 truth-up after D.0/D.2 landed
 
 Small follow-up, folded into its own commit rather than widening `40eae29b`. Two

@@ -10,14 +10,20 @@ options.** No spreads, no selling to open, no assignment handling. That is not
 a simplification for the contest; it is what bounds the loss.
 
 > ⚠️ **PARTLY SUPERSEDED — pending implementation, 2026-08-30.** The user has
-> decided to loosen the sizing caps and replace the fixed take-profit with a
-> trailing ratchet for the contest window. **The numbers below are still what
-> the code does today** — this file's own rule is that the code wins — but §2's
-> "1% and 5% are not negotiable" and §3's exit table are scheduled to change.
-> The reasoning and the new numbers:
-> [`PLAN_AGGRESSIVE_PROFILE.md`](PLAN_AGGRESSIVE_PROFILE.md) and
-> [`PLAN_EXIT_AGENT.md`](PLAN_EXIT_AGENT.md). Whoever implements those updates
-> this file **in the same commit**, per §0 above.
+> decided to loosen the sizing caps for the contest window. **§2's "1% and 5%
+> are not negotiable" is still what the code does today** — this file's own
+> rule is that the code wins — but is scheduled to change. Reasoning and
+> numbers: [`PLAN_AGGRESSIVE_PROFILE.md`](PLAN_AGGRESSIVE_PROFILE.md). Whoever
+> implements it updates this file **in the same commit**, per §0 above.
+>
+> **§3's exit table below is CURRENT, not superseded** — the trailing ratchet
+> from [`PLAN_EXIT_AGENT.md`](PLAN_EXIT_AGENT.md) (A.1+A.2) shipped and is
+> live by default (`options_ratchet_enabled=True`), replacing the flat
+> take-profit described in the old revision of this section. The LLM exit
+> agent (A.3/A.4 of that same plan — a monotone-authority model consult that
+> can only close a position EARLIER than the trail would, never later, never
+> hold longer, never place an order) has **not** shipped yet; nothing in this
+> file describes it because nothing in the code does it yet.
 
 ---
 
@@ -176,21 +182,45 @@ env-tunable while other thresholds are.
 
 ## 3. How it gets out
 
-An open option has **four** exits. Whichever fires first wins.
+An open option has **five** exits. Whichever fires first wins, checked in
+this order: stop-loss, hard take-profit backstop, trailing stop, time stop,
+expiry sweep (plus signal exit, checked alongside the time stop).
 
 | Exit | Trigger | `close_reason` |
 |---|---|---|
-| **Take profit** | premium **≥ +60%** | `option_take_profit` |
 | **Stop loss** | premium **≤ −50%** | `option_stop_loss` |
+| **Hard take-profit backstop** | premium **≥ +150%** | `option_take_profit` |
+| **Trailing stop** | armed (peak ≥ +35%) AND premium retraced to ≤ 70% of peak | `option_trail_stop` |
 | **Time stop** | held ≥ `timeStopDays` (5 on a "short" horizon) | `agent_time` |
 | **Expiry sweep** | **DTE ≤ 2** — unconditional | `agent_expiry` |
 
 Plus **signal exit** (`agent_signal`): a later council pass on the same
 underlying comes out SELL.
 
+**The old fixed +60% take-profit is gone by default** (`RiskCaps.
+options_ratchet_enabled = True`), replaced by a trailing ratchet
+(`engine.options.exits.option_ratchet_signal`) that arms once the position's
+peak gain reaches **+35%** and then gives back **30% of the peak** before
+closing — proportionally, not as a flat point count: a peak of +80% draws the
+line at +56%, a peak of +200% draws it at +140%. A hard +150% ceiling remains
+as a backstop for a single-tick gap the trail somehow never caught. The whole
+ratchet reverts to the old flat +60%/−50% behavior by flipping
+`OPTIONS_RATCHET_ENABLED=0` — see §4.
+
+**Stop wins over trail on a gap through zero.** A peak of +50% gapping to
+−60% satisfies both "past the stop" and "below the trail line" — the stop is
+checked first and wins, so the audit row reads `option_stop_loss`, which is
+the more honest label for a loss that happened to pass through a level the
+trail formula would also have caught.
+
+**The high-water mark is persisted per position**, in
+`agent_decisions.reasoning->option_exit->peak_pl_pct`, written via
+`jsonb_set` (never a whole-column overwrite — see §5 traps) only on the
+ticks where the peak actually advances.
+
 Order matters. The premium exits are checked **before** the time stop: a
-contract already at its target must not sit two more sessions waiting on the
-calendar.
+contract already at a stop/backstop/trail level must not sit two more
+sessions waiting on the calendar.
 
 **Why these live in our own sweep and not at the broker.** Alpaca cannot
 bracket a single-leg option — `OrderClass` allows only `simple`/`mleg` for
@@ -205,13 +235,16 @@ premium stop is roughly a 5% adverse move in the stock. The leverage is the
 instrument's whole point and is why a percentage that would be absurd on
 shares is ordinary here.
 
-**The asymmetry (+60/−50) is deliberate.** A long option that has not worked
-bleeds theta every day it sits, so the loss side has to be tighter than the
-gain side is wide.
+**The stop is tight; the ceiling is wide, on purpose.** A long option that has
+not worked bleeds theta every day it sits, so the loss side stays tight (50%)
+while the trail — not a fixed ceiling — is now the mechanism that decides when
+a winner is done.
 
-**No mark means hold.** If the broker does not report a price, no premium exit
-fires — a missing price must never close a position. The time stop and the
-expiry sweep still run, so nothing is left unmanaged.
+**No mark means hold, and the peak is left exactly alone.** If the broker does
+not report a price, no premium exit fires and the persisted peak does not
+move — a missing price must never close a position or manufacture a data
+point in either direction. The time stop and the expiry sweep still run, so
+nothing is left unmanaged.
 
 **The expiry sweep is not optional.** There is no auto-exercise or assignment
 handling in this system. An ITM long call left to expire becomes a share
@@ -235,8 +268,19 @@ cannot increase maximum loss beyond the premium already paid.
 | `OPTIONS_MIN_OPEN_INTEREST` | 100 |
 | `OPTIONS_MIN_VOLUME` | 1 |
 | `OPTIONS_MAX_SPREAD_PCT` | 12.0 |
-| `OPTIONS_TAKE_PROFIT_PCT` | 60.0 |
-| `OPTIONS_STOP_LOSS_PCT` | 50.0 |
+| `OPTIONS_TAKE_PROFIT_PCT` | 60.0 — read only when the ratchet is disabled |
+| `OPTIONS_STOP_LOSS_PCT` | 50.0 — read by BOTH the ratchet's stop and the legacy flat exit |
+| `OPTIONS_RATCHET_ENABLED` | **on** — the one flag here that fails OPEN, not closed |
+| `OPTIONS_TRAIL_ARM_PCT` | 35.0 |
+| `OPTIONS_TRAIL_GIVEBACK_PCT` | 30.0 (percent OF THE PEAK, not percentage points) |
+| `OPTIONS_HARD_TAKE_PROFIT_PCT` | 150.0 |
+
+`OPTIONS_RATCHET_ENABLED` is the one exception to "unset means off" among the
+flags in this table: it defaults to **True**, because the ratchet is the
+intended behavior, not an opt-in. Set it to an explicit falsy value
+(`0`/`false`) to revert every open option to the flat `OPTIONS_TAKE_PROFIT_PCT`
+/`OPTIONS_STOP_LOSS_PCT` behavior this whole ratchet replaced — that single
+flag is the entire revert path, by design.
 
 **Code-level only, by design:** `options_max_premium_pct` (1%),
 `options_max_total_premium_pct` (5%), `max_position_pct`,
@@ -280,12 +324,26 @@ then no more, so funnel counts stay comparable across days.
 - **Paper trading.** Hypothetical results, no real fills.
 - **15-minute-delayed indicative feed**, not consolidated OPRA. Fine for
   daily-bar decisions; not a basis for any claim about execution quality.
+- **The trail's 30% giveback is sized for a noisy, delayed mark, not tuned for
+  return.** The broker P&L the trail reads is itself derived from a
+  15-minute-delayed indicative quote on a contract we permit up to a 12%
+  relative spread. A tighter giveback (10%, say) would look more aggressive
+  about "locking in gains faster" but would in practice fire on quote noise
+  as often as on a real reversal — the position closing and reopening cost
+  (spread + missed continuation) on a false trigger is worse than the
+  giveback surrendered. 30% was chosen against that noise floor, not against
+  a return-optimization backtest.
 - **No assignment or exercise handling.** The `DTE ≤ 2` sweep is the only
   protection, and it depends on the sweep actually running.
 - **`earnings_blackout` never fires.** See §2.
 - **Premium exits depend on our loop being alive.** Unlike an equity bracket,
   which survives our downtime at the broker, an unreached stop is an unenforced
   stop. This is the strongest argument for the expiry sweep being unconditional.
+- **The exit-agent LLM consult (`PLAN_EXIT_AGENT.md` A.3/A.4) has not shipped.**
+  Only the deterministic ratchet in this section is live. When it does ship,
+  its authority is monotone by design — it can only close a position EARLIER
+  than the trail would, never later, never bigger, never by itself on error
+  or timeout (the fail-safe is to keep trailing, not to close).
 
 ---
 

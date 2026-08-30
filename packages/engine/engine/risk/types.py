@@ -209,6 +209,38 @@ class RiskCaps:
     premium, not the underlying — on a 0.5-delta call this is roughly a 5%
     adverse move in the stock."""
 
+    options_ratchet_enabled: bool = True
+    """Master switch for ``engine.options.exits.option_ratchet_signal``.
+    True is the default — the trailing ratchet REPLACES the flat
+    ``options_take_profit_pct`` ceiling above for options exits when this
+    is on; flipping it off reverts every open option to exactly the flat
+    take-profit/stop-loss behavior, unconditionally. See
+    ``docs/PLAN_EXIT_AGENT.md`` §2 for why the whole feature is designed
+    to be a single-flag revert."""
+
+    options_trail_arm_pct: float = 35.0
+    """The trail arms once the position's peak premium gain reaches this
+    percent. Below this, only the hard stop/take-profit can close the
+    position — there is no trail line yet to give back from."""
+
+    options_trail_giveback_pct: float = 30.0
+    """Percent OF THE PEAK GAIN the trail gives back before closing —
+    NOT a percentage-point giveback. A peak of +80% draws the trail line
+    at +80 × (1 - 0.30) = +56%; a peak of +200% draws it at +140%. This is
+    30, not 10, because the mark is a 15-minute-delayed indicative quote
+    on a contract we permit up to a 12% relative spread — a 10% giveback
+    would fire on quote noise, not on an actual reversal. See
+    ``docs/OPTIONS_PLAYBOOK.md`` §6 for this disclosed as a limitation."""
+
+    options_hard_take_profit_pct: float = 150.0
+    """A backstop ceiling far above the arm point. The trail is expected
+    to catch almost every real winner before this fires; this exists only
+    for a single-tick gap that jumps from below the arm point straight
+    past it. This is NOT the old fixed take-profit (that was 60.0, tight
+    enough to cut winners short — see ``docs/PLAN_EXIT_AGENT.md`` §1) —
+    it is set deliberately high because the trail, not this ceiling, is
+    now the mechanism that locks in ordinary gains."""
+
     # Wash-sale (US tax informational warning)
     wash_sale_lookback_days: int = 30
     """IRS rule: closing at a loss + re-entering within 30 calendar days
@@ -264,6 +296,15 @@ class RiskCaps:
         env var nobody reviews is not a risk cap — and these are exactly the
         ones there is a live incentive to quietly widen. Changing them
         requires a reviewed code change.
+
+        The ratchet knobs (``options_ratchet_enabled`` and its three
+        thresholds) are exit thresholds too, same reasoning as
+        ``OPTIONS_TAKE_PROFIT_PCT``/``OPTIONS_STOP_LOSS_PCT`` above, so they
+        get the same env-tunable treatment. ``OPTIONS_RATCHET_ENABLED``
+        defaults to **on** — the opposite polarity from
+        ``ALLOW_SHORTS``/``ALLOW_OPTIONS``, which fail closed. An unset or
+        malformed value here keeps the ratchet active; the one way back to
+        the old flat take-profit is an explicit falsy value.
         """
         return cls(
             forbid_short_phase_0=not env_flag("ALLOW_SHORTS"),
@@ -284,6 +325,18 @@ class RiskCaps:
             ),
             options_stop_loss_pct=_env_float(
                 "OPTIONS_STOP_LOSS_PCT", cls.options_stop_loss_pct
+            ),
+            options_ratchet_enabled=env_flag(
+                "OPTIONS_RATCHET_ENABLED", default=cls.options_ratchet_enabled
+            ),
+            options_trail_arm_pct=_env_float(
+                "OPTIONS_TRAIL_ARM_PCT", cls.options_trail_arm_pct
+            ),
+            options_trail_giveback_pct=_env_float(
+                "OPTIONS_TRAIL_GIVEBACK_PCT", cls.options_trail_giveback_pct
+            ),
+            options_hard_take_profit_pct=_env_float(
+                "OPTIONS_HARD_TAKE_PROFIT_PCT", cls.options_hard_take_profit_pct
             ),
             **overrides,  # type: ignore[arg-type]
         )
