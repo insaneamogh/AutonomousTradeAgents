@@ -385,6 +385,46 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-30 — `db79fa78` fix(orders): auto-approver's own try/except must cover gate 2b too
+
+Found reviewing the merged auto-approve sweeper (`3bce40b2`/`4e46507e`/`7362a3a3`)
+before pushing, `ID:MODEL2OFF`. `auto_approve_for_user`'s docstring claims
+*"Never raises: a broker or DB failure mid-sweep is logged and swallowed"* — but
+the try/except only wrapped gates 5-7 + `execute_proposal`. Gate 2b's connection
+lookup (`_resolve_paper_connection`, a real store/DB call) and `store.list_pending`
+sat outside it, so a transient failure there would propagate straight out of the
+function — a CLAUDE.md §4.2 "docstring claims something the code doesn't do" case,
+on the one file in this feature where that claim matters most.
+
+**Not a live bug**: `ReconcilerFleet.tick()` already wraps the entire call in its
+own per-user try/except, matching every other tick step — so a DB hiccup here was
+already caught one layer up, and one user's trouble still couldn't stop
+reconciliation for everyone else. Fixed anyway so the function's own contract is
+self-sufficient, not dependent on the caller happening to wrap it.
+
+**Fix**: widened the try/except to start right after gate 2 (the two pure
+env-var reads, which genuinely cannot raise), covering gate 2b onward through
+execution in one block; removed the now-redundant second `try:` that used to sit
+before gate 5.
+
+**Verified**: added `test_a_connection_lookup_failure_is_also_swallowed`. Per
+CLAUDE.md §4.1: reverted to the pre-fix file (`git show` off the merge commit),
+confirmed the new test fails with the `RuntimeError` propagating out uncaught,
+restored, confirmed 19/19 pass again. Full suite **961 passed, 10 skipped**
+(was 960 — +1, zero regressions). mypy on this file: identical 3 pre-existing
+`async_sessionmaker` type-arg errors before and after, confirmed by running
+mypy against the real pre-fix file content directly (not piped through stdin,
+which this session already found unreliable for cross-module imports) rather
+than trusting a stdin diff.
+
+**Left open**: the per-row `AUTO` pill (Picks/Review) the frontend workstream
+deliberately deferred — the real field is now known
+(`DecisionSummaryDto.approval_mode` / wire `approvalMode`, `GET /api/v1/decisions`,
+landed in `7362a3a3`). Live verification of the whole feature (deploy with
+`AUTO_APPROVE_ENABLED=0`, confirm inert, then the account owner — not a model —
+flips both keys) is unchanged from the plan's own §4 order and correctly not run
+this session.
+
 ### 2026-08-30 — `7362a3a3` feat(api): expose approval_mode on the decision list so auto pills can render
 
 `ID:MODEL2OFF`. Third and last of three commits this session. `approval_mode` lived only
