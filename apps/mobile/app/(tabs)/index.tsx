@@ -13,6 +13,7 @@ import { useRouter } from 'expo-router';
 import type { ActivityEntryDto } from '@app/shared-types';
 import { ErrorState, Skeleton, StatusPill, cn, formatRelative } from '@app/ui';
 
+import { AutoApprovePill } from '@/components/AutoApprovePill';
 import { BentoCTA, DirectionPill, Tile, TileLabel, TileValue } from '@/components/bento';
 import { CircuitBreakerBanner } from '@/components/CircuitBreakerBanner';
 import { useAccount } from '@/hooks/useAccount';
@@ -30,6 +31,7 @@ export default function HomeScreen() {
     <SafeAreaView edges={['top']} className="flex-1 bg-bg-canvas dark:bg-bg-canvas-dark">
       <ScrollView contentContainerClassName="px-4 pb-32 pt-4 gap-3">
         <CircuitBreakerBanner />
+        <AutoApprovePill />
         <Hero />
         <StatTiles />
         <ActivityTile />

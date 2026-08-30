@@ -12,9 +12,12 @@
  * prints "No data" (§8.2).
  */
 
+import { useEffect, useState } from 'react';
+
 import { useAccount } from '@/hooks/useAccount';
 import { useActivity } from '@/hooks/useActivity';
 import { usePendingApprovals } from '@/hooks/useApprovals';
+import { useBrokerConnections, useSetAutoApproveConsent } from '@/hooks/useBrokerConnections';
 import { useHealthFull } from '@/hooks/useHealthFull';
 import type { ComponentHealth, ComponentStatus } from '@/hooks/useHealthFull';
 import { useGhostSummary, useVetoLedger } from '@/hooks/useInsights';
@@ -23,6 +26,7 @@ import { useScannerStatus } from '@/hooks/useScannerStatus';
 import type { ScanSignalDto } from '@/hooks/useScannerStatus';
 
 import { ago, ruleLabel, signedPct, signedUsd, tone, usd } from '../format';
+import { IconSpark } from '../icons';
 import { useNav } from '../nav';
 import {
   Button,
@@ -86,6 +90,7 @@ export function DashboardScreen() {
                     <Pill tone={acct.status === 'connected' ? 'bull' : 'bear'}>
                       {acct.status.toUpperCase()}
                     </Pill>
+                    <AutoApproveControl />
                   </Row>
                 ) : null
               }
@@ -527,6 +532,156 @@ export function DashboardScreen() {
 }
 
 /* ── pieces ──────────────────────────────────────────────────────── */
+
+/**
+ * Auto-approve mode control (docs/PLAN_AUTO_APPROVE.md) — lives in the
+ * hero card's header, top of the screen. ASK (default): every proposal
+ * waits for a click. AUTO: the reconciler's sweeper may execute a
+ * pending proposal by itself, up to the daily cap, paper-account only.
+ *
+ * Arming a real autonomous-trading feature isn't cosmetic, so turning it
+ * ON gates behind `ConfirmAutoApproveOverlay`, which names the actual
+ * consequence — this repo's desktop tree has no existing confirm/modal
+ * component to mirror (unlike mobile's `Alert.alert` precedent), so this
+ * is a small, purpose-built overlay rather than a reused primitive.
+ * Turning it back OFF is immediate, same asymmetry as the mobile pill
+ * and the CircuitBreakerBanner ("halt needs no confirmation, resume
+ * does" — here, "safe needs no confirmation, armed does").
+ *
+ * Reflects the server's `autoApproveConsent` only — see
+ * `useSetAutoApproveConsent`'s docstring for why there is no optimistic
+ * flip.
+ */
+function AutoApproveControl() {
+  const connections = useBrokerConnections();
+  const setConsent = useSetAutoApproveConsent();
+  const [confirming, setConfirming] = useState(false);
+
+  // Paper-only is hard-coded server-side (plan §2, gate 2) — the active
+  // paper Alpaca connection is the one thing this control can ever act on.
+  const connection = (connections.data ?? []).find(
+    (c) => c.broker === 'alpaca' && c.status === 'active' && c.isPaper,
+  );
+  const armed = connection?.autoApproveConsent === true;
+  const busy = setConsent.isPending;
+
+  const onClick = () => {
+    if (!connection) return;
+    if (armed) {
+      setConsent.mutate({ connectionId: connection.id, enabled: false });
+    } else {
+      setConfirming(true);
+    }
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        className={`pg-pill pg-pill-btn${armed ? ' pg-pill--warn' : ''}`}
+        onClick={onClick}
+        disabled={!connection || busy}
+        aria-pressed={armed}
+        aria-label={
+          !connection
+            ? 'Auto-approve unavailable — connect a broker first'
+            : armed
+              ? 'Auto-approve is on. The agent can open paper trades without approval, up to the daily cap. Click to turn off.'
+              : 'Auto-approve is off. Every trade waits for approval. Click to turn on autonomous entries.'
+        }
+        title={!connection ? 'Connect a broker in Settings first' : undefined}
+      >
+        {armed && !busy ? <IconSpark size={11} /> : null}
+        {busy ? (armed ? 'TURNING OFF…' : 'ARMING…') : armed ? 'AUTO' : 'ASK'}
+      </button>
+      {setConsent.isError ? <span className="pg-caption pg-bear">Failed — try again</span> : null}
+      {confirming ? (
+        <ConfirmAutoApproveOverlay
+          onCancel={() => setConfirming(false)}
+          onConfirm={() => {
+            if (connection) {
+              setConsent.mutate({ connectionId: connection.id, enabled: true });
+            }
+            setConfirming(false);
+          }}
+        />
+      ) : null}
+    </>
+  );
+}
+
+function ConfirmAutoApproveOverlay({
+  onCancel,
+  onConfirm,
+}: {
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onCancel();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onCancel]);
+
+  return (
+    <div
+      role="presentation"
+      // Only a click on the backdrop ITSELF cancels — a click that bubbles
+      // up from the card inside (e.currentTarget) must not, so the dialog
+      // content stays a plain non-interactive div with no onClick of its
+      // own to suppress under jsx-a11y's click/keyboard rules.
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onCancel();
+      }}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 1000,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: 'rgba(0, 0, 0, 0.5)',
+        padding: 20,
+      }}
+    >
+      <div
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="auto-approve-confirm-title"
+        className="pg-card pg-fade-up"
+        style={{ maxWidth: 440, gap: 16 }}
+      >
+        <Row gap={8}>
+          <span style={{ color: 'var(--pg-warn)' }}>
+            <IconSpark size={16} />
+          </span>
+          <h2 id="auto-approve-confirm-title" className="pg-h3">
+            Turn on autonomous entries?
+          </h2>
+        </Row>
+        <p className="pg-body-sm">
+          The agent will open new paper-account positions on its own, with no approval click
+          from you, up to the daily cap. Every auto-opened trade still passes the full risk
+          gate and is logged as machine-approved, not yours.
+        </p>
+        <p className="pg-body-sm">
+          Live trading stays fully blocked no matter what — this can only ever act on the
+          paper account. You can turn it back off instantly, any time.
+        </p>
+        <Row style={{ justifyContent: 'flex-end' }} gap={10}>
+          <Button kind="secondary" onClick={onCancel} ariaLabel="Cancel — keep auto-approve off">
+            Not yet
+          </Button>
+          <Button kind="primary" onClick={onConfirm} ariaLabel="Confirm — turn on autonomous entries">
+            Turn on
+          </Button>
+        </Row>
+      </div>
+    </div>
+  );
+}
 
 function MiniStat({ label, value }: { label: string; value: string | null }) {
   return (
