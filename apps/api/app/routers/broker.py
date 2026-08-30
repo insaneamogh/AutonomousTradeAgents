@@ -36,6 +36,7 @@ from app.schemas.broker import (
     BrokerConnectionResponse,
     CallbackRequest,
     CallbackResponse,
+    SetAutoApproveConsentRequest,
     SetConsentRequest,
     StartOAuthRequest,
     StartOAuthResponse,
@@ -103,6 +104,7 @@ def _to_response(rec: BrokerConnectionRecord) -> BrokerConnectionResponse:
         account_number=rec.account_number,
         status=rec.status,
         live_trading_consent=rec.live_trading_consent,
+        auto_approve_consent=rec.auto_approve_consent,
         connection_source=_connection_source(rec),
         created_at=rec.created_at,
         last_used_at=rec.last_used_at,
@@ -626,6 +628,36 @@ async def set_live_consent(
     assert fresh is not None
     logger.info(
         "broker: live_trading_consent=%s set for conn=%s user=%s",
+        body.enabled, connection_id, user.id,
+    )
+    return _to_response(fresh)
+
+
+@router.post(
+    "/connections/{connection_id}/auto-approve-consent",
+    response_model=BrokerConnectionResponse,
+    response_model_by_alias=True,
+)
+async def set_auto_approve_consent(
+    connection_id: str,
+    body: SetAutoApproveConsentRequest,
+    user: AuthedUser = Depends(require_real_auth),
+    store: BrokerStore = Depends(get_broker_store),
+) -> BrokerConnectionResponse:
+    """Grant/revoke this connection's autonomous-entry consent. An
+    auto-approved order also requires the operator's global
+    AUTO_APPROVE_ENABLED — this is the per-user half of that two-key gate,
+    mirroring ``set_live_consent`` exactly. Ownership-checked."""
+    rec = await store.get_connection(connection_id)
+    if rec is None or rec.user_id != user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="connection not found"
+        )
+    await store.set_auto_approve_consent(connection_id, enabled=body.enabled)
+    fresh = await store.get_connection(connection_id)
+    assert fresh is not None
+    logger.info(
+        "broker: auto_approve_consent=%s set for conn=%s user=%s",
         body.enabled, connection_id, user.id,
     )
     return _to_response(fresh)

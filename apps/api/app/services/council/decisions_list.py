@@ -73,6 +73,7 @@ async def list_decisions(
                 regime=r.regime,
                 analyst_subset=list(r.analyst_subset) if r.analyst_subset else None,
                 user_response=r.user_response,
+                approval_mode=r.approval_mode,
             )
             for r in rows
         ],

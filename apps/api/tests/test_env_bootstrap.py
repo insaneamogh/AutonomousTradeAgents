@@ -140,6 +140,7 @@ async def test_ensure_connection_happy_path(monkeypatch: pytest.MonkeyPatch) -> 
     assert row.broker == "alpaca"
     assert row.is_paper is True
     assert row.live_trading_consent is False
+    assert row.auto_approve_consent is False
     assert row.status == "active"
     assert row.account_number is None
     assert decrypt_from_storage(row.encrypted_access_token) == ALPACA_ENV_SENTINEL

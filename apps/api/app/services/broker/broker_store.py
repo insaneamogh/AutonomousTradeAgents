@@ -52,6 +52,10 @@ class BrokerConnectionRecord:
     live_trading_consent: bool = False
     """Per-connection real-money opt-in. A live order needs this AND the
     global LIVE_TRADING_ENABLED env. Default False — paper-safe."""
+    auto_approve_consent: bool = False
+    """Per-connection autonomous-entry opt-in. An auto-approved order needs
+    this AND the global AUTO_APPROVE_ENABLED env. Default False — a human
+    approves every entry until the account owner flips this from the app."""
     last_used_at: datetime | None = None
     created_at: datetime = field(default_factory=lambda: utc_now())
     updated_at: datetime = field(default_factory=lambda: utc_now())
@@ -82,6 +86,8 @@ class BrokerStore(Protocol):
     async def revoke_connection(self, connection_id: str) -> bool: ...
 
     async def set_live_consent(self, connection_id: str, *, enabled: bool) -> bool: ...
+
+    async def set_auto_approve_consent(self, connection_id: str, *, enabled: bool) -> bool: ...
 
 
 class InMemoryBrokerStore:
@@ -171,6 +177,14 @@ class InMemoryBrokerStore:
         if rec is None or rec.status == "revoked":
             return False
         rec.live_trading_consent = enabled
+        rec.updated_at = utc_now()
+        return True
+
+    async def set_auto_approve_consent(self, connection_id: str, *, enabled: bool) -> bool:
+        rec = self._rows.get(connection_id)
+        if rec is None or rec.status == "revoked":
+            return False
+        rec.auto_approve_consent = enabled
         rec.updated_at = utc_now()
         return True
 

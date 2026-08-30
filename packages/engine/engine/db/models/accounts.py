@@ -99,6 +99,13 @@ class BrokerConnection(Base):
     live_trading_consent: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text_false()
     )
+    # Per-connection autonomous-entry opt-in (migration 0016). Mirrors
+    # live_trading_consent's shape exactly: an auto-approved order needs
+    # BOTH this AND the global AUTO_APPROVE_ENABLED env — the operator's
+    # kill switch and the account owner's own in-app toggle. Default False.
+    auto_approve_consent: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text_false()
+    )
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

@@ -466,6 +466,11 @@ export interface DecisionSummaryDto {
   regime: string | null;
   analystSubset: string[] | null;
   userResponse: string | null;
+  /** 'ask' (human-approved, the default) or 'auto' (the auto-approve
+   * sweeper executed it with no human in the loop). Not present on
+   * ApprovalProposalDto — a still-pending proposal has never been
+   * decided, so it can only ever be 'ask' there. */
+  approvalMode: string;
 }
 
 export interface DecisionListResponse {

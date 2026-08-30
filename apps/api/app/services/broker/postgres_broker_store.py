@@ -39,6 +39,7 @@ def _row_to_record(b: BrokerConnection) -> BrokerConnectionRecord:
         refresh_token_expires_at=b.refresh_token_expires_at,
         status=b.status,
         live_trading_consent=bool(b.live_trading_consent),
+        auto_approve_consent=bool(b.auto_approve_consent),
         last_used_at=b.last_used_at,
         created_at=b.created_at,
         updated_at=b.updated_at,
@@ -161,6 +162,20 @@ class PostgresBrokerStore:
                 update(BrokerConnection)
                 .where(BrokerConnection.id == cid, BrokerConnection.status == "active")
                 .values(live_trading_consent=enabled, updated_at=utc_now())
+            )
+            await session.commit()
+        return bool(result.rowcount)
+
+    async def set_auto_approve_consent(self, connection_id: str, *, enabled: bool) -> bool:
+        try:
+            cid = uuid.UUID(connection_id)
+        except (ValueError, TypeError):
+            return False
+        async with self._session_factory() as session:
+            result = await session.execute(
+                update(BrokerConnection)
+                .where(BrokerConnection.id == cid, BrokerConnection.status == "active")
+                .values(auto_approve_consent=enabled, updated_at=utc_now())
             )
             await session.commit()
         return bool(result.rowcount)

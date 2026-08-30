@@ -44,6 +44,14 @@ class DecisionSummaryDto(CamelCaseModel):
     regime: str | None
     analyst_subset: list[str] | None
     user_response: str | None
+    approval_mode: str
+    """'ask' (human-approved, the default) or 'auto' (the auto-approve
+    sweeper executed it with no human in the loop — see
+    services/orders/auto_approver.py). Lets this list render an AUTO pill.
+    NOT exposed on ApprovalProposalDto/the Picks (pending-approvals) list —
+    a still-pending proposal has never been decided, so it can only ever
+    read 'ask' there; this decision-history list is where a completed
+    auto-approval is actually visible."""
 
 
 class DecisionListResponse(CamelCaseModel):

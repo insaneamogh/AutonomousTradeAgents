@@ -385,6 +385,161 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-30 — `7362a3a3` feat(api): expose approval_mode on the decision list so auto pills can render
+
+`ID:MODEL2OFF`. Third and last of three commits this session. `approval_mode` lived only
+on the DB model + `PostgresStore` internals (confirmed by grep before writing anything)
+— no API-facing DTO carried it, so nothing could render an AUTO pill against a real
+field.
+
+**Checked both candidate homes the brief named, rather than picking one on a guess:**
+`ApprovalProposalDto` (backs the Picks screen, `GET /approvals/pending`) is the WRONG
+home — read `PostgresStore.list_pending`'s query and `append_pending`'s hardcoded
+`approval_mode="ask"` at creation, and read `Picks.tsx` itself: it is specifically the
+PENDING-approvals inbox, and an auto-approved row's `user_response='approved'` means it
+is never in that list by construction. `approval_mode` would read `"ask"` on literally
+every row there, forever — not a useful field to add. `DecisionSummaryDto` (backs
+`GET /api/v1/decisions`, read by `Decisions.tsx` via its `useDecisions` hook, traced
+through the import chain rather than assumed from the filename) is the RIGHT home — it
+lists every council decision regardless of outcome. Added `approval_mode` there,
+populated in `decisions_list.py`, plus the matching field on the hand-maintained TS
+mirror in `packages/shared-types/src/index.ts` (confirmed no codegen exists for these
+DTOs — this file is manually kept in sync, same as every other field on it).
+
+**This is flagged explicitly, not silently resolved:** the brief said a parallel
+frontend agent might be building against either of the two guessed locations. If that
+agent assumed `ApprovalProposalDto`, this commit's home (`DecisionSummaryDto`) is the
+one that actually works and needs reconciling.
+
+Verified: full suite -> 960 passed, 10 skipped, unchanged from the prior commit (a field
+addition, not new behavior). Confirmed via grep that no test constructs
+`DecisionSummaryDto` directly or hits `GET /api/v1/decisions`, so the new required field
+broke nothing. Installed the JS workspace fresh (this worktree had no `node_modules`)
+and ran `pnpm -s exec tsc --noEmit -p apps/mobile/tsconfig.json` (clean) +
+`pnpm --filter mobile exec jest --silent` (**23 passed, 3 suites**) to confirm the
+shared-types edit doesn't break the mobile build.
+
+**Session total, all three commits:** baseline **940 passed / 9 skipped**, verified
+myself before touching anything (matches `PLAN_AUTO_APPROVE.md`'s own claimed number
+exactly) -> final **960 passed / 10 skipped** (+20 passing: 18 in `test_auto_approver.py`
++ 2 in `test_broker.py`; +1 skip: the new Postgres-gated `auto_approve_consent`
+round-trip, not run locally, no Postgres in this sandbox). Every gate in
+`auto_approve_for_user` was individually broken and confirmed to fail its matching test
+before being restored (CLAUDE.md §4.1) — see the two commits above for the full list.
+Never flipped `AUTO_APPROVE_ENABLED` or `auto_approve_consent` to true outside a test's
+own isolated fixture; never touched the real deployed Railway app or the real Alpaca
+connection.
+
+**Left open / for the next agent:** the frontend AUTO-pill work itself (out of scope —
+this session was backend-only, per the brief); reconciling whichever DTO the parallel
+frontend agent actually built against, if it wasn't `DecisionSummaryDto`; live
+verification of the sweeper end-to-end (deploy with `AUTO_APPROVE_ENABLED=0`, confirm it
+runs and executes nothing, then the ACCOUNT OWNER — not a model — flips the flag and
+grants consent from the app) was explicitly out of scope for this session per its own
+operating rules (never run anything against the real deployed app or real broker
+connection) and is unchanged from `PLAN_AUTO_APPROVE.md`'s own §4 live-verification order.
+
+### 2026-08-30 — `4e46507e` feat(orders): auto-approve sweeper — the agent can now open a trade unattended
+
+`ID:MODEL2OFF`. Second of three commits. Built `docs/PLAN_AUTO_APPROVE.md` end to end —
+`apps/api/app/services/orders/auto_approver.py::auto_approve_for_user`, wired into
+`ReconcilerFleet.tick()` after both exit paths — plus the new `auto_approve_consent`
+gate from the prior commit, wired in as its own explicit gate 2b per the user's
+instruction not to fold it silently into gate 1.
+
+**Both of the plan's own "verify before relying on it" items were actually verified,
+not assumed** (see the commit body for the full detail): `execute_proposal` resolves
+its store/broker-store through module-level singletons with no FastAPI `Depends`
+anywhere on that path, so it behaves identically called from the reconciler fleet as
+from a route. `store.decide()` and `finalize_execution_claim()` were both read end to
+end — neither touches `approval_mode` — so the `"auto"` stamp is applied via its own
+dedicated `UPDATE`, strictly after a successful execution.
+
+**All 18 tests (10 named in the plan's §4, 2 for the new consent gate's two-key AND
+property + a no-connection edge case, 1 extra fresh-proposal-is-not-skipped companion,
+1 extra under-daily-budget companion, 1 extra literal `agent`-exit-mode-fired
+confirmation, 1 String(10) fit check) were individually revert-checked live** —
+broke each gate in the source, ran the specific test, watched it fail with the exact
+wrong number/behavior, restored, confirmed the full file green again. Every one behaved
+exactly as predicted; none needed a second attempt. The per-tick-cap check (gate 6) was
+the most involved to break realistically — simulated "the cap was removed" by having
+the sweeper loop `execute_proposal` over every eligible proposal instead of picking one,
+which correctly turned `len(executed) == 1` into `len(executed) == 5`.
+
+**Design choices beyond the plan's literal text, decided and stated rather than left
+implicit:**
+- The consent gate resolves the user's Alpaca connection filtered to `is_paper=True`
+  explicitly (a small local helper, not the shared `broker_use.get_active_broker_connection`,
+  which has no such filter and would happily read a LIVE connection's consent flag —
+  exactly the wrong row for a feature that must stay paper-only).
+- The two exit steps (`manage_positions_for_user`, `sweep_expiring_options_for_user`)
+  both free premium, so the sweeper runs after BOTH, not just the one the plan names —
+  same reasoning the plan gives, applied to the second exit mechanism it didn't
+  explicitly mention.
+- `_env_int` is a small local copy of `engine.risk.types`'s private helper of the same
+  name and contract (fail-to-default, warn-and-keep-default on a malformed value), not
+  an import of that underscore-private name across the api/engine package boundary —
+  the CONTRACT is shared, the actual env var names/defaults never overlap, so this
+  isn't the §4.4 "same number in two places" trap.
+
+Verified: full suite `apps/agents apps/api packages/` -> **960 passed, 10 skipped**
+(940+20 passing / 9+1 skipped across all three commits this session, exactly accounted
+for). Ruff clean. mypy: 3 new "missing type arguments for async_sessionmaker" errors in
+this file, same pre-existing untyped-generic pattern `reconciler_fleet.py`'s own
+`session_factory` field already carries (confirmed via `git stash` baseline) — not a
+new class of error, not fixed here.
+
+### 2026-08-30 — `3bce40b2` feat(broker): add auto_approve_consent, the account owner's own two-key gate
+
+`ID:MODEL2OFF`. First of three commits implementing `PLAN_AUTO_APPROVE.md` (the sweeper
+itself, in a later commit) plus a UI-facing extension the user asked for this session on
+top of the plan: a per-connection `auto_approve_consent` flag so the account owner — not
+just the Railway operator env — controls autonomous entries from inside the app. This
+commit is the extension's plumbing; the sweeper that actually reads it lands next.
+
+**Baseline verified first**, per CLAUDE.md's own instruction: `apps/agents apps/api
+packages/` → **940 passed, 9 skipped**, matching `PLAN_AUTO_APPROVE.md`'s own claimed
+number exactly (no drift to chase, unlike the last session's stale "792").
+
+Copied `live_trading_consent` (migration 0011) field-for-field, per the brief's explicit
+instruction to mirror that exact shape rather than invent a new one:
+- Migration `0016_auto_approve_consent`, chained onto `0015_snapshot_options_level`
+  (confirmed a single head via `alembic heads` — no branching).
+  `BrokerConnection.auto_approve_consent`, `BrokerConnectionRecord.auto_approve_consent`,
+  both default `False`.
+- `BrokerStore.set_auto_approve_consent` on the Protocol, implemented identically in
+  `InMemoryBrokerStore` and `PostgresBrokerStore` (mirrors `set_live_consent`'s
+  compare-on-`status=="active"` update exactly).
+- `POST /api/v1/broker/connections/{id}/auto-approve-consent`, body `{"enabled": bool}`,
+  response `BrokerConnectionResponse` (now carrying `auto_approve_consent` /
+  wire `autoApproveConsent`), ownership-checked the same way `/consent` is. **This exact
+  path and body shape is the contract a parallel frontend agent is building against —
+  unchanged from the brief.**
+
+**Tested the same way `live_trading_consent` is tested — which turned out to be less
+than the brief assumed, so I extended it rather than just mirroring gaps too:**
+searching the existing suite found `live_trading_consent`'s own round-trip is
+Postgres-gated only (`test_postgres_stores.py`, skipped without
+`RUN_POSTGRES_TESTS=1`) — there was no router-level ownership-check test for the
+`/consent` endpoint itself anywhere. I mirrored the Postgres-gated round-trip
+(`test_postgres_broker_store_auto_approve_consent_round_trip`: defaults false,
+independent of `live_trading_consent`, refuses on a revoked connection — same three
+assertions `set_live_consent` would need) AND added the router-level pair that didn't
+already exist for either endpoint (`test_auto_approve_consent_defaults_false_and_round_trips`,
+`test_auto_approve_consent_other_users_connection_is_404`, in `test_broker.py`, mirroring
+the existing `test_revoke_other_users_connection_is_404`'s OAuth-seeded-connection
+pattern). One line added to `test_env_bootstrap.py` confirming the env-bootstrap path
+defaults the new flag false too, alongside the existing `live_trading_consent` assertion.
+
+**Verified, not assumed:** ran `apps/api/tests/test_broker.py
+apps/api/tests/test_postgres_stores.py apps/api/tests/test_env_bootstrap.py` directly →
+**38 passed, 9 skipped** (the 9 skips are the pre-existing `RUN_POSTGRES_TESTS`-gated
+file in full, my new Postgres test included — not run here, no local Postgres). Ruff
+clean on every file this commit touches. mypy: `postgres_broker_store.py` already had 2
+pre-existing `"Result[Any]" has no attribute "rowcount"` errors before this change
+(`revoke_connection`, `set_live_consent`) — confirmed via `git stash` — my new
+`set_auto_approve_consent` mirrors that exact existing pattern and is a 3rd occurrence
+of the SAME pre-existing gap, not a new class of error.
 ### 2026-08-30 — `a70cd210` feat(mobile,desktop): auto-approve mode toggle, arm-gated by a real confirmation
 
 `ID:MODEL2OFF`. Built in an isolated worktree; not merged to `main` by me. UI-only

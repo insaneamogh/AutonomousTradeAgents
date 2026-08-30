@@ -227,6 +227,19 @@ class ReconcilerFleet:
             except Exception:
                 logger.exception("fleet: options expiry sweep failed for user=%s", uid)
 
+            try:
+                from app.services.orders.auto_approver import auto_approve_for_user
+
+                auto_approved = await auto_approve_for_user(
+                    user_id=uid, session_factory=self.session_factory
+                )
+                if auto_approved:
+                    logger.info(
+                        "fleet: auto-approved %d proposal(s) for %s", auto_approved, uid
+                    )
+            except Exception:
+                logger.exception("fleet: auto-approve sweep failed for user=%s", uid)
+
         return reconciled
 
     async def run_forever(self) -> None:
