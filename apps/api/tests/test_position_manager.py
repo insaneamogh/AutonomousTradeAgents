@@ -11,6 +11,7 @@ plumbing; what must be pinned here is WHEN the agent decides to close:
 
 from __future__ import annotations
 
+import json
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -26,8 +27,12 @@ from app.services.orders.position_manager import (
     _close_position,
     _exit_reason,
     _has_in_flight_close,
+    _option_exit_peak_update_stmt,
+    _persist_option_exit_peak,
+    _ratchet_outcome_for,
 )
 from broker.types import Side
+from engine.options.exits import RatchetOutcome
 from engine.risk import RiskCaps
 
 NOW = datetime(2026, 6, 12, 15, 0, tzinfo=UTC)
@@ -94,16 +99,95 @@ def _option_decision(*, days_held: int = 1, occ: str = "NVDA260918C00250000") ->
 
 
 async def test_premium_take_profit_fires_before_the_time_stop() -> None:
-    """Ordering is the point: a contract already at its target must not sit
-    two more sessions waiting on the calendar."""
+    """Ordering is the point: a contract already past the ratchet's hard
+    take-profit backstop must not sit two more sessions waiting on the
+    calendar.
+
+    ``RiskCaps.options_ratchet_enabled`` defaults True, so `_exit_reason`'s
+    options branch runs the ratchet, not the flat `option_exit_signal` —
+    which is why this uses a pl (160%) above the ratchet's hard-take-profit
+    default (150%) rather than the old flat 60% threshold. See
+    `test_ratchet_disabled_reverts_to_the_flat_take_profit` below for that
+    flat threshold pinned explicitly via the revert flag.
+    """
     reason = await _exit_reason(
         _session(False),
         _option_decision(days_held=1),
         NOW,
-        caps=RiskCaps(options_take_profit_pct=60.0, options_stop_loss_pct=50.0),
+        caps=RiskCaps(),  # ratchet on by default; hard_take_profit_pct=150.0
+        option_pl_pct={"NVDA260918C00250000": 160.0},
+    )
+    assert reason == "option_take_profit"
+
+
+async def test_ratchet_arms_and_holds_instead_of_closing_at_the_old_flat_threshold() -> None:
+    """The entire point of PLAN_EXIT_AGENT.md: a gain that used to trip the
+    flat +60% take-profit now arms the trail and holds instead, so a
+    bigger winner has room to keep running."""
+    reason = await _exit_reason(
+        _session(False),
+        _option_decision(days_held=1),
+        NOW,
+        caps=RiskCaps(),  # ratchet on by default
+        option_pl_pct={"NVDA260918C00250000": 72.4},
+    )
+    assert reason is None
+
+
+async def test_ratchet_reads_the_persisted_peak_and_closes_on_retracement() -> None:
+    """The high-water mark from a PRIOR tick — stored on
+    `decision.reasoning["option_exit"]["peak_pl_pct"]` — must feed the
+    ratchet's `peak_pl_pct` input. Without this wiring every tick would
+    see a fresh position and never detect a retracement from an earlier
+    high."""
+    decision = _option_decision(days_held=1)
+    decision.reasoning = {
+        "option_exit": {"peak_pl_pct": 82.4},
+        "contract_funnel": {"stages": ["irrelevant here"]},
+    }
+    reason = await _exit_reason(
+        _session(False),
+        decision,
+        NOW,
+        caps=RiskCaps(),
+        option_pl_pct={"NVDA260918C00250000": 50.0},
+    )
+    assert reason == "option_trail_stop"
+
+
+async def test_ratchet_disabled_reverts_to_the_flat_take_profit() -> None:
+    """`options_ratchet_enabled=False` must reproduce `option_exit_signal`'s
+    exact flat-threshold behavior — the single-flag revert the whole
+    feature is designed around."""
+    reason = await _exit_reason(
+        _session(False),
+        _option_decision(days_held=1),
+        NOW,
+        caps=RiskCaps(
+            options_ratchet_enabled=False, options_take_profit_pct=60.0,
+            options_stop_loss_pct=50.0,
+        ),
         option_pl_pct={"NVDA260918C00250000": 72.4},
     )
     assert reason == "option_take_profit"
+
+
+async def test_ratchet_disabled_ignores_a_persisted_peak() -> None:
+    """Reverting must be a COMPLETE revert: a peak persisted from before the
+    flag was flipped off must not leak into the flat-threshold path."""
+    decision = _option_decision(days_held=1)
+    decision.reasoning = {"option_exit": {"peak_pl_pct": 82.4}}
+    reason = await _exit_reason(
+        _session(False),
+        decision,
+        NOW,
+        caps=RiskCaps(
+            options_ratchet_enabled=False, options_take_profit_pct=60.0,
+            options_stop_loss_pct=50.0,
+        ),
+        option_pl_pct={"NVDA260918C00250000": 50.0},
+    )
+    assert reason is None  # 50.0 is inside both flat thresholds
 
 
 async def test_premium_stop_loss_fires() -> None:
@@ -163,6 +247,205 @@ async def test_equity_position_is_never_premium_exited() -> None:
         option_pl_pct={"NVDA": 90.0},
     )
     assert reason is None
+
+
+# ── _ratchet_outcome_for — the glue between the DB row and the pure state
+# machine ────────────────────────────────────────────────────────────────
+
+
+def test_ratchet_outcome_is_none_for_a_non_option_decision() -> None:
+    assert _ratchet_outcome_for(_decision(days_held=1), {}, RiskCaps()) is None
+
+
+def test_ratchet_outcome_is_none_when_disabled() -> None:
+    decision = _option_decision(days_held=1)
+    assert (
+        _ratchet_outcome_for(decision, {"NVDA260918C00250000": 40.0},
+                              RiskCaps(options_ratchet_enabled=False))
+        is None
+    )
+
+
+def test_ratchet_outcome_is_none_without_an_occ_symbol() -> None:
+    decision = _decision(days_held=1)
+    decision.proposal = {"timeStopDays": 5, "isOption": True}  # no occSymbol at all
+    assert _ratchet_outcome_for(decision, {}, RiskCaps()) is None
+
+
+def test_ratchet_outcome_reads_the_persisted_peak_off_the_row() -> None:
+    decision = _option_decision(days_held=1)
+    decision.reasoning = {"option_exit": {"peak_pl_pct": 82.4}}
+    outcome = _ratchet_outcome_for(
+        decision, {"NVDA260918C00250000": 50.0}, RiskCaps()
+    )
+    assert outcome is not None
+    assert outcome.peak_pl_pct == 82.4  # unchanged: 50 < 82.4
+    assert outcome.action == "CLOSE"
+    assert outcome.reason == "option_trail_stop"
+
+
+def test_ratchet_outcome_defaults_the_peak_when_the_row_has_no_reasoning() -> None:
+    """A decision row with no `.reasoning` attribute at all (older fixtures,
+    or a fresh row before any tick has written to it) must not raise —
+    same defensive `getattr` pattern `_close_position` already uses for
+    `.proposal`."""
+    decision = _option_decision(days_held=1)
+    assert not hasattr(decision, "reasoning")
+    outcome = _ratchet_outcome_for(decision, {"NVDA260918C00250000": 20.0}, RiskCaps())
+    assert outcome is not None
+    assert outcome.peak_pl_pct == 20.0
+
+
+# ── _option_exit_peak_update_stmt — the jsonb_set write, SQL-text level ──
+#
+# No live Postgres in this suite (every test in this package mocks the
+# session — see fable5findings.md). These assert the emitted SQL and bound
+# params directly, which is exactly what would catch the two regressions
+# PLAN_EXIT_AGENT.md §9 names: replacing jsonb_set with a whole-column
+# overwrite, and dropping the COALESCE.
+
+
+def test_peak_write_uses_jsonb_set_not_a_whole_column_overwrite() -> None:
+    """Break this by replacing the statement with a plain
+    `SET reasoning = :payload` and this fails: `contract_funnel` and
+    `strategy_fit` would vanish on the next write, since a whole-column
+    overwrite has no way to know about sibling keys."""
+    stmt, _params = _option_exit_peak_update_stmt(
+        decision_id=uuid.uuid4(), payload={"peak_pl_pct": 10.0}
+    )
+    sql = str(stmt)
+    assert "jsonb_set(" in sql
+    assert "{option_exit}" in sql
+    assert "reasoning = jsonb_set" in sql  # writes back into the SAME column
+
+
+def test_jsonb_set_writes_into_a_null_reasoning_column() -> None:
+    """Break this by dropping the COALESCE and this fails: Postgres's
+    `jsonb_set(NULL, ...)` returns NULL, so a decision row with no
+    `reasoning` yet would have the whole column silently blanked instead
+    of gaining an `option_exit` key."""
+    stmt, _params = _option_exit_peak_update_stmt(
+        decision_id=uuid.uuid4(), payload={"peak_pl_pct": 10.0}
+    )
+    assert "COALESCE(reasoning, '{}'::jsonb)" in str(stmt)
+
+
+def test_peak_write_params_carry_the_decision_id_and_json_payload() -> None:
+    did = uuid.uuid4()
+    _stmt, params = _option_exit_peak_update_stmt(
+        decision_id=did, payload={"peak_pl_pct": 55.5, "armed": True}
+    )
+    assert params["id"] == str(did)
+    assert json.loads(params["payload"]) == {"peak_pl_pct": 55.5, "armed": True}
+
+
+async def test_persist_option_exit_peak_merges_over_existing_option_exit_state() -> None:
+    """Fields this module does not own yet (a future exit-agent's
+    `consults`/`log`) must survive a ratchet-only write untouched — see
+    `_persist_option_exit_peak`'s own docstring for why."""
+    decision = SimpleNamespace(
+        id=uuid.uuid4(),
+        symbol="NVDA",
+        reasoning={
+            "option_exit": {"peak_pl_pct": 40.0, "consults": 2, "log": ["x"]},
+            "contract_funnel": {"stages": []},  # a SIBLING key, never read here
+        },
+    )
+    outcome = RatchetOutcome(
+        action="HOLD", reason=None, detail="d", pnl_pct=45.0, peak_pl_pct=45.0,
+        trail_line_pct=31.5, armed=True, may_consult=True, peak_advanced=True,
+    )
+    session_cm = _FakeSessionCM()
+    await _persist_option_exit_peak(
+        lambda: session_cm, decision=decision, outcome=outcome
+    )
+
+    session_cm.session.execute.assert_awaited_once()
+    session_cm.session.commit.assert_awaited_once()
+    _stmt, params = session_cm.session.execute.call_args.args
+    payload = json.loads(params["payload"])
+    assert payload["peak_pl_pct"] == 45.0  # the new value
+    assert payload["consults"] == 2  # preserved, not owned by this write
+    assert payload["log"] == ["x"]  # preserved
+    assert "contract_funnel" not in payload  # never touched — a sibling key
+
+
+# ── manage_positions_for_user — the peak-write gate ──────────────────────
+
+
+async def test_manage_positions_persists_the_peak_only_when_it_advanced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two armed-but-holding options in one tick: one whose peak just moved,
+    one whose peak did not. Exactly one write must happen."""
+    from app.services.orders.position_manager import manage_positions_for_user
+
+    # `manage_positions_for_user` computes `now` as the REAL wall clock
+    # (unlike every other test in this file, which passes the fixed `NOW`
+    # constant straight into `_exit_reason`) — so these two decisions need
+    # a genuinely recent `triggered_at`/`user_responded_at`, or the time
+    # stop fires regardless of the ratchet and this test would pass for
+    # the wrong reason (it would still pass — the persist gate is checked
+    # before the reason is used — but `_close_position` would then also be
+    # attempted and fail noisily on these bare fixtures).
+    recent = datetime.now(UTC) - timedelta(hours=1)
+    d_advances = _option_decision(occ="AAA250101C00100000", days_held=1)
+    d_advances.symbol = "AAA"
+    d_advances.triggered_at = recent
+    d_advances.user_responded_at = recent
+    d_holds = _option_decision(occ="BBB250101C00100000", days_held=1)
+    d_holds.symbol = "BBB"
+    d_holds.triggered_at = recent
+    d_holds.user_responded_at = recent
+    d_holds.reasoning = {"option_exit": {"peak_pl_pct": 50.0}}
+
+    session = MagicMock()
+    session.execute = AsyncMock(
+        side_effect=[
+            _ScalarsResult([d_advances, d_holds]),
+            _ScalarOneResult(None),  # newer-sell check for d_advances
+            _ScalarOneResult(None),  # newer-sell check for d_holds
+        ]
+    )
+    session_cm = _FakeSessionCM()
+    session_cm.session = session
+
+    monkeypatch.setattr(
+        position_manager_mod,
+        "_option_pl_pct_by_symbol",
+        AsyncMock(
+            return_value={
+                "AAA250101C00100000": 20.0,  # fresh position: peak 0 -> 20, HOLD (not armed)
+                "BBB250101C00100000": 40.0,  # peak stays 50 (40 < 50): armed, HOLD, no advance
+            }
+        ),
+    )
+    persisted: list[str] = []
+
+    async def _fake_persist(_session_factory, *, decision, outcome) -> None:
+        persisted.append(decision.symbol)
+
+    monkeypatch.setattr(position_manager_mod, "_persist_option_exit_peak", _fake_persist)
+
+    count = await manage_positions_for_user(
+        user_id="00000000-0000-0000-0000-000000000001",
+        session_factory=lambda: session_cm,
+        caps=RiskCaps(),
+    )
+
+    assert count == 0  # both hold — nothing closes this tick
+    assert persisted == ["AAA"]  # only the position whose peak actually moved
+
+
+# ── close_reason length — String(20) in the DB ───────────────────────────
+
+
+def test_new_close_reasons_fit_in_the_close_reason_column() -> None:
+    """`close_reason` is `String(20)`. `option_trailing_stop` (the name
+    PLAN_EXIT_AGENT.md explicitly warns against) is exactly 20 and is not
+    the name used here; `option_trail_stop` (17) is."""
+    for reason in ("option_trail_stop", "option_agent_close"):
+        assert len(reason) <= 20, reason
 
 
 async def test_in_flight_close_guard_detects_pending_sell() -> None:

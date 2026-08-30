@@ -583,3 +583,39 @@ def test_options_disabled_by_default_from_env(monkeypatch: pytest.MonkeyPatch) -
     d = evaluate(_entry(), _ctx(), caps)
     assert not d.approved
     assert d.veto_rule == "options_disabled"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Ratchet knobs from_env — PLAN_EXIT_AGENT.md §3. Opposite polarity from
+# ALLOW_OPTIONS/ALLOW_SHORTS above: unset must leave the ratchet ON.
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_ratchet_defaults_to_enabled_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OPTIONS_RATCHET_ENABLED", raising=False)
+    caps = RiskCaps.from_env()
+    assert caps.options_ratchet_enabled is True
+
+
+def test_ratchet_can_be_reverted_off_via_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPTIONS_RATCHET_ENABLED", "0")
+    caps = RiskCaps.from_env()
+    assert caps.options_ratchet_enabled is False
+
+
+def test_ratchet_thresholds_are_env_tunable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPTIONS_TRAIL_ARM_PCT", "40")
+    monkeypatch.setenv("OPTIONS_TRAIL_GIVEBACK_PCT", "25")
+    monkeypatch.setenv("OPTIONS_HARD_TAKE_PROFIT_PCT", "175")
+    caps = RiskCaps.from_env()
+    assert caps.options_trail_arm_pct == 40.0
+    assert caps.options_trail_giveback_pct == 25.0
+    assert caps.options_hard_take_profit_pct == 175.0
+
+
+def test_malformed_ratchet_threshold_keeps_the_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Same fail-to-default contract as every other `_env_float` cap — a
+    typo must not silently produce a nonsense threshold."""
+    monkeypatch.setenv("OPTIONS_TRAIL_ARM_PCT", "not-a-number")
+    caps = RiskCaps.from_env()
+    assert caps.options_trail_arm_pct == 35.0
