@@ -385,6 +385,21 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-30 — docs: `HACKATHON.md` §5 truth-up after D.0/D.2 landed
+
+Small follow-up, folded into its own commit rather than widening `40eae29b`. Two
+statements in §5 went stale the moment my own prior commits landed:
+
+- *"The early-close / halt awareness already exists in Python and is simply
+  unwired"* — false as of `40eae29b`. Struck through, replaced with a note that it's
+  wired, citing that sha and the new `clock`/`market_open_source` surface.
+- *"The exact clock subcommand below was never verified"* — false as of `1bd33849`'s
+  D.0 findings. Replaced with the verified fact: **`alpaca clock`, no `get` suffix** —
+  the section's own prior `alpaca clock get` guess was wrong.
+
+Docs-only (`docs/HACKATHON.md`). No code touched, so the suite is unaffected —
+last confirmed at 795 passed, 9 skipped in the `40eae29b` entry below, still current.
+
 ### 2026-08-30 — `40eae29b` feat(engine,api): wire AlpacaClock into the scanner via an optional clock provider
 
 **D.2 from `docs/PLAN_ALPACA_MCP.md` — the actual functional upgrade** (the CLI in

@@ -113,13 +113,19 @@ jobs and CI"*.
 1. **The gate is not `pandas_market_calendars` in `daily_cron.main`.** The real path is
    `engine/features/market_calendar.py::is_us_market_open` → `engine/scanner/engine.py:86`
    → `apps/api/app/services/council/scheduler.py:317`.
-2. **The early-close / halt awareness already exists in Python and is simply unwired.**
-   `engine/features/clock.py::AlpacaClock` calls `/v2/clock`; `clock_from_env()` has zero
-   non-test callers. So the CLI is the **eligibility artifact**; wiring that clock is the
-   **functional upgrade**. Do both, and do not confuse them.
+2. ~~**The early-close / halt awareness already exists in Python and is simply
+   unwired.**~~ **Wired 2026-08-30** (`40eae29b`). `Scanner` now takes an optional
+   `clock: ClockProvider | None`; `scanner_from_env()` passes `clock_from_env()` at
+   construction, and `ScanResult`/`ScannerStatusResponse` both carry
+   `market_open_source` so a run can show which one actually answered. The CLI
+   remains the **eligibility artifact**; this was the **functional upgrade** — done
+   ahead of the CLI, per the plan's own build order.
 
-The exact clock subcommand below was never verified — treat it as unknown until the gate in
-[`PLAN_ALPACA_MCP.md`](PLAN_ALPACA_MCP.md) §0 confirms it.
+**The exact clock subcommand is now verified** (D.0, `docs/PLAN_ALPACA_MCP.md` §0,
+findings quoted in `fable5findings.md`): it is **`alpaca clock`**, with no `get`
+suffix — this section's old `alpaca clock get` guess was wrong. `clock` is a
+top-level command alongside `order`/`position`/`option`/`locate`/`calendar`, not a
+subcommand of anything else.
 
 **B. Alpaca's MCP server — ONE read-only session. No execution session.**
 
