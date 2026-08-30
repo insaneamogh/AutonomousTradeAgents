@@ -9,15 +9,16 @@ Scope: **Phase A only — long calls and long puts, single leg, US equity
 options.** No spreads, no selling to open, no assignment handling. That is not
 a simplification for the contest; it is what bounds the loss.
 
-> ⚠️ **PARTLY SUPERSEDED — pending implementation, 2026-08-30.** The user has
-> decided to loosen the sizing caps and replace the fixed take-profit with a
-> trailing ratchet for the contest window. **The numbers below are still what
-> the code does today** — this file's own rule is that the code wins — but §2's
-> "1% and 5% are not negotiable" and §3's exit table are scheduled to change.
-> The reasoning and the new numbers:
-> [`PLAN_AGGRESSIVE_PROFILE.md`](PLAN_AGGRESSIVE_PROFILE.md) and
-> [`PLAN_EXIT_AGENT.md`](PLAN_EXIT_AGENT.md). Whoever implements those updates
-> this file **in the same commit**, per §0 above.
+> ⚠️ **PARTLY SUPERSEDED — the sizing caps below shipped 2026-08-30; the
+> take-profit ratchet has not.** [`PLAN_AGGRESSIVE_PROFILE.md`](PLAN_AGGRESSIVE_PROFILE.md)
+> is implemented: `RiskCaps.aggressive_paper()` is a reviewed profile,
+> dispatched via `RISK_PROFILE` (default `conservative` — the numbers this
+> file always had; `aggressive_paper` is the wider ones now described below).
+> §2 and §3 reflect both profiles explicitly. **Still pending:**
+> [`PLAN_EXIT_AGENT.md`](PLAN_EXIT_AGENT.md)'s trailing ratchet — §3's
+> take-profit row is still the fixed +60% because that part has not landed.
+> Whoever implements the ratchet updates §3 (and adds a §7) in the same
+> commit, per §0 above.
 
 ---
 
@@ -25,11 +26,15 @@ a simplification for the contest; it is what bounds the loss.
 
 > The agent may buy one call or one put per underlying per day, 10–45 days
 > out, near the money, in a contract that actually trades, for no more than
-> **1% of equity** and no more than **5% across the whole book** — and it must
-> close that position on a target, a stop, a clock, or an expiry, whichever
-> comes first.
+> **1% of equity** (**2.5%** under the `aggressive_paper` profile) and no more
+> than **5% across the whole book** (**12%** under `aggressive_paper`) — and it
+> must close that position on a target, a stop, a clock, or an expiry,
+> whichever comes first.
 
-Everything below is that sentence, enforced.
+Everything below is that sentence, enforced. Two profiles exist —
+`conservative` (the numbers above without the parenthetical) and
+`aggressive_paper` (the parenthetical) — selected by the `RISK_PROFILE` env
+var, default `conservative`. See §2 and §4.
 
 ---
 
@@ -68,7 +73,7 @@ persisted to the decision row's `reasoning.contract_funnel`.
 |---|---|---|---|
 | 1 | `contract_type` | calls for long, puts for short | `no_matching_contract_type` |
 | 2 | `dte_window` | **10 ≤ DTE ≤ 45** | `no_expiry_in_window` |
-| 3 | `delta_band` | conviction ≥ 0.7 → &#124;δ&#124; ∈ **[0.40, 0.70]**; else **[0.25, 0.55]** | `no_delta_in_band` |
+| 3 | `delta_band` | conviction ≥ 0.7 → &#124;δ&#124; ∈ **[0.35, 0.75]**; else **[0.25, 0.65]** | `no_delta_in_band` |
 | 4 | `liquidity` | OI ≥ **100**, volume ≥ **1**, relative spread ≤ **12%** | `no_liquid_contract` |
 | 5 | `iv_present` | IV must be reported | `no_iv` |
 | 6 | `iv_realized_vol_band` | 0.3× ≤ IV/realized vol ≤ 3.0× | `iv_outside_plausible_band` |
@@ -85,11 +90,16 @@ arbitrary and are not:
   chosen at exactly 7 DTE can re-enter the risk engine at 6 across a UTC
   boundary and be vetoed by the layer that just selected it. Three days of
   buffer removes that failure class.
-- **The delta bands overlap at 0.40–0.55, deliberately.** They used to be
+- **The delta bands overlap at 0.35–0.65, deliberately.** They used to be
   disjoint (`[0.45,0.65]` / `[0.25,0.45]`), which made a 0.50-delta contract —
   ATM, the most liquid strike on the board — eligible *only* when LLM
   confidence cleared 0.7. Conviction should move the band, not exclude the
-  middle of the chain.
+  middle of the chain. Widened once more 2026-08-30, from `[0.40,0.70]` /
+  `[0.25,0.55]`, for the contest window (`docs/PLAN_AGGRESSIVE_PROFILE.md`
+  §2 — more delta per premium dollar, and the upper strikes it reaches are
+  also the more liquid near-ATM ones). **Frozen after this change** per
+  §4/`docs/HACKATHON.md` §8 — not touched again once Monday's open happens,
+  so funnel counts stay comparable across the contest's trading days.
 - **The volume floor is 1, and it is not a daily-volume floor.** alpaca-py's
   `OptionsSnapshot` model drops the `dailyBar` block, so the only number
   available is the *last trade size* — one print, typically 1–5 lots. Measured
@@ -138,8 +148,8 @@ No LLM output participates in any of them.
 | `iv_unavailable` | no IV — a contract this system cannot price is not bought |
 | `illiquid_contract` | OI / volume / spread floors, re-checked at approval |
 | `earnings_blackout` | **permanently inert — see the warning below** |
-| `max_premium_pct` | one position's premium > **1% of equity** — *trims first* |
-| `max_total_premium_pct` | all open premium > **5% of equity** — blocks, never trims |
+| `max_premium_pct` | one position's premium > **1% of equity** (**2.5%** under `aggressive_paper`) — *trims first* |
+| `max_total_premium_pct` | all open premium > **5% of equity** (**12%** under `aggressive_paper`) — blocks, never trims |
 
 Plus the shared equity rules that apply to any order: `pdt_block`,
 `daily_drawdown_halt`, `max_open_positions`, `min_council_confidence`,
@@ -157,20 +167,43 @@ it becomes a block.
 > and disclosed rather than quietly deleted — and rather than fed a fabricated
 > date. Do not describe it as an active control anywhere.
 
-### Why 1% and 5% are not negotiable
+### Why the caps are 2.5% and 12% (was 1%/5%), and what still bounds them
 
-> **Superseded pending implementation** — see the banner at the top. The
-> *structure* of this argument survives the change; only the chosen bound moves,
-> and `daily_drawdown_halt_pct = -3.0` does not move at all.
+Shipped 2026-08-30 via `RiskCaps.aggressive_paper()`
+(`docs/PLAN_AGGRESSIVE_PROFILE.md`), dispatched by `RISK_PROFILE`
+(default `conservative` — the original 1%/5%). The *structure* of the
+original argument survives unchanged; only the chosen bound moved, and
+one number moved with it on purpose (the stop-loss, §3) while the two
+that matter most did **not** move at all.
 
 A long option's maximum loss is the entire premium. So `options_max_premium_pct`
-**is** the position-size cap — it is not a proxy for one. 1% per position and 5%
-across the book means the entire options book going to zero costs 5% of equity,
-by construction, with no assumption about stops filling or gaps behaving.
+**is** the position-size cap — it is not a proxy for one. That did not change.
+What changed is which bound the position-size cap enforces: 1%/5% under
+`conservative`, 2.5%/12% under `aggressive_paper` — the entire options book
+going to zero costs 5% (or 12%) of equity, by construction, with no
+assumption about stops filling or gaps behaving, whichever profile is active.
 
-That bound is the capital-preservation claim. Raising these to chase P&L would
-trade the claim for a lottery ticket, and it is the reason they are **not**
-env-tunable while other thresholds are.
+**One of the two numbers was never really about risk appetite.** At $100k
+equity, a 1% premium budget is $1,000, and sizing is
+`floor(budget / (ask × 100))` — so any contract priced above $10.00 floored
+to zero contracts and the pass silently became a HOLD (never even reaching
+the Refusal Ledger, because the sizer emits a HOLD via `.notes`, not a veto).
+2.5% ($2,500) makes a $12 contract buy 2. `packages/engine/tests/test_options_sizing.py`'s
+`test_the_old_one_percent_cap_floored_a_twelve_dollar_contract_to_zero` /
+`test_a_twelve_dollar_contract_sizes_to_at_least_one` pin exactly this.
+
+**What still bounds it, and why 12% is a ceiling, not a step:**
+`daily_drawdown_halt_pct = -3.0` **does not move, in any profile.** "The
+entire options book to zero costs 12% of equity" is only tolerable as a
+**multi-day** worst case; the −3% intraday halt is what keeps it from being
+a **single-day** one. Widening the total-premium cap and holding the halt
+fixed is one coupled decision, not two independent ones — raising 12% any
+further without re-deriving that coupling would trade the capital-preservation
+claim for a lottery ticket. That is also why these two numbers are **not**
+env-tunable directly (no `OPTIONS_MAX_PREMIUM_PCT` env var exists) while
+other thresholds are — only a reviewed profile classmethod can move them,
+and `RISK_PROFILE` only ever chooses between two such profiles, never
+supplies a number itself. See §4.
 
 ---
 
@@ -180,8 +213,8 @@ An open option has **four** exits. Whichever fires first wins.
 
 | Exit | Trigger | `close_reason` |
 |---|---|---|
-| **Take profit** | premium **≥ +60%** | `option_take_profit` |
-| **Stop loss** | premium **≤ −50%** | `option_stop_loss` |
+| **Take profit** | premium **≥ +60%** — **still fixed; the trailing-ratchet replacement in [`PLAN_EXIT_AGENT.md`](PLAN_EXIT_AGENT.md) §3 has not landed** | `option_take_profit` |
+| **Stop loss** | premium **≤ −50%** (**≤ −40%** under `aggressive_paper` — "cut losers early") | `option_stop_loss` |
 | **Time stop** | held ≥ `timeStopDays` (5 on a "short" horizon) | `agent_time` |
 | **Expiry sweep** | **DTE ≤ 2** — unconditional | `agent_expiry` |
 
@@ -201,13 +234,16 @@ broker; every option entry gets this loop instead. That is a genuine
 difference in protection and it should be stated as one.
 
 **The measure is the premium, not the underlying.** On a 0.5-delta call, a 50%
-premium stop is roughly a 5% adverse move in the stock. The leverage is the
-instrument's whole point and is why a percentage that would be absurd on
-shares is ordinary here.
+(or, under `aggressive_paper`, 40%) premium stop is roughly a 5% (4%) adverse
+move in the stock. The leverage is the instrument's whole point and is why a
+percentage that would be absurd on shares is ordinary here.
 
-**The asymmetry (+60/−50) is deliberate.** A long option that has not worked
-bleeds theta every day it sits, so the loss side has to be tighter than the
-gain side is wide.
+**The asymmetry (+60/−50, or +60/−40 under `aggressive_paper`) is
+deliberate.** A long option that has not worked bleeds theta every day it
+sits, so the loss side has to be tighter than the gain side is wide. Do not
+go below ~35 on the stop: at the permitted 12% relative spread on a delayed
+mark, a 30% stop is only 2.5× the spread and starts stopping out on quote
+noise rather than a real adverse move.
 
 **No mark means hold.** If the broker does not report a price, no premium exit
 fires — a missing price must never close a position. The time stop and the
@@ -227,7 +263,15 @@ risk, so an env var that widens it is not a cap.** An exit threshold only
 decides when to realize a position whose size those caps already bounded — it
 cannot increase maximum loss beyond the premium already paid.
 
-**Env-tunable** (`RiskCaps.from_env`, malformed input keeps the default and logs):
+**Profile, not a number** (`RiskCaps.from_env`):
+
+| Var | Default | What it does |
+|---|---|---|
+| `RISK_PROFILE` | `conservative` | Picks the BASE profile before any of the env vars below apply on top: `conservative` (bare `RiskCaps()`) or `aggressive_paper` (`RiskCaps.aggressive_paper()` — the wider premium caps and confidence floors, tighter stop, see §2/§3). An unrecognised value falls back to `conservative` and logs a warning — same fail-to-default contract as every var below. This is a choice between two REVIEWED, in-git profiles; it cannot express a cap nobody looked at, which is the whole point given the next paragraph. |
+
+**Env-tunable** (malformed input keeps the default and logs; the "default"
+below is whichever profile's own value — only `OPTIONS_STOP_LOSS_PCT` differs
+by profile today):
 
 | Var | Default |
 |---|---|
@@ -236,14 +280,20 @@ cannot increase maximum loss beyond the premium already paid.
 | `OPTIONS_MIN_VOLUME` | 1 |
 | `OPTIONS_MAX_SPREAD_PCT` | 12.0 |
 | `OPTIONS_TAKE_PROFIT_PCT` | 60.0 |
-| `OPTIONS_STOP_LOSS_PCT` | 50.0 |
+| `OPTIONS_STOP_LOSS_PCT` | 50.0 (`aggressive_paper`: 40.0) |
 
-**Code-level only, by design:** `options_max_premium_pct` (1%),
-`options_max_total_premium_pct` (5%), `max_position_pct`,
-`daily_drawdown_halt_pct`. Changing one requires a reviewed commit.
+**Code-level only, by design:** `options_max_premium_pct` (1% /
+`aggressive_paper` 2.5%), `options_max_total_premium_pct` (5% /
+`aggressive_paper` 12%), `max_position_pct` (5%, same in both profiles),
+`daily_drawdown_halt_pct` (-3.0, same in both profiles — see §2's "what
+still bounds it"). Changing one requires a reviewed commit — either a new
+number in an existing profile classmethod, or a new profile entirely. No
+env var supplies any of these four as a raw number, in either profile.
 
-**Frozen for the contest:** `selection.py`'s constants. One reviewed change,
-then no more, so funnel counts stay comparable across days.
+**Frozen for the contest:** `selection.py`'s constants (the DTE window and
+the delta bands). One reviewed widening of the delta bands landed alongside
+this profile, 2026-08-30 — no more after Monday's open, so funnel counts
+stay comparable across days.
 
 ---
 

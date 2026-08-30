@@ -50,7 +50,7 @@ plan as if there is time to iterate on strategy performance. There is not.
 
 | Criterion | Our position |
 |---|---|
-| **P&L Performance** | Weakest. **Caps overridden by the user 2026-08-30** — 1%/5% → 2.5%/12% for the contest window, on the grounds that this is a paper account with no real capital. See [`PLAN_AGGRESSIVE_PROFILE.md`](PLAN_AGGRESSIVE_PROFILE.md); the −3% daily halt stays fixed and is what makes the wider bound tolerable. |
+| **P&L Performance** | Weakest. **Caps overridden by the user 2026-08-30, shipped the same day** — 1%/5% → 2.5%/12% for the contest window, on the grounds that this is a paper account with no real capital. `RiskCaps.aggressive_paper()`, dispatched via `RISK_PROFILE=aggressive_paper` (default stays `conservative`) — see [`PLAN_AGGRESSIVE_PROFILE.md`](PLAN_AGGRESSIVE_PROFILE.md) and [`docs/OPTIONS_PLAYBOOK.md`](OPTIONS_PLAYBOOK.md) §2/§4. The −3% daily halt stays fixed in both profiles and is what makes the wider bound tolerable. |
 | **Technology Implementation** | Strong. 21 equity + 13 options named risk rules, walk-forward backtester sharing live risk code, deterministic funnel, per-agent MCP toolset scoping. |
 | **Creativity & Originality** | **This is where we win.** The Refusal Ledger is unclaimed in the field. |
 | **Presentation & Execution** | Strong — real mobile + desktop product, full audit trail, live counterfactuals. |
@@ -222,16 +222,26 @@ by Tuesday close is the emergency signal** — loosen the funnel, never the risk
 ## 8. Do not do these
 
 - ~~**Do not raise `options_max_premium_pct` (1%) or `options_max_total_premium_pct`
-  (5%) to chase P&L.**~~ **SUPERSEDED 2026-08-30 by an explicit user decision.** The caps
-  move to 2.5% / 12% via a reviewed `RiskCaps.aggressive_paper()` profile — never via an
-  env var that supplies a number. The bounded-loss argument survives with a wider bound:
-  max loss is still the premium, and `daily_drawdown_halt_pct = -3.0` **does not move**,
-  which is what keeps a 12% book-to-zero a multi-day worst case rather than a single-day
-  one. Widening the cap and freezing the halt are one coupled decision. Full reasoning and
-  the numbers: [`PLAN_AGGRESSIVE_PROFILE.md`](PLAN_AGGRESSIVE_PROFILE.md).
+  (5%) to chase P&L.**~~ **SUPERSEDED 2026-08-30 by an explicit user decision, and
+  SHIPPED the same day.** `RiskCaps.aggressive_paper()` is a reviewed profile — dispatched
+  via `RISK_PROFILE=aggressive_paper` (unset/unknown value stays `conservative` and logs a
+  warning), never via an env var that supplies a number directly. It raises
+  `options_max_premium_pct` 1.0 → 2.5 and `options_max_total_premium_pct` 5.0 → 12.0, plus
+  `min_council_confidence` 0.50 → 0.42, `min_specialist_avg_score` 45.0 → 40.0,
+  `options_stop_loss_pct` 50.0 → 40.0 ("cut losers early"), `max_correlation_cluster` 3 → 4.
+  The bounded-loss argument survives with a wider bound: max loss is still the premium, and
+  `daily_drawdown_halt_pct = -3.0` **does not move, in either profile**, which is what keeps
+  a 12% book-to-zero a multi-day worst case rather than a single-day one. Widening the cap
+  and freezing the halt are one coupled decision. `MIN_FIT_TO_TRADE` (a separate,
+  non-`RiskCaps` gate) also moved 0.45 → 0.42, alongside a new evidence gate in
+  `best_strategy` that refuses to call an empty/near-empty feature dict "tradable" — see
+  [`PLAN_AGGRESSIVE_PROFILE.md`](PLAN_AGGRESSIVE_PROFILE.md) §4. Full reasoning and the
+  numbers: that plan, and [`docs/OPTIONS_PLAYBOOK.md`](OPTIONS_PLAYBOOK.md) §2–§4.
 - **Do not raise the caps beyond 2.5% / 12%.** That is the reviewed ceiling.
-- **Do not change `selection.py` constants after Monday's open.** One reviewed Saturday
-  change, then frozen, so funnel counts stay comparable across days.
+- **Do not change `selection.py` constants after Monday's open.** One reviewed change
+  landed 2026-08-30 alongside the profile above (the delta bands widened to
+  `[0.35,0.75]`/`[0.25,0.65]` — see `OPTIONS_PLAYBOOK.md` §1.3), then frozen, so funnel
+  counts stay comparable across days.
 - **Do not claim `earnings_blackout` is an active control.** It is permanently inert:
   `MinimalOptionsContextProvider` hardcodes `days_to_earnings: None`, and Alpaca
   publishes **no earnings calendar** (`features/corporate_actions.py` says so
@@ -250,8 +260,8 @@ by Tuesday close is the emergency signal** — loosen the funnel, never the risk
 
 | Thing | Value | Source |
 |---|---|---|
-| Full Python suite | 757 passed, 9 skipped | `pytest apps/agents apps/api packages/` |
-| Ruff pre-existing errors | 9 | check baseline before blaming your change |
+| Full Python suite | 818 passed, 9 skipped (2026-08-30, aggressive-profile commit; was 792 immediately before it) | `pytest apps/agents apps/api packages/` |
+| Ruff pre-existing errors | **252** as measured 2026-08-30 against a fresh `uv sync --all-packages` (ruff 0.16.0) — NOT 9. Confirmed via `git stash` that this count exists on `main` with zero code changes, so it predates the aggressive-profile commit; most likely a ruff-version drift (124 of the 252 are `RUF100 unused-noqa`, consistent with old suppressions the current ruff no longer needs) but that specific cause is not fully re-verified — pin the old version and diff before trusting it either way. | check baseline before blaming your change — "9" was itself stale; re-verify a lint number instead of trusting the last one written down |
 | Council LLM calls/pass | 5 (max 10 with re-ask) | `graph.py` |
 | Cost per pass | ~$0.04 | `cost_ledger.py` pricing table |
 | Option `open_interest` | real, populated 90/100, values 137–722 | `/v2/options/contracts` |

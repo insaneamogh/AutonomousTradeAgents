@@ -57,7 +57,7 @@ def _inputs(
     days_to_earnings: int | None = None,
     realized_vol_pct: float | None = None,
 ) -> ContractSelectionInputs:
-    # 0.8 is high-conviction (band [0.45, 0.65]), matching _quote()'s own
+    # 0.8 is high-conviction (band [0.35, 0.75]), matching _quote()'s own
     # default delta=0.50 — tests exercising the conviction/delta-band
     # relationship itself pass their own explicit conviction below.
     return ContractSelectionInputs(
@@ -170,7 +170,8 @@ def test_low_conviction_wants_further_otm_delta() -> None:
 
 
 def test_low_conviction_rejects_a_too_close_to_the_money_delta() -> None:
-    result = select_contract(_inputs((_quote(delta=0.60),), conviction=0.4))
+    # Low band is [0.25, 0.65] — 0.70 sits just above the ceiling.
+    result = select_contract(_inputs((_quote(delta=0.70),), conviction=0.4))
     assert result.selected is None
     assert result.rejection_reason == "no_delta_in_band"
 
@@ -185,6 +186,36 @@ def test_missing_delta_fails_the_band_not_a_neutral_pass() -> None:
     result = select_contract(_inputs((_quote(delta=None),), conviction=0.5))
     assert result.selected is None
     assert result.rejection_reason == "no_delta_in_band"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Delta bands widened for the contest window, 2026-08-30 (was
+# [0.40,0.70]/[0.25,0.55] — docs/PLAN_AGGRESSIVE_PROFILE.md §2). Frozen
+# after Monday's open (docs/HACKATHON.md §8): these three pin the exact
+# new edges so a reversion to the old numbers is caught, not just a
+# generically-still-passing "some delta near ATM works" test.
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_low_conviction_band_widened_ceiling_to_point_65() -> None:
+    """0.63 is inside the new low band [0.25, 0.65]; the old ceiling of
+    0.55 would have rejected it."""
+    result = select_contract(_inputs((_quote(delta=0.63),), conviction=0.4))
+    assert result.selected is not None
+
+
+def test_high_conviction_band_widened_floor_to_point_35() -> None:
+    """0.37 is inside the new high band [0.35, 0.75]; the old floor of
+    0.40 would have rejected it."""
+    result = select_contract(_inputs((_quote(delta=0.37),), conviction=0.9))
+    assert result.selected is not None
+
+
+def test_high_conviction_band_widened_ceiling_to_point_75() -> None:
+    """0.73 is inside the new high band [0.35, 0.75]; the old ceiling of
+    0.70 would have rejected it."""
+    result = select_contract(_inputs((_quote(delta=0.73),), conviction=0.9))
+    assert result.selected is not None
 
 
 # ─────────────────────────────────────────────────────────────────────

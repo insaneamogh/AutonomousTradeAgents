@@ -49,6 +49,7 @@ from typing import Any
 from engine.env import env_flag
 from trading_agents.state import CouncilState
 from trading_agents.strategies import best_strategy
+from trading_agents.strategies.fit import _has_usable_features
 
 logger = logging.getLogger("agents.node.strategy_fit")
 
@@ -71,24 +72,45 @@ async def strategy_fit_node(state: CouncilState) -> CouncilState:
         features, priors=priors, allow_shorts=allow_shorts
     )
 
+    # Re-derived here (not threaded through `best_strategy`'s return value)
+    # purely to explain a None winner — see that function's docstring. This
+    # never changes the decision, only the rationale text and the audit
+    # block below it.
+    usable_features, unusable_reason = _has_usable_features(features)
+
     fit_block: dict[str, Any] = {
         "allow_shorts": allow_shorts,
         "winner": winner.as_dict() if winner else None,
         "ranked": [r.as_dict() for r in ranked[:MAX_RANKED_PERSISTED]],
         "priors_applied": dict(priors),
+        "usable_features": usable_features,
     }
+    if not usable_features:
+        fit_block["unusable_reason"] = unusable_reason
 
     if winner is None:
         top = ranked[0] if ranked else None
-        rationale = (
-            f"No strategy clears the fit floor — best was {top.strategy_id} "
-            f"({top.direction}) at {top.score:.2f}. Holding without spending an LLM call."
-            if top
-            else "No strategy could be scored (no usable features). Holding."
-        )
+        if not usable_features:
+            # Distinct from the "genuinely marginal" branch below: `top`
+            # (if any) may well show a score at or above MIN_FIT_TO_TRADE
+            # here — that's the exact leak this branch exists to name
+            # correctly rather than let read as "best was X at 0.60" while
+            # returning HOLD, which looks like a bug rather than a gate.
+            rationale = (
+                f"Feature data too thin to trade ({unusable_reason}) — "
+                "holding without spending an LLM call."
+            )
+        elif top:
+            rationale = (
+                f"No strategy clears the fit floor — best was {top.strategy_id} "
+                f"({top.direction}) at {top.score:.2f}. Holding without spending an LLM call."
+            )
+        else:
+            rationale = "No strategy could be scored (no usable features). Holding."
         logger.info(
-            "strategy_fit: %s → HOLD before any LLM call (best=%s %.3f)",
+            "strategy_fit: %s → HOLD before any LLM call (usable_features=%s best=%s %.3f)",
             state.get("symbol"),
+            usable_features,
             top.strategy_id if top else "none",
             top.score if top else 0.0,
         )

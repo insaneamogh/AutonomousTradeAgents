@@ -7,6 +7,7 @@ Pure-logic — no DB, no LLM, runs in milliseconds. Mirrors the style of
 from __future__ import annotations
 
 from engine.options.sizing import OptionsSizingInputs, options_position_size
+from engine.risk import RiskCaps
 
 
 def test_floor_division_basic_case() -> None:
@@ -107,3 +108,43 @@ def test_qty_is_never_negative() -> None:
         OptionsSizingInputs(budget_usd=500.0, ask=3.20, multiplier=-100),
     ):
         assert options_position_size(bad).qty >= 0
+
+
+# ─────────────────────────────────────────────────────────────────────
+# The real reason options_max_premium_pct moved 1.0 -> 2.5
+# (docs/PLAN_AGGRESSIVE_PROFILE.md §1) — not risk appetite, a sizing-floor
+# bug. budget_usd here is computed exactly the way the real caller does
+# (``trading_agents.nodes.drafter``: ``equity * caps.options_max_premium_pct
+# / 100.0``), so this is a revert-checkable regression test, not a
+# hand-picked number.
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_the_old_one_percent_cap_floored_a_twelve_dollar_contract_to_zero() -> None:
+    """Documents the bug the aggressive profile happens to fix: at
+    $100k equity and the CONSERVATIVE 1% cap, a $12.00 ask (x100 = $1,200)
+    exceeds the $1,000 budget and floors to 0 contracts — a silent HOLD
+    that never even reached the Refusal Ledger, because the sizer emits a
+    HOLD via ``.notes``, not a veto."""
+    equity = 100_000.0
+    caps = RiskCaps()  # conservative default: options_max_premium_pct = 1.0
+    budget_usd = equity * caps.options_max_premium_pct / 100.0
+    decision = options_position_size(
+        OptionsSizingInputs(budget_usd=budget_usd, ask=12.0, multiplier=100)
+    )
+    assert decision.qty == 0
+
+
+def test_a_twelve_dollar_contract_sizes_to_at_least_one() -> None:
+    """The fix: under ``RiskCaps.aggressive_paper()`` (2.5%), the same
+    $12.00 contract sizes to qty >= 1 instead of HOLDing. Revert
+    ``options_max_premium_pct`` to 1.0 in ``aggressive_paper()`` to see
+    this fail — it is the test that documents the real reason for the
+    change, not just "the number is bigger now"."""
+    equity = 100_000.0
+    caps = RiskCaps.aggressive_paper()
+    budget_usd = equity * caps.options_max_premium_pct / 100.0
+    decision = options_position_size(
+        OptionsSizingInputs(budget_usd=budget_usd, ask=12.0, multiplier=100)
+    )
+    assert decision.qty >= 1
