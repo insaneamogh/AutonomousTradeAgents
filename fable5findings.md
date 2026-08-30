@@ -385,6 +385,82 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-30 — `2709d236` fix(auth,broker): stop auto-attaching every signup to the operator's own Alpaca account
+
+`ID:MODEL2OFF`. Implements `docs/PLAN_MULTI_TENANT.md` §1 + §3 — the live
+security issue flagged in the handoff (`d9240326`): any new signup
+(magic-link or Google, first login, no exotic path) was silently handed a
+write-capable connection to the SERVER's own Alpaca keys — the exact paper
+account being scored. A real authenticated user, so `require_real_auth`
+passed: they could approve a pending proposal, close a position, revoke
+the connection, or arm auto-approve, on someone else's account.
+
+**Fix (§1):** new `_env_connection_allowlist()` in `env_bootstrap.py` —
+`ALPACA_ENV_CONNECTION_USER_IDS` (comma-separated) if set, else
+`AGENT_CRON_USER_ID` alone (matches `.env.example`'s existing
+`AGENT_CRON_USER_ID == FIXTURE_USER_ID` convention, so a correctly-set-up
+single-tenant deployment is unaffected). Checked inside
+`ensure_env_broker_connection` itself — the ONE function both the
+per-login catch-up (`routers/auth.py`) and the boot-time sweep
+(`bootstrap_env_broker_connections`) already call — so there's exactly one
+gate to remember, not two (CLAUDE.md §4.4). Neither var set → nobody gets
+the connection; fails closed. Mechanism itself is untouched — the operator
+still needs it to trade at all, per the plan's own explicit warning not to
+delete it.
+
+**Fix (§3):** `PostgresStore.get_account` was returning the SAME hardcoded
+cold-boot fixture (`equity=$100,000, buying_power=$200,000,
+status="connected"`) for BOTH "genuine cold boot, connection exists" and
+"no connection at all" — a judge with zero connections (now correctly the
+case, per §1) would have seen a confident fake portfolio instead of an
+honest empty state. Now checks for an active connection first:
+none → `status="disconnected"`, zeroed fields; connection but no snapshot
+yet → the legitimate fixture, unchanged; connection + snapshot → real
+numbers, unchanged. `AccountStatus` already had `"disconnected"` as a
+valid literal — the schema anticipated this, nothing downstream changed.
+
+**Verified:**
+- Baseline reproduced myself: 961 passed, 10 skipped (matches the plan's
+  own stated number).
+- Revert-checked both fixes per CLAUDE.md §4.1 — disabled each gate in
+  turn, confirmed the matching new test failed with a real, legible
+  assertion diff, restored, confirmed green again.
+- Found and fixed a 7th pre-existing test I'd have otherwise missed:
+  `test_broker.py::test_connections_response_flags_environment_vs_oauth_source`
+  called `ensure_env_broker_connection` directly with no allowlist
+  configured — caught by running the FULL suite, not just the file I
+  thought I'd touched.
+- Updated 6 more pre-existing tests (all in `test_env_bootstrap.py`) that
+  exercised `ensure_env_broker_connection`/`bootstrap_env_broker_connections`
+  with a plain test user id — each now sets `AGENT_CRON_USER_ID` explicitly
+  so it keeps testing its OWN original concern (idempotency, non-clobber,
+  paper-vs-live) rather than being silently entangled with the new gate.
+- Replaced the one test whose original assertion WAS the vulnerability
+  (`test_login_after_boot_still_gets_env_broker_connection`, which proved
+  *any* new signup got the connection) with two: one proving a genuinely
+  new signup now gets zero connections, one proving the catch-up mechanism
+  still fires for an allowlisted user (the plan's own named
+  `test_owner_still_gets_the_env_connection`, guarding against
+  over-narrowing this into breaking the operator's own login).
+- Added a `RUN_POSTGRES_TESTS=1`-gated test (skipped here, no live
+  Postgres) proving the boot-time sweep respects the allowlist across
+  several real `User` rows, not just MockStore's single fixture user.
+- Final: **969 passed, 11 skipped** (+8/+1, exactly the new tests, zero
+  regressions). ruff's 15 findings on touched files all confirmed
+  pre-existing via `git diff` (none land near my actual changes). mypy
+  clean on both production files.
+
+**Left open, per the plan's own scope:**
+- §2 (register an Alpaca OAuth app + set `ALPACA_OAUTH_CLIENT_ID`/
+  `_SECRET`) — external, on Alpaca's own dashboard, not committable.
+- The empty-state UI polish (extend `Settings.tsx`'s existing "No broker
+  linked" pattern to Dashboard/Positions for `status="disconnected"`) —
+  the API now tells the truth; nicer frontend messaging is a follow-up,
+  not a blocker for the security fix itself.
+- Not deployed from this session — same Railway-CLI-access limitation
+  already noted for the auto-approve toggle work (no linked project, TLS
+  cert error reaching Railway's API from this environment).
+
 ### 2026-08-30 — `d0774438` feat(desktop): AUTO pill on the Decisions list
 
 `ID:MODEL2OFF`. Closes the deliverable the frontend toggle work (`a70cd210`)
