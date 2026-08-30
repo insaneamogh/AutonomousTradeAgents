@@ -14,6 +14,7 @@ Read the whole plan before starting it:
 | 0 | [`docs/PLAN_NEXT.md`](docs/PLAN_NEXT.md) | **START HERE.** What is left after the four below shipped, in order, plus the product gaps found reviewing the live app. |
 | 0a | [`docs/PLAN_AUTO_APPROVE.md`](docs/PLAN_AUTO_APPROVE.md) | **Do this first.** The agent cannot open a trade today — entries are human-gated. Nothing trades Mon–Thu without it. |
 | 0b | [`docs/PLAN_LEDGER_SURFACE.md`](docs/PLAN_LEDGER_SURFACE.md) | The Refusal Ledger renders $0 across the board. It is the entry's whole differentiator. |
+| 0c | [`docs/PLAN_JUDGE_SURFACE.md`](docs/PLAN_JUDGE_SURFACE.md) | Judges hit a login wall, cannot see WHY an options trade was picked, and nothing on screen proves we use Alpaca's CLI. |
 | 1 | [`docs/PLAN_AGGRESSIVE_PROFILE.md`](docs/PLAN_AGGRESSIVE_PROFILE.md) | Loosen the caps for the contest window via a reviewed profile. Changes outcomes; the delta band is frozen after Monday's open. |
 | 2 | [`docs/PLAN_EXIT_AGENT.md`](docs/PLAN_EXIT_AGENT.md) | Trailing ratchet (hold winners) + a monotone LLM exit agent with read-only tools. |
 | 3 | [`docs/PLAN_ALPACA_MCP.md`](docs/PLAN_ALPACA_MCP.md) | **Eligibility requirement.** Starts with a blocking verification gate — no code until you have quoted the spec. |
