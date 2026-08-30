@@ -97,6 +97,10 @@ class BrokerConnectionResponse(_Base):
     live_trading_consent: bool = False
     """Per-connection real-money opt-in. Live orders also require the global
     LIVE_TRADING_ENABLED env."""
+    auto_approve_consent: bool = False
+    """Per-connection autonomous-entry opt-in. Auto-approved orders also
+    require the global AUTO_APPROVE_ENABLED env — the operator's kill
+    switch and the account owner's own in-app toggle both have to be on."""
     connection_source: Literal["environment", "oauth"] = "oauth"
     """Not persisted — recomputed on every response (see
     ``routers.broker._connection_source``) by decrypting the stored token
@@ -111,6 +115,10 @@ class BrokerConnectionResponse(_Base):
 
 
 class SetConsentRequest(_Base):
+    enabled: bool
+
+
+class SetAutoApproveConsentRequest(_Base):
     enabled: bool
 
 

@@ -160,6 +160,44 @@ async def test_postgres_broker_store_upsert_list_revoke() -> None:
     assert fresh.encrypted_access_token == ""
 
 
+async def test_postgres_broker_store_auto_approve_consent_round_trip() -> None:
+    """Mirrors ``live_trading_consent``'s own round trip: defaults False,
+    the setter flips it, and it is independent of the live-trading flag."""
+    from app.services.auth.postgres_auth_store import PostgresAuthStore
+    from app.services.broker.postgres_broker_store import PostgresBrokerStore
+
+    auth = PostgresAuthStore()
+    user = await auth.upsert_user(f"auto-approve-{secrets.token_hex(4)}@example.com")
+
+    store = PostgresBrokerStore()
+    rec = await store.upsert_connection(
+        user_id=user.id,
+        broker="alpaca",
+        is_paper=True,
+        account_number="PA-AUTO",
+        encrypted_access_token="enc-access",
+        encrypted_refresh_token=None,
+        access_token_expires_at=None,
+    )
+    assert rec.auto_approve_consent is False
+    assert rec.live_trading_consent is False
+
+    assert await store.set_auto_approve_consent(rec.id, enabled=True) is True
+    fresh = await store.get_connection(rec.id)
+    assert fresh is not None
+    assert fresh.auto_approve_consent is True
+    # Independent of the live-trading key — granting one must not grant the other.
+    assert fresh.live_trading_consent is False
+
+    assert await store.set_auto_approve_consent(rec.id, enabled=False) is True
+    fresh2 = await store.get_connection(rec.id)
+    assert fresh2 is not None and fresh2.auto_approve_consent is False
+
+    # A revoked connection refuses the setter, same as set_live_consent.
+    assert await store.revoke_connection(rec.id) is True
+    assert await store.set_auto_approve_consent(rec.id, enabled=True) is False
+
+
 # ─────────────────────────────────────────────────────────────────────
 # PostgresNotificationStore
 # ─────────────────────────────────────────────────────────────────────

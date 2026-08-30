@@ -362,6 +362,79 @@ def test_revoke_other_users_connection_is_404(
     assert r.status_code == 404
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Auto-approve consent — mirrors the live_trading_consent endpoint exactly
+# ─────────────────────────────────────────────────────────────────────
+
+
+@pytestmark_crypto
+def test_auto_approve_consent_defaults_false_and_round_trips(
+    client: TestClient, mocked_token_endpoint: None
+) -> None:
+    """Defaults False on a fresh connection; the account owner's own
+    toggle flips it and the response DTO reflects the new value. The two
+    consent flags are independent keys — flipping one must not disturb
+    the other."""
+    access = _login_and_get_access(client, "auto-consent-user@example.com")
+    started = client.post(
+        "/api/v1/broker/connect/alpaca/start",
+        headers=_bearer(access),
+        json={"isPaper": True},
+    ).json()
+    conn = client.post(
+        "/api/v1/broker/connect/alpaca/callback",
+        headers=_bearer(access),
+        json={"code": "abc", "state": started["state"]},
+    ).json()["connection"]
+    assert conn["autoApproveConsent"] is False
+
+    r = client.post(
+        f"/api/v1/broker/connections/{conn['id']}/auto-approve-consent",
+        headers=_bearer(access),
+        json={"enabled": True},
+    )
+    assert r.status_code == 200
+    assert r.json()["autoApproveConsent"] is True
+
+    # Granting live-trading consent separately must not disturb the
+    # auto-approve flag — they are two independent columns, not aliases.
+    r2 = client.post(
+        f"/api/v1/broker/connections/{conn['id']}/consent",
+        headers=_bearer(access),
+        json={"enabled": True},
+    )
+    assert r2.status_code == 200
+    assert r2.json()["liveTradingConsent"] is True
+    assert r2.json()["autoApproveConsent"] is True
+
+
+@pytestmark_crypto
+def test_auto_approve_consent_other_users_connection_is_404(
+    client: TestClient, mocked_token_endpoint: None
+) -> None:
+    alice = _login_and_get_access(client, "alice-auto@example.com")
+    bob = _login_and_get_access(client, "bob-auto@example.com")
+
+    started = client.post(
+        "/api/v1/broker/connect/alpaca/start",
+        headers=_bearer(alice),
+        json={"isPaper": True},
+    ).json()
+    conn = client.post(
+        "/api/v1/broker/connect/alpaca/callback",
+        headers=_bearer(alice),
+        json={"code": "abc", "state": started["state"]},
+    ).json()["connection"]
+
+    # Bob tries to grant himself auto-approve consent on Alice's connection.
+    r = client.post(
+        f"/api/v1/broker/connections/{conn['id']}/auto-approve-consent",
+        headers=_bearer(bob),
+        json={"enabled": True},
+    )
+    assert r.status_code == 404
+
+
 @pytestmark_crypto
 def test_token_exchange_failure_is_502(client: TestClient) -> None:
     """If Alpaca returns 4xx on the token exchange, the callback surfaces 502."""
