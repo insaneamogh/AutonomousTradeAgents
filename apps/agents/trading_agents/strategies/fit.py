@@ -174,12 +174,16 @@ class _Features:
         self._quant = _block(features, "quant")
         self._news = _block(features, "news")
         self._events = _block(features, "events")
+        self._patterns = _block(features, "patterns")
 
     def tech(self, key: str) -> float | None:
         return _num(self._tech.get(key))
 
     def quant(self, key: str) -> float | None:
         return _num(self._quant.get(key))
+
+    def pattern(self, key: str) -> float | None:
+        return _num(self._patterns.get(key))
 
     @property
     def trend_regime(self) -> str:
@@ -369,6 +373,8 @@ def _rsi_mean_reversion(f: _Features, d: Direction) -> list[FitComponent]:
     rsi = f.tech("rsi_14")
     z = f.quant("price_zscore_20")
     signed_z = -z if (z is not None and long) else z
+    reversal_key = "reversal_bull" if long else "reversal_bear"
+    reversal = f.pattern(reversal_key)
     return [
         FitComponent(
             "rsi_extreme",
@@ -399,6 +405,19 @@ def _rsi_mean_reversion(f: _Features, d: Direction) -> list[FitComponent]:
             "ATR has not blown out; a vol explosion means the old mean is gone",
             f.quant("atr_zscore"),
             directional=False,
+        ),
+        FitComponent(
+            "candle_reversal_confirms",
+            _ramp(reversal, low=0.0, high=1.0),
+            0.15,
+            (
+                f"{reversal_key} candlestick score {reversal:.2f} — a reversal "
+                "candle is precisely the extra evidence a mean-reversion entry wants"
+            )
+            if reversal is not None
+            else "no candlestick pattern block available",
+            reversal,
+            directional=True,
         ),
     ]
 
@@ -449,6 +468,12 @@ def _breakout(f: _Features, d: Direction) -> list[FitComponent]:
     don = f.quant("donchian_pct")
     positioned = don if long else (100.0 - don if don is not None else None)
     vol_ratio = f.tech("volume_ratio_20d")
+    continuation_key = "continuation_bull" if long else "continuation_bear"
+    continuation = f.pattern(continuation_key)
+    expansion = f.pattern("expansion")
+    candle_confirms = (
+        max(continuation, expansion) if continuation is not None and expansion is not None else None
+    )
     return [
         FitComponent(
             "donchian_edge",
@@ -479,6 +504,19 @@ def _breakout(f: _Features, d: Direction) -> list[FitComponent]:
             0.2,
             f"scanner directions: {sorted(f.scan_directions) or 'none this pass'}",
             ",".join(sorted(f.scan_directions)) or None,
+        ),
+        FitComponent(
+            "candle_confirms_break",
+            _ramp(candle_confirms, low=0.0, high=1.0),
+            0.10,
+            (
+                f"{continuation_key} {continuation:.2f}, expansion {expansion:.2f} — "
+                "a marubozu/wide-range bar confirms a break; a doji on it is a probe"
+            )
+            if candle_confirms is not None
+            else "no candlestick pattern block available",
+            candle_confirms,
+            directional=True,
         ),
     ]
 

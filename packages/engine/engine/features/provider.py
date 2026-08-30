@@ -74,6 +74,7 @@ from engine.features.news import (
     compute_news,
     news_provider_from_env,
 )
+from engine.features.patterns import detect_patterns
 from engine.features.quant import compute_quant
 from engine.features.technicals import InsufficientBarsError, compute_technicals
 
@@ -244,6 +245,14 @@ class RealFeatureProvider:
 
         technicals = compute_technicals(bars)
         quant = compute_quant(bars, benchmark_bars=spy_bars)
+        # atr/trend_regime are PARAMETERS, not recomputed here — compute_technicals
+        # already produced both, and duplicating that math would be the "same
+        # number in two places" trap CLAUDE.md §4.4 exists because of.
+        patterns = detect_patterns(
+            bars,
+            atr=float(technicals["atr_14"]),
+            trend_regime=str(technicals["trend_regime"]),
+        )
         macro = await compute_macro(
             fred_api_key=self.fred_api_key, symbol_bars=bars, spy_bars=spy_bars
         )
@@ -272,6 +281,7 @@ class RealFeatureProvider:
             "portfolio_equity": equity,
             "technicals": technicals,
             "quant": quant.as_dict(),
+            "patterns": patterns.as_dict(),
             "macro": macro,
             "feature_source": "alpaca",
             **extras,

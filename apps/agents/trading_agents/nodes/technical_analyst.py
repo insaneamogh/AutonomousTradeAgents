@@ -4,7 +4,7 @@ Cheapest tier on purpose: reading already-computed indicators into a 0-100
 score is pattern-matching, not reasoning. The judgement calls live in Macro
 (regime) and the Drafter (thesis).
 
-Three feature blocks are rendered, all computed deterministically upstream
+Four feature blocks are rendered, all computed deterministically upstream
 (``engine.features`` / ``engine.scanner``) — the analyst never fetches or
 derives anything:
 
@@ -12,6 +12,10 @@ derives anything:
   - ``quant``         — vol regime, risk-adjusted return, beta, tail shape,
                         standardized price z-score. Optional: the block is
                         absent under the synthetic MOCK provider.
+  - ``patterns``      — candlestick pattern scores (hammer, engulfing,
+                        marubozu, …), already ATR-normalised and
+                        trend-context-gated. Optional: absent under the
+                        synthetic MOCK provider, same as ``quant``.
   - ``scan_triggers`` — why the scanner woke the council for this symbol
                         right now. Absent on a scheduled full sweep.
 """
@@ -59,6 +63,22 @@ QUANT_FEATURES = (
     "relative_strength_rank",
 )
 
+#: Candlestick pattern fields worth the prompt tokens. ``names`` is
+#: deliberately excluded — it is a tuple, and ``render_features`` expects
+#: scalars (missing keys render as ``n/a``, not a tuple's ``repr``);
+#: ``top_pattern`` already carries the headline.
+PATTERN_FEATURES = (
+    "top_pattern",
+    "top_pattern_score",
+    "reversal_bull",
+    "reversal_bear",
+    "continuation_bull",
+    "continuation_bear",
+    "indecision",
+    "compression",
+    "expansion",
+)
+
 
 async def technical_analyst_node(state: CouncilState, llm: LLM) -> CouncilState:
     """Score the symbol's technical setup 0-100 from the context blocks."""
@@ -69,6 +89,12 @@ async def technical_analyst_node(state: CouncilState, llm: LLM) -> CouncilState:
     if quant:
         body += "\nQuant measures:\n" + render_features(
             quant, QUANT_FEATURES, label_width=25
+        )
+
+    patterns = ctx.get("patterns")
+    if patterns:
+        body += "\nCandlestick patterns:\n" + render_features(
+            patterns, PATTERN_FEATURES, label_width=25
         )
 
     body += _render_triggers(ctx.get("scan_triggers"))

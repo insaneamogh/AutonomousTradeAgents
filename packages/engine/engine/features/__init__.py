@@ -70,6 +70,11 @@ from engine.features.news import (
     news_provider_from_env,
     sanitize_headline,
 )
+from engine.features.patterns import (
+    MIN_BARS_FOR_PATTERNS,
+    PatternBlock,
+    detect_patterns,
+)
 from engine.features.provider import (
     DEFAULT_EQUITY_FALLBACK,
     HOLD_DAYS_BY_HORIZON,
@@ -106,6 +111,7 @@ __all__ = [
     "MAX_CREDIBLE_SPREAD_BPS",
     "MAX_HEADLINES",
     "MIN_BARS",
+    "MIN_BARS_FOR_PATTERNS",
     "MIN_QUANT_BARS",
     "NEWS_LOOKBACK_DAYS",
     "US_MARKET_HOLIDAYS",
@@ -135,6 +141,7 @@ __all__ = [
     "NewsItem",
     "NewsProvider",
     "OptionsContextProvider",
+    "PatternBlock",
     "QuantFeatures",
     "QuoteProvider",
     "RealFeatureProvider",
@@ -149,6 +156,7 @@ __all__ = [
     "compute_quant",
     "compute_technicals",
     "corporate_actions_provider_from_env",
+    "detect_patterns",
     "feature_provider_from_env",
     "fred_latest",
     "intraday_provider_from_env",

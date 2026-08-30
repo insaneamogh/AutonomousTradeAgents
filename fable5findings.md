@@ -385,6 +385,182 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-30 — `538b119f` feat(engine,agents): candlestick pattern detection feeding strategy fit
+
+`ID:MODEL2OFF`. Built [`PLAN_CANDLE_PATTERNS.md`](docs/PLAN_CANDLE_PATTERNS.md) end to
+end in one commit — greenfield module, provider/audit-row wiring, two-strategy fit
+integration, prompt wiring — minus the TradingView chart (see "Left open" below). Built
+in an isolated worktree; not merged to `main` by me.
+
+**Baseline verified first**, per CLAUDE.md's own instruction: ran `apps/agents apps/api
+packages/` before touching anything → **853 passed, 9 skipped**, matching the handover
+note exactly (it did NOT match the plan's own stale "792" — the plan predates the
+Aggressive Profile / Exit Agent / clock-wiring commits already on `main`; verified via
+`git log` that all three had already landed before I started, so 853 is correct and 792
+is simply out of date, not a discrepancy to chase). Now **904 passed, 9 skipped** — 51
+new tests (47 in `test_features_patterns.py`, 4 in `test_fit_patterns.py`), zero
+regressions. Ruff repo-wide: **252 → 252** (`git stash` comparison, matches
+`HACKATHON.md`'s number, not the stale "9"). Mypy on `apps/agents` + `packages/engine`:
+**178 → 178**. Every pre-existing error in a file I touched (`runtime.py` ×4,
+`technical_analyst.py` ×1) individually confirmed via `git stash` to predate this change,
+same line-shifted messages before and after.
+
+#### `packages/engine/engine/features/patterns.py` — the detector (new file)
+
+`PatternBlock` (frozen dataclass, `as_dict()`) + `detect_patterns(bars, *, atr,
+trend_regime)`. 18 named patterns across four families (single-bar, two-bar, three-bar,
+range), pure stdlib `math` — no pandas/numpy/pandas-ta, confirmed the forbidden-import
+reasoning is real: `pandas-ta` does emit a deprecation warning on import under this
+repo's pandas/numpy pins, and `pytest`'s `filterwarnings = ["error"]` would fail
+collection repo-wide, not just one test, if anything imported it.
+
+Every pattern scores `quality × magnitude × context`, all ramps. **One deliberate
+departure from a single universal magnitude ramp**, spelled out in the module docstring:
+compression (`inside_bar`/`nr7`) is a coil — its whole claim is a SMALL range — so
+`_coil_magnitude` ramps the opposite direction from `_magnitude` (rewards low `rng_atr`,
+not high). Reversal/continuation/indecision/expansion all share the plan's own
+`_ramp(rng_atr, low=0.5, high=1.5)`. Family aggregation is `max`, never `sum`, per the
+plan. `atr <= 0` or fewer than 7 bars (the binding minimum, needed by `nr7`'s trailing
+window — every other pattern needs at most 3) returns the all-zero block; never raises.
+
+**Piercing line / dark cloud cover needed a fade the plan didn't specify**, found by
+measuring, not reasoning (CLAUDE.md §4.3): an early version scored a CLEAN bullish
+engulfing fixture at `piercing_line ≈ 0.45` too, because penetration >100% still ramped
+to 1.0 — meaning a full engulf would sometimes get NAMED as a piercing line instead of
+an engulfing, since both patterns share the same color gate and often co-occur on the
+same two bars. Classical TA defines a piercing line as explicitly NOT fully engulfing —
+that is what distinguishes it from an engulfing pattern — so `_penetration_ramp` now
+fades the score back to 0 once penetration passes ~1.3 (full retracement plus margin).
+Verified live: reusing the bullish-engulfing positive fixture as a piercing-line input
+now scores `< 0.1` (`test_piercing_line_fades_out_on_a_full_engulf`).
+
+**Every fixture was measured against the real implementation before being written down**
+— a standalone script computed real `PatternBlock` values for every candidate fixture
+first; two arithmetic mistakes in my own first-draft fixtures (a hammer bar with
+`rng_atr=0.27` when I intended ~1.0; a doji with `rng_atr=0.55` when I intended ~1.5,
+both from picking wick lengths that didn't add up to the range I meant) were caught this
+way, not by trusting the ramp formulas on paper.
+
+**All 5 revert-checks performed live** (CLAUDE.md §4.1), each: broke it, confirmed the
+specific test failed (and which one), restored, confirmed green again:
+- `_magnitude` short-circuited to always return `1.0` → `test_a_micro_range_hammer_scores_zero`
+  failed exactly as predicted: `reversal_bull` 0.0 → 1.0, `"hammer"` became named.
+- `_reversal_context` short-circuited to always return `1.0` →
+  `test_hammer_in_an_uptrend_is_heavily_discounted` failed: uptrend and downtrend both
+  scored 1.0 (no discount at all).
+- `reversal_bull`'s aggregate changed from `max(...)` to `sum([...])` →
+  `test_three_weak_patterns_do_not_outscore_one_clean_one` failed: reported ~0.58 (the
+  sum of hammer/bullish_engulfing/piercing_line, all genuinely nonzero on one crafted
+  2-bar tail) instead of ~0.29 (the max).
+- The `atr <= 0 or len(bars) < 7` guard removed entirely → `detect_patterns([], ...)`
+  raised `IndexError` immediately (single-bar patterns index `bars[-1]`) — before even
+  reaching `nr7`'s `bars[-7:]`. Proves the guard is load-bearing, not decorative.
+
+#### Provider + audit-row wiring
+
+`RealFeatureProvider.__call__` (`packages/engine/engine/features/provider.py`) computes
+`detect_patterns(bars, atr=float(technicals["atr_14"]), trend_regime=str(technicals["trend_regime"]))`
+immediately after `compute_technicals`/`compute_quant` — parameters, not recomputed, per
+CLAUDE.md §4.4 — and adds `"patterns": patterns.as_dict()` to the returned feature dict.
+Re-exported `PatternBlock`/`detect_patterns`/`MIN_BARS_FOR_PATTERNS` from
+`engine.features.__init__` alongside every sibling module's symbols, alphabetized into
+the existing CONSTANTS/Classes/functions groups (verified with `ruff check --fix` on the
+isort rule, not hand-sorted). Added `"patterns"` to `_SNAPSHOT_BLOCKS` in
+`apps/agents/trading_agents/runtime.py` — the plan's own named easy-to-forget step;
+`test_patterns_reach_the_audit_row` pins it directly.
+
+Deliberately did NOT add a `"patterns"` block to the synthetic MOCK provider
+(`apps/agents/trading_agents/features/synthetic.py`) — the plan's own §3 says the
+degradation to NEUTRAL when the block is absent "is correct and automatic — do not
+special-case it," and the MOCK provider lacking new blocks until a real one is wired is
+exactly the existing, established pattern that block was already following for `quant`.
+
+#### Fit integration — exactly two strategies
+
+`apps/agents/trading_agents/strategies/fit.py`: `_Features` gained `.pattern(key)`
+(mirrors `.tech()`/`.quant()`). Two new `FitComponent`s, both `directional=True`:
+- `rsi_mean_reversion` → `candle_reversal_confirms`, weight 0.15, scored off
+  `reversal_bull`/`reversal_bear` by direction.
+- `breakout` → `candle_confirms_break`, weight 0.10, scored off
+  `max(continuation_bull/bear, expansion)` by direction — chose `max` over an average
+  specifically so a doji (near-zero continuation, whatever its expansion) reads as a
+  probe even if its wicks happen to be wide, and a clean marubozu alone is sufficient to
+  confirm even without also being an outside bar. Not specified exactly this way by the
+  plan ("combined with expansion"); this is the reading I judged matches "a marubozu is
+  a break; a doji is a probe" most literally, and it is revert-check-covered indirectly
+  through `test_absent_patterns_block_barely_moves_the_fit`.
+
+Did NOT touch `momentum`, `sma_crossover`, or `vol_regime_switch` — confirmed via `grep
+candle_ fit.py`, exactly 2 matches, in exactly the 2 named functions.
+
+**THE collision test** — `test_blind_weight_stays_below_the_trade_floor`
+(`apps/agents/tests/test_fit.py`, written by the Aggressive Profile work, NOT
+duplicated) — re-run unmodified after both components landed. **Still passes.** Measured
+`blind_weight_fraction` directly:
+
+```
+sma_crossover        0.1500  (untouched)
+rsi_mean_reversion    0.1500 -> 0.1304
+momentum              0.0000  (untouched)
+breakout              0.3500 -> 0.3182
+vol_regime_switch     0.4000  (untouched)
+```
+
+Every strategy strictly below `MIN_FIT_TO_TRADE = 0.42` — `vol_regime_switch`'s 0.400 is
+still the tightest case, exactly as before, since it was never touched. Matches the
+plan's own `~0.130`/`~0.318` predictions almost exactly.
+
+**One pre-existing test needed an intentional, documented update.**
+`test_blind_weight_fraction_still_works_on_an_empty_dict` hardcoded
+`rank_strategies({})[0].score == pytest.approx(0.60, ...)`. Adding `rsi_mean_reversion`'s
+5th component — which degrades to NEUTRAL (0.5) on `{}` since there is no `patterns` key
+— renormalises the weighted mean even though the new term itself contributes nothing
+informative: `(0.6 + 0.5*0.15) / 1.15 = 0.5870`, hand-derived AND confirmed against the
+live code. Updated the assertion to `0.587` with a comment explaining the shift, rather
+than silently loosening the tolerance or deleting the assertion.
+
+**An honest finding beyond what the plan estimated**, written up as a new test rather
+than left as a surprise for later: `test_absent_patterns_block_barely_moves_the_fit`
+confirms `|Δfit| ≤ 0.03` for the specific case the plan's §3 describes — patterns
+**absent** (MOCK provider / thin history), so the new component defaults to NEUTRAL —
+verified on both the empty dict (Δ=-0.013, the 0.60→0.587 shift above) and a data-rich
+fixture (Δ=+0.0245 for `rsi_mean_reversion`, Δ=-0.0173 for `breakout`), all comfortably
+inside 0.03. But a **genuinely present, near-zero reading** ("no notable
+pattern today", the common case — NOT the same as "absent") moves `rsi_mean_reversion`'s
+fit by **~-0.063** on the same data-rich fixture — measured directly, more than double
+the plan's 0.03 estimate. Not a bug: 0.0 is simply farther from NEUTRAL (0.5) than the
+"absent" default is, and it's the exact same renormalisation math either way — just
+larger than the plan's own worked example implied. Pinned in
+`test_a_typical_pattern_reading_can_move_the_fit_by_more_than_the_absent_case_does` so a
+future reader who re-measures this does not mistake a real, intentional effect for a
+regression.
+
+#### Technical analyst node + prompt
+
+`PATTERN_FEATURES` tuple (`top_pattern`, `top_pattern_score`, the 7 aggregate scores) —
+`names` deliberately excluded, a tuple that `render_features` (which expects scalars)
+would otherwise stringify oddly. Prompt (`prompts/technical_analyst.py`) explains
+ATR-normalisation and trend-context-gating explicitly, warning the model not to
+re-apply the trend itself (double-counting), matching the plan's exact wording.
+
+#### Left open
+
+- **The TradingView Lightweight Charts visual** (plan §5) — not started. The plan
+  itself frames this as the last, explicitly-optional step ("the feature is the pattern
+  detection; the chart is presentation") and flags its own unverified LICENSE claim.
+  Building it means touching `apps/mobile/src/desktop/` (React/TypeScript, Platinum
+  Glass design system) — a different stack from everything else in this session, and I
+  did not want to rush a UI feature I could not properly verify (light+dark, the
+  license) in the budget remaining after the detector + fit work above. This is a
+  reasonable place for the next model to pick up, per the plan's own explicit
+  permission to stop here.
+- Whether `RealFeatureProvider`'s live pass actually produces a populated `patterns`
+  block against real Alpaca bars was NOT verified live (market context / no live keys
+  exercised this session) — only verified against hand-built `DailyBar` fixtures and the
+  full test suite. The provider wiring is a 6-line, low-risk change (mirrors
+  `compute_quant`'s exact call shape) but say so plainly rather than claim it as
+  live-verified.
+
 ### 2026-08-30 — D.4 (MCP client) assessed and deliberately NOT built — docs only, no commit
 
 **D.4 from `docs/PLAN_ALPACA_MCP.md`** is explicitly "the first thing to cut" and was
