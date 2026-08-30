@@ -81,11 +81,43 @@ class PostgresStore:
     # ── Account ──────────────────────────────────────────────────────
 
     async def get_account(self, user_id: str | None = None) -> AccountResponse:
-        """Most-recent reconciler snapshot for the user, or a cold-boot
-        fixture if the reconciler hasn't run yet."""
+        """Most-recent reconciler snapshot for the user, a cold-boot fixture
+        if a connection exists but the reconciler hasn't ticked yet, or an
+        honest "disconnected" response with no connection at all.
+
+        Per docs/PLAN_MULTI_TENANT.md §3: a user with NO broker connection
+        used to get the SAME hardcoded fixture as a genuine cold boot —
+        equity=$100,000, status="connected" — which is a plausible-looking
+        LIE, not an error. The tell was buying_power=$200,000 (real Alpaca
+        paper reports $400,000), but nothing in the UI ever pointed at it.
+        A judge who signs up (now correctly given no connection, per the
+        allowlist fix in env_bootstrap.py) must see an honest empty state,
+        not a confident fake portfolio.
+        """
+        from app.services.broker.broker_store import get_broker_store
         from engine.db.models import PositionsSnapshot
 
         uid = _uid(user_id)
+
+        broker_store = get_broker_store()
+        connections = await broker_store.list_connections(str(uid))
+        has_connection = any(
+            c.broker == "alpaca" and c.status == "active" for c in connections
+        )
+
+        if not has_connection:
+            return AccountResponse(
+                equity=0.0,
+                cash=0.0,
+                buying_power=0.0,
+                today_pnl=0.0,
+                today_pnl_pct=0.0,
+                open_positions=0,
+                status="disconnected",
+                broker_name="Alpaca",
+                is_paper=True,
+            )
+
         async with self._session_factory() as session:
             await self._ensure_seed(session)
             stmt = (
@@ -97,7 +129,8 @@ class PostgresStore:
             row = (await session.execute(stmt)).scalar_one_or_none()
 
         if row is None:
-            # Cold boot — reconciler hasn't landed a snapshot yet.
+            # Genuine cold boot: a connection exists, the reconciler simply
+            # hasn't ticked yet. Keep the fixture ONLY for this case.
             return AccountResponse(
                 equity=100_000.00,
                 cash=100_000.00,

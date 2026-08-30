@@ -22,6 +22,20 @@ PAPER ONLY, deliberately. A bootstrapped connection is created with
 ``is_paper=True`` and ``live_trading_consent`` left False. Real money
 still requires the explicit two-key gate (per-connection consent AND
 ``LIVE_TRADING_ENABLED``), which no automatic process may grant.
+
+🚨 OWNER ALLOWLIST — see ``docs/PLAN_MULTI_TENANT.md`` §1. The env keys
+belong to the OPERATOR's own Alpaca account (the one being traded /
+scored), not to "whoever happens to be logged in." Before this gate
+existed, EVERY new signup — magic-link or Google, first login, no exotic
+path required — was silently handed a live, write-capable connection to
+that same account: they could approve a pending proposal, close a
+position, revoke the connection, or arm auto-approve, on the operator's
+own book. ``_env_connection_allowlist()`` is checked inside
+``ensure_env_broker_connection`` itself (the one function BOTH the
+per-login catch-up in ``routers/auth.py`` and the boot-time fan-out in
+``bootstrap_env_broker_connections`` call) so there is exactly one place
+to gate, not two to remember — the CLAUDE.md §4.4 "same check in two
+places" trap does not apply here by construction.
 """
 
 from __future__ import annotations
@@ -47,6 +61,29 @@ def env_keys_present() -> bool:
     )
 
 
+def _env_connection_allowlist() -> set[str]:
+    """User ids allowed to receive the env-sentinel Alpaca connection.
+
+    ``ALPACA_ENV_CONNECTION_USER_IDS`` (comma-separated) if set — this is
+    the explicit, reviewable list an operator running multiple named
+    accounts would use. If unset, falls back to ``AGENT_CRON_USER_ID``
+    ALONE: the one identity that already has to keep trading for the
+    agent to function at all, and (per ``.env.example``) the same id
+    ``FIXTURE_USER_ID``/``DEV_AUTH_BYPASS`` resolve to by convention, so a
+    single-tenant dev/demo deployment that has only ever set that one var
+    keeps working unchanged.
+
+    Neither var set → empty set → NOBODY gets the env connection. That is
+    deliberate and safe: it means "auto-attach the operator's account" is
+    opt-in, not a default a forgotten env var quietly grants to strangers.
+    """
+    raw = os.environ.get("ALPACA_ENV_CONNECTION_USER_IDS", "").strip()
+    if raw:
+        return {uid.strip() for uid in raw.split(",") if uid.strip()}
+    fallback = os.environ.get("AGENT_CRON_USER_ID", "").strip()
+    return {fallback} if fallback else set()
+
+
 def _is_paper_env() -> bool:
     """Paper unless ALPACA_BASE_URL explicitly names a live endpoint.
 
@@ -65,9 +102,10 @@ async def ensure_env_broker_connection(
     """Create the env-key Alpaca paper connection for ``user_id`` if absent.
 
     Idempotent: returns False when the keys aren't set, when the
-    environment is live rather than paper, or when an active Alpaca
-    connection already exists. Never raises into the caller — a failure
-    here must not stop the API from booting.
+    environment is live rather than paper, when ``user_id`` is not on the
+    owner allowlist (see the module docstring — this is the multi-tenant
+    fix), or when an active Alpaca connection already exists. Never raises
+    into the caller — a failure here must not stop the API from booting.
     """
     if not env_keys_present():
         return False
@@ -79,6 +117,18 @@ async def ensure_env_broker_connection(
             "ALPACA_BASE_URL points at a live endpoint — refusing to "
             "auto-create a broker connection. Connect live accounts "
             "explicitly via OAuth."
+        )
+        return False
+
+    if user_id not in _env_connection_allowlist():
+        # NOT a live-mode-style warning: this is the normal, expected
+        # outcome for every real signup/judge login, so it stays at info
+        # level rather than paging anyone.
+        logger.info(
+            "env broker bootstrap: user=%s is not on ALPACA_ENV_CONNECTION_USER_IDS "
+            "(or the AGENT_CRON_USER_ID fallback) — refusing to auto-attach the "
+            "operator's own Alpaca connection. They can connect their own via OAuth.",
+            user_id,
         )
         return False
 

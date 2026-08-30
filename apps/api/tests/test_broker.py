@@ -726,6 +726,11 @@ def test_connections_response_flags_environment_vs_oauth_source(
 
     monkeypatch.setenv("ALPACA_API_KEY", "key")
     monkeypatch.setenv("ALPACA_SECRET_KEY", "secret")
+    # This test's own concern is the connectionSource label, not the
+    # docs/PLAN_MULTI_TENANT.md §1 allowlist — put this user on it so the
+    # env connection is actually created, same as every other direct
+    # ensure_env_broker_connection() call in the suite.
+    monkeypatch.setenv("AGENT_CRON_USER_ID", other_user_id)
     created = asyncio.run(ensure_env_broker_connection(other_user_id))
     assert created is True
 

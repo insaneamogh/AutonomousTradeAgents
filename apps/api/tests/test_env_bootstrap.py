@@ -51,11 +51,15 @@ pytestmark_crypto = pytest.mark.skipif(
 def _clean_alpaca_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Every test opts into Alpaca env keys explicitly — starting from a
     clean slate means a key leaked from the real shell environment can't
-    skew a "keys absent" assertion.
+    skew a "keys absent" assertion. Also clears the allowlist vars so
+    every test's use of them is explicit, not inherited from the real
+    shell environment or a prior test's monkeypatch.
     """
     monkeypatch.delenv("ALPACA_API_KEY", raising=False)
     monkeypatch.delenv("ALPACA_SECRET_KEY", raising=False)
     monkeypatch.delenv("ALPACA_BASE_URL", raising=False)
+    monkeypatch.delenv("ALPACA_ENV_CONNECTION_USER_IDS", raising=False)
+    monkeypatch.delenv("AGENT_CRON_USER_ID", raising=False)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -114,6 +118,7 @@ async def test_ensure_connection_unset_base_url_defaults_to_paper(
     """
     monkeypatch.setenv("ALPACA_API_KEY", "key")
     monkeypatch.setenv("ALPACA_SECRET_KEY", "secret")
+    monkeypatch.setenv("AGENT_CRON_USER_ID", "user-1")  # this test's own concern is paper-vs-live, not the allowlist
     store = InMemoryBrokerStore()
     assert await ensure_env_broker_connection("user-1", store=store) is True
     rows = await store.list_connections("user-1")
@@ -129,6 +134,7 @@ async def test_ensure_connection_unset_base_url_defaults_to_paper(
 async def test_ensure_connection_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ALPACA_API_KEY", "key")
     monkeypatch.setenv("ALPACA_SECRET_KEY", "secret")
+    monkeypatch.setenv("AGENT_CRON_USER_ID", "user-1")  # this test's own concern is the row shape, not the allowlist
     store = InMemoryBrokerStore()
 
     created = await ensure_env_broker_connection("user-1", store=store)
@@ -150,6 +156,7 @@ async def test_ensure_connection_happy_path(monkeypatch: pytest.MonkeyPatch) -> 
 async def test_ensure_connection_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ALPACA_API_KEY", "key")
     monkeypatch.setenv("ALPACA_SECRET_KEY", "secret")
+    monkeypatch.setenv("AGENT_CRON_USER_ID", "user-1")  # this test's own concern is idempotency, not the allowlist
     store = InMemoryBrokerStore()
 
     first = await ensure_env_broker_connection("user-1", store=store)
@@ -172,6 +179,7 @@ async def test_ensure_connection_does_not_clobber_existing_oauth_connection(
     """
     monkeypatch.setenv("ALPACA_API_KEY", "key")
     monkeypatch.setenv("ALPACA_SECRET_KEY", "secret")
+    monkeypatch.setenv("AGENT_CRON_USER_ID", "user-1")  # this test's own concern is non-clobbering, not the allowlist
     store = InMemoryBrokerStore()
 
     real_token = encrypt_for_storage("real-oauth-access-token")
@@ -218,6 +226,10 @@ async def test_bootstrap_mock_mode_targets_only_fixture_user(
     """
     monkeypatch.setenv("ALPACA_API_KEY", "key")
     monkeypatch.setenv("ALPACA_SECRET_KEY", "secret")
+    # Matches the real .env.example convention: AGENT_CRON_USER_ID ==
+    # FIXTURE_USER_ID, so a correctly-configured single-tenant deployment
+    # keeps un-gating the mock-mode fixture user unchanged.
+    monkeypatch.setenv("AGENT_CRON_USER_ID", FIXTURE_USER_ID)
     store = InMemoryBrokerStore()
 
     created, considered = await bootstrap_env_broker_connections(use_pg=False, store=store)
@@ -235,6 +247,7 @@ async def test_bootstrap_mock_mode_targets_only_fixture_user(
 async def test_bootstrap_mock_mode_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ALPACA_API_KEY", "key")
     monkeypatch.setenv("ALPACA_SECRET_KEY", "secret")
+    monkeypatch.setenv("AGENT_CRON_USER_ID", FIXTURE_USER_ID)
     store = InMemoryBrokerStore()
 
     first = await bootstrap_env_broker_connections(use_pg=False, store=store)
@@ -270,6 +283,7 @@ def test_lifespan_boot_links_fixture_user_under_mockstore(
     monkeypatch.delenv("RECONCILER_ENABLED", raising=False)
     monkeypatch.setenv("ALPACA_API_KEY", "lifespan-test-key")
     monkeypatch.setenv("ALPACA_SECRET_KEY", "lifespan-test-secret")
+    monkeypatch.setenv("AGENT_CRON_USER_ID", FIXTURE_USER_ID)
 
     reset_auth_store_for_tests()
     reset_broker_store_for_tests()
@@ -292,29 +306,34 @@ def test_lifespan_boot_links_fixture_user_under_mockstore(
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Per-login catch-up — a user who arrives AFTER boot must not be skipped
+# Per-login catch-up — a user who arrives AFTER boot must not be skipped,
+# but ONLY when they are on the owner allowlist. This is the exact
+# docs/PLAN_MULTI_TENANT.md §1 fix: before it, EVERY new signup got the
+# operator's own write-capable Alpaca connection, on their first login.
 # ─────────────────────────────────────────────────────────────────────
 
 
 @pytestmark_crypto
-def test_login_after_boot_still_gets_env_broker_connection(
+def test_new_signup_does_not_get_the_env_connection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The boot-time sweep only ever covers whoever already exists AT
-    BOOT. A user who signs up (via magic-link, or Google) afterward would
-    silently never get the env-key connection without a per-login
-    catch-up — this is the live gap a real deployment hit: a brand-new
-    Postgres has zero users at boot, so NOBODY got swept, including every
-    real signup that follows.
+    """THE critical regression test for docs/PLAN_MULTI_TENANT.md §1.
 
-    ``routers/auth.py``'s ``verify``/``google_login`` handlers now call
-    ``_bootstrap_broker_for_new_login`` right before returning — this
-    proves that catch-up fires end-to-end through the real HTTP endpoint,
-    not just by calling the service function directly.
+    Before the allowlist gate, a brand-new signup — no exotic path, just
+    the ordinary magic-link flow — was silently handed a live connection
+    to the OPERATOR's own Alpaca account (the one being traded/scored):
+    they could approve a pending proposal, close a position, revoke the
+    connection, or arm auto-approve, all on someone else's book. Break:
+    remove the allowlist check from ``ensure_env_broker_connection`` and
+    this signup gets a connection again.
     """
     monkeypatch.setenv("ALPACA_API_KEY", "post-boot-test-key")
     monkeypatch.setenv("ALPACA_SECRET_KEY", "post-boot-test-secret")
     monkeypatch.delenv("USE_POSTGRES", raising=False)
+    # Deliberately NOT setting ALPACA_ENV_CONNECTION_USER_IDS or
+    # AGENT_CRON_USER_ID — this is what "a deployment with the keys set
+    # but no allowlist configured yet" looks like, and it must fail
+    # closed (nobody gets the connection), not fail open.
 
     reset_auth_store_for_tests()
     reset_broker_store_for_tests()
@@ -324,24 +343,58 @@ def test_login_after_boot_still_gets_env_broker_connection(
 
     with TestClient(app) as c:
         # Boot already ran (with zero non-fixture users) by the time this
-        # request fires — exactly the "empty database at boot" scenario.
-        r = c.post("/api/v1/auth/request-login", json={"email": "post-boot@example.com"})
+        # request fires — exactly the "empty database at boot" scenario
+        # that made a real deployment hit this on its very first real user.
+        r = c.post("/api/v1/auth/request-login", json={"email": "judge@example.com"})
         assert r.status_code == 200
         token = r.json()["devToken"]
         r2 = c.post(
             "/api/v1/auth/verify",
-            json={"email": "post-boot@example.com", "token": token},
+            json={"email": "judge@example.com", "token": token},
         )
         assert r2.status_code == 200, r2.text
         user_id = r2.json()["userId"]
 
     store = get_broker_store()
     rows = asyncio.run(store.list_connections(user_id))
+    assert rows == []
+
+    reset_auth_store_for_tests()
+    reset_broker_store_for_tests()
+
+
+@pytestmark_crypto
+def test_login_catchup_still_fires_for_an_allowlisted_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The catch-up mechanism itself (not just the allowlist gate) must
+    still work — this is ``test_owner_still_gets_the_env_connection`` from
+    docs/PLAN_MULTI_TENANT.md §5, the one that catches over-narrowing the
+    fix into breaking the operator's own login. Exercises the exact
+    function ``routers/auth.py``'s verify/Google handlers call, with a
+    user id that IS on the allowlist (mirroring the real
+    AGENT_CRON_USER_ID == FIXTURE_USER_ID convention), rather than the
+    full random-UUID signup flow used above — the point here is proving
+    the call site still works, not re-deriving a fresh id to allowlist
+    mid-request.
+    """
+    monkeypatch.setenv("ALPACA_API_KEY", "post-boot-test-key")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "post-boot-test-secret")
+    monkeypatch.setenv("AGENT_CRON_USER_ID", FIXTURE_USER_ID)
+
+    reset_broker_store_for_tests()
+
+    from app.routers.auth import _bootstrap_broker_for_new_login
+    from app.services.broker.broker_store import get_broker_store
+
+    asyncio.run(_bootstrap_broker_for_new_login(FIXTURE_USER_ID))
+
+    store = get_broker_store()
+    rows = asyncio.run(store.list_connections(FIXTURE_USER_ID))
     assert len(rows) == 1
     assert rows[0].broker == "alpaca"
     assert rows[0].status == "active"
 
-    reset_auth_store_for_tests()
     reset_broker_store_for_tests()
 
 
@@ -383,3 +436,100 @@ def test_refresh_does_not_trigger_broker_bootstrap(monkeypatch: pytest.MonkeyPat
 
     reset_auth_store_for_tests()
     reset_broker_store_for_tests()
+
+
+# ─────────────────────────────────────────────────────────────────────
+# _env_connection_allowlist — the resolution logic in isolation
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_allowlist_empty_when_neither_var_set() -> None:
+    """Fail closed: no explicit list AND no AGENT_CRON_USER_ID fallback
+    means nobody gets the env connection — an operator who forgets to set
+    either var gets a locked-down deployment, never an accidentally-open
+    one."""
+    from app.services.broker.env_bootstrap import _env_connection_allowlist
+
+    assert _env_connection_allowlist() == set()
+
+
+def test_allowlist_falls_back_to_agent_cron_user_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENT_CRON_USER_ID", "cron-user")
+    from app.services.broker.env_bootstrap import _env_connection_allowlist
+
+    assert _env_connection_allowlist() == {"cron-user"}
+
+
+def test_allowlist_explicit_var_wins_over_the_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENT_CRON_USER_ID", "cron-user")
+    monkeypatch.setenv("ALPACA_ENV_CONNECTION_USER_IDS", "owner-1, owner-2")
+    from app.services.broker.env_bootstrap import _env_connection_allowlist
+
+    assert _env_connection_allowlist() == {"owner-1", "owner-2"}
+
+
+def test_allowlist_ignores_blank_entries(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ALPACA_ENV_CONNECTION_USER_IDS", "owner-1,, ,owner-2,")
+    from app.services.broker.env_bootstrap import _env_connection_allowlist
+
+    assert _env_connection_allowlist() == {"owner-1", "owner-2"}
+
+
+# ─────────────────────────────────────────────────────────────────────
+# bootstrap_env_broker_connections(use_pg=True) — the real multi-user
+# fan-out. Requires a real Postgres (RUN_POSTGRES_TESTS=1) because this
+# path enumerates real `User` rows — a mocked session would only prove
+# the mock was called correctly, not that the real SELECT + allowlist
+# combination behaves as intended.
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _postgres_available() -> bool:
+    if os.environ.get("RUN_POSTGRES_TESTS", "").strip().lower() not in ("1", "true", "yes"):
+        return False
+    try:
+        import asyncpg  # noqa: F401
+    except ImportError:
+        return False
+    return bool(os.environ.get("DATABASE_URL", "").strip())
+
+
+@pytest.mark.skipif(
+    not _postgres_available(),
+    reason="Postgres tests opt-in via RUN_POSTGRES_TESTS=1 + DATABASE_URL set.",
+)
+@pytestmark_crypto
+async def test_boot_sweep_only_attaches_allowlisted_users_among_several(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """docs/PLAN_MULTI_TENANT.md §5's ``test_boot_sweep_respects_the_allowlist``.
+
+    Three real ``User`` rows exist at boot; only one is allowlisted. Break
+    by dropping the allowlist check from ``ensure_env_broker_connection``
+    (or by adding a SEPARATE, un-synchronised check directly inside
+    ``bootstrap_env_broker_connections`` that later drifts from it) and
+    all three get connections instead of one.
+    """
+    import secrets
+
+    from app.services.auth.postgres_auth_store import PostgresAuthStore
+
+    monkeypatch.setenv("ALPACA_API_KEY", "boot-sweep-test-key")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "boot-sweep-test-secret")
+
+    auth_store = PostgresAuthStore()
+    owner = await auth_store.upsert_user(f"owner-{secrets.token_hex(4)}@example.com")
+    stranger_a = await auth_store.upsert_user(f"stranger-a-{secrets.token_hex(4)}@example.com")
+    stranger_b = await auth_store.upsert_user(f"stranger-b-{secrets.token_hex(4)}@example.com")
+
+    monkeypatch.setenv("ALPACA_ENV_CONNECTION_USER_IDS", owner.id)
+
+    conn_store = InMemoryBrokerStore()
+    created, considered = await bootstrap_env_broker_connections(use_pg=True, store=conn_store)
+
+    assert created == 1
+    assert considered >= 3  # at least our three; other tests' rows may also exist
+
+    assert len(await conn_store.list_connections(owner.id)) == 1
+    assert await conn_store.list_connections(stranger_a.id) == []
+    assert await conn_store.list_connections(stranger_b.id) == []
