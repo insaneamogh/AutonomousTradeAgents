@@ -355,6 +355,27 @@ async def test_a_broker_failure_does_not_kill_the_fleet_tick(
     assert n == 0
 
 
+async def test_a_connection_lookup_failure_is_also_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Gate 2b's own I/O (the connection lookup) must be inside the same
+    try/except as execution, not just the caller's. Break: narrow the
+    try/except back to start at gate 5 (right before the daily-budget
+    check) instead of gate 2b, and this raises straight out of
+    ``auto_approve_for_user`` instead of returning 0 — the function's own
+    docstring claim of "never raises" would then only hold because
+    ``ReconcilerFleet.tick()`` happens to wrap the call too, not because
+    this function actually keeps its own promise."""
+    _install_happy_path(monkeypatch)
+
+    async def fake_resolve_conn_raises(user_id: str) -> None:
+        raise RuntimeError("db unavailable")
+
+    monkeypatch.setattr(aa, "_resolve_paper_connection", fake_resolve_conn_raises)
+    n = await aa.auto_approve_for_user(user_id="u1", session_factory=_Sentinel())
+    assert n == 0
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Schema fit
 # ─────────────────────────────────────────────────────────────────────

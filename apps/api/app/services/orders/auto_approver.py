@@ -206,16 +206,21 @@ async def auto_approve_for_user(
     Always 0 or 1 — gate 6 is a hard per-tick cap (see the module
     docstring). Never raises: a broker or DB failure mid-sweep is logged
     and swallowed so one user's trouble can't stop
-    ``ReconcilerFleet.tick()`` from reconciling everyone else.
+    ``ReconcilerFleet.tick()`` from reconciling everyone else. This is a
+    property of THIS function, not just of its caller — gates 2b onward do
+    real I/O (the connection lookup, ``list_pending``) and are inside the
+    same try/except as execution, precisely so that claim holds even if
+    ``ReconcilerFleet.tick()``'s own wrapping around this call ever changed.
     """
     # Gate 1 — operator kill switch. Default OFF, and this is the normal
     # steady state for most of this feature's life, so stay silent here.
+    # Pure env read, no I/O — deliberately outside the try/except below.
     if not env_flag("AUTO_APPROVE_ENABLED"):
         return 0
 
     # Gate 2 — HARD-CODED paper-only. See the module docstring: this must
     # never become configurable, so it stays a literal boolean expression,
-    # not a lookup against any table of "safe modes".
+    # not a lookup against any table of "safe modes". Pure env read, no I/O.
     if not (trading_mode() == "paper" and not env_flag("LIVE_TRADING_ENABLED")):
         logger.warning(
             "auto_approver: refusing for user=%s — not in safe paper mode "
@@ -224,39 +229,41 @@ async def auto_approve_for_user(
         )
         return 0
 
-    # Gate 2b — the account owner's own in-app consent. Second key of the
-    # two-key gate; the operator env alone is not enough.
-    conn = await _resolve_paper_connection(user_id)
-    if conn is None or not conn.auto_approve_consent:
-        logger.info(
-            "auto_approver: no auto-approve consent for user=%s — skipping "
-            "(connection=%s)",
-            user_id, "none" if conn is None else conn.id,
-        )
-        return 0
-
-    now = utc_now()
-
-    # Gate 3 — regular US session only. Pre/post-market feeds are thin
-    # enough that a single odd-lot can manufacture a false signal, and
-    # that's the SAME reasoning the scanner already uses for this gate.
-    if not is_us_market_open(now):
-        return 0
-
-    store = get_store()
-    pending: list[ApprovalProposalDto] = await store.list_pending(user_id)
-
-    # Gate 4 — drop stale proposals. list_pending() already excludes
-    # EXPIRED ones (a much longer, end-of-day window); this is a tighter,
-    # auto-approval-specific freshness bound on top of that.
-    max_age = timedelta(minutes=_env_int("AUTO_APPROVE_MAX_AGE_MIN", _DEFAULT_MAX_AGE_MIN))
-    eligible = [p for p in pending if now - _aware(p.proposed_at) <= max_age]
-    if not eligible:
-        return 0
-
-    max_per_day = _env_int("AUTO_APPROVE_MAX_PER_DAY", _DEFAULT_MAX_PER_DAY)
-
     try:
+        # Gate 2b — the account owner's own in-app consent. Second key of
+        # the two-key gate; the operator env alone is not enough.
+        conn = await _resolve_paper_connection(user_id)
+        if conn is None or not conn.auto_approve_consent:
+            logger.info(
+                "auto_approver: no auto-approve consent for user=%s — skipping "
+                "(connection=%s)",
+                user_id, "none" if conn is None else conn.id,
+            )
+            return 0
+
+        now = utc_now()
+
+        # Gate 3 — regular US session only. Pre/post-market feeds are thin
+        # enough that a single odd-lot can manufacture a false signal, and
+        # that's the SAME reasoning the scanner already uses for this gate.
+        if not is_us_market_open(now):
+            return 0
+
+        store = get_store()
+        pending: list[ApprovalProposalDto] = await store.list_pending(user_id)
+
+        # Gate 4 — drop stale proposals. list_pending() already excludes
+        # EXPIRED ones (a much longer, end-of-day window); this is a tighter,
+        # auto-approval-specific freshness bound on top of that.
+        max_age = timedelta(
+            minutes=_env_int("AUTO_APPROVE_MAX_AGE_MIN", _DEFAULT_MAX_AGE_MIN)
+        )
+        eligible = [p for p in pending if now - _aware(p.proposed_at) <= max_age]
+        if not eligible:
+            return 0
+
+        max_per_day = _env_int("AUTO_APPROVE_MAX_PER_DAY", _DEFAULT_MAX_PER_DAY)
+
         # Gate 5 — daily budget.
         today_count = await _auto_approvals_today(session_factory, user_id)
         if today_count >= max_per_day:
