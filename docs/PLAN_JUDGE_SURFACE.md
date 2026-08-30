@@ -118,6 +118,73 @@ judge who sees the banner reads it as deliberate.
 
 ---
 
+## 1b. "Couldn't reach the agent server" on the FIRST council run
+
+Reported 2026-08-30: clicking **Run** the first time shows
+*"Couldn't reach the agent server — check your connection and try again."*
+The second attempt works. A judge's first action is exactly this button, so it
+must not fail.
+
+### ✅ Why the symptom looks like "first time only" — verified
+
+`apps/mobile/src/lib/queryClient.ts`:
+
+```
+line 17   queries:   retry: 2
+line 21   mutations: retry: 0
+```
+
+`useStartCouncilRun` is a **mutation**. Every *query* on the page (account,
+positions, activity, ghost, vetoes, scanner) silently retries twice and heals
+through a transient blip. **The council-run mutation does not retry at all**, so the
+same blip that everything else absorbs surfaces as a hard red error on this one
+button. That is why it looks like "only the first run, only this control".
+
+### What the message actually means
+
+`runErrorMessage` (`Picks.tsx:188`) returns that string **only when the error has no
+`status`** — i.e. `fetch()` itself rejected and no HTTP response was ever received.
+Everything with a status gets a specific message. So this is a genuine
+transport-level failure, not a server refusal.
+
+**Ruled out by inspection** — do not re-investigate these:
+- **Not CORS.** The web build is served from the same origin as the API
+  (`resolveBaseUrl` returns `window.location.origin` for a non-dev web build), so
+  there is no preflight.
+- **Not the base URL.** `EXPO_PUBLIC_API_URL` is unset, which is correct — the
+  same-origin branch handles it and survives a domain change with no rebuild.
+- **Not the token refresh.** `refresh()` returns `null` rather than throwing, and the
+  shared `inFlightRefresh` promise already de-dupes concurrent 401s.
+- **Not a 502/429/422** — all of those carry a status and their own message.
+
+### Most likely cause
+
+**Container restarts.** The service was redeployed four times on 2026-08-30; a click
+landing in that window gets a connection reset, `fetch` rejects, and the retry
+succeeds once the new container is up. Railway cold starts produce the same shape.
+
+⚠️ **Get evidence before assuming that is the whole story.** Reproduce with the
+browser devtools **Network** tab open and read the failed row — `net::ERR_CONNECTION_
+REFUSED`, `net::ERR_FAILED`, or a stalled request each point somewhere different. One
+look settles it; guessing does not.
+
+### The fix — worth doing regardless of root cause
+
+1. **Retry a status-less failure once, on this mutation only.** A rejected `fetch`
+   means no response was received, so a single retry after ~1s is safe here: the
+   worst case is a duplicate council run (~$0.04), and `/agent/run/start` places no
+   order.
+   > 🚨 **Do NOT make this a blanket mutation retry.** `orders/execute`,
+   > `approvals/decision` and `positions/close` are mutations too, and auto-retrying
+   > those is how you place a trade twice. Scope it to the council-run call, or gate
+   > it behind an explicit `retryOnNetworkError: true` request option that only this
+   > call passes.
+2. **Split the message.** A status-less failure after the retry should read
+   *"The server didn't respond — it may still be starting up. Try again in a
+   moment."* "Check your connection" blames the user for our cold start.
+
+---
+
 ## 2. The "why was this options trade picked" page
 
 ### What exists
