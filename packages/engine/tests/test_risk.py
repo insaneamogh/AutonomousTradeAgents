@@ -204,6 +204,30 @@ def test_position_size_trims_when_over_cap() -> None:
     assert any("trimmed" in f for f in d.informational_flags)
 
 
+def test_trim_names_the_rule_that_shrank_the_trade() -> None:
+    """A trim is a PARTIAL refusal. The `trimmed:50->25` flag is anonymous,
+    so without `trim_rules` the Refusal Ledger cannot attribute it — it can
+    say how often risk refused a trade but never how often it refused part
+    of one."""
+    p = _buy(symbol="AAPL", qty=50, last_price=200.0)
+    caps = RiskCaps(max_position_pct=5.0, max_single_name_pct=99.0, max_sector_pct=99.0)
+    d = evaluate(p, _ctx(), caps=caps)
+    assert d.adjusted_qty == 25
+    assert d.trim_rules == ("max_position_pct_trim",)
+    # A trim is never reported as a block.
+    assert d.approved
+    assert d.veto_rule is None
+
+
+def test_no_trim_rules_when_nothing_was_shrunk() -> None:
+    """A trimming rule that ran and left the size alone belongs in
+    checks_passed, not trim_rules."""
+    d = evaluate(_buy("AAPL", 10, 150.0), _ctx())
+    assert d.approved
+    assert d.trim_rules == ()
+    assert "max_position_pct" in d.checks_passed
+
+
 def test_position_size_blocks_when_trim_rounds_to_zero() -> None:
     # 1 share of a $200 stock against a $10 equity → trim rounds to 0 shares.
     # Use a non-classified symbol so sector rule no-ops; loosen single-name

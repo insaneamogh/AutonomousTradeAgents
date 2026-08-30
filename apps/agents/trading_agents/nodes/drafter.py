@@ -87,6 +87,7 @@ from typing import Any, Literal, cast
 from engine.options.selection import (
     ContractQuote,
     ContractSelectionInputs,
+    ContractSelectionResult,
     select_contract,
 )
 from engine.options.sizing import OptionsSizingInputs, options_position_size
@@ -342,6 +343,24 @@ async def drafter_node(state: CouncilState, llm: LLM) -> CouncilState:
 # ─────────────────────────────────────────────────────────────────────
 
 
+def _funnel_block(selection: ContractSelectionResult) -> dict[str, Any]:
+    """The contract funnel, shaped for persistence.
+
+    ``select_contract`` is where MOST refusals happen — far more than the
+    risk engine — and every one of them used to be ``logger.info``'d and
+    discarded, because a HOLD writes ``proposal = None`` and nothing
+    downstream had anywhere to put it. This block rides in the decision's
+    ``reasoning`` JSONB (no schema change) so the machine's actual
+    narrowing is readable: 4,128 contracts -> 2,064 calls -> 1,843 in the
+    DTE window -> 130 in the delta band -> 3 liquid -> 1 bought.
+    """
+    return {
+        "counts": dict(selection.funnel_counts or {}),
+        "rejection_reason": selection.rejection_reason,
+        "selected_occ": selection.selected.occ_symbol if selection.selected else None,
+    }
+
+
 async def _draft_option_proposal(
     state: CouncilState,
     data: dict[str, Any],
@@ -394,6 +413,9 @@ async def _draft_option_proposal(
             "drafter_rationale": f"No liquid option contract found: {reason}",
             "bull_case": str(data.get("bull_case", "")).strip(),
             "bear_case": str(data.get("bear_case", "")).strip(),
+            # The funnel is the WHOLE explanation of this HOLD. Dropping it
+            # here is what made "it just says HOLD with no reason" true.
+            "contract_funnel": _funnel_block(selection),
         }
 
     leg = selection.selected
@@ -422,6 +444,7 @@ async def _draft_option_proposal(
             ).strip(" |"),
             "bull_case": str(data.get("bull_case", "")).strip(),
             "bear_case": str(data.get("bear_case", "")).strip(),
+            "contract_funnel": _funnel_block(selection),
         }
 
     rationale = str(data.get("rationale", "")).strip()
@@ -435,6 +458,9 @@ async def _draft_option_proposal(
 
     return {
         **state,
+        # Persisted on the SUCCESS path too: "we looked at 4,128 contracts
+        # and bought this one" is the sentence, and it needs the 4,128.
+        "contract_funnel": _funnel_block(selection),
         "proposal": {
             "strategy": strategy_id,
             # Always "BUY" — Phase A only ever buys a call or a put to open

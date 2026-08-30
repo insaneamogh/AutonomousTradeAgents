@@ -104,6 +104,7 @@ def evaluate(
     caps = caps or RiskCaps.from_env()
     informational: list[str] = []
     passed: list[str] = []
+    trims: list[str] = []
     working = proposal
 
     # ── 1. Drawdown circuit breaker ─────────────────────────────────
@@ -195,6 +196,9 @@ def evaluate(
             return trim_d
         if trim_d.adjusted_qty is not None and trim_d.adjusted_qty != working.qty:
             informational.append(f"trimmed:{working.qty}->{trim_d.adjusted_qty}")
+            # Keep the rule's own name. The flag above is anonymous, so
+            # without this a partial refusal is unattributable in the ledger.
+            trims.append(trim_d.veto_rule or "max_position_pct_trim")
             working = replace(working, qty=trim_d.adjusted_qty)
     if working.side is Side.BUY:
         passed.append("max_position_pct")
@@ -206,6 +210,7 @@ def evaluate(
             return short_d
         if short_d.adjusted_qty is not None and short_d.adjusted_qty != working.qty:
             informational.append(f"trimmed:{working.qty}->{short_d.adjusted_qty}")
+            trims.append(short_d.veto_rule or "short_unbounded_loss_cap_trim")
             working = replace(working, qty=short_d.adjusted_qty)
     _note_if_short(working, context, passed, "short_unbounded_loss_cap")
 
@@ -245,6 +250,7 @@ def evaluate(
         adjusted_qty=working.qty if working.qty != proposal.qty else None,
         informational_flags=tuple(informational),
         checks_passed=tuple(passed),
+        trim_rules=tuple(trims),
     )
 
 

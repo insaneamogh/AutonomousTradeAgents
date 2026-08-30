@@ -81,6 +81,7 @@ def evaluate_option(
     caps = caps or RiskCaps.from_env()
     informational: list[str] = []
     passed: list[str] = []
+    trims: list[str] = []
     working = proposal
 
     if working.option is None:
@@ -182,6 +183,9 @@ def evaluate_option(
             return trim_d
         if trim_d.adjusted_qty is not None and trim_d.adjusted_qty != working.qty:
             informational.append(f"trimmed:{working.qty}->{trim_d.adjusted_qty}")
+            # The rule's OWN name, not the anonymous flag above — a trim is
+            # a partial refusal and the Refusal Ledger needs to attribute it.
+            trims.append(trim_d.veto_rule or "max_premium_pct_trim")
             working = replace(working, qty=trim_d.adjusted_qty)
     _note_if_entry(working, passed, "max_premium_pct")
 
@@ -202,6 +206,7 @@ def evaluate_option(
         adjusted_qty=working.qty if working.qty != proposal.qty else None,
         informational_flags=tuple(informational),
         checks_passed=tuple(passed),
+        trim_rules=tuple(trims),
     )
 
 

@@ -130,6 +130,10 @@ async def risk_officer_node(
         # Named rules that ran and did not block. A veto explains a refusal;
         # this explains an approval, which is what the user actually sees.
         "risk_checks_passed": list(decision.checks_passed),
+        # Rules that shrank the trade rather than blocking it — a partial
+        # refusal, and the most common kind. Kept separate from
+        # ``risk_veto_rule`` so the ledger never counts a trim as a block.
+        "risk_trim_rules": list(decision.trim_rules),
     }
 
     if not decision.approved:

@@ -455,3 +455,19 @@ class RiskDecision:
     exists at all. Rules that self-gate out (an India rule on a US symbol)
     are not listed: they did not run, so they did not pass.
     """
+
+    trim_rules: tuple[str, ...] = field(default_factory=tuple)
+    """Named rules that SHRANK the trade instead of blocking it.
+
+    A trim is a partial refusal, and until this field existed the name of
+    the rule responsible was discarded: the engine kept only an anonymous
+    ``trimmed:80->37`` informational flag. So the Refusal Ledger could
+    report how often risk said "no" but never how often it said "not that
+    much" — a materially different and more common intervention.
+
+    Trimming rules name themselves with a ``_trim`` suffix
+    (``max_premium_pct_trim``, ``max_position_pct_trim``,
+    ``short_unbounded_loss_cap_trim``) so a reader can never mistake a
+    trim for a block. A rule lands here ONLY when it actually changed the
+    qty; one that ran and left the size alone belongs in ``checks_passed``.
+    """

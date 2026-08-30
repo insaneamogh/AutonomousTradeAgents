@@ -199,6 +199,11 @@ async def run_council(
         "selector_rationale": str(final.get("selector_rationale", "")),
         "strategy_fit": final.get("strategy_fit"),
         "risk_checks_passed": list(final.get("risk_checks_passed") or []),
+        # The same deterministic block that is persisted on the decision
+        # row. Returned here too so a caller that runs a pass directly (the
+        # API's council endpoint, the MCP server, a test) sees the contract
+        # funnel and the trim attribution without a second DB read.
+        "reasoning": _reasoning_block(final),
         "llm_mock": llm.mock,
         "decision_id": decision_id,
     }
@@ -303,6 +308,9 @@ def _reasoning_block(final: CouncilState) -> dict[str, Any]:
         "analyst_subset": list(final.get("analyst_subset") or []),
         "risk_checks_passed": list(final.get("risk_checks_passed") or []),
         "risk_veto_rule": final.get("risk_veto_rule"),
+        # Partial refusals. Separate from ``risk_veto_rule`` so no reader
+        # can mistake "risk shrank this" for "risk blocked this".
+        "risk_trim_rules": list(final.get("risk_trim_rules") or []),
         "risk_reason": final.get("risk_reason"),
         # The Drafter's own explanation of a HOLD — present only when the
         # model actually reached a verdict (constrained by the fit node's
@@ -311,6 +319,7 @@ def _reasoning_block(final: CouncilState) -> dict[str, Any]:
         "drafter_rationale": final.get("drafter_rationale") or None,
         "sizing": proposal.get("sizing"),
         "informational_flags": list(proposal.get("informational_flags") or []),
+        "contract_funnel": final.get("contract_funnel"),
         "scan_triggers": (final.get("context") or {}).get("scan_triggers"),
         "feature_snapshot": _feature_snapshot(final.get("context") or {}),
         "degraded_nodes": list(final.get("degraded_nodes") or []),

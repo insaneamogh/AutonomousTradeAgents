@@ -87,12 +87,23 @@ class CouncilState(TypedDict, total=False):
     """The Drafter's bear case, kept even on a HOLD — same reasoning as
     ``bull_case`` above."""
 
+    contract_funnel: dict[str, Any] | None
+    """The option-chain narrowing that produced (or refused) this contract:
+    per-stage survivor counts, the named rejection reason, and the chosen
+    OCC symbol. Present only on an options pass. This is where MOST
+    refusals actually happen — more than the risk engine — and it is the
+    only record of them, since a HOLD writes no proposal."""
+
     # ── Risk officer (deterministic) ─────────────────────────────────
     risk_approved: bool
     risk_reason: str
     risk_veto_rule: str | None
     risk_checks_passed: list[str]
     """Named rules that ran and did not block, in evaluation order."""
+    risk_trim_rules: list[str]
+    """Named rules that SHRANK this trade instead of blocking it. A trim is
+    a partial refusal; without the rule's name it is unattributable in the
+    Refusal Ledger."""
 
     # ── Final ────────────────────────────────────────────────────────
     final_action: Literal["BUY", "SELL", "HOLD", "VETOED"]

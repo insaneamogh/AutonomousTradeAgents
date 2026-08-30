@@ -437,3 +437,79 @@ async def test_real_anthropic_council_produces_proposal() -> None:
             assert "MOCK" not in result[key].get("thesis", ""), (
                 f"{key} thesis still contains MOCK marker — wrapper picked mock path"
             )
+
+
+async def test_options_pass_persists_the_contract_funnel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`select_contract` is where MOST refusals happen, and every one of
+    them used to be logger.info'd and dropped: a HOLD writes no proposal,
+    so there was nowhere to put it. The funnel now rides in the decision's
+    `reasoning` JSONB on BOTH the approved and the refused path.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from engine.options.selection import ContractQuote
+    from trading_agents.nodes import drafter as drafter_mod
+
+    quote = ContractQuote(
+        occ_symbol="NVDA_TEST_CALL",
+        contract_type="call",
+        strike=250.0,
+        expiry=(datetime.now(UTC) + timedelta(days=30)).date(),
+        bid=3.00,
+        ask=3.20,
+        open_interest=500,
+        volume=200,
+        delta=0.55,
+        implied_volatility=0.30,
+    )
+
+    async def _fake_fetch(symbol: str) -> tuple[ContractQuote, ...]:
+        return (quote,)
+
+    monkeypatch.setenv("ALLOW_OPTIONS", "1")
+    monkeypatch.setattr(drafter_mod, "_fetch_option_candidates", _fake_fetch)
+
+    result = await run_council(
+        symbol="NVDA", llm=LLM(api_key=None), instrument_preference="option"
+    )
+
+    funnel = result["reasoning"]["contract_funnel"]
+    assert funnel is not None
+    assert funnel["selected_occ"] == "NVDA_TEST_CALL"
+    assert funnel["rejection_reason"] is None
+    # Real per-stage counts, not an empty dict — the narrowing IS the story.
+    assert funnel["counts"]
+    assert all(isinstance(v, int) for v in funnel["counts"].values())
+
+
+async def test_contract_funnel_explains_an_options_hold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The case the user actually hit: "it just says HOLD, no explanation."
+    An empty chain must produce a named rejection reason on the row."""
+    from trading_agents.nodes import drafter as drafter_mod
+
+    async def _empty_chain(symbol: str) -> tuple:
+        return ()
+
+    monkeypatch.setenv("ALLOW_OPTIONS", "1")
+    monkeypatch.setattr(drafter_mod, "_fetch_option_candidates", _empty_chain)
+
+    result = await run_council(
+        symbol="NVDA", llm=LLM(api_key=None), instrument_preference="option"
+    )
+
+    assert result["final_action"] == "HOLD"
+    funnel = result["reasoning"]["contract_funnel"]
+    assert funnel is not None
+    assert funnel["rejection_reason"] == "no_candidates"
+    assert funnel["selected_occ"] is None
+
+
+async def test_equity_pass_has_no_contract_funnel() -> None:
+    """No option chain was consulted, so claiming a funnel would be
+    fabricating a stage that never ran."""
+    result = await run_council(symbol="NVDA", llm=LLM(api_key=None))
+    assert result["reasoning"]["contract_funnel"] is None

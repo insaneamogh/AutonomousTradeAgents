@@ -405,6 +405,21 @@ def test_max_premium_pct_trims_when_over_cap() -> None:
     assert any("trimmed" in f for f in d.informational_flags)
 
 
+def test_options_trim_names_the_rule_that_shrank_it() -> None:
+    """`trimmed:10->4` is anonymous. The Refusal Ledger needs the rule
+    name to report "premium cap shrank N trades" alongside its blocks."""
+    d = evaluate(_entry(qty=10, last_price=2.50), _ctx(), ENABLED)
+    assert d.adjusted_qty == 4
+    assert d.trim_rules == ("max_premium_pct_trim",)
+    assert d.approved and d.veto_rule is None
+
+
+def test_options_no_trim_rules_when_size_was_left_alone() -> None:
+    d = evaluate(_entry(qty=1, last_price=2.50), _ctx(), ENABLED)
+    assert d.approved
+    assert d.trim_rules == ()
+
+
 def test_max_premium_pct_rejects_when_trim_rounds_to_zero_contracts() -> None:
     # A single contract alone ($250) is already 25% of a $1,000 account —
     # far over the 1% cap — so trimming can't produce even 1 contract.
