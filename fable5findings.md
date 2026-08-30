@@ -385,6 +385,186 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-30 — `f736c438` feat(risk,agents): aggressive paper profile for the contest window
+
+`ID:MODEL2OFF`. Picked up the handover from the four-plans commit below and built
+[`PLAN_AGGRESSIVE_PROFILE.md`](docs/PLAN_AGGRESSIVE_PROFILE.md) end to end — one commit,
+code + both docs together per that plan's own §5. Built in an isolated worktree; not
+merged to `main` by me — the orchestrating session reviews and merges.
+
+**Baseline verified first**, per CLAUDE.md's own instruction rather than trusting the
+doc: `git stash`, ran `apps/agents apps/api packages/` → **792 passed, 9 skipped**,
+matching the plan's §7 exactly. Now **818 passed, 9 skipped** (829 with `apps/mcp_server`
+via `uv sync --all-packages`) — 26 new tests, zero regressions. **Every new test
+revert-checked per §4.1**: broke the fix, confirmed the specific new test failed (and
+only that one), restored it. Ruff + mypy clean on every touched file (`ruff check`,
+`mypy`) — checked per-file both before and after, not against the repo-wide baseline
+(see the ruff finding below).
+
+#### `RiskCaps.aggressive_paper()` — `packages/engine/engine/risk/types.py`
+
+New classmethod, six numbers, merged via a dict rather than sibling `**kwargs` (so a
+caller can still override one of the same six fields without a "got multiple values for
+keyword argument" `TypeError` — my own test needed this, fixed it rather than deleting
+the test):
+
+```
+options_max_premium_pct        1.0  -> 2.5
+options_max_total_premium_pct  5.0  -> 12.0
+min_council_confidence         0.50 -> 0.42
+min_specialist_avg_score       45.0 -> 40.0
+options_stop_loss_pct          50.0 -> 40.0   ("cut losers early")
+max_correlation_cluster        3    -> 4
+```
+
+`daily_drawdown_halt_pct` (-3.0) and `max_position_pct` (5.0) do **not** move, in either
+profile — `test_aggressive_profile_leaves_the_drawdown_halt_alone` /
+`..._leaves_max_position_pct_alone` pin this and are revert-checked. `from_env()` now
+reads `RISK_PROFILE` (default `conservative`) via a new `_select_risk_profile()` helper —
+same fail-to-default contract as `_env_int`/`_env_float`: unset or unrecognised value
+keeps conservative and logs a warning (`test_unknown_risk_profile_falls_back_to_conservative`,
+revert-checked by making the fallback silently pick aggressive instead). Every existing
+`cls.X` fallback inside `from_env` for the env-tunable fields is now `base.X` (the
+resolved profile's own value), so an explicit env var still wins over either profile's
+default, verified live (`OPTIONS_STOP_LOSS_PCT=33` under `aggressive_paper` → 33.0, not
+40.0). `RiskCaps()` bare-constructor call sites (tests, `lot_size_block`, etc.) are
+completely untouched — only `from_env()`'s body and docstring changed structurally.
+
+**The real reason for the premium-cap change, not just "more risk appetite"**: at $100k
+equity, `qty = floor(budget/(ask*100))` with the OLD 1% cap means any contract over
+$10.00 floors to zero and the pass silently becomes a HOLD — never reaching the Refusal
+Ledger, since the sizer emits a HOLD via `.notes`, not a veto. Verified with the actual
+arithmetic, not just cited from the plan:
+`test_the_old_one_percent_cap_floored_a_twelve_dollar_contract_to_zero` (qty=0 at 1%) /
+`test_a_twelve_dollar_contract_sizes_to_at_least_one` (qty=2 at 2.5%), both computing
+`budget_usd` the same way `drafter.py` really does. Revert-checked by putting
+`options_max_premium_pct` back to 1.0 inside `aggressive_paper()` — fails exactly as
+predicted.
+
+#### The empty-features evidence gate — `apps/agents/trading_agents/strategies/fit.py`
+
+Verified the plan's central claim myself before touching anything:
+`best_strategy({})` on the **unmodified** code returns `rsi_mean_reversion` at 0.60,
+`tradable=True` — `not_a_trend_break` reads `trend_regime != "downtrend"` and the
+missing sentinel `"unknown"` satisfies that as TRUE, not NEUTRAL. A data outage was
+spending 5 LLM calls and could originate a trade.
+
+New `_has_usable_features(features) -> (bool, str)`: technicals non-empty AND
+`trend_regime not in ("", "unknown")` AND ≥3 non-None values among the 9 quant keys the
+scorers read. Wired into `best_strategy` **only** — confirmed `score_strategy`/
+`rank_strategies` are untouched by directly testing that `rank_strategies({})[0].score`
+still reports ~0.60 (the real, ungated number) even though `best_strategy({})` now
+refuses to call it a winner.
+
+**`test_fit.py` did not exist** — `fit.py:93`'s `blind_weight_fraction` docstring claims
+a test asserts the direction-blind-weight invariant; there was no `test_fit.py` anywhere
+in the repo. Written it, and wrote `test_blind_weight_stays_below_the_trade_floor`
+FIRST, confirmed it passed against the **original, untouched** `MIN_FIT_TO_TRADE = 0.45`
+before changing that constant at all (per the plan's explicit instruction). It still
+passes at the new 0.42, and — revert-checked live — fails if `MIN_FIT_TO_TRADE` is set
+to 0.40: `vol_regime_switch`'s blind fraction is exactly 0.400.
+
+`MIN_FIT_TO_TRADE`: 0.45 → 0.42 (hard floor is 0.41, per the above — do not go lower).
+
+**Also revert-checked the "wrong function" failure mode** the plan warned about
+(§8.3): moved the gate into `score_strategy` instead of `best_strategy` and confirmed
+`test_blind_weight_fraction_still_works_on_an_empty_dict` fails — but worth flagging
+precisely **how** it fails, since it surprised me: `blind_weight_fraction` itself calls
+`_SCORERS[sid]` directly and never touches `score_strategy` at all, so it is NOT what
+catches the misplacement. The test catches it via its OTHER assertion,
+`rank_strategies({})[0].score`, which collapses toward 0 once `score_strategy` (which
+`rank_strategies` does call) is gated. If a future edit ever trims that second assertion
+because it "looks redundant" with the `blind_weight_fraction` loop above it, this
+specific protection is what would quietly disappear.
+
+`strategy_fit_node`'s rationale branch (the plan's own "where you'll go wrong" #5) now
+tells the two HOLD reasons apart — "no strategy clears the fit floor" (genuine, e.g. the
+`_no_fit_features` fixture) vs. "feature data too thin to trade" (the gate fired; the
+nominal top score may well be ≥ the floor, which is exactly why the OLD single message
+would have read as self-contradictory: "best was X at 0.60, holding"). `fit_block` now
+carries `usable_features` + `unusable_reason`. Two new node-level tests
+(`test_hold_rationale_names_thin_evidence_not_the_fit_floor` /
+`..._still_names_the_fit_floor_for_real_data`), revert-checked by stashing just
+`strategy_fit.py` and confirming both fail against the pre-change node.
+
+#### A real regression this workstream caused, found and fixed in the same commit
+
+Adding the evidence gate broke **8 previously-green tests**
+(`test_mock_council_produces_buy_proposal_for_nvda` and 7 others in
+`test_council_mock.py`/`test_reflection.py`) the moment it landed. Root cause (CLAUDE.md
+§4.6 — fixed the cause, not the symptom): `trading_agents/features/synthetic.py`'s
+`synthetic_features()` — the default `feature_provider` `run_council()` falls back to
+when no explicit one is supplied — has **never had a `"quant"` block**, only
+`"technicals"`/`"fundamentals"`/`"macro"`. It predates that schema entirely (it's a
+Phase-0 offline/demo/test mock; confirmed live it is NOT reachable in the real
+production path — `daily_cron.py` and `apps/api/app/routers/agent.py` both always call
+`resolve_feature_provider()` explicitly, which only falls back to synthetic when
+`AGENTS_REQUIRE_REAL_DATA` is unset, i.e. dev/CI only). Every quant-driven
+`FitComponent` has silently sat at NEUTRAL for every mock-LLM/offline pass this whole
+time — harmless until my new gate started reading "no quant block at all" as
+indistinguishable from a genuine data outage.
+
+Fixed by giving `synthetic_features()` a deterministic per-symbol `"quant"` block
+mirroring `engine.features.quant.compute_quant()`'s real keys and realistic value
+ranges — NOT by loosening the gate to tolerate a stale mock schema, which would have
+been fixing the symptom. Confirmed via `git stash` that the missing-quant-block gap
+itself predates this commit entirely (it's real, just never observable before).
+**Checked side effect, and safe**: NVDA under the mock provider now wins on
+`"momentum"` (~0.90) instead of `"sma_crossover"` (0.787) — grepped the whole suite,
+confirmed no test asserts the specific winning strategy id anywhere, only registry
+membership / `BUY` / proposal shape, and corrected the one comment
+(`test_council_mock.py`) that cited the old number. The mock LLM's Drafter branch reads
+`selected_direction` from state and always emits whichever side is required
+(`_extract_required_side`), so this does not change any test's asserted `final_action`
+either — verified by re-running the full suite, not just reasoning about it.
+
+#### `selection.py` delta bands — widened, then FROZEN
+
+`engine/options/selection.py`: `[0.40,0.70]`/`[0.25,0.55]` → `[0.35,0.75]`/`[0.25,0.65]`,
+per the plan and `docs/HACKATHON.md` §8 (pre-Monday's-open only, one reviewed change).
+Added three tests that pin the exact new edges (deltas 0.63 / 0.37 / 0.73) rather than
+relying on existing "some delta near ATM still works" coverage — the existing suite
+only needed ONE fixture value changed (`test_low_conviction_rejects_a_too_close_to_the_
+money_delta`'s `delta=0.60` → `0.70`, since 0.60 now falls inside the widened low band).
+Revert-checked: reverting to the old band constants makes exactly the three new tests
+fail, nothing else.
+
+#### Docs, same commit per `OPTIONS_PLAYBOOK.md`'s own §0 rule
+
+`OPTIONS_PLAYBOOK.md` §0/§2/§3/§4 rewritten to state both profiles explicitly (was
+"superseded pending implementation" prose). Take-profit row deliberately LEFT as the
+fixed +60% — `PLAN_EXIT_AGENT.md`'s trailing ratchet has not landed; do not describe it
+as shipped. `HACKATHON.md` §3/§8 updated from "decided" to "decided AND shipped, same
+day", with the exact numbers. `HACKATHON.md` §9's known-good numbers corrected: full
+suite is 818/9 (was stale at 757), and — **found while updating this, not something I
+went looking for** — the "9 pre-existing ruff errors" figure is wrong. Measured live: a
+fresh `uv sync --all-packages` + `ruff check apps/agents apps/api packages/` gives
+**252** errors, confirmed via `git stash` to predate this commit entirely (exists on
+`main` with zero code changes). 124 of the 252 are `RUF100 unused-noqa`, consistent
+with a ruff-version bump (this pulled 0.16.0) making old suppressions redundant — a
+plausible cause, **not fully re-verified** (would need to pin the old ruff version and
+diff), so stated as a hypothesis in the doc, not a fact. Flagged in `HACKATHON.md`
+directly rather than silently trusting the old "9".
+
+**Deliberately did NOT touch** `CLAUDE.md` §7's own stale "757 passing" figure — same
+staleness, but that file is outside this task's scope and I was explicitly told the
+instruction-boundary around modifying it; flagging here instead of silently editing it.
+
+#### Left open, per the plan's own scope
+
+- [ ] **The take-profit trailing ratchet** (`PLAN_EXIT_AGENT.md`) — not built. The
+      `+60%` row in `OPTIONS_PLAYBOOK.md` §3 is still accurate; the ratchet knobs
+      (`options_ratchet_enabled`, `options_trail_arm_pct`, `options_trail_giveback_pct`)
+      are that workstream's own fields on `RiskCaps` — this diff stayed additive/narrow
+      in `types.py` on purpose so the two merge cleanly.
+- [ ] Alpaca MCP/CLI integration, candlestick patterns — untouched, other workstreams.
+- [ ] Nothing here is deployed. `RISK_PROFILE=aggressive_paper` has to actually be set
+      in Railway for any of this to take effect live — that's a deploy/config step, not
+      a code change, and it's the user's action.
+- [ ] `min_council_confidence`'s "verify it actually binds" caveat from the plan's §0 is
+      still unverified — would need `agent_decisions.judge_confidence` from a day of
+      real (non-mock) passes on the new account, which does not exist yet.
+
 ### 2026-08-30 — four implementation plans, written for the next model
 
 **Account blocker cleared.** New paper account `PA3IAZI74E5R`, **options Level 3**
