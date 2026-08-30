@@ -48,32 +48,64 @@ accident — `approvals.py:63` documents it.
 (1/minute/IP, and refuse when `AUTO_APPROVE_ENABLED=1`). Judges do not need to
 trigger runs — the scheduler produces them.
 
-### The second problem: the bypass shows the wrong account's data
+### The second problem — and it kills the naive fix
 
 `DEV_AUTH_BYPASS=1` resolves an unauthenticated caller to
-`FIXTURE_USER_ID = 00000000-0000-0000-0000-000000000001`. But **every agent decision
-is written to `AGENT_CRON_USER_ID = 43221580-69bc-4134-8e1e-5af75499d874`.**
+`FIXTURE_USER_ID = 00000000-0000-0000-0000-000000000001`. Every agent decision is
+written to `AGENT_CRON_USER_ID = 43221580-…`. So flipping the flag today gives a
+judge a **fully working, completely empty app.**
 
-So flipping the flag today gives a judge a **fully working, completely empty app.**
-That is worse than the login wall.
+**And a "proper login" does not fix it either.** Verified 2026-08-30:
 
-**Fix — one of:**
-- **(preferred)** add a `DEMO_USER_ID` env var that the bypass resolves to, defaulting
-  to `FIXTURE_USER_ID`, and set it to the cron user. One small change in
-  `middleware/auth.py`, no data migration, reversible by unsetting.
-- Or repoint `AGENT_CRON_USER_ID` at the fixture user — but that orphans the 132
-  existing decisions and is harder to undo.
+- `positions_snapshot` rows are only written for users the reconciler fleet
+  iterates, and it iterates `list_active_connections_by_broker("alpaca")` — i.e.
+  **users who have their own broker-connection row.**
+- A newly-signed-up judge has none, so `store.get_account()` finds no snapshot and
+  returns the **hardcoded cold-boot fixture** (`postgres_store.py:99`):
+  `equity=100_000, cash=100_000, buying_power=200_000, today_pnl=0`.
+- The tell is `buying_power=200_000`. The real account reports **400,000**. A judge
+  who signs up is looking at a constant in our source code, not at the account.
+- Decisions, positions, ghost marks, insights are all scoped by `user_id` too — so
+  they see zero of everything.
 
-### Then
+**So the question "will the P&L stay correct no matter who logs in?" has a firm
+answer: no.** Not via the bypass, and not via a normal signup. Whoever the judge is
+authenticated as must resolve to the account that owns the data.
+
+### 🔑 Recommended design: a read-only demo session, keeping real login intact
+
+Do **not** turn on a blanket bypass. Add a **signed, long-lived, read-only demo
+token** carried in the submission link:
 
 ```
-DEV_AUTH_BYPASS=1
-DEMO_USER_ID=43221580-69bc-4134-8e1e-5af75499d874
+https://…up.railway.app/?demo=<signed-token>
 ```
 
-`ENV=staging`, and `_dev_bypass_enabled()` force-disables the bypass when
-`is_production` — so **do not set `ENV=production`** or the whole thing silently
-turns off. That guard is correct; work with it, don't remove it.
+- On load, the app exchanges `?demo=…` for a session scoped to `DEMO_USER_ID`
+  (= the cron user), and stores it like any other session.
+- Real magic-link / Google login and logout are **untouched**. You still sign in
+  normally; the demo token is an additional, weaker identity.
+
+**The elegant part: the security boundary already exists.** Mint the demo identity
+as `AuthedUser(..., is_dev_bypass=True)` — or add an `is_demo` flag that
+`require_real_auth` rejects the same way. Then **every money route refuses it with
+no new code**, because all 6 of them already call `require_real_auth`:
+
+```
+approvals/{id}/decision · orders/execute/{id} · positions/{id}/close
+broker/connections/* · broker/…/auto-approve-consent · circuit-breaker/acknowledge
+```
+
+Read routes keep working. That is the whole feature: a link that reads everything
+and changes nothing, without weakening a single existing check.
+
+Still close the three leaky routes named above (`agent/run`, watchlist mutations,
+`review/{id}`) — the demo identity must not be able to spend LLM budget or change
+the trading universe either.
+
+Token hygiene: sign it with the existing JWT secret, give it a **fixed expiry past
+the submission deadline**, and make it revocable (it is a session — `logout` already
+revokes by `sid`). Do not make it a permanent unsigned string.
 
 ### Say it on screen
 
