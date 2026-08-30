@@ -66,16 +66,41 @@ the funnel, never the risk caps.
 
 ### The other hard ordering constraint
 
-`positions_snapshot.options_trading_level` was **`None`** as of this review even
-though the account is level 3, because `_cold_boot_fallback` does not set it and it
-only lands after a reconciler tick. `options_level_insufficient` vetoes every entry
-while it is null. **Confirm it is 3 in the DB before the first options pass each
-cold start** — not just Monday:
+`positions_snapshot.options_trading_level` was **`None`** on a level-3 account —
+`UserBrokerPoller` never fetched it. **Fixed 2026-08-30** (`6964dbf4a`); the
+correct implementation had existed all along in `engine.reconciler.poller.AlpacaPoller`,
+which production does not use. Same commit also restores `is_option`/`multiplier`
+on polled positions, without which an option position entered the risk context
+looking like stock and `max_total_premium_pct` under-counted the book.
+
+Still verify after every cold start — `_cold_boot_fallback` does not set the level,
+so it is null until the first reconciler tick lands:
 
 ```sql
 SELECT options_trading_level, captured_at FROM positions_snapshot
  ORDER BY captured_at DESC LIMIT 1;
 ```
+
+### P1 code fix — the daily P&L baseline is account-blind
+
+`engine/reconciler/snapshot.py::_daily_pnl` computes today's P&L against **today's
+earliest `positions_snapshot` row**, not against the broker's own `last_equity`.
+
+Swap the Alpaca account mid-session and the baseline is the *previous* account's
+equity. Measured 2026-08-30: a fresh $100,000 account displayed **−$169.27 all day**
+because the 00:00 UTC row held the old account's $100,169.27. Alpaca itself reported
+`equity == last_equity == 100000`, i.e. P&L exactly 0.00.
+
+It self-heals at 00:00 UTC and the stale rows have been cleared, but the flaw stands:
+
+- **`breaker.py` reads `daily_pnl_pct`** to trip the −3% drawdown halt. A bogus
+  baseline means the only real circuit breaker is measuring against the wrong number.
+- Any future key rotation reintroduces it silently.
+
+**Fix:** prefer the broker's `last_equity` (authoritative, account-scoped) and keep
+the first-snapshot-of-day as the fallback. Needs a broker handle in `_daily_pnl`, so
+it touches the reconciler signature — do it deliberately, with a test, not in a rush.
+This sits on the drawdown-breaker path; treat it as risk code.
 
 ---
 
