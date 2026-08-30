@@ -30,9 +30,26 @@ made a whole workstream inert.
 
 ---
 
+## 0.5 🚨 BIGGEST BLOCKER — the agent cannot OPEN a trade at all
+
+`approval_mode` is hardcoded `"ask"`; `execute_proposal` is reachable only from two
+authenticated HTTP endpoints. The cron's last act is a push notification. So the
+agent drafts, files an audit row, and stops — **running it "on auto" Mon–Thu
+produces zero trades**, just a full inbox. The exit half already runs unattended;
+the entry half does not.
+
+Full design, gates and traps: **[`PLAN_AUTO_APPROVE.md`](PLAN_AUTO_APPROVE.md)**.
+Ship it flag-gated OFF; the account owner flips the switch.
+
+---
+
 ## 1. 🚨 BLOCKER — the agent cannot trade an option today
 
-**Every watchlist row is `asset_class='equity'`. All 45 of them.**
+~~**Every watchlist row is `asset_class='equity'`. All 45 of them.**~~
+**CLEARED 2026-08-30** — 8 liquid underlyings (SPY, QQQ, NVDA, AAPL, MSFT, AMD,
+TSLA, META) are now `asset_class='option'`, `ALLOW_OPTIONS=1` is set, and
+`options_trading_level` reads **3** in the snapshot. Kept below because the
+reasoning still applies if the watchlist is ever rebuilt.
 
 Per `OPTIONS_PLAYBOOK.md` §1.1 an options pass needs **both** `ALLOW_OPTIONS=1`
 **and** a watchlist row marked `option`. The env var is now set; the rows are not.
