@@ -9,6 +9,16 @@ Scope: **Phase A only — long calls and long puts, single leg, US equity
 options.** No spreads, no selling to open, no assignment handling. That is not
 a simplification for the contest; it is what bounds the loss.
 
+> ⚠️ **PARTLY SUPERSEDED — pending implementation, 2026-08-30.** The user has
+> decided to loosen the sizing caps and replace the fixed take-profit with a
+> trailing ratchet for the contest window. **The numbers below are still what
+> the code does today** — this file's own rule is that the code wins — but §2's
+> "1% and 5% are not negotiable" and §3's exit table are scheduled to change.
+> The reasoning and the new numbers:
+> [`PLAN_AGGRESSIVE_PROFILE.md`](PLAN_AGGRESSIVE_PROFILE.md) and
+> [`PLAN_EXIT_AGENT.md`](PLAN_EXIT_AGENT.md). Whoever implements those updates
+> this file **in the same commit**, per §0 above.
+
 ---
 
 ## 0. The one-line version
@@ -148,6 +158,10 @@ it becomes a block.
 > date. Do not describe it as an active control anywhere.
 
 ### Why 1% and 5% are not negotiable
+
+> **Superseded pending implementation** — see the banner at the top. The
+> *structure* of this argument survives the change; only the chosen bound moves,
+> and `daily_drawdown_halt_pct = -3.0` does not move at all.
 
 A long option's maximum loss is the entire premium. So `options_max_premium_pct`
 **is** the position-size cap — it is not a proxy for one. 1% per position and 5%

@@ -60,8 +60,8 @@ Full architecture, module map, and setup: **[`docs/README.md`](docs/README.md)**
 |---|---|
 | **Trading API** | Orders, positions, account, options trading level |
 | **Market Data API** | Daily/intraday bars, option chain snapshots with Greeks + IV, `/v2/options/contracts` for open interest |
-| **Alpaca MCP server** | `uvx alpaca-mcp-server`, with `ALPACA_TOOLSETS` scoped per agent role — the analyst session is mounted **without** the `trading` toolset, so those agents physically cannot place an order |
-| **Alpaca CLI** | The production market-hours gate (`alpaca clock get`) and the ops runbook |
+| **Alpaca MCP server** | *Planned, not shipped* — see [`docs/PLAN_ALPACA_MCP.md`](docs/PLAN_ALPACA_MCP.md). Intended as a **read-only** session only: there is to be exactly one Alpaca MCP session in this system and no order-placing tool in it. |
+| **Alpaca CLI** | *Planned, not shipped* — the market-hours gate. Today that gate is `engine.features.market_calendar` (a holiday table) with an unwired `/v2/clock` client beside it. |
 
 We also ship **our own** MCP server (`apps/mcp_server/`) exposing the council's
 read/propose-only surface, so the agent is itself addressable from Claude, Cursor or

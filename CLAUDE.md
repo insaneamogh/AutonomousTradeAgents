@@ -5,6 +5,17 @@ If you are touching anything options-related, also read
 [`docs/OPTIONS_PLAYBOOK.md`](docs/OPTIONS_PLAYBOOK.md) — it is the authoritative
 rule set, derived from the code, and §5 lists the traps that have already bitten.**
 
+**Work queued for you, in priority order.** Each is a full implementation plan with
+verified measurements, a revert-check matrix, and a "where you will go wrong" section.
+Read the whole plan before starting it:
+
+| # | Plan | What |
+|---|---|---|
+| 1 | [`docs/PLAN_AGGRESSIVE_PROFILE.md`](docs/PLAN_AGGRESSIVE_PROFILE.md) | Loosen the caps for the contest window via a reviewed profile. Changes outcomes; the delta band is frozen after Monday's open. |
+| 2 | [`docs/PLAN_EXIT_AGENT.md`](docs/PLAN_EXIT_AGENT.md) | Trailing ratchet (hold winners) + a monotone LLM exit agent with read-only tools. |
+| 3 | [`docs/PLAN_ALPACA_MCP.md`](docs/PLAN_ALPACA_MCP.md) | **Eligibility requirement.** Starts with a blocking verification gate — no code until you have quoted the spec. |
+| 4 | [`docs/PLAN_CANDLE_PATTERNS.md`](docs/PLAN_CANDLE_PATTERNS.md) | Candlestick detection feeding strategy fit + the chart. |
+
 ---
 
 ## 0. Who you are — identify yourself in every commit

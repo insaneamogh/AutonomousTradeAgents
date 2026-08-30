@@ -50,7 +50,7 @@ plan as if there is time to iterate on strategy performance. There is not.
 
 | Criterion | Our position |
 |---|---|
-| **P&L Performance** | Weakest. 4 sessions, 1% premium/trade, 5% total cap → low single digits either way. **Do not chase this by raising the caps** (§8). |
+| **P&L Performance** | Weakest. **Caps overridden by the user 2026-08-30** — 1%/5% → 2.5%/12% for the contest window, on the grounds that this is a paper account with no real capital. See [`PLAN_AGGRESSIVE_PROFILE.md`](PLAN_AGGRESSIVE_PROFILE.md); the −3% daily halt stays fixed and is what makes the wider bound tolerable. |
 | **Technology Implementation** | Strong. 21 equity + 13 options named risk rules, walk-forward backtester sharing live risk code, deterministic funnel, per-agent MCP toolset scoping. |
 | **Creativity & Originality** | **This is where we win.** The Refusal Ledger is unclaimed in the field. |
 | **Presentation & Execution** | Strong — real mobile + desktop product, full audit trail, live counterfactuals. |
@@ -104,25 +104,40 @@ satisfy it.
 - **Additionally** consume Alpaca's own tooling. Two integration points, both genuinely
   useful rather than decorative:
 
-**A. Alpaca CLI in the scheduler path.** `github.com/alpacahq/cli`, prebuilt binaries,
-env-var auth, JSON out. Explicitly built for *"long-running agent sessions, cron jobs
-and CI"* — which is what `apps/api/app/services/council/scheduler.py` is. Best plug
-point: replace the `pandas_market_calendars` gate in `daily_cron.main` with
-`alpaca clock get`. That is a genuine upgrade, not a swap — the pandas calendar doesn't
-know about a same-day early close or an unscheduled halt; Alpaca's clock does.
+**A. Alpaca CLI in the market-hours gate.** `github.com/alpacahq/cli`, prebuilt
+binaries, env-var auth, JSON out. Explicitly built for *"long-running agent sessions, cron
+jobs and CI"*.
 
-**B. Alpaca's MCP server with `ALPACA_TOOLSETS` privilege separation.** `uvx
-alpaca-mcp-server`, 65 tools. Open **two sessions with disjoint toolsets**:
+⚠️ **Two corrections to what this section used to say** (both verified 2026-08-30):
 
-| Session | `ALPACA_TOOLSETS` | Holder | Can place an order? |
-|---|---|---|---|
-| research | `options-data,stock-data,assets,news` | analysts, drafter, chain fetch | **No — the tool isn't loaded** |
-| execution | `trading,account` | executor, only past the risk gate | Yes |
+1. **The gate is not `pandas_market_calendars` in `daily_cron.main`.** The real path is
+   `engine/features/market_calendar.py::is_us_market_open` → `engine/scanner/engine.py:86`
+   → `apps/api/app/services/council/scheduler.py:317`.
+2. **The early-close / halt awareness already exists in Python and is simply unwired.**
+   `engine/features/clock.py::AlpacaClock` calls `/v2/clock`; `clock_from_env()` has zero
+   non-test callers. So the CLI is the **eligibility artifact**; wiring that clock is the
+   **functional upgrade**. Do both, and do not confuse them.
 
-The claim this buys: *"The analyst agents cannot place an order. Not because we told
-them not to — because `place_option_order` is not in their tool list."* That is a
-capability boundary, not a prompt instruction, and it's the strongest available answer
-to the five teams claiming the same architecture as prompt-level policy.
+The exact clock subcommand below was never verified — treat it as unknown until the gate in
+[`PLAN_ALPACA_MCP.md`](PLAN_ALPACA_MCP.md) §0 confirms it.
+
+**B. Alpaca's MCP server — ONE read-only session. No execution session.**
+
+The two-session design that used to be described here (a `research` session plus an
+`execution` session holding the `trading` toolset) **has been deleted**, because
+`apps/mcp_server/mcp_server/tools.py:9-19` correctly says mounting execution tools into an
+LLM tool loop would violate this codebase's one architectural rule.
+
+Read-only-only is also the **stronger** claim. Two disjoint sessions says *"we mounted
+execution tools and trusted ourselves to only use them from the right place"* — a policy,
+which is exactly what five competitors already claim. One read-only session says:
+
+> *"There is exactly one Alpaca MCP session in this system and `place_option_order` is not
+> in it. Execution never touches MCP at all — it goes `engine.risk` → `packages/broker` →
+> Alpaca REST, deterministic Python end to end."*
+
+A capability boundary **with no exception** beats one with a carve-out. Toolset names must
+be verified against the README before use — see [`PLAN_ALPACA_MCP.md`](PLAN_ALPACA_MCP.md) §0.
 
 **Do not let MCP work block Monday's open.** Flag-gate every MCP path with the existing
 direct-SDK code as the default. The CLI clock gate alone satisfies the requirement.
@@ -206,10 +221,15 @@ by Tuesday close is the emergency signal** — loosen the funnel, never the risk
 
 ## 8. Do not do these
 
-- **Do not raise `options_max_premium_pct` (1%) or `options_max_total_premium_pct`
-  (5%) to chase P&L.** Bounded downside *is* the capital-preservation story the
-  write-up makes. Raising them mid-contest trades our three best judging categories
-  for a lottery ticket on our worst one — and a judge reading the git log will see it.
+- ~~**Do not raise `options_max_premium_pct` (1%) or `options_max_total_premium_pct`
+  (5%) to chase P&L.**~~ **SUPERSEDED 2026-08-30 by an explicit user decision.** The caps
+  move to 2.5% / 12% via a reviewed `RiskCaps.aggressive_paper()` profile — never via an
+  env var that supplies a number. The bounded-loss argument survives with a wider bound:
+  max loss is still the premium, and `daily_drawdown_halt_pct = -3.0` **does not move**,
+  which is what keeps a 12% book-to-zero a multi-day worst case rather than a single-day
+  one. Widening the cap and freezing the halt are one coupled decision. Full reasoning and
+  the numbers: [`PLAN_AGGRESSIVE_PROFILE.md`](PLAN_AGGRESSIVE_PROFILE.md).
+- **Do not raise the caps beyond 2.5% / 12%.** That is the reviewed ceiling.
 - **Do not change `selection.py` constants after Monday's open.** One reviewed Saturday
   change, then frozen, so funnel counts stay comparable across days.
 - **Do not claim `earnings_blackout` is an active control.** It is permanently inert:

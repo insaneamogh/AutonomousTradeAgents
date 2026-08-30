@@ -385,6 +385,91 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-30 — four implementation plans, written for the next model
+
+**Account blocker cleared.** New paper account `PA3IAZI74E5R`, **options Level 3**
+(covered calls, CSPs, long calls/puts, spreads, straddles, multi-leg). Keys going to
+Railway. Phase A only needs Level 2, so we have headroom.
+
+**This commit is docs only. No code changed. Suite still 792 passed, 9 skipped.**
+The user is near their session limit and is handing execution over — these four plans
+are written to be executed without access to that conversation.
+
+| Plan | Priority |
+|---|---|
+| [`docs/PLAN_AGGRESSIVE_PROFILE.md`](docs/PLAN_AGGRESSIVE_PROFILE.md) | 1 — changes outcomes; delta band frozen after Mon open |
+| [`docs/PLAN_EXIT_AGENT.md`](docs/PLAN_EXIT_AGENT.md) | 2 — ratchet ships without any LLM |
+| [`docs/PLAN_ALPACA_MCP.md`](docs/PLAN_ALPACA_MCP.md) | 3 — **eligibility**, starts with a blocking spec-verification gate |
+| [`docs/PLAN_CANDLE_PATTERNS.md`](docs/PLAN_CANDLE_PATTERNS.md) | 4 — greenfield |
+
+#### Things I measured that you should not re-derive
+
+```
+best_strategy({})  ->  rsi_mean_reversion, score 0.60, tradable=True
+blind_weight_fraction:  vol_regime_switch 0.400 · breakout 0.350 · sma/rsi 0.150 · momentum 0.000
+```
+
+- **An empty feature dict is tradable at 0.60**, not 0.50 — `not_a_trend_break` reads
+  `trend_regime != "downtrend"` and the missing-value sentinel `"unknown"` satisfies that
+  as a genuine TRUE. **Raising `MIN_FIT_TO_TRADE` does not fix it.** A data outage
+  currently spends 5 LLM calls and can originate a trade.
+- **`MIN_FIT_TO_TRADE` has a hard floor of 0.41.** `vol_regime_switch`'s blind fraction is
+  exactly 0.400 — at a floor of 0.40 it clears the trade gate on direction-blind checks
+  alone.
+- **`fit.py:93` claims a test asserts this. That test does not exist.** There is no
+  `test_fit.py` anywhere in the repo. CLAUDE.md §4.2 case, and it is the only thing that
+  would catch a collision between the aggressive-profile and candlestick workstreams.
+  **Write it first.**
+- **`engine/features/clock.py::AlpacaClock` already calls `/v2/clock` and is unwired** —
+  `clock_from_env()` has zero non-test callers. The early-close/halt awareness
+  `HACKATHON.md` §5 promised from the Alpaca CLI has been sitting in the repo the whole
+  time. The CLI is the eligibility artifact; wiring that clock is the actual upgrade.
+- **At a 1% premium cap on $100k, any contract priced over $10.00 floors to zero
+  contracts and HOLDs** (`qty = floor(budget / (ask × 100))`, never rounds up). The cap
+  was silently refusing whole price bands, and because the sizer emits a HOLD rather than
+  a veto, that refusal never reached the Refusal Ledger either.
+
+#### Corrections to our own docs, made in this commit
+
+- **`README.md:63-64` claimed the Alpaca MCP server and CLI in the present tense**, in the
+  judge-facing file, and neither is shipped. I wrote that last session describing intent as
+  fact. Now marked planned. **If you catch me doing that again, fix it the same way.**
+- **`HACKATHON.md` §5 said the market-hours gate is `pandas_market_calendars` in
+  `daily_cron.main`. It is not there.** Real path:
+  `market_calendar.is_us_market_open` → `scanner/engine.py:86` → `scheduler.py:317`.
+  Corrected — do not go hunting for the code the old text described.
+- **`HACKATHON.md` §5's two-session MCP table is deleted.** It proposed an `execution`
+  session holding the `trading` toolset, which `mcp_server/tools.py:9-19` correctly says
+  would violate the architecture rule. Read-only-only is also the stronger claim: a
+  capability boundary with no exception beats one with a carve-out.
+- **`HACKATHON.md` §3 and §8's "do not raise the caps"** now record the user's override,
+  dated.
+- **`OPTIONS_PLAYBOOK.md`** carries a superseded-pending-implementation banner rather than
+  contradicting prose.
+
+#### The one design decision worth arguing about
+
+The user asked for the LLM to have "tools and harnesses to execute" an option close. The
+plan gives it **monotone authority: it can only close EARLIER, never hold longer, never
+move the trail, never place an order.** Deterministic code still executes.
+
+The consequence people get backwards: **the fail-safe on error/timeout is `TRAIL`, not
+`CLOSE`.** Closing on an API timeout means an Anthropic outage caused a trade. Because the
+agent can only ever close earlier, fail-open is structurally impossible — the trail, hard
+stop, time stop and expiry sweep run whatever it says. Do not "harden" this by flipping it.
+
+#### Open, in the order they bite
+
+- [ ] **Nothing from these plans is live.** Monday's open runs the current conservative
+      caps and the fixed +60% take-profit.
+- [ ] **The delta band is frozen after Monday's open** (`HACKATHON.md` §8). Pre-open or
+      accept a mid-contest change.
+- [ ] **The reconciler must tick once before the first options pass** —
+      `_cold_boot_fallback` leaves `options_trading_level` as `None` and
+      `options_level_insufficient` vetoes every entry. Every cold start, not just Monday.
+- [ ] Alpaca MCP/CLI not started. Eligibility.
+- [ ] No UI renders the contract funnel or the trim rows yet; both endpoints exist.
+
 ### 2026-08-30 — `750100a9`+`1c04b194`+`c410f1c0`+`7684c21b`+`0de733c6` The Refusal Ledger, end to end
 
 Sunday's block: made the ledger actually work for OPTIONS, and gave an open
