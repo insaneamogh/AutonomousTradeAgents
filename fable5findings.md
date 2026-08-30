@@ -385,6 +385,32 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-30 — `d0774438` feat(desktop): AUTO pill on the Decisions list
+
+`ID:MODEL2OFF`. Closes the deliverable the frontend toggle work (`a70cd210`)
+deliberately left open, now that the backend landed the real field
+(`DecisionSummaryDto.approval_mode` / wire `approvalMode`, `7362a3a3`).
+
+**Checked where it actually belongs rather than guessing**: mobile has no
+screen consuming `useDecisions`/`DecisionSummaryDto` at all — `(tabs)/review.tsx`
+is a different feature (the swipe hand-grading deck, `useReviewQueue`, closed
+trades only). Desktop's `Decisions.tsx` is the only real target. Mobile's
+`decision/[id].tsx` reads a third, separate endpoint
+(`/api/v1/decisions/{id}/timeline`) neither prior workstream touched — left
+alone rather than scope-creeping a new field through it.
+
+Extended `Tone` (`primitives.tsx`) with `'warn'`, mapped to the `pg-pill--warn`
+token the toggle work already added to `theme.ts`, instead of a one-off
+className. Decisions.tsx renders it beside the existing action pill when
+`d.approvalMode === 'auto'`.
+
+**Verified**: `tsc --noEmit -p apps/mobile/tsconfig.json` clean (the `Tone`
+union extension doesn't break an exhaustive switch anywhere), `jest` 23/23
+unchanged. **Not verified live** — an authenticated desktop Decisions view
+needs real Google OAuth or a live Postgres-backed API, unavailable here; the
+toggle commit (`a70cd210`) already accepted the identical limitation for the
+same reason. Recommend a real look once deployed.
+
 ### 2026-08-30 — `db79fa78` fix(orders): auto-approver's own try/except must cover gate 2b too
 
 Found reviewing the merged auto-approve sweeper (`3bce40b2`/`4e46507e`/`7362a3a3`)
