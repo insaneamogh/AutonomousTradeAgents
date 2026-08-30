@@ -385,6 +385,58 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-30 — `3bce40b2` feat(broker): add auto_approve_consent, the account owner's own two-key gate
+
+`ID:MODEL2OFF`. First of three commits implementing `PLAN_AUTO_APPROVE.md` (the sweeper
+itself, in a later commit) plus a UI-facing extension the user asked for this session on
+top of the plan: a per-connection `auto_approve_consent` flag so the account owner — not
+just the Railway operator env — controls autonomous entries from inside the app. This
+commit is the extension's plumbing; the sweeper that actually reads it lands next.
+
+**Baseline verified first**, per CLAUDE.md's own instruction: `apps/agents apps/api
+packages/` → **940 passed, 9 skipped**, matching `PLAN_AUTO_APPROVE.md`'s own claimed
+number exactly (no drift to chase, unlike the last session's stale "792").
+
+Copied `live_trading_consent` (migration 0011) field-for-field, per the brief's explicit
+instruction to mirror that exact shape rather than invent a new one:
+- Migration `0016_auto_approve_consent`, chained onto `0015_snapshot_options_level`
+  (confirmed a single head via `alembic heads` — no branching).
+  `BrokerConnection.auto_approve_consent`, `BrokerConnectionRecord.auto_approve_consent`,
+  both default `False`.
+- `BrokerStore.set_auto_approve_consent` on the Protocol, implemented identically in
+  `InMemoryBrokerStore` and `PostgresBrokerStore` (mirrors `set_live_consent`'s
+  compare-on-`status=="active"` update exactly).
+- `POST /api/v1/broker/connections/{id}/auto-approve-consent`, body `{"enabled": bool}`,
+  response `BrokerConnectionResponse` (now carrying `auto_approve_consent` /
+  wire `autoApproveConsent`), ownership-checked the same way `/consent` is. **This exact
+  path and body shape is the contract a parallel frontend agent is building against —
+  unchanged from the brief.**
+
+**Tested the same way `live_trading_consent` is tested — which turned out to be less
+than the brief assumed, so I extended it rather than just mirroring gaps too:**
+searching the existing suite found `live_trading_consent`'s own round-trip is
+Postgres-gated only (`test_postgres_stores.py`, skipped without
+`RUN_POSTGRES_TESTS=1`) — there was no router-level ownership-check test for the
+`/consent` endpoint itself anywhere. I mirrored the Postgres-gated round-trip
+(`test_postgres_broker_store_auto_approve_consent_round_trip`: defaults false,
+independent of `live_trading_consent`, refuses on a revoked connection — same three
+assertions `set_live_consent` would need) AND added the router-level pair that didn't
+already exist for either endpoint (`test_auto_approve_consent_defaults_false_and_round_trips`,
+`test_auto_approve_consent_other_users_connection_is_404`, in `test_broker.py`, mirroring
+the existing `test_revoke_other_users_connection_is_404`'s OAuth-seeded-connection
+pattern). One line added to `test_env_bootstrap.py` confirming the env-bootstrap path
+defaults the new flag false too, alongside the existing `live_trading_consent` assertion.
+
+**Verified, not assumed:** ran `apps/api/tests/test_broker.py
+apps/api/tests/test_postgres_stores.py apps/api/tests/test_env_bootstrap.py` directly →
+**38 passed, 9 skipped** (the 9 skips are the pre-existing `RUN_POSTGRES_TESTS`-gated
+file in full, my new Postgres test included — not run here, no local Postgres). Ruff
+clean on every file this commit touches. mypy: `postgres_broker_store.py` already had 2
+pre-existing `"Result[Any]" has no attribute "rowcount"` errors before this change
+(`revoke_connection`, `set_live_consent`) — confirmed via `git stash` — my new
+`set_auto_approve_consent` mirrors that exact existing pattern and is a 3rd occurrence
+of the SAME pre-existing gap, not a new class of error.
+
 ### 2026-08-30 — `538b119f` feat(engine,agents): candlestick pattern detection feeding strategy fit
 
 `ID:MODEL2OFF`. Built [`PLAN_CANDLE_PATTERNS.md`](docs/PLAN_CANDLE_PATTERNS.md) end to
