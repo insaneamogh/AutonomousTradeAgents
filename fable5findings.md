@@ -385,6 +385,60 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-30 — `7362a3a3` feat(api): expose approval_mode on the decision list so auto pills can render
+
+`ID:MODEL2OFF`. Third and last of three commits this session. `approval_mode` lived only
+on the DB model + `PostgresStore` internals (confirmed by grep before writing anything)
+— no API-facing DTO carried it, so nothing could render an AUTO pill against a real
+field.
+
+**Checked both candidate homes the brief named, rather than picking one on a guess:**
+`ApprovalProposalDto` (backs the Picks screen, `GET /approvals/pending`) is the WRONG
+home — read `PostgresStore.list_pending`'s query and `append_pending`'s hardcoded
+`approval_mode="ask"` at creation, and read `Picks.tsx` itself: it is specifically the
+PENDING-approvals inbox, and an auto-approved row's `user_response='approved'` means it
+is never in that list by construction. `approval_mode` would read `"ask"` on literally
+every row there, forever — not a useful field to add. `DecisionSummaryDto` (backs
+`GET /api/v1/decisions`, read by `Decisions.tsx` via its `useDecisions` hook, traced
+through the import chain rather than assumed from the filename) is the RIGHT home — it
+lists every council decision regardless of outcome. Added `approval_mode` there,
+populated in `decisions_list.py`, plus the matching field on the hand-maintained TS
+mirror in `packages/shared-types/src/index.ts` (confirmed no codegen exists for these
+DTOs — this file is manually kept in sync, same as every other field on it).
+
+**This is flagged explicitly, not silently resolved:** the brief said a parallel
+frontend agent might be building against either of the two guessed locations. If that
+agent assumed `ApprovalProposalDto`, this commit's home (`DecisionSummaryDto`) is the
+one that actually works and needs reconciling.
+
+Verified: full suite -> 960 passed, 10 skipped, unchanged from the prior commit (a field
+addition, not new behavior). Confirmed via grep that no test constructs
+`DecisionSummaryDto` directly or hits `GET /api/v1/decisions`, so the new required field
+broke nothing. Installed the JS workspace fresh (this worktree had no `node_modules`)
+and ran `pnpm -s exec tsc --noEmit -p apps/mobile/tsconfig.json` (clean) +
+`pnpm --filter mobile exec jest --silent` (**23 passed, 3 suites**) to confirm the
+shared-types edit doesn't break the mobile build.
+
+**Session total, all three commits:** baseline **940 passed / 9 skipped**, verified
+myself before touching anything (matches `PLAN_AUTO_APPROVE.md`'s own claimed number
+exactly) -> final **960 passed / 10 skipped** (+20 passing: 18 in `test_auto_approver.py`
++ 2 in `test_broker.py`; +1 skip: the new Postgres-gated `auto_approve_consent`
+round-trip, not run locally, no Postgres in this sandbox). Every gate in
+`auto_approve_for_user` was individually broken and confirmed to fail its matching test
+before being restored (CLAUDE.md §4.1) — see the two commits above for the full list.
+Never flipped `AUTO_APPROVE_ENABLED` or `auto_approve_consent` to true outside a test's
+own isolated fixture; never touched the real deployed Railway app or the real Alpaca
+connection.
+
+**Left open / for the next agent:** the frontend AUTO-pill work itself (out of scope —
+this session was backend-only, per the brief); reconciling whichever DTO the parallel
+frontend agent actually built against, if it wasn't `DecisionSummaryDto`; live
+verification of the sweeper end-to-end (deploy with `AUTO_APPROVE_ENABLED=0`, confirm it
+runs and executes nothing, then the ACCOUNT OWNER — not a model — flips the flag and
+grants consent from the app) was explicitly out of scope for this session per its own
+operating rules (never run anything against the real deployed app or real broker
+connection) and is unchanged from `PLAN_AUTO_APPROVE.md`'s own §4 live-verification order.
+
 ### 2026-08-30 — `4e46507e` feat(orders): auto-approve sweeper — the agent can now open a trade unattended
 
 `ID:MODEL2OFF`. Second of three commits. Built `docs/PLAN_AUTO_APPROVE.md` end to end —
