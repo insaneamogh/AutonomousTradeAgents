@@ -385,6 +385,90 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-30 — `750100a9`+`1c04b194`+`c410f1c0`+`7684c21b`+`0de733c6` The Refusal Ledger, end to end
+
+Sunday's block: made the ledger actually work for OPTIONS, and gave an open
+option a price-based way out. Five commits, all on `main`, all `ID:MODEL1REAL`.
+
+**`750100a9` — option ghosts are marked on the CONTRACT.** The hero feature had
+never once included an options refusal. Three independent reasons: `ghost_eval`
+marked every ghost through the *stock* bars endpoint keyed on `row.symbol` (the
+underlying — a different question, and an OCC symbol through that endpoint 400s
+with "invalid symbol"); `_ghost_pnl` had no multiplier so every options ghost
+was 100x too small; and status only went "final" when the horizon's LAST trading
+day happened to print a bar, which for a sparse option strike may never happen.
+New `engine/prices/option_alpaca.py` + `get_option_price_provider()`.
+
+**VERIFIED LIVE, and this one is worth knowing about:** `/v1beta1/options/bars`
+with `end` inside the 15-minute delay window returns **403 "OPRA agreement is
+not signed"**. The message is a lie — nothing is unsigned. Same keys, same
+contract, seconds apart:
+
+```
+end=2026-08-30T23:59:59Z -> 403 "OPRA agreement is not signed"
+end=2026-08-29T00:00:00Z -> 200, bars returned
+```
+
+The evaluator always marks up to `today`, so unclamped this 403s on every single
+pass. `end` is clamped to `now-20min`. If you see that error anywhere else in
+this codebase, check the request window before you check the account.
+
+Also verified live: option daily bars are **sparse**. A 3-contract SPY request
+over 10 days returned bars for 2 contracts on 3 days total. Do not write code
+that assumes a dense series.
+
+**`1c04b194` — trims are attributed; the contract funnel is persisted.** Both
+risk engines were discarding `trim_d.veto_rule` and keeping only an anonymous
+`trimmed:10->4` flag. `RiskDecision.trim_rules` now carries the name. And
+`select_contract`'s funnel — where MOST refusals happen — was `logger.info`'d
+and dropped, because a HOLD writes `proposal = None` and there was nowhere to
+put it. **That is the mechanical cause of "it just says HOLD with no
+explanation" on an options pass.** Now in `reasoning.contract_funnel` (JSONB,
+zero schema change), on the approved path too. `run_council` returns `reasoning`.
+
+**`c410f1c0` — options finally have a price exit.** Before this an open option
+had only the calendar time stop, a signal exit, and the `dte<=2` sweep. **None
+is a price rule.** Running unattended Mon-Thu, a call up 90% Tuesday and back to
+zero Thursday hits none of them. This is not fixable with a bracket: Alpaca
+cannot bracket a single-leg option at all (`OrderClass` allows only simple/mleg
+for us_option), so the protection every equity entry gets from the broker is
+structurally unavailable and has to live in our sweep. `engine/options/exits.py`,
++60% / -50% on the PREMIUM, checked BEFORE the time stop. Env-tunable
+(`OPTIONS_TAKE_PROFIT_PCT` / `OPTIONS_STOP_LOSS_PCT`) while the premium caps
+stay code-level — an exit threshold cannot increase max loss beyond premium
+already paid; a cap can.
+
+**`7684c21b` — `docs/OPTIONS_PLAYBOOK.md`.** Every rule the options side plays
+by, derived from the code. Writing it immediately caught that `selection.py`'s
+own module docstring had drifted from its constants on FIVE numbers (DTE window,
+risk guardrail, both delta bands, volume floor, spread ceiling) — all changed in
+an earlier commit with the prose left behind. Corrected. **Read §5 (traps)
+before touching options code.**
+
+**`0de733c6` — trims surface on `GET /api/v1/risk/vetoes`** as a separate
+`trims[]` list, never summed into `totalVetoes`.
+
+**Verified:** full suite **792 passed, 9 skipped** (was 757 at session start).
+Every new test reverted-checked — break the fix, confirm the test fails, restore.
+ruff clean on all touched files; the 2 pre-existing B008 in `insights.py`
+confirmed unchanged via `git stash`.
+
+**Still open, and the first two are blockers:**
+- [ ] **Fresh Alpaca paper account, $100k, `options_trading_level >= 2`.** User
+      action. Gates everything. A new account can sit at level 0 until the
+      options agreement is accepted and approval is not instant.
+- [ ] **The reconciler must tick once before the first options pass.**
+      `postgres_context._cold_boot_fallback` does not set
+      `options_trading_level`, so it defaults to `None` and
+      `options_level_insufficient` vetoes every entry. Hard ordering constraint
+      every cold start, not just Monday.
+- [ ] **P0.5: Alpaca's own MCP server / CLI — this is ELIGIBILITY, not polish.**
+      Not started. `docs/HACKATHON.md` §5 has the design.
+- [ ] UI: nothing renders the contract funnel or the trim rows yet. The data and
+      the endpoints exist. Highest demo-value-per-hour item remaining.
+- [ ] Ghost marks for options are untested against a REAL refused option — there
+      has never been one. The code path is verified; the end-to-end is not.
+
 ### 2026-08-29 — `add7346a` docs: model handover protocol + hackathon brief + MCP correction
 
 Process change, not a code change. Two models alternate on this repo across
