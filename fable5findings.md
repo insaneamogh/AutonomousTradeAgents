@@ -385,6 +385,56 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-30 — `4e46507e` feat(orders): auto-approve sweeper — the agent can now open a trade unattended
+
+`ID:MODEL2OFF`. Second of three commits. Built `docs/PLAN_AUTO_APPROVE.md` end to end —
+`apps/api/app/services/orders/auto_approver.py::auto_approve_for_user`, wired into
+`ReconcilerFleet.tick()` after both exit paths — plus the new `auto_approve_consent`
+gate from the prior commit, wired in as its own explicit gate 2b per the user's
+instruction not to fold it silently into gate 1.
+
+**Both of the plan's own "verify before relying on it" items were actually verified,
+not assumed** (see the commit body for the full detail): `execute_proposal` resolves
+its store/broker-store through module-level singletons with no FastAPI `Depends`
+anywhere on that path, so it behaves identically called from the reconciler fleet as
+from a route. `store.decide()` and `finalize_execution_claim()` were both read end to
+end — neither touches `approval_mode` — so the `"auto"` stamp is applied via its own
+dedicated `UPDATE`, strictly after a successful execution.
+
+**All 18 tests (10 named in the plan's §4, 2 for the new consent gate's two-key AND
+property + a no-connection edge case, 1 extra fresh-proposal-is-not-skipped companion,
+1 extra under-daily-budget companion, 1 extra literal `agent`-exit-mode-fired
+confirmation, 1 String(10) fit check) were individually revert-checked live** —
+broke each gate in the source, ran the specific test, watched it fail with the exact
+wrong number/behavior, restored, confirmed the full file green again. Every one behaved
+exactly as predicted; none needed a second attempt. The per-tick-cap check (gate 6) was
+the most involved to break realistically — simulated "the cap was removed" by having
+the sweeper loop `execute_proposal` over every eligible proposal instead of picking one,
+which correctly turned `len(executed) == 1` into `len(executed) == 5`.
+
+**Design choices beyond the plan's literal text, decided and stated rather than left
+implicit:**
+- The consent gate resolves the user's Alpaca connection filtered to `is_paper=True`
+  explicitly (a small local helper, not the shared `broker_use.get_active_broker_connection`,
+  which has no such filter and would happily read a LIVE connection's consent flag —
+  exactly the wrong row for a feature that must stay paper-only).
+- The two exit steps (`manage_positions_for_user`, `sweep_expiring_options_for_user`)
+  both free premium, so the sweeper runs after BOTH, not just the one the plan names —
+  same reasoning the plan gives, applied to the second exit mechanism it didn't
+  explicitly mention.
+- `_env_int` is a small local copy of `engine.risk.types`'s private helper of the same
+  name and contract (fail-to-default, warn-and-keep-default on a malformed value), not
+  an import of that underscore-private name across the api/engine package boundary —
+  the CONTRACT is shared, the actual env var names/defaults never overlap, so this
+  isn't the §4.4 "same number in two places" trap.
+
+Verified: full suite `apps/agents apps/api packages/` -> **960 passed, 10 skipped**
+(940+20 passing / 9+1 skipped across all three commits this session, exactly accounted
+for). Ruff clean. mypy: 3 new "missing type arguments for async_sessionmaker" errors in
+this file, same pre-existing untyped-generic pattern `reconciler_fleet.py`'s own
+`session_factory` field already carries (confirmed via `git stash` baseline) — not a
+new class of error, not fixed here.
+
 ### 2026-08-30 — `3bce40b2` feat(broker): add auto_approve_consent, the account owner's own two-key gate
 
 `ID:MODEL2OFF`. First of three commits implementing `PLAN_AUTO_APPROVE.md` (the sweeper
