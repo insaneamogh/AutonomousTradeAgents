@@ -168,7 +168,14 @@ export function DecisionsScreen() {
                             </Stack>
                           </td>
                           <td>
-                            <Pill tone={actionTone(d.finalAction)}>{d.finalAction}</Pill>
+                            <Row gap={6}>
+                              <Pill tone={actionTone(d.finalAction)}>{d.finalAction}</Pill>
+                              {d.approvalMode === 'auto' ? (
+                                <Pill tone="warn" title="Executed by the auto-approve sweeper — no human tap">
+                                  AUTO
+                                </Pill>
+                              ) : null}
+                            </Row>
                           </td>
                           <td>
                             <span className="pg-caption">{outcomeLabel(d)}</span>

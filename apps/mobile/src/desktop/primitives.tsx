@@ -13,7 +13,7 @@ import type { CSSProperties, ReactNode } from 'react';
 
 import { scoreBand, scoreHex } from './theme';
 
-export type Tone = 'bull' | 'bear' | 'neutral';
+export type Tone = 'bull' | 'bear' | 'neutral' | 'warn';
 
 /* ── Layout ──────────────────────────────────────────────────────── */
 
@@ -149,7 +149,13 @@ export function Pill({
 }) {
   const cls = [
     'pg-pill',
-    tone === 'bull' ? 'pg-pill--bull' : tone === 'bear' ? 'pg-pill--bear' : '',
+    tone === 'bull'
+      ? 'pg-pill--bull'
+      : tone === 'bear'
+        ? 'pg-pill--bear'
+        : tone === 'warn'
+          ? 'pg-pill--warn'
+          : '',
     glow ? 'pg-pill--glow' : '',
   ]
     .filter(Boolean)
