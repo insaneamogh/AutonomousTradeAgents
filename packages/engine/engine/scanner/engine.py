@@ -64,7 +64,10 @@ class Scanner:
     daily_bars: BarsProvider
     intraday: IntradayBarsProvider
     clock: ClockProvider | None = None
-    """Optional real market clock (``AlpacaClock`` via ``clock_from_env()``).
+    """Optional real market clock — in production, ``resolved_clock_from_env()``
+    (Alpaca's own CLI, when ``USE_ALPACA_CLI=1``, layered in front of
+    ``AlpacaClock`` via ``clock_from_env()``; either way, any ``ClockProvider``
+    works here, including a bare ``AlpacaClock`` in tests).
 
     When present, ``scan()`` asks it whether the market is open instead of
     consulting the local holiday calendar — the same real ``/v2/clock`` that
