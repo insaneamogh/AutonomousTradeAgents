@@ -52,11 +52,21 @@ class VetoRuleDto(CamelCaseModel):
     last_at: str | None = None
 
 
+class TrimRuleDto(CamelCaseModel):
+    rule: str
+    count: int
+
+
 class VetoLedgerResponse(CamelCaseModel):
     window_days: int
     total_vetoes: int
     total_blocked_notional: float
     rules: list[VetoRuleDto] = Field(default_factory=list)
+    trims: list[TrimRuleDto] = Field(default_factory=list)
+    """Partial refusals — rules that resized a trade instead of stopping
+    it. A separate list, never summed into ``totalVetoes``: a trim let a
+    (smaller) trade through, a veto did not."""
+    total_trims: int = 0
 
 
 @router.get("/ghost/summary", response_model=GhostSummaryResponse, response_model_by_alias=True)
@@ -104,4 +114,6 @@ async def veto_ledger(
             )
             for r in ledger.rules
         ],
+        trims=[TrimRuleDto(rule=t.rule, count=t.count) for t in ledger.trims],
+        total_trims=ledger.total_trims,
     )

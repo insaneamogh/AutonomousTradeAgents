@@ -13,7 +13,8 @@ notional and ghost P&L as the caller's own numbers.
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
@@ -70,11 +71,28 @@ class VetoRuleRow:
 
 
 @dataclass
+class TrimRuleRow:
+    """One rule that SHRANK trades rather than blocking them."""
+
+    rule: str
+    count: int
+    """How many approved trades this rule resized."""
+
+
+@dataclass
 class VetoLedger:
     window_days: int
     total_vetoes: int
     total_blocked_notional: float
     rules: list[VetoRuleRow]
+    trims: list[TrimRuleRow] = field(default_factory=list)
+    """Partial refusals, kept in their own list rather than mixed into
+    ``rules``. A trim approved a smaller trade; a veto approved nothing.
+    Summing them together would inflate the veto count with events that
+    did not stop a trade — the same class of error that once let every
+    strategy-fit HOLD land in this ledger as ``unnamed_rule``."""
+
+    total_trims: int = 0
 
 
 def _empty_summary(window_days: int) -> GhostSummary:
@@ -208,9 +226,78 @@ async def build_veto_ledger(window_days: int = 30, *, user_id: str) -> VetoLedge
         total_notional += notional
 
     out.sort(key=lambda r: r.count, reverse=True)
+    trims = await _trim_rows(window_days=window_days, tenant=tenant)
     return VetoLedger(
         window_days=window_days,
         total_vetoes=sum(r.count for r in out),
         total_blocked_notional=round(total_notional, 2),
         rules=out,
+        trims=trims,
+        total_trims=sum(t.count for t in trims),
+    )
+
+
+async def _trim_rows(
+    *, window_days: int, tenant: list[ColumnElement[bool]]
+) -> list[TrimRuleRow]:
+    """Rules that shrank a trade instead of blocking it.
+
+    Read from ``reasoning.risk_trim_rules`` on APPROVED rows, which is why
+    this cannot be folded into the veto query above: a trim lives on a row
+    whose ``risk_veto_rule`` is NULL and whose ``risk_approved`` is true.
+    They are the same story ("risk refused something") told about
+    different rows, so they are counted separately and never summed.
+
+    Filtering happens in Python rather than in a JSONB predicate: the list
+    is short (one window of one tenant's decisions), and a ``->>`` array
+    containment expression here would be one more place for the field name
+    to drift out of sync with ``runtime._reasoning_block``.
+    """
+    cutoff = datetime.now(UTC) - timedelta(days=window_days)
+    session_factory = async_session_factory()
+    async with session_factory() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(AgentDecision.reasoning).where(
+                        AgentDecision.risk_approved.is_(True),
+                        AgentDecision.triggered_at >= cutoff,
+                        AgentDecision.reasoning.is_not(None),
+                        *tenant,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    return count_trim_rules(rows)
+
+
+def count_trim_rules(reasonings: Sequence[object]) -> list[TrimRuleRow]:
+    """Tally ``reasoning.risk_trim_rules`` across decision rows.
+
+    Split out from the query so the aggregation is testable without a
+    database. Tolerant by construction: a row with no ``reasoning``, a
+    non-dict, a missing key, or a non-string entry is skipped rather than
+    raising — these rows are historical JSONB written by several
+    generations of this code, and one malformed row must not empty the
+    whole ledger.
+    """
+    counts: dict[str, int] = {}
+    for reasoning in reasonings:
+        if not isinstance(reasoning, dict):
+            continue
+        rules = reasoning.get("risk_trim_rules")
+        if not isinstance(rules, list):
+            continue
+        for rule in rules:
+            if isinstance(rule, str) and rule:
+                counts[rule] = counts.get(rule, 0) + 1
+
+    # Ties break alphabetically so the ledger's row order is stable across
+    # reloads — a scorecard that reshuffles on refresh reads as broken.
+    return sorted(
+        (TrimRuleRow(rule=r, count=c) for r, c in counts.items()),
+        key=lambda t: (-t.count, t.rule),
     )
