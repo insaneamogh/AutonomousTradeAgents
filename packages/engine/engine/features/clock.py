@@ -29,7 +29,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import monotonic
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from engine.features.market_calendar import is_us_market_open
 
@@ -49,6 +49,20 @@ class MarketClock:
     next_close: datetime | None = None
     source: str = "local_calendar"
     """``alpaca`` when the broker answered, ``local_calendar`` on fallback."""
+
+
+@runtime_checkable
+class ClockProvider(Protocol):
+    """What a caller (the scanner) needs from a clock — real or fake.
+
+    Same shape as ``BarsProvider``/``IntradayBarsProvider`` in
+    ``engine.features.bars``: a ``name`` for logging plus one async method,
+    so tests can inject a trivial double without a network.
+    """
+
+    name: str
+
+    async def now(self, *, at: datetime | None = None) -> MarketClock: ...
 
 
 class AlpacaClock:

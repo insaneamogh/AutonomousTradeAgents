@@ -27,6 +27,7 @@ import logging
 import os
 
 from engine.features.bars import AlpacaDailyBarsProvider, intraday_provider_from_env
+from engine.features.clock import clock_from_env
 from engine.scanner.cooldown import DEFAULT_COOLDOWN_MINUTES, TriggerCooldown
 from engine.scanner.engine import Scanner
 from engine.scanner.types import ScannerConfig
@@ -76,6 +77,7 @@ def scanner_from_env() -> Scanner | None:
     return Scanner(
         daily_bars=AlpacaDailyBarsProvider(api_key, secret),
         intraday=intraday,
+        clock=clock_from_env(),
         config=scanner_config_from_env(),
         cooldown=TriggerCooldown(
             _env_int("SCANNER_COOLDOWN_MINUTES", DEFAULT_COOLDOWN_MINUTES)

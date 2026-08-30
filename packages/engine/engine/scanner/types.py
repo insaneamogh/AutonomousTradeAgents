@@ -230,6 +230,13 @@ class ScanResult:
     """Signals a cooldown swallowed. Kept for observability — a scan that
     is constantly suppressing the same rule means the cooldown or the
     threshold is mistuned, and that is invisible if we drop them."""
+    market_open_source: str = "local_calendar"
+    """``"alpaca"`` when an injected ``ClockProvider`` answered (real
+    ``/v2/clock``, session-aware — catches unscheduled early closes the
+    local holiday table can't); ``"local_calendar"`` when no clock was
+    configured and the hardcoded/``pandas_market_calendars`` table decided
+    instead. Surfaced so the API response and the demo can show which
+    source answered, not just the yes/no answer."""
     relative_strength: Mapping[str, float] = field(default_factory=dict)
     """Cross-sectional 63-day return rank across the scanned universe."""
     errors: Mapping[str, str] = field(default_factory=dict)

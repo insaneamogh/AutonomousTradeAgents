@@ -17,6 +17,7 @@ from engine.features.bars import (
 from engine.features.clock import (
     CLOCK_TTL_SECONDS,
     AlpacaClock,
+    ClockProvider,
     MarketClock,
     clock_from_env,
 )
@@ -113,6 +114,7 @@ __all__ = [
     "AlpacaSnapshotProvider",
     "AssetInfoProvider",
     "BarsProvider",
+    "ClockProvider",
     "CorporateActionFeatures",
     "CorporateActionsProvider",
     "CorporateEvent",

@@ -69,6 +69,7 @@ def _empty_report(watchlist_size: int = 0) -> ScannerStatusResponse:
         scanner_enabled_flag=scanner_enabled(),
         trigger_loop_armed=False,
         market_open=None,
+        market_open_source=None,
         last_scan_at=None,
         scan_interval_minutes=None,
         max_council_runs_per_scan=None,
@@ -92,12 +93,14 @@ def _build(watchlist_size: int) -> ScannerStatusResponse:
     triggered_symbols = list(result.triggered_symbols) if result is not None else []
     suppressed_count = len(result.suppressed) if result is not None else 0
     market_open = result.market_open if result is not None else None
+    market_open_source = result.market_open_source if result is not None else None
 
     return ScannerStatusResponse(
         scheduler_enabled=True,
         scanner_enabled_flag=scanner_enabled(),
         trigger_loop_armed=scheduler.trigger_loop_armed,
         market_open=market_open,
+        market_open_source=market_open_source,
         last_scan_at=scheduler.last_scan_at,
         scan_interval_minutes=scheduler.scanner_interval_minutes,
         max_council_runs_per_scan=scheduler.scanner_max_council_runs,

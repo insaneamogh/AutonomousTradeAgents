@@ -12,6 +12,7 @@ from datetime import UTC, date, datetime, timedelta
 import pytest
 
 from engine.features.bars import IntradayBar
+from engine.features.clock import ClockProvider, MarketClock
 from engine.features.technicals import DailyBar
 from engine.scanner import (
     Scanner,
@@ -97,16 +98,34 @@ class FakeIntraday:
         return {s: self.series.get(s, []) for s in symbols}
 
 
+class FakeClock:
+    """A ``ClockProvider`` double — returns a fixed ``MarketClock``, no
+    network, so tests can assert on the injected-clock path without
+    depending on ``AlpacaClock``'s real HTTP call."""
+
+    name = "fake-clock"
+
+    def __init__(self, value: MarketClock) -> None:
+        self.value = value
+        self.calls = 0
+
+    async def now(self, *, at: datetime | None = None) -> MarketClock:
+        self.calls += 1
+        return self.value
+
+
 def make_scanner(
     daily: dict[str, list[DailyBar]],
     intraday: dict[str, list[IntradayBar]],
     *,
     config: ScannerConfig | None = None,
     cooldown_minutes: int = 240,
+    clock: ClockProvider | None = None,
 ) -> Scanner:
     return Scanner(
         daily_bars=FakeDaily(daily),
         intraday=FakeIntraday(intraday),
+        clock=clock,
         config=config or ScannerConfig(),
         cooldown=TriggerCooldown(cooldown_minutes),
     )
@@ -148,6 +167,53 @@ async def test_empty_watchlist_is_a_clean_no_op() -> None:
     result = await sc.scan([], now=OPEN_AT)
     assert result.symbols_scanned == ()
     assert result.signals == ()
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Injected clock (AlpacaClock via ClockProvider) vs. the local calendar
+# ─────────────────────────────────────────────────────────────────────
+
+
+async def test_scanner_uses_the_local_calendar_when_no_clock_is_injected() -> None:
+    """``clock=None`` (the default — every pre-existing call site) must
+    preserve exactly the old behaviour: the local holiday-table calendar
+    decides, and ``market_open_source`` says so."""
+    sc = make_scanner({"AAA": daily_series()}, {"AAA": intraday_series([104.0])})
+    assert sc.clock is None
+    result = await sc.scan(["AAA"], now=OPEN_AT)
+    assert result.market_open is True
+    assert result.market_open_source == "local_calendar"
+
+
+async def test_scanner_reports_market_open_source() -> None:
+    """An injected clock's ``source`` (e.g. Alpaca's real ``/v2/clock``)
+    flows through to the ``ScanResult`` — not hardcoded to the local-
+    calendar default the moment a clock is configured."""
+    clock = FakeClock(MarketClock(is_open=True, source="alpaca"))
+    sc = make_scanner(
+        {"AAA": daily_series()}, {"AAA": intraday_series([104.0])}, clock=clock
+    )
+    result = await sc.scan(["AAA"], now=OPEN_AT)
+    assert result.market_open is True
+    assert result.market_open_source == "alpaca"
+    assert clock.calls == 1
+
+
+async def test_scanner_skips_scan_when_injected_clock_reports_closed() -> None:
+    """The injected clock's VERDICT gates the scan, not just its label.
+    ``OPEN_AT`` is a weekday session the local calendar would call open;
+    the clock saying closed must still block the scan — this is the whole
+    point of wiring a real clock (an unscheduled early close the static
+    holiday table cannot know about)."""
+    clock = FakeClock(MarketClock(is_open=False, source="alpaca"))
+    sc = make_scanner(
+        {"AAA": daily_series()}, {"AAA": intraday_series([104.0])}, clock=clock
+    )
+    result = await sc.scan(["AAA"], now=OPEN_AT)
+    assert result.market_open is False
+    assert result.market_open_source == "alpaca"
+    assert sc.intraday.calls == 0  # type: ignore[attr-defined]
+    assert sc.daily_bars.calls == 0  # type: ignore[attr-defined]
 
 
 # ─────────────────────────────────────────────────────────────────────

@@ -72,6 +72,7 @@ def test_scanner_status_honest_defaults_when_no_scheduler(
     assert body["scannerEnabledFlag"] is False
     assert body["triggerLoopArmed"] is False
     assert body["marketOpen"] is None
+    assert body["marketOpenSource"] is None
     assert body["lastScanAt"] is None
     assert body["scanIntervalMinutes"] is None
     assert body["maxCouncilRunsPerScan"] is None
@@ -151,6 +152,7 @@ def test_scanner_status_populated_when_scheduler_has_data(
     assert body["scannerEnabledFlag"] is True
     assert body["triggerLoopArmed"] is True
     assert body["marketOpen"] is True
+    assert body["marketOpenSource"] == "local_calendar"
     assert body["watchlistSize"] == 2
     assert body["scanIntervalMinutes"] == 5
     assert body["maxCouncilRunsPerScan"] == 3

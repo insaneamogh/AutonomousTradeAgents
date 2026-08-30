@@ -53,6 +53,10 @@ class ScannerStatusResponse(CamelCaseModel):
     scanner_enabled_flag: bool
     trigger_loop_armed: bool
     market_open: bool | None
+    market_open_source: str | None
+    """``"alpaca"`` (real ``/v2/clock``) or ``"local_calendar"`` (holiday-table
+    fallback) — which source answered the last scan's market-hours check.
+    ``None`` before any scan has run, same as ``market_open`` itself."""
     last_scan_at: datetime | None
     scan_interval_minutes: int | None
     max_council_runs_per_scan: int | None

@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 
 from engine.features.bars import BarsProvider, IntradayBar, IntradayBarsProvider
+from engine.features.clock import ClockProvider
 from engine.features.market_calendar import (
     is_us_market_open,
     us_market_session_bounds,
@@ -62,6 +63,15 @@ class Scanner:
 
     daily_bars: BarsProvider
     intraday: IntradayBarsProvider
+    clock: ClockProvider | None = None
+    """Optional real market clock (``AlpacaClock`` via ``clock_from_env()``).
+
+    When present, ``scan()`` asks it whether the market is open instead of
+    consulting the local holiday calendar — the same real ``/v2/clock`` that
+    decides whether Alpaca will accept an order, so it also catches an
+    unscheduled early close the local table cannot know about. ``None``
+    (the default) preserves the exact previous behaviour: the local
+    calendar decides, unconditionally."""
     config: ScannerConfig = field(default_factory=ScannerConfig)
     cooldown: TriggerCooldown = field(default_factory=TriggerCooldown)
 
@@ -83,18 +93,29 @@ class Scanner:
         at = (now or datetime.now(UTC)).astimezone(UTC)
         syms = [s.strip().upper() for s in symbols if s.strip()]
 
-        if not force and not is_us_market_open(at):
-            logger.debug("scanner: market closed at %s — no scan", at.isoformat())
+        market_open, market_open_source = await self._market_open(at)
+
+        if not force and not market_open:
+            logger.debug(
+                "scanner: market closed at %s (source=%s) — no scan",
+                at.isoformat(), market_open_source,
+            )
             return ScanResult(
                 scanned_at=at,
                 market_open=False,
                 symbols_scanned=(),
                 signals=(),
                 suppressed=(),
+                market_open_source=market_open_source,
             )
         if not syms:
             return ScanResult(
-                scanned_at=at, market_open=True, symbols_scanned=(), signals=(), suppressed=()
+                scanned_at=at,
+                market_open=True,
+                symbols_scanned=(),
+                signals=(),
+                suppressed=(),
+                market_open_source=market_open_source,
             )
 
         errors: dict[str, str] = {}
@@ -130,9 +151,26 @@ class Scanner:
             symbols_scanned=tuple(syms),
             signals=tuple(allowed),
             suppressed=tuple(suppressed),
+            market_open_source=market_open_source,
             relative_strength=relative_strength_ranks(returns),
             errors=errors,
         )
+
+    async def _market_open(self, at: datetime) -> tuple[bool, str]:
+        """Whether the market is open at ``at``, and which source answered.
+
+        Delegates to the injected ``clock`` when one is configured — real
+        session state from Alpaca's own ``/v2/clock``, the same clock that
+        will decide whether an order is accepted. Falls back to the local
+        holiday-table calendar when no clock is present, exactly as before
+        this method existed. Never raises: ``AlpacaClock.now()`` already
+        swallows its own failures and falls back internally, reporting
+        ``source="local_calendar"`` when it does.
+        """
+        if self.clock is not None:
+            clock = await self.clock.now(at=at)
+            return clock.is_open, clock.source
+        return is_us_market_open(at), "local_calendar"
 
     async def _load_daily(
         self, symbols: list[str], errors: dict[str, str]
