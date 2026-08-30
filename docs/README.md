@@ -242,9 +242,14 @@ off. That is the direction that cannot lose money by accident.
 | `OPTIONS_MIN_OPEN_INTEREST` | `100` | Real OI, from `/v2/options/contracts`. The actual liquidity gate |
 | `OPTIONS_MIN_VOLUME` | `1` | **Not** daily volume — a last-trade-size proxy (alpaca-py's `OptionsSnapshot` drops the `dailyBar` block). `0` disables it |
 | `OPTIONS_MAX_SPREAD_PCT` | `12.0` | `(ask-bid)/mid`. Widened from 8 because the 15-min delayed indicative book reads wider than the one an order fills against |
+| `OPTIONS_TAKE_PROFIT_PCT` | `60.0` | Close a long option once its **premium** is up this much. Alpaca cannot bracket a single-leg option, so this exit lives in our own sweep — see [`OPTIONS_PLAYBOOK.md`](OPTIONS_PLAYBOOK.md) §3 |
+| `OPTIONS_STOP_LOSS_PCT` | `50.0` | Close once the premium has lost this much (positive magnitude). Gated on `abs()`, so a `-50` typo still stops out — only an explicit `0` disables it |
 
-These are **calibration against a delayed feed**, not loss limits — getting them wrong
-means the agent refuses everything, not that it risks too much. The loss limits
+The first three are **calibration against a delayed feed**, not loss limits — getting them wrong
+means the agent refuses everything, not that it risks too much. The two exit
+thresholds are tunable for a different reason: they only decide *when* to realize a
+position whose size the caps below already bounded, so no setting of them can increase
+maximum loss beyond the premium already paid. The loss limits
 (`options_max_premium_pct`, `options_max_total_premium_pct`, `max_position_pct`,
 `daily_drawdown_halt_pct`) are deliberately **code-level and not env-tunable**: a cap
 that an unreviewed env var can widen is not a cap.

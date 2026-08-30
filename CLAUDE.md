@@ -1,6 +1,9 @@
 # Agent Collaboration Guide — Autonomous Trading App
 
-**Read this fully before writing any code. Then read [`docs/HACKATHON.md`](docs/HACKATHON.md).**
+**Read this fully before writing any code. Then read [`docs/HACKATHON.md`](docs/HACKATHON.md).
+If you are touching anything options-related, also read
+[`docs/OPTIONS_PLAYBOOK.md`](docs/OPTIONS_PLAYBOOK.md) — it is the authoritative
+rule set, derived from the code, and §5 lists the traps that have already bitten.**
 
 ---
 

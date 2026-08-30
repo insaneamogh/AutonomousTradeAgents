@@ -16,22 +16,29 @@ whose count drops to zero names the rejection reason):
      (see ``engine.risk.types.OptionLegDetails.action`` — always
      ``buy_to_open``); "short" here is only about which contract TYPE
      expresses the bearish view, never about opening a short option leg.
-  2. ``dte_window`` — 21-60 DTE is the risk engine's OUTER guardrail
+  2. ``dte_window`` — 7-60 DTE is the risk engine's OUTER guardrail
      (``RiskCaps.options_min_dte``/``options_max_dte``, deliberately wider,
      re-checked independently at approval time). This module's own window
-     is narrower and for a different reason: 21-45 DTE, deliberately NOT
+     is narrower and for a different reason: 10-45 DTE, deliberately NOT
      0-7 DTE, because theta decay dominates and greeks are frequently
      missing close to expiry, and deliberately not run all the way to 60,
      to leave room above the selection window for the position to roll
      before it re-enters the risk engine's own boundary. The two numbers
      are intentionally NOT the same constant reused twice — one is a
      selection heuristic, the other is an authoritative veto — so this
-     module hardcodes its own 21/45, it does not import ``RiskCaps``.
+     module hardcodes its own 10/45, it does not import ``RiskCaps``.
+
+     The floor is 10 rather than the risk engine's own 7 on purpose:
+     ``expiry.dte()`` reads ``context.now_utc`` while ``select_contract``
+     reads its own ``inputs.now``, so a contract chosen at exactly 7 DTE
+     can re-enter the risk engine at 6 across a UTC boundary and be vetoed
+     by ``min_dte`` — refused by the layer that just selected it. Three
+     days of buffer removes that class of failure entirely.
   3. ``delta_band`` — higher conviction buys closer to the money (higher
      |delta|, more directional exposure per contract); lower conviction
      buys further OTM (lower |delta|, cheaper, more convex). The exact
-     bands (conviction >= 0.7 -> |delta| in [0.45, 0.65]; below that ->
-     [0.25, 0.45]) are a deliberately simple two-tier judgment call, not a
+     bands (conviction >= 0.7 -> |delta| in [0.40, 0.70]; below that ->
+     [0.25, 0.55]) are a deliberately simple two-tier judgment call, not a
      continuous function — the task this implements asked for "a
      reasonable banding", not a research result, and a two-tier band is
      easy to audit from a funnel count in a way a continuous formula is
@@ -40,8 +47,17 @@ whose count drops to zero names the rejection reason):
      ``iv_present`` below, just not singled out in the module docstring
      because — unlike IV — nothing else in this codebase leads a reader to
      expect a missing delta to pass neutrally.
-  4. ``liquidity`` — reject `open_interest < 100`, `volume < 10`, or (when
-     both bid and ask are present) relative spread `(ask-bid)/mid > 8%`.
+  4. ``liquidity`` — reject `open_interest < 100`, `volume < 1`, or (when
+     both bid and ask are present) relative spread `(ask-bid)/mid > 12%`.
+     Open interest is the REAL gate here. ``volume`` carries a floor of
+     only 1 ("it has traded at all") because it is NOT daily volume:
+     alpaca-py's ``OptionsSnapshot`` drops the ``dailyBar`` block, so the
+     available number is the LAST TRADE SIZE — one print, typically 1-5
+     lots. Measured live, a floor of 10 against that field rejected 16 of
+     18 SPY contracts that had already cleared DTE, delta and IV. The
+     spread ceiling is 12% rather than 8% for a related reason: the free
+     tier serves a 15-minute-delayed indicative book, which reads wider
+     than the one an order would actually fill against.
      Missing OI/volume fails the floor (can't prove liquidity you can't
      see); a missing bid or ask only skips the spread arm of this check
      (there is no mid to compute it from) — OI/volume still apply on

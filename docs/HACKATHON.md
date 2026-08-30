@@ -158,6 +158,10 @@ council: BUY NVDA260909C00225000, 4 @ $2.17 = $868 = 0.868% of $100k
          15 risk rules passed, approved
 ```
 
+**The full rule set — thresholds, vetoes, exits, and the traps — is
+[`docs/OPTIONS_PLAYBOOK.md`](OPTIONS_PLAYBOOK.md). Read it before changing any
+options number.**
+
 ### Still open
 - [ ] **Fresh paper account + `options_trading_level ≥ 2`** — a new account may sit at
       level 0 until the options agreement is accepted, and approval is not instant.

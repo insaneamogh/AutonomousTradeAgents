@@ -47,6 +47,9 @@ dispose. It cannot be argued out of a limit, because the limit is not in a promp
 - **Ghost P&L** then marks everything that got refused against real forward prices.
   That is the Refusal Ledger.
 
+The exact rules the options side plays by — every threshold, every veto, every
+exit, with the reasoning: **[`docs/OPTIONS_PLAYBOOK.md`](docs/OPTIONS_PLAYBOOK.md)**
+
 Full architecture, module map, and setup: **[`docs/README.md`](docs/README.md)**
 
 ---
