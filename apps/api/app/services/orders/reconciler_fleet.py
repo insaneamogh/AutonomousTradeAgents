@@ -66,6 +66,17 @@ class UserBrokerPoller:
         async with with_broker_client(self.user_id, broker="alpaca") as (broker, conn):
             equity = await broker.get_account_equity()
             buying_power = await broker.get_buying_power()
+            # MUST be fetched here, not just in engine.reconciler.poller's
+            # AlpacaPoller. This class — not that one — is the poller the
+            # production API actually runs, and it used to omit this field
+            # entirely, so RawAccountState defaulted it to None. A None
+            # level makes `options_level_insufficient` veto EVERY option
+            # entry, on an account approved for level 3, with no error
+            # anywhere: the snapshot is the only source
+            # `postgres_context` has for the level, and its cold-boot
+            # fallback does not set it either. Verified live 2026-08-30:
+            # the account reported 3, every snapshot row said None.
+            options_trading_level = await broker.get_options_trading_level()
             broker_positions = await broker.list_positions()
             positions = tuple(
                 PortfolioPosition(
@@ -74,6 +85,13 @@ class UserBrokerPoller:
                     avg_entry_price=p.avg_entry_price,
                     market_value=p.market_value,
                     sector=sector_for(p.symbol),
+                    # Same omission, same cause: without these an OPTION
+                    # position enters the risk context looking like stock,
+                    # so `max_total_premium_pct` (which sums open option
+                    # premium) under-counts the book and the aggregate cap
+                    # silently stops binding.
+                    is_option=p.is_option,
+                    multiplier=p.multiplier,
                 )
                 for p in broker_positions
             )
@@ -83,6 +101,7 @@ class UserBrokerPoller:
                 cash=cash,
                 buying_power=buying_power,
                 open_positions=positions,
+                options_trading_level=options_trading_level,
                 raw={
                     "source": "alpaca",
                     "is_paper": conn.is_paper,
