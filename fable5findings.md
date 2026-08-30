@@ -385,6 +385,92 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-30 — D.1: resolve the two-session MCP contradiction in `apps/mcp_server/README.md`
+
+- **`docs/HACKATHON.md` §5's two-session table was already deleted** — by the previous
+  commit (`7d073a9d`, "four implementation plans"), per its own build-log entry below.
+  Verified by reading the file directly: §5 already states the one-read-only-session
+  resolution. No change needed there.
+- **`apps/mcp_server/README.md` still had it.** A `research`/`execution` two-session
+  `ALPACA_TOOLSETS` table, with the `execution` session mounting `trading,account`
+  "Yes, and only downstream of `engine.risk`". That directly contradicts this same
+  file's own "Will never build" section forty lines below it (which quotes
+  `mcp_server/tools.py:9-19` almost verbatim: mounting execution-capable tools into an
+  LLM tool loop "would violate this codebase's one architectural rule"). The file
+  argued both sides of the same question.
+- **Replaced with the one-session resolution**: exactly one Alpaca MCP session, ever,
+  read-only, no `trading` toolset mounted anywhere — not gated by policy, not
+  downstream of a risk check, not behind a flag. Folded in the D.0-verified
+  `ALPACA_TOOLSETS` legal values (see the entry below) so whoever builds D.4 has a
+  checked list to choose a read-only subset from, without this doc prescribing that
+  subset itself (that's D.4's call, out of this session's scope).
+- Docs-only change (`apps/mcp_server/README.md`). Suite unaffected — still 792 passed,
+  9 skipped (the baseline verified below, before any D.2 code change).
+
+### 2026-08-30 — D.0 verification gate: Alpaca MCP server + CLI facts, quoted
+
+**`docs/PLAN_ALPACA_MCP.md` §0 is a blocking gate: fetch both pages for real, quote
+exact facts into this file, don't infer one tool's surface from the other's
+conventions, stop if either page can't be fetched.** Both pages were reachable — gate
+passes. Method: live fetches of the actual GitHub READMEs (not from training memory).
+The CLI page was fetched twice, independently, with more targeted prompts on the
+second pass, specifically to cross-check the two facts the plan flagged as unverified
+traps (the clock subcommand, the auth env var prefix) — both passes agreed.
+
+**A. `github.com/alpacahq/alpaca-mcp-server`**
+
+1. **Entry point:** `alpaca-mcp-server`, invoked via `uvx alpaca-mcp-server`. Matches
+   `docs/HACKATHON.md`'s existing assertion.
+2. **Toolset-scoping env var:** `ALPACA_TOOLSETS` — "Comma-separated list of toolsets
+   to enable". Legal values, verbatim: `account`, `trading`, `watchlists`, `assets`,
+   `stock-data`, `crypto-data`, `options-data`, `corporate-actions`, `news`,
+   `fixed-income-data`, `locates`.
+3. **Option tools in the read-only toolsets:** `get_option_chain` ("Full option chain
+   for an underlying"), `get_option_snapshot` ("Snapshot with Greeks and IV"), plus
+   `get_option_contracts`, `get_option_contract`, `get_option_latest_quote`,
+   `get_option_bars`. (`place_option_order` lives in the `trading` toolset — not
+   read-only, not quoted verbatim here since D.0 only asked for the read-only tool
+   names, but keeping it OUT of the one session D.1 describes is the entire point.)
+4. **Transport:** the README does not state a default in so many words. It documents
+   `--transport streamable-http` and `--port` as opt-in HTTP flags; the absence of an
+   equivalent explicit stdio default statement, plus stdio being the MCP norm for a
+   local process launched via `uvx`, is why stdio reads as the default. **Flagged as
+   inference-from-omission, not a literal "default: stdio" sentence** — whoever builds
+   D.4 should confirm directly against `server.py`'s argument parser rather than
+   trusting this secondhand.
+
+**B. `github.com/alpacahq/cli`**
+
+1. **Linux/amd64 release asset naming: not found in the README.** Whoever builds D.5
+   needs to check the GitHub Releases page's actual asset list directly.
+2. **Clock subcommand — the plan's named trap, and `docs/HACKATHON.md`'s old text was
+   wrong:** verbatim from two independent fetches — a Quick Start line `# Check if the
+   market is open` / `alpaca clock`, and a Commands list: "Trading: `order`,
+   `position`, `option`, `locate`, `clock`, `calendar`". **The command is `alpaca
+   clock` — no `get` suffix.** `docs/HACKATHON.md`'s superseded assertion of `alpaca
+   clock get` is confirmed wrong; `clock` is a top-level command alongside
+   `order`/`position`, not a subcommand of anything else.
+3. **JSON output:** verbatim — "API commands return JSON on stdout by default. They
+   also support CSV output, inline jq filtering, quiet mode, response schemas, and
+   request timeouts." **There is no JSON flag to pass — JSON is already the default**;
+   `--csv` is the flag that opts OUT of it. The plan's framing ("the exact JSON-output
+   flag") assumed a flag exists; the actual fact is the inverse.
+4. **Auth env vars — the plan's other named trap, and it does NOT materialize:**
+   verbatim — `export ALPACA_API_KEY=PK...` / `export ALPACA_SECRET_KEY=...`, and
+   separately, "Credential lookup uses the first complete credential bundle: 1.
+   `ALPACA_API_KEY` and `ALPACA_SECRET_KEY`". **Both fetches agree: only the `ALPACA_`
+   prefix appears anywhere in this README.** The `APCA_` prefix the plan predicted
+   ("Alpaca's own tooling conventionally uses `APCA_API_KEY_ID`/`APCA_API_SECRET_KEY`")
+   does not appear at all. The CLI reads the exact same env var names this repo
+   already uses (`engine/features/clock.py`'s `clock_from_env()`). **Consequence for
+   D.3 (not this session's scope): the subprocess `env=` dict does not need to remap
+   names for the CLI** — the trap was genuinely worth checking, and on the CLI
+   specifically, it turned out not to apply. (Not tested: whether the MCP server side
+   uses the same convention — D.0 didn't ask for that fact and D.4 is out of scope
+   here.)
+
+**Gate result: both pages fetched successfully. Proceeding to D.1/D.2.**
+
 ### 2026-08-30 — four implementation plans, written for the next model
 
 **Account blocker cleared.** New paper account `PA3IAZI74E5R`, **options Level 3**

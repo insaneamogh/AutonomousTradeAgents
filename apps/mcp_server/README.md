@@ -27,26 +27,52 @@ for the requirement. Shipping only this risks eligibility.
 An earlier version of this README argued that adopting Alpaca's MCP server
 would violate the propose/dispose rule, because it "exposes real
 order-placement tools directly to an LLM." **That premise is incorrect.**
-Alpaca's server supports `ALPACA_TOOLSETS` filtering, so a session can be
-mounted with market-data toolsets and **no `trading` toolset at all**:
+Alpaca's server supports `ALPACA_TOOLSETS` filtering (verified live against
+`github.com/alpacahq/alpaca-mcp-server`'s own README — see
+[`docs/PLAN_ALPACA_MCP.md`](../../docs/PLAN_ALPACA_MCP.md) §0 and the build
+log in [`fable5findings.md`](../../fable5findings.md) for the verbatim
+quote), so a session can be mounted with market-data toolsets and **no
+`trading` toolset at all**. Legal `ALPACA_TOOLSETS` values, verbatim from
+that README: `account`, `trading`, `watchlists`, `assets`, `stock-data`,
+`crypto-data`, `options-data`, `corporate-actions`, `news`,
+`fixed-income-data`, `locates`.
 
-| Session | `ALPACA_TOOLSETS` | Can place an order? |
-|---|---|---|
-| research | `options-data,stock-data,assets,news` | **No — the tool is not loaded** |
-| execution | `trading,account` | Yes, and only downstream of `engine.risk` |
+**A previous draft of this section went on to propose two sessions** — a
+`research` session on read-only toolsets, alongside a second `execution`
+session mounting `trading`/`account`, on the theory that gating its calls
+downstream through `engine.risk` would keep it safe. **That table has been
+deleted.** It wasn't just risky, it was a strictly weaker claim than not
+building it: "we mounted an execution-capable toolset into an LLM tool
+loop and trust ourselves to only invoke it from the right place" is a
+*policy*, and policy is exactly what several competing entries already
+claim (see `docs/HACKATHON.md` §4). It is also exactly what this file's
+own "Will never build" section below already says would violate the
+architecture rule — the two sections contradicted each other, and
+read-only-only is the version that survives.
 
-Far from violating the rule, that *strengthens* it: the boundary stops
-being a prompt instruction and becomes a capability boundary enforced by
-the vendor's own config. "The analyst agents cannot place an order,
-because `place_option_order` is not in their tool list" is a materially
-stronger claim than "we told them not to" — and it is the strongest
-available answer to the several competing entries claiming the same
-architecture as prompt-level policy.
+**The resolution: exactly ONE Alpaca MCP session, ever, read-only, with no
+execution tool in it.** `place_option_order` and every other `trading`-
+toolset tool is simply never mounted, in any session — not gated by
+policy, not downstream of a risk check, not behind a flag. That is a
+**capability boundary with no exception**, which is a stronger claim than
+one with a carve-out:
+
+> "There is exactly one Alpaca MCP session in this system and
+> `place_option_order` is not in it. Execution never touches MCP at all —
+> it goes `engine.risk` → `packages/broker` → Alpaca REST, deterministic
+> Python end to end."
+
+Far from violating the rule, mounting only read-only toolsets *strengthens*
+it: the boundary stops being a prompt instruction and becomes a capability
+boundary enforced by the vendor's own config. "The analyst agents cannot
+place an order, because `place_option_order` is not in their tool list" is
+a materially stronger claim than "we told them not to."
 
 **So: keep this server** (an agent that is itself MCP-addressable is a
-genuine bonus), **and additionally** consume Alpaca's own MCP server
-and/or CLI. See [`docs/HACKATHON.md`](../../docs/HACKATHON.md) §5 for the
-integration design and plug points.
+genuine bonus), **and additionally** consume Alpaca's own MCP server (one
+read-only session) and/or CLI. See
+[`docs/HACKATHON.md`](../../docs/HACKATHON.md) §5 for the integration
+design and plug points.
 
 **The generalisable lesson:** when a requirement comes from an external
 spec, open the spec and quote it before building against it. This was a
