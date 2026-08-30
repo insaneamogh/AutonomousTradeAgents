@@ -385,6 +385,65 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-30 — `40eae29b` feat(engine,api): wire AlpacaClock into the scanner via an optional clock provider
+
+**D.2 from `docs/PLAN_ALPACA_MCP.md` — the actual functional upgrade** (the CLI in
+D.3 is only the eligibility artifact; this is the part that changes behavior).
+
+- **What changed and why:** `engine/features/clock.py::AlpacaClock` (real `/v2/clock`)
+  and `clock_from_env()` had zero non-test callers — confirmed by reading the file and
+  grepping the repo. `engine/scanner/engine.py:86` called the hardcoded local-calendar
+  `is_us_market_open(at)` directly instead, so an unscheduled early close or halt was
+  invisible to the scanner. Wired the real clock in behind an optional
+  `Scanner.clock: ClockProvider | None = None` field — `scan()`'s new `_market_open()`
+  helper asks it when present, falls back to the local calendar otherwise, so every
+  pre-existing call site (none of which pass `clock=`) is behaviourally unchanged.
+  `ScanResult` gains `market_open_source: str = "local_calendar"`, wired through
+  `scanner_status.py` → `schemas/scanner.py`'s `ScannerStatusResponse` alongside the
+  `market_open` field it already carries. `clock_from_env()` wired at the real
+  construction site, `engine/scanner/select.py::scanner_from_env()` — it reads the same
+  `ALPACA_API_KEY`/`ALPACA_SECRET_KEY` that function already requires to construct a
+  Scanner at all, so this adds no new precondition.
+- **What I VERIFIED, and how:**
+  - **Measured the baseline myself, not trusted from a doc**, per the operational
+    instruction to do so: `python -m uv run pytest apps/agents apps/api packages/ -q`
+    → **792 passed, 9 skipped** — matches `docs/PLAN_ALPACA_MCP.md`'s stated baseline
+    and the prior entry below, confirmed independently rather than assumed. This
+    worktree had no `.venv` yet; plain Windows `python` (67 collection errors,
+    `ModuleNotFoundError: No module named 'app'`) and even a bare
+    `python -m uv run pytest` before syncing (same 67 errors, `No module named
+    'engine'`) both failed for environment reasons, not code reasons — resolved with
+    `python -m uv sync --all-packages` first.
+  - **After the change: 795 passed, 9 skipped** — exactly +3, matching the 3 new tests
+    (skip count unchanged).
+  - **Revert-checked per CLAUDE.md §4.1**: temporarily reverted `_market_open()` to
+    ignore `self.clock` (hardcoded the old local-calendar-only behaviour) and ran the
+    3 new tests. `test_scanner_reports_market_open_source` and
+    `test_scanner_skips_scan_when_injected_clock_reports_closed` both failed with a
+    real, legible assertion diff (`'local_calendar' == 'alpaca'` and
+    `True is False`) — not vacuously. `test_scanner_uses_the_local_calendar_when_no_
+    clock_is_injected` correctly kept passing (that path doesn't touch the clock).
+    Restored immediately after.
+  - **ruff clean on every touched file.** Two pre-existing findings live in files this
+    commit touched — RUF100 (unused `noqa: E402`) ×6 in `test_scanner_route.py`'s
+    import block, RUF012 (mutable default) ×1 on `ScanSignalDto.context` in
+    `schemas/scanner.py` — both confirmed unchanged via `git stash` / re-run / `stash
+    pop`; neither is on a line this commit added.
+  - **mypy clean** on all 6 touched source files (not one of the checks
+    `docs/HACKATHON.md`/CLAUDE.md's own verification list names as required today,
+    run anyway given the new `Protocol` and dataclass fields).
+- **Anything left open:** D.3 (CLI subprocess wrapper), D.4 (MCP client), D.5
+  (Dockerfile) are the plan's own next steps — explicitly out of this session's scope,
+  and the plan says D.3 starts only after D.0-D.2 land, specifically because it needs
+  D.0's verified facts (see the entry below). Also flagged, found but deliberately not
+  touched (pre-existing, separately tested, out of scope): `Scanner.scan()`'s
+  `force=True` path still reports `market_open=True` in the `ScanResult` even when the
+  market is actually closed, whenever there are no symbols/no triggers to report on
+  (`test_force_bypasses_the_hours_gate` asserts exactly this, unchanged) —
+  `market_open_source` is threaded through honestly regardless of that quirk (it
+  always reports which source actually answered), but the boolean's forced-bypass
+  semantics were not in scope to fix here.
+
 ### 2026-08-30 — D.1: resolve the two-session MCP contradiction in `apps/mcp_server/README.md`
 
 - **`docs/HACKATHON.md` §5's two-session table was already deleted** — by the previous
