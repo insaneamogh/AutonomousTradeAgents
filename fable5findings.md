@@ -385,6 +385,80 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-30 — `a70cd210` feat(mobile,desktop): auto-approve mode toggle, arm-gated by a real confirmation
+
+`ID:MODEL2OFF`. Built in an isolated worktree; not merged to `main` by me. UI-only
+session — did not touch `apps/api` or any risk/execution path, per this session's own
+instructions and CLAUDE.md §8.
+
+- The UI half of [`PLAN_AUTO_APPROVE.md`](docs/PLAN_AUTO_APPROVE.md): a pill near the
+  top of Home (mobile, `AutoApprovePill.tsx`) and Dashboard (desktop, `AutoApproveControl`
+  in `Dashboard.tsx`'s hero `CardHead`) showing **ASK** (default) or **AUTO**, backed by
+  a new `useSetAutoApproveConsent` hook calling `POST
+  /api/v1/broker/connections/{id}/auto-approve-consent {enabled}` and a new
+  `autoApproveConsent: boolean` on the `BrokerConnection` type
+  (`apps/mobile/src/hooks/useBrokerConnections.ts`). Built against a **pre-agreed
+  contract** from a parallel backend session I could not see the code of — mirrors the
+  existing `live_trading_consent` / `POST .../consent` pair in
+  `apps/api/app/schemas/broker.py` / `routers/broker.py` exactly (same `_camel`
+  alias_generator, same `SetConsentRequest`-shaped body). **Neither the endpoint nor the
+  field exist server-side yet** — confirmed, not assumed (see below).
+- Turning ON requires an explicit confirmation naming the real consequence (paper-only,
+  daily cap, still risk-gated) — mirrors `CircuitBreakerBanner`'s
+  confirm-the-risky-direction-only asymmetry. Mobile: `Alert.alert` (existing precedent).
+  Desktop: **no existing confirm/modal precedent** — checked first (grepped the desktop
+  tree for confirm/Modal/dialog: nothing; desktop's own broker-disconnect button has zero
+  confirmation) — so `ConfirmAutoApproveOverlay` is a small purpose-built overlay off
+  existing `.pg-card`/`.pg-btn` classes, not a new generic Modal primitive. Turning OFF is
+  immediate on both surfaces.
+- Neither pill optimistically flips — both render `autoApproveConsent` straight from the
+  query cache, with a busy label ("Arming…"/"Turning off…") while the mutation is in
+  flight; a failed call just leaves the cached value (and pill) untouched, surfaced via
+  `isError`. Explained in `useSetAutoApproveConsent`'s docstring.
+- Desktop Platinum Glass had no warning/amber token (only bull/bear/error) — added
+  `--pg-warn` / `--pg-warn-wash` (light+dark) + `.pg-pill--warn` + a `.pg-pill-btn`
+  (clickable-pill variant, 44px min-height) to `theme.ts`, same semantic slot as mobile
+  `DESIGN.md`'s `warning` token. Mobile needed no new tokens — reused
+  `warning`/`warning-subtle` and `StatusPill`'s existing chip visual language.
+
+**Verified:**
+- `pnpm -s exec tsc --noEmit -p apps/mobile/tsconfig.json` — clean before (`git stash -u`)
+  and after.
+- `pnpm --filter mobile exec jest --silent` — **23/23 passing**, same 3 suites as
+  untouched baseline.
+- `pnpm --filter mobile exec eslint` on every touched file: 3 findings, all 3 confirmed
+  pre-existing via `git stash -u` (shifted line numbers, identical rule+file+message).
+  Fixed the 2 *new* findings my own code introduced (a floating promise in my mutation's
+  `onSuccess`; a `jsx-a11y` violation from `stopPropagation` on the overlay's inner div —
+  reworked to an `e.target === e.currentTarget` check on the outer backdrop instead).
+- Hit the exact "backtick inside the `PLATINUM_CSS` template literal" trap `521f7251`'s
+  own commit message warns about, despite reading that warning first (it's literally
+  ~100 lines above where I added text). `tsc` caught it immediately (TS1005), same
+  signature that commit describes. Fixed before committing.
+
+**Left open — deliverable 2, the per-row "AUTO" pill (Picks/Review rows):** Not built.
+Checked thoroughly, not skipped: grepped all of `apps/api` for `approval_mode` /
+`approvalMode` and plausible alternates (`opened_by`/`auto_opened`/`decision_source`/
+`entry_source`) — the only repo-wide hit is the hardcoded `approval_mode="ask"` literal
+at `postgres_store.py:203`; none of `ApprovalProposalDto`, `DecisionRequest`,
+`DecisionResponse`, `DecisionSummaryDto`/`DecisionListResponse` carry anything like it.
+Also checked every other branch/ref (`agent-v1/auto-mode-real-data`, the other active
+worktree branch, `origin/claude`) in case the parallel backend PR had already landed
+somewhere readable — **all three are byte-identical to `main` right now**. This task's
+own instructions explicitly forbid guessing the field name, so this is left for whoever
+lands the real DTO to wire up (the visual pattern to copy is already well-established:
+`Positions.tsx`'s `<Pill tone={p.exitMode === 'agent' ? 'bull' : 'neutral'}>` on desktop,
+the rounded-full bordered badge in mobile `positions.tsx`).
+
+**Also not done, and said plainly rather than silently:** no live visual verification.
+Reaching Home/Dashboard needs a real session (Google OAuth) or a `DEV_AUTH_BYPASS=1`
+backend + a from-scratch Python env (no `.venv` in this worktree, `uv` not on PATH) —
+disproportionate to stand up for a UI-only change, and the endpoint this depends on
+doesn't exist server-side yet regardless. Every color/spacing value is an existing,
+already-shipped token (`StatusPill`'s warning chip, `Pill`'s bull/bear wash pattern,
+`.pg-card`/`.pg-btn`) — nothing here is a novel visual primitive — but I have not
+personally seen this exact composition rendered.
+
 ### 2026-08-30 — `538b119f` feat(engine,agents): candlestick pattern detection feeding strategy fit
 
 `ID:MODEL2OFF`. Built [`PLAN_CANDLE_PATTERNS.md`](docs/PLAN_CANDLE_PATTERNS.md) end to
