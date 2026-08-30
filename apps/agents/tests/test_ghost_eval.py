@@ -12,7 +12,14 @@ from datetime import date
 import pytest
 
 from engine.prices import SyntheticPriceProvider
-from trading_agents.jobs.ghost_eval import _entry_price, _ghost_pnl, _trading_day_offset
+from trading_agents.jobs.ghost_eval import (
+    _entry_price,
+    _ghost_pnl,
+    _is_option,
+    _mark_symbol,
+    _multiplier,
+    _trading_day_offset,
+)
 
 
 def test_entry_price_prefers_limit() -> None:
@@ -68,3 +75,76 @@ async def test_synthetic_provider_is_deterministic_and_anchored() -> None:
 async def test_synthetic_provider_empty_when_inverted_window() -> None:
     p = SyntheticPriceProvider()
     assert await p.daily_closes("NVDA", date(2026, 6, 10), date(2026, 6, 1)) == []
+
+
+# ── Options ghosts ────────────────────────────────────────────────────
+# Every test below fails if the options branch is removed — the whole
+# point is that an options refusal is marked on its OWN contract, in the
+# right units. Verified by reverting each change in turn.
+
+
+def _option_proposal(**over: object) -> dict:
+    base = {
+        "isOption": True,
+        "occSymbol": "nvda260918c00250000",
+        "multiplier": 100,
+        "qty": 4,
+        "limitPrice": 2.17,
+        "estimatedNotional": 868.0,
+    }
+    base.update(over)
+    return base
+
+
+def test_mark_symbol_is_the_occ_contract_not_the_underlying() -> None:
+    """The stock-bars endpoint returns [] (not an error) for an OCC
+    symbol, so getting this wrong is silent."""
+
+    class _Row:
+        symbol = "NVDA"
+
+    assert _mark_symbol(_Row(), _option_proposal()) == "NVDA260918C00250000"
+    assert _mark_symbol(_Row(), {"qty": 10}) == "NVDA"
+
+
+def test_mark_symbol_skips_an_option_row_with_no_occ() -> None:
+    """None means 'skip', never 'fall back to the underlying' — marking
+    the stock would put a plausible-looking wrong number in the ledger."""
+
+    class _Row:
+        symbol = "NVDA"
+
+    assert _mark_symbol(_Row(), _option_proposal(occSymbol=None)) is None
+
+
+def test_option_entry_from_notional_divides_out_the_multiplier() -> None:
+    """estimatedNotional is premium * qty * 100; option bars quote the
+    per-share premium. Without the divide, $2.17 reads as $217."""
+    price, source = _entry_price(_option_proposal(limitPrice=None))
+    assert source == "proposal_notional"
+    assert price == pytest.approx(2.17)
+
+
+def test_equity_entry_from_notional_is_unchanged_by_the_option_path() -> None:
+    price, _ = _entry_price({"qty": 20, "estimatedNotional": 4810.0})
+    assert price == pytest.approx(240.5)
+
+
+def test_ghost_pnl_scales_options_by_the_contract_multiplier() -> None:
+    """A $1.23 premium move on 4 contracts is $492, not $4.92."""
+    assert _ghost_pnl("BUY", 4, 2.17, 3.40, 100) == 492.0
+    # Equity default stays 1x.
+    assert _ghost_pnl("BUY", 4, 2.17, 3.40) == 4.92
+
+
+def test_multiplier_defaults_are_instrument_correct() -> None:
+    assert _multiplier({"qty": 1}) == 1  # equity
+    assert _multiplier({"isOption": True}) == 100  # option, key absent
+    assert _multiplier(_option_proposal(multiplier=0)) == 100  # nonsense → 100
+    assert _multiplier(_option_proposal(multiplier="bad")) == 100
+
+
+def test_is_option_accepts_both_key_styles() -> None:
+    assert _is_option({"isOption": True})
+    assert _is_option({"is_option": True})
+    assert not _is_option({})

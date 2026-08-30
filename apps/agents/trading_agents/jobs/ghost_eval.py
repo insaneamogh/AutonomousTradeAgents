@@ -5,6 +5,14 @@ expired) within the lookback window, derives an entry price from the
 stored proposal, marks each against daily closes, and finalizes
 ``ghost_pnl`` once the proposal's horizon has elapsed.
 
+**Options are marked on the CONTRACT, not the underlying.** An option
+ghost pulls bars for its OCC symbol via ``get_option_price_provider`` and
+scales P&L by the contract multiplier. Both are load-bearing: the stock
+bars endpoint returns an empty series (not an error) for an OCC symbol,
+so before this every options refusal skipped silently; and omitting the
+multiplier under-reports the dollars 100-fold — which is precisely the
+number the Refusal Ledger puts on screen.
+
 Deterministic Python over close prices — no LLM in this path. Idempotent
 per day: re-running upserts the same marks.
 
@@ -26,7 +34,7 @@ from sqlalchemy import or_, select
 
 from engine.db import async_session_factory
 from engine.db.models import AgentDecision, GhostOutcome
-from engine.prices import get_price_provider
+from engine.prices import get_option_price_provider, get_price_provider
 
 logger = logging.getLogger("agents.ghost_eval")
 
@@ -42,8 +50,52 @@ _HORIZON_BY_PROPOSAL_HORIZON = {
 }
 
 
+def _is_option(proposal: dict[str, Any]) -> bool:
+    """True for an options proposal. Accepts both key styles because the
+    DTO writes camelCase (``isOption``) while older/internal rows may
+    carry the snake_case form — the same tolerance
+    ``position_manager.sweep_expiring_options_for_user`` already applies."""
+    return bool(proposal.get("isOption", proposal.get("is_option", False)))
+
+
+def _multiplier(proposal: dict[str, Any]) -> int:
+    """Contract multiplier — 100 for a standard US equity option, 1 for a
+    share. Load-bearing for P&L: a $1.00 premium move on 4 contracts is
+    $400, not $4."""
+    if not _is_option(proposal):
+        return 1
+    raw = proposal.get("multiplier", proposal.get("multiplier", 100))
+    try:
+        m = int(raw)
+    except (TypeError, ValueError):
+        return 100
+    return m if m > 0 else 100
+
+
+def _mark_symbol(row: AgentDecision, proposal: dict[str, Any]) -> str | None:
+    """Which symbol the forward marks are pulled for.
+
+    For an option that is the OCC contract, NOT ``row.symbol`` — the
+    latter is deliberately the underlying (it is what the one-decision-
+    per-symbol-per-day dedup and the whole UI key on), so marking it would
+    price the wrong instrument. Returns None when an options row has no
+    OCC symbol, so the caller skips instead of silently marking the stock.
+    """
+    if not _is_option(proposal):
+        return row.symbol
+    occ = proposal.get("occSymbol") or proposal.get("occ_symbol")
+    return str(occ).upper() if occ else None
+
+
 def _entry_price(proposal: dict[str, Any]) -> tuple[float, str] | None:
-    """Entry reference: explicit limit, else notional/qty. None = skip."""
+    """Entry reference, in the SAME units the forward marks arrive in.
+
+    For an option that unit is the per-share premium (what an option bar's
+    close quotes), not the per-contract cost. So the notional fallback
+    divides by the multiplier — ``estimatedNotional`` for options is
+    ``premium * qty * 100`` and would otherwise read as a $217 premium on
+    a $2.17 contract. ``limitPrice`` is already per-share, both sides.
+    """
     limit = proposal.get("limitPrice")
     if isinstance(limit, (int, float)) and limit > 0:
         return float(limit), "proposal_limit"
@@ -55,7 +107,8 @@ def _entry_price(proposal: dict[str, Any]) -> tuple[float, str] | None:
         and isinstance(notional, (int, float))
         and notional > 0
     ):
-        return float(notional) / float(qty), "proposal_notional"
+        per_unit = float(notional) / float(qty) / float(_multiplier(proposal))
+        return per_unit, "proposal_notional"
     return None
 
 
@@ -69,9 +122,15 @@ def _reason_of(row: AgentDecision) -> str | None:
     return None
 
 
-def _ghost_pnl(side: str, qty: int, entry: float, mark: float) -> float:
+def _ghost_pnl(side: str, qty: int, entry: float, mark: float, multiplier: int = 1) -> float:
+    """Dollar P&L of the refused trade.
+
+    ``multiplier`` is 1 for equities and 100 for a standard option
+    contract. Omitting it made every options ghost 100x too small — the
+    exact number the Refusal Ledger reports, so it is not cosmetic.
+    """
     direction = 1.0 if side == "BUY" else -1.0
-    return round(direction * qty * (mark - entry), 2)
+    return round(direction * qty * (mark - entry) * multiplier, 2)
 
 
 def _trading_day_offset(start: date, day: date) -> int:
@@ -117,10 +176,19 @@ async def evaluate_ghosts(*, today: date | None = None) -> dict[str, int]:
             entry = _entry_price(proposal)
             side = proposal.get("side")
             qty = proposal.get("qty")
-            if reason is None or entry is None or side not in ("BUY", "SELL") or not qty:
+            mark_symbol = _mark_symbol(row, proposal)
+            if (
+                reason is None
+                or entry is None
+                or mark_symbol is None
+                or side not in ("BUY", "SELL")
+                or not qty
+            ):
                 skipped += 1
                 continue
             entry_price, entry_source = entry
+            multiplier = _multiplier(proposal)
+            is_option = _is_option(proposal)
             horizon = _HORIZON_BY_PROPOSAL_HORIZON.get(row.horizon, DEFAULT_HORIZON_DAYS)
             start_day = row.triggered_at.date()
 
@@ -148,8 +216,16 @@ async def evaluate_ghosts(*, today: date | None = None) -> dict[str, int]:
             elif ghost.status == "final":
                 continue  # idempotent: nothing to do
 
-            provider = get_price_provider(anchor_price=entry_price, anchor_day=start_day)
-            closes = await provider.daily_closes(row.symbol, start_day, today)
+            # An option is marked on its OWN contract's bars. Marking the
+            # underlying's stock bars would answer a different question
+            # (and, before this branch existed, returned [] for every OCC
+            # symbol — so options never appeared in the ledger at all).
+            provider = (
+                get_option_price_provider(anchor_price=entry_price, anchor_day=start_day)
+                if is_option
+                else get_price_provider(anchor_price=entry_price, anchor_day=start_day)
+            )
+            closes = await provider.daily_closes(mark_symbol, start_day, today)
             if not closes:
                 skipped += 1
                 continue
@@ -168,11 +244,18 @@ async def evaluate_ghosts(*, today: date | None = None) -> dict[str, int]:
             ghost.marks = marks
             ghost.last_price = Decimal(str(round(last_price, 4)))
             ghost.ghost_pnl = Decimal(
-                str(_ghost_pnl(str(side), int(qty), entry_price, last_price))
+                str(_ghost_pnl(str(side), int(qty), entry_price, last_price, multiplier))
             )
             ghost.price_source = provider.name
             ghost.last_evaluated_at = datetime.now(UTC)
-            new_status = "final" if last_offset >= horizon else "partial"
+            # Finalize on ELAPSED trading days, not on the last day that
+            # happened to print a bar. Keying on the latter left a ghost
+            # "partial" forever whenever the horizon's final session had no
+            # bar — rare for a liquid stock, routine for an option, where a
+            # thin strike may print on 3 days out of 10 (verified live
+            # 2026-08-30). A ledger that never finalizes reports nothing.
+            elapsed = _trading_day_offset(start_day, today)
+            new_status = "final" if elapsed >= horizon else "partial"
             if new_status == "final":
                 finalized += 1
             ghost.status = new_status

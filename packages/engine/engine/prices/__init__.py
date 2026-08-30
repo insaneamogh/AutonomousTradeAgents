@@ -6,12 +6,13 @@ seeded synthetic walk (MOCK-mode parity with ``features.synthetic``).
 """
 
 from engine.prices.base import DailyClose, PriceProvider
-from engine.prices.select import get_price_provider
+from engine.prices.select import get_option_price_provider, get_price_provider
 from engine.prices.synthetic import SyntheticPriceProvider
 
 __all__ = [
     "DailyClose",
     "PriceProvider",
     "SyntheticPriceProvider",
+    "get_option_price_provider",
     "get_price_provider",
 ]
