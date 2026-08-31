@@ -386,6 +386,19 @@ stay comparable across days.
 5. **A fresh Alpaca account may be options level 0** until the options
    agreement is accepted, and approval is not instant. Check it the day
    before, not the morning of.
+6. **The two mutating tools do not automatically share a gate.**
+   `_before_open_option_trade` and `_before_adjust_option_position` are
+   separate methods on `ToolGuard`; nothing enforces that a check added to
+   one also applies to the other. The three hard-coded gates — master
+   switch (`AUTO_TRADE_ENABLED`), paper-only (`_is_paper_and_safe()`),
+   market-hours (`is_us_market_open`) — lived only in
+   `_before_open_option_trade` for a full merge cycle. `EXIT_NOW` and
+   `SCALE_IN` both reach `packages/broker.place_order` exactly like
+   `open_option_trade` does, so `adjust_option_position` could place a real
+   order with the switch off, in live mode, or with the market closed, as
+   long as the LLM called *that* tool instead. Fixed in `dcf58ca4`. When
+   adding a new hard-coded gate to one mutating tool, grep for the other
+   and add it there too, in the same commit.
 
 ---
 
