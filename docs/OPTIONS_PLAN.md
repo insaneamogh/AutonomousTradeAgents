@@ -1,285 +1,173 @@
-# Options Trading — Design Plan
+5 agents running. Here's what I found in triage — one answer corrects your read of the screenshots.
 
-**Status: SUPERSEDED IN PART — most of Phases 0-2 shipped 2026-08-28/29.**
-This document is the original design rationale and is still the best explanation of
-*why* the options rules are shaped the way they are. It is **not** an accurate
-statement of what exists. For current state, open [`HACKATHON.md`](HACKATHON.md) §6
-and the build log in [`../fable5findings.md`](../fable5findings.md).
+## The options council **is** running
 
-Known drift in this document:
-- The env flag is **`ALLOW_OPTIONS`**, not `OPTIONS_ENABLED` (which exists nowhere).
-- Selection constants have moved for the hackathon window: DTE 10-45 (was 21-45),
-  overlapping delta bands, spread cap 12% (was 8%), volume floor 1 (was 10).
-- `earnings_blackout` is built but **permanently inert** — Alpaca publishes no
-  earnings calendar. §2.5's assumption that this is wireable is wrong.
-**Prerequisite reading:** `CLAUDE.md` (the prime rule), `PLAN.md` §11 (phase order).
-
----
-
-## 0. Verified capability (measured 2026-08-26, live paper keys)
-
-Everything below was checked against the account, not assumed:
-
-| Fact | Value |
-|---|---|
-| `options_trading_level` | **3** (spreads + long/short singles, already approved) |
-| `options_buying_power` | $97,569 |
-| Contract lookup `/v2/options/contracts` | works |
-| Chain snapshot `/v1beta1/options/snapshots/{underlying}` | works |
-| Greeks + IV on **near-the-money** strikes | **present** — e.g. `AAPL260828P00305000` δ −0.2790, γ 0.04540, θ −0.4062, ν 0.0942, IV 0.2644 |
-| Greeks on **deep-ITM** strikes | **absent** (`null`) — the plan must tolerate this |
-| 5-minute option bars `/v1beta1/options/bars` | works |
-
-**Correction to an earlier claim of mine:** I previously said options data required a
-paid OPRA subscription. That was wrong. The **free Basic tier does include US options** —
-the caveats are quality, not access:
-
-- **Indicative Pricing Feed**, not full OPRA. Derived quotes, not the consolidated tape.
-- **15-minute delay** on the most recent data.
-- 200 API calls/min; history only since **February 2024**.
-- Greeks are missing on some contracts (notably deep ITM and some 0DTE).
-
-That is *good enough to build and paper-trade on*, and **not** good enough to make
-short-dated or spread-pricing decisions that depend on a live inside market.
-$99/mo Algo Trader Plus removes the delay and gives real OPRA.
-
----
-
-## 1. Why this is not a small feature
-
-The current system is equity-only in three places that all have to change together.
-Adding an options *order type* without these is how you build something that looks
-like it works and quietly takes uncapped risk.
-
-### 1.1 The risk engine has no options rules
-
-`packages/engine/engine/risk/` has 14 named deterministic rules. They are calibrated
-for **shares**, and several are actively wrong when applied to a premium:
-
-- `max_position_pct: 5.0` — 5% of equity in shares is a position that can draw down.
-  5% of equity in long premium is a position that can go to **exactly zero** on a date
-  known in advance. Same number, categorically different risk.
-- `atr_position_size` sizes from an ATR **stop distance in dollars per share**. An
-  option has no meaningful ATR stop; its loss is bounded by the premium and its
-  sensitivity is δ/ν/θ, not price distance.
-- `pdt_block`, `wash_sale`, `sector_concentration` — need options-aware definitions
-  (a call on AAPL is AAPL exposure for concentration; a 0DTE round trip is a day trade).
-
-**The `max_derivative_notional_pct: 20.0` and `lot_sizes` that already exist are
-India NSE/BSE F&O**, not US options. Do not reuse them by accident.
-
-### 1.2 Nothing models expiry, assignment, or exercise
-
-Equity positions end when you close them. Options end **on a schedule**, and can end
-*for* you:
-
-- Long ITM at expiry → auto-exercised → you wake up owning 100 shares/contract and a
-  margin call you did not authorise.
-- Short ITM → **assignment**, possibly early for American style.
-- The reconciler currently syncs share positions. An option position that vanishes
-  overnight because it expired worthless must be reconciled as a realised loss, not as
-  a mystery.
-
-### 1.3 The council reasons about the wrong instrument
-
-Analysts read `technicals` computed from **underlying daily bars**. That is genuinely
-useful for direction — but a directional view is only one of three inputs to an options
-trade. Without IV rank, term structure, and days-to-expiry, the council can be right
-about NVDA going up and still lose money buying overpriced IV that crushes after earnings.
-
----
-
-## 2. Design
-
-Prime rule is unchanged and non-negotiable: **agents propose, deterministic code disposes.**
-The LLM never picks a strike, never sizes, never approves. It expresses a *directional
-thesis with a conviction and a horizon*; deterministic Python turns that into a contract.
+Your screenshot said "nothing has fired on options," but the DB says otherwise:
 
 ```
-Council (unchanged)          Deterministic options layer (new)
-─────────────────────        ──────────────────────────────────
-direction: BUY/SELL     ──►  1. Should this be an option at all?  (gate)
-conviction: 1-5              2. Structure selection               (rules)
-horizon: short/mid           3. Contract selection                (chain scan)
-underlying technicals        4. Sizing                            (premium-at-risk)
-                             5. Options risk rules                (veto)
-                                        │
-                                        ▼
-                                 ApprovalProposal
-                                 (you still tap Approve)
+15:24 TSLA  HOLD  "Agents did not agree (abstained)."
+15:24 SPY   HOLD  "Agents did not agree (abstained)."
+15:23 NVDA  HOLD  "Agents did not agree (abstained)."
+15:23 META  HOLD  "Agents did not agree (abstained)."
 ```
 
-### 2.1 New package: `packages/engine/engine/options/`
+Bull and Bear **are** firing on the option symbols. They're **abstaining** — both returning `direction=None` — which almost certainly means a parse failure or a prompt/parser key mismatch, not a market judgement. That's agent 1's job, and it's the single highest-value fix.
 
-```
-options/
-  contracts.py    Chain fetch + normalise. OCC symbol parse/build.
-  selection.py    Thesis + chain → the one contract. Deterministic.
-  greeks.py       Fallback Black-Scholes when the feed omits greeks.
-  sizing.py       Premium-at-risk sizing. Replaces ATR for this path.
-  rules/          Options-specific risk rules, named like the equity ones.
-  expiry.py       DTE math, expiry calendar, auto-exercise projection.
-```
+The Insights "No options passes yet" panel is reading the wrong thing, since passes clearly happened.
 
-### 2.2 Contract selection (the core algorithm)
+## You're right about the confidence bug
 
-Deterministic, auditable, no LLM. Inputs: direction, conviction, horizon, chain snapshot,
-account state. Output: one contract + why.
+AMZN was drafted at 15:15, surfaced as an approvable BUY, then refused at click time for `confidence 0.40 below floor 0.42`. Your objection is exactly correct — confidence is fixed at draft time, so a below-floor proposal should never become a pick. The interesting part is *why the same rule passed at draft and failed at approval*; agent 2 is tracing both call sites.
 
-Selection criteria, in order:
+## One thing that looks wrong but isn't
 
-1. **Expiry window** from the council's horizon — `short` (1–10d hold) maps to
-   **21–45 DTE**. Deliberately *not* 0–7 DTE: theta decay dominates, greeks are often
-   missing, and the 15-minute data delay is most dangerous where gamma is highest.
-2. **Delta band** from conviction — e.g. conviction 3 → δ 0.35–0.50 (roughly ATM);
-   conviction 5 → δ 0.55–0.70. Higher conviction buys more directional exposure, never
-   more contracts.
-3. **Liquidity floor** — reject if `open_interest < 100`, `volume < 10`, or
-   **relative spread `(ask-bid)/mid > 8%`**. On the indicative feed this filter is the
-   single most important line of code in the module: a wide book will show a fill price
-   that never existed.
-4. **IV sanity** — reject if IV is `null` (can't price it) or outside a plausible band
-   vs the underlying's own realised vol. Buying 90% IV into earnings is a different
-   trade from the one the council proposed.
-5. Tie-break on tightest relative spread, then highest OI.
+`RISK SAVED $— · 6 marks pending`. All 7 ghost outcomes are `pending`, zero `final`. `prevented_loss_usd` deliberately counts **only finalized** marks — showing `$0` there would be claiming a measurement we haven't made. The `—` is honest.
 
-**Every rejection carries a named reason** (`no_liquid_contract`, `iv_unavailable`,
-`spread_too_wide`, `no_expiry_in_window`) so the Veto Ledger explains itself exactly
-like the equity path does.
+The real issue is that ghosts aren't *finalizing* (needs 5 trading days, and the scanner path passes `skip_ghost_eval=True`). Agent 4 has it, with instructions not to "fix" it by counting unfinished marks.
 
-### 2.3 Structure selection
+Also confirmed: `SUM(estimatedNotional)` is **NULL** in SQL while the UI shows $29,108 — a snake_case/camelCase split that's been partially patched. And only **one** rule has ever fired in 30 days, which is thin for a ledger about refusals.
 
-Start deliberately narrow. Level 3 permits spreads; that is not a reason to ship them first.
+## The equity funnel
 
-| Phase | Structures | Rationale |
-|---|---|---|
-| **A** | Long call / long put only | Loss is bounded by premium paid. No assignment risk. Simplest thing that is honestly risk-checkable. |
-| **B** | Vertical debit spreads | Still bounded, cheaper, but needs multi-leg orders + per-leg fills in the reconciler. |
-| **C** | Cash-secured puts / covered calls | Assignment machinery + collateral checks required first. |
+`strategy_fit` is not the bottleneck — SPY 0.784, AAPL 0.877 against a 0.42 floor. The collapse is downstream: analysts returning **28–42** on names the deterministic layer rates 0.65–0.88. That's a prompt-calibration problem, not a threshold problem, and agent 5 is instrumenting a full pass to find the exact stage. It's also checking whether the analysts run in parallel — a free latency win if they don't.
 
-**Never without a separate, explicit decision:** naked short calls. Unbounded loss is
-incompatible with a system whose selling point is deterministic risk disposal.
+I gave every agent hard constraints not to loosen `MIN_FIT_TO_TRADE` (hard floor 0.41), the premium caps, or the drawdown halt — the fix is calibration, not removing gates.
 
-### 2.4 Sizing — replaces ATR entirely on this path
+I'll report as each lands.
+'ll start by reading the project guide and then tracing both call sites.
 
-Long premium is a **total-loss-possible** instrument. Size on premium at risk:
+Ran 4 commands
 
-```
-max_premium = min(
-    account_equity * OPTIONS_MAX_PREMIUM_PCT,   # default 1.0%, hard cap 2.0%
-    OPTIONS_MAX_PREMIUM_ABS,                    # absolute per-trade dollar cap
-)
-contracts = floor(max_premium / (ask * 100))
-```
+Found a lead — fable5findings.md:166 already documents this exact discrepancy. Let me verify against the actual code.
 
-Reject if `contracts < 1` — do not round up into a bigger position than the rule allows.
+Ran 6 commands
 
-Two properties this must have:
-- The **whole premium is the risk number**. No stop-loss assumption. An option can gap
-  through any stop, and on a 15-min-delayed feed a stop is a suggestion.
-- **Portfolio-level greek caps**, not just per-trade: total portfolio δ (as
-  underlying-equivalent notional) and total θ/day both capped.
+Now the council side. Let me trace risk_officer_node.
 
-### 2.5 New risk rules (named, deterministic, in `options/rules/`)
+Ran 5 commands
 
-| Rule | Default | Blocks |
-|---|---|---|
-| `options_disabled` | on | Master switch, default OFF |
-| `options_level_insufficient` | — | Broker level < required for the structure |
-| `max_premium_pct` | 1.0% equity | Oversized premium |
-| `max_total_premium_pct` | 5.0% equity | All open long premium combined |
-| `min_dte` | 7 | 0DTE/weekly gamma risk |
-| `max_dte` | 60 | Capital parked too long |
-| `illiquid_contract` | see §2.2 | OI/volume/spread floor |
-| `iv_unavailable` | — | No IV → cannot price |
-| `earnings_blackout` | ±2 days | IV crush around a known event |
-| `portfolio_delta_cap` | 30% equity | Aggregate directional exposure |
-| `portfolio_theta_cap` | 0.2%/day | Aggregate time decay burn |
-| `naked_short_forbidden` | on | Undefined-risk structures |
-| `expiry_day_entry` | on | No new positions expiring today |
+The reported 0.40 is suspiciously exactly conviction_level 2 / 5. Let me check what actually gets persisted into the proposal JSON.
 
-### 2.6 Expiry & assignment (`expiry.py` + reconciler work)
+Ran 2 commands
 
-Non-negotiable before any options position is opened:
+councilConfidence is never written — only read. Let me find what actually lands in agent_decisions.proposal.
 
-- **Daily DTE sweep.** At T-2 days, an open long option is force-surfaced for a decision
-  (close / roll / let expire). Silence must not be a decision.
-- **Auto-exercise projection.** Long ITM approaching expiry → warn *before* the broker
-  exercises. Alpaca auto-exercises ITM longs; that converts a $500 option into a $30,000
-  share position overnight. The app must never let that surprise the user.
-- **Reconciler**: a vanished option position resolves to expired-worthless (realised
-  loss = premium) rather than an unexplained gap.
-- Explicit exercise endpoint (`POST /v2/positions/{symbol}/exercise`) stays **manual-only**.
+Ran 5 commands
 
-### 2.7 What the council gains
+Confirmed the mechanism. Let me verify the drafter side and check the exact numbers.
 
-Add an `options_context` block to the feature dict — **only when options are enabled**,
-and only real values (omit the key rather than synthesise, exactly as `fundamentals`
-does today):
+Ran 4 commands
 
-- IV rank / IV percentile vs the underlying's own 52-week IV history
-- ATM IV vs realised vol (rich/cheap)
-- Term structure slope (front vs back month)
-- Days to next earnings
+Diagnosis is clear from code. Let me confirm empirically against the live DB.
 
-The analysts stay directional. This block exists so the **deterministic** layer can
-refuse an otherwise-fine direction when the options are priced badly.
+Ran 8 commands
 
----
+Live DB proves it. Let me recover the council's real confidence and check the blast radius.
 
-## 3. Order execution notes (from the API, verified)
+Ran 2 commands
 
-- **Only `market` and `limit`**; **`day` only**; no extended hours; no fractional/notional.
-- **Use limit orders.** On a 15-minute-delayed indicative feed, a market order into a
-  wide options book is how you donate money. Limit at mid or better, with a
-  configurable max slippage from mid.
-- Multi-leg (Phase B) uses `order_class: mleg` with a `legs[]` array.
-- Check `options_buying_power` (a distinct field from equity buying power) pre-trade.
-- OCC symbol format: `AAPL260828P00305000` = underlying + YYMMDD + C/P + strike×1000,
-  8 digits. Parse and build it in `contracts.py`; never string-concatenate at call sites.
+0 / 30 approved rows have ever carried a confidence key. Let me recover the real value from the reasoning column.
 
----
+Inspected reasoning column for AMZN
 
-## 4. Phasing
+Diagnosis nailed: real council confidence was 0.54; the executor scored it as 0.40. Let me check what else reads confidence and inspect the options guard for the same conflation.
 
-| Phase | Deliverable | Gate to proceed |
-|---|---|---|
-| **0** | `engine/options/` skeleton, OCC parse/build, chain fetch, greeks fallback, **tests only — no trading** | Chain + greeks read reliably for 20 symbols |
-| **1** | Selection + sizing + risk rules, wired into a **backtest/dry-run only** | Rules demonstrably veto: illiquid, no-IV, oversized, 0DTE |
-| **2** | Paper execution, long call/put only, behind `ALLOW_OPTIONS=0` default | 2 weeks paper with expiry sweep working |
-| **3** | Expiry/assignment automation + UI (chain view, greeks on pick detail, expiry countdown) | — |
-| **4** | Vertical spreads | Phase 3 stable |
+Ran 2 commands
 
-**Do not start Phase 2 before the expiry sweep from §2.6 exists.** Opening a position
-you have no automated plan to close is the failure mode that actually costs money.
+Engine-side, proposal.confidence is read by exactly one rule — so a narrow change is safe. Let me read the types.
 
----
+Ran 3 commands
 
-## 5. Honest assessment
+Confirmed: proposal["confidence"] and sizing.confidence are the same value — so the live 0.54 is the council's number. Let me check the remaining call sites.
 
-**Cost to build properly: ~2 weeks.** Not because any single piece is hard — because
-options risk is genuinely a different domain, and the parts that make this system worth
-showing (named deterministic vetoes, a full audit row, ghost P&L) all have to be
-re-derived for a new instrument.
+Ran 2 commands
 
-**Cheap versions to refuse:** placing options orders through the existing equity path
-with `max_position_pct` doing the risk checking. It will run. It will look fine on a
-demo. It is a 5%-of-equity position that can be worth zero on a known date with no rule
-that understands that.
+Diagnosis complete and proven. Now implementing the fix.
 
-**For the current demo:** options stay out, and that is the stronger position to argue —
-*"we deliberately don't trade instruments we can't risk-check yet"* is a maturity signal.
-This document is the answer to "what would it take?", which is a better answer than a
-half-wired options path.
+Ran 2 commands
 
----
+Now the two evaluators, so a self-gated rule isn't recorded as a pass.
 
-## 6. Data subscription decision
+Gate the confidence rule in both evaluators
 
-Free Basic tier is sufficient for **Phases 0–2** (build, backtest, paper). Buy Algo
-Trader Plus ($99/mo) before Phase 3 if any of these become true:
+Now the root cause — persist the council's confidence on the approval DTO.
 
-- You want DTE < 7 (the delay is disqualifying near expiry).
-- You want spreads (leg pricing needs a live inside market).
-- The indicative feed's fills diverge materially from paper fills in Phase 2 — **measure
-  this in Phase 2 rather than assuming either way.**
+Ran 3 commands
+
+Now remove the fabricating fallback in the executor.
+
+Removed the conviction/5 fabrication in the executor
+
+Now the regression tests. Let me look at the existing helpers.
+
+Ran 4 commands
+
+Now let me write the tests.
+
+Ran 2 commands
+
+The DTO fallback needs to be in _re_run_risk — the single funnel into evaluate() — not only in the async loader.
+
+Moved DTO fallback into _re_run_risk and retest
+
+Now the revert check (CLAUDE.md §4.1) — confirming each test actually fails without the fix.
+
+Reverted check 1: restore conviction/5 fallback
+
+Both fail as expected. Now revert check 2 — the root cause (dropping councilConfidence from the DTO).
+
+Reverted check 2: drop councilConfidence from DTO
+
+Revert check 3 — the engine's checks_passed gating.
+
+Reverted check 3: unconditional checks_passed append
+
+All three revert checks confirmed. Restoring and running the full suite.
+
+Restored and ran full Python suite
+
+Full suite: 1242 passed, 11 skipped (baseline 1239 + my 3 net new tests). But the diff shows two files I didn't touch — let me check those.
+
+Inspected unexpected diffs
+
+These are someone else's in-flight options pre-pass work, uncommitted in the tree — not mine. Let me confirm and stage only my files.
+
+Ran 2 commands
+
+Working tree is being actively edited in parallel (agents.py, prompts.py are not mine). Let me lint my files and stage only those.
+
+Ran 2 commands
+
+9 errors remain — CLAUDE.md §7 says that's the known baseline. Let me verify none are mine.
+
+Failed to list remaining ruff errors concisely
+
+All 9 are pre-existing in executor.py (unused noqa, RUF005, UP037) — matching the documented baseline. Confirming against HEAD:
+
+Ruff baseline on HEAD executor.py
+
+Baseline identical. Re-running the suite after the ruff fix, then committing.
+
+Ran
+Re-run full suite
+Stopped
+
+You've hit your session limit · resets 12:40am (Asia/Calcutta)
+I'll start by reading the key context files.
+
+Ran 41 commands, read IMPL_REFUSAL_LEDGER.md
+Ran 5 commands
+
+Now let me implement. First, move the proposal DTO builder into guard.py:
+
+Ran 5 commands
+
+Another agent is actively editing files in this tree. Let me check what's contested before I write anything.
+
+Ran 2 commands
+
+Now the adjust_option_position denial audit trail:
+
+Log adjust denials to tool_log
+
+You've hit your session limit · resets 12:40am (Asia/Calcutta)
