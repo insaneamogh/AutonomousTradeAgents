@@ -18,6 +18,7 @@ from trading_agents.jobs.ghost_eval import (
     _is_option,
     _mark_symbol,
     _multiplier,
+    _skip_reason,
     _trading_day_offset,
 )
 
@@ -148,3 +149,68 @@ def test_is_option_accepts_both_key_styles() -> None:
     assert _is_option({"isOption": True})
     assert _is_option({"is_option": True})
     assert not _is_option({})
+
+
+def test_entry_price_accepts_snake_case_notional() -> None:
+    """A vetoed proposal is persisted as the Drafter's raw dict
+    (`estimated_notional`), not the camelCase DTO — the write-side gap
+    IMPL_REFUSAL_LEDGER.md §0 traces the live "$0 blocked" ledger to.
+    `_entry_price` must find it under either key."""
+    price, source = _entry_price({"qty": 16, "estimated_notional": 4922.08})
+    assert source == "proposal_notional"
+    assert price == pytest.approx(4922.08 / 16)
+
+
+def test_entry_price_accepts_snake_case_limit() -> None:
+    price, source = _entry_price({"limit_price": 12.5, "qty": 10, "estimated_notional": 125.0})
+    assert source == "proposal_limit"
+    assert price == 12.5
+
+
+# ── test_ghost_eval_counters_name_the_skip_reason ──────────────────────
+# `_skip_reason` is the pure prefilter `evaluate_ghosts` uses to name WHICH
+# check failed. Pinned here (no DB needed) rather than on the DB-touching
+# `evaluate_ghosts` itself — same split as the rest of this file.
+
+
+def _ok_args(**over: object) -> dict:
+    base: dict = {
+        "reason": "vetoed",
+        "entry": (100.0, "proposal_limit"),
+        "mark_symbol": "NVDA",
+        "side": "BUY",
+        "qty": 10,
+    }
+    base.update(over)
+    return base
+
+
+def test_skip_reason_none_when_everything_is_usable() -> None:
+    assert _skip_reason(**_ok_args()) is None
+
+
+def test_skip_reason_names_reason_is_none() -> None:
+    assert _skip_reason(**_ok_args(reason=None)) == "reason_is_none"
+
+
+def test_skip_reason_names_entry_is_none() -> None:
+    assert _skip_reason(**_ok_args(entry=None)) == "entry_is_none"
+
+
+def test_skip_reason_names_mark_symbol_is_none() -> None:
+    assert _skip_reason(**_ok_args(mark_symbol=None)) == "mark_symbol_is_none"
+
+
+def test_skip_reason_names_bad_side() -> None:
+    assert _skip_reason(**_ok_args(side="SHORT")) == "bad_side"
+
+
+def test_skip_reason_names_falsy_qty() -> None:
+    assert _skip_reason(**_ok_args(qty=0)) == "falsy_qty"
+
+
+def test_skip_reason_checks_in_priority_order() -> None:
+    """When several checks would fail at once, the first one in the
+    doc's own listed order wins -- pins the order so the counters stay
+    stable across refactors."""
+    assert _skip_reason(**_ok_args(reason=None, entry=None)) == "reason_is_none"

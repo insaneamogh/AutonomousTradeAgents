@@ -368,6 +368,14 @@ def _to_decision_entry(
     fund = final.get("fundamental") or {}
     macro = final.get("macro") or {}
     internal_proposal = final.get("proposal") or {}
+    # Persisted `proposal` must be the same camelCase shape regardless of
+    # risk_approved. `proposal_dto` is already that shape when approved;
+    # when vetoed it's None (see run_council), and without this the
+    # fallback in PostgresDecisionLog.record() would persist
+    # `internal_proposal` untouched — the Drafter's snake_case dict, whose
+    # `estimated_notional` no camelCase reader (ghost_eval, the veto
+    # ledger) will ever find under `estimatedNotional`.
+    audit_proposal = proposal_dto if proposal_dto is not None else _to_proposal_dto(final)
 
     return DecisionEntry(
         id=council_run_id,
@@ -387,7 +395,7 @@ def _to_decision_entry(
         fundamental_score=float(fund.get("score")) if fund.get("score") is not None else None,
         macro_score=float(macro.get("score")) if macro.get("score") is not None else None,
         raw_state={
-            "proposal": final.get("proposal"),
+            "proposal": audit_proposal,
             "regime": final.get("regime"),
             "analyst_subset": final.get("analyst_subset"),
             # Non-empty when any node ran on a parse-retry or neutral

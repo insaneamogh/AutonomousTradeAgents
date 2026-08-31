@@ -96,11 +96,11 @@ def _entry_price(proposal: dict[str, Any]) -> tuple[float, str] | None:
     ``premium * qty * 100`` and would otherwise read as a $217 premium on
     a $2.17 contract. ``limitPrice`` is already per-share, both sides.
     """
-    limit = proposal.get("limitPrice")
+    limit = proposal.get("limitPrice", proposal.get("limit_price"))
     if isinstance(limit, (int, float)) and limit > 0:
         return float(limit), "proposal_limit"
     qty = proposal.get("qty")
-    notional = proposal.get("estimatedNotional")
+    notional = proposal.get("estimatedNotional", proposal.get("estimated_notional"))
     if (
         isinstance(qty, (int, float))
         and qty
@@ -109,6 +109,33 @@ def _entry_price(proposal: dict[str, Any]) -> tuple[float, str] | None:
     ):
         per_unit = float(notional) / float(qty) / float(_multiplier(proposal))
         return per_unit, "proposal_notional"
+    return None
+
+
+def _skip_reason(
+    *,
+    reason: str | None,
+    entry: tuple[float, str] | None,
+    mark_symbol: str | None,
+    side: Any,
+    qty: Any,
+) -> str | None:
+    """Which prefilter check failed, or None if the row is evaluable.
+
+    Named so ``evaluate_ghosts`` can report WHICH branch fired instead of
+    one bare ``skipped`` total — a high count with no breakdown isn't
+    diagnosable (see IMPL_REFUSAL_LEDGER.md §1).
+    """
+    if reason is None:
+        return "reason_is_none"
+    if entry is None:
+        return "entry_is_none"
+    if mark_symbol is None:
+        return "mark_symbol_is_none"
+    if side not in ("BUY", "SELL"):
+        return "bad_side"
+    if not qty:
+        return "falsy_qty"
     return None
 
 
@@ -146,11 +173,22 @@ def _trading_day_offset(start: date, day: date) -> int:
     return offset
 
 
-async def evaluate_ghosts(*, today: date | None = None) -> dict[str, int]:
-    """One evaluator pass. Returns counters for logging/tests."""
+async def evaluate_ghosts(*, today: date | None = None) -> dict[str, int | dict[str, int]]:
+    """One evaluator pass. Returns counters for logging/tests: ``created``/
+    ``updated``/``finalized``/``skipped`` (ints) plus ``skip_reasons``, a
+    breakdown of ``skipped`` by which check failed (``reason_is_none``,
+    ``entry_is_none``, ``mark_symbol_is_none``, ``bad_side``,
+    ``falsy_qty``, ``no_daily_closes``, ``marks_out_of_window``) — a bare
+    total doesn't say why."""
     today = today or datetime.now(UTC).date()
     session_factory = async_session_factory()
     created = updated = finalized = skipped = 0
+    skip_reasons: dict[str, int] = {}
+
+    def _skip(reason_name: str) -> None:
+        nonlocal skipped
+        skipped += 1
+        skip_reasons[reason_name] = skip_reasons.get(reason_name, 0) + 1
 
     async with session_factory() as session:
         cutoff = datetime.now(UTC) - timedelta(
@@ -177,15 +215,18 @@ async def evaluate_ghosts(*, today: date | None = None) -> dict[str, int]:
             side = proposal.get("side")
             qty = proposal.get("qty")
             mark_symbol = _mark_symbol(row, proposal)
-            if (
-                reason is None
-                or entry is None
-                or mark_symbol is None
-                or side not in ("BUY", "SELL")
-                or not qty
-            ):
-                skipped += 1
+            reason_to_skip = _skip_reason(
+                reason=reason, entry=entry, mark_symbol=mark_symbol, side=side, qty=qty
+            )
+            if reason_to_skip is not None:
+                _skip(reason_to_skip)
                 continue
+            # `_skip_reason` already guarantees these — restate for mypy,
+            # which can't narrow through the helper call the way it could
+            # through an inline `is None` check.
+            assert entry is not None
+            assert mark_symbol is not None
+            assert qty
             entry_price, entry_source = entry
             multiplier = _multiplier(proposal)
             is_option = _is_option(proposal)
@@ -227,7 +268,7 @@ async def evaluate_ghosts(*, today: date | None = None) -> dict[str, int]:
             )
             closes = await provider.daily_closes(mark_symbol, start_day, today)
             if not closes:
-                skipped += 1
+                _skip("no_daily_closes")
                 continue
 
             marks: dict[str, float] = dict(ghost.marks or {})
@@ -237,6 +278,7 @@ async def evaluate_ghosts(*, today: date | None = None) -> dict[str, int]:
                     marks[str(off)] = c.close
 
             if not marks:
+                _skip("marks_out_of_window")
                 continue
 
             last_offset = max(int(k) for k in marks)
@@ -263,11 +305,12 @@ async def evaluate_ghosts(*, today: date | None = None) -> dict[str, int]:
 
         await session.commit()
 
-    counters = {
+    counters: dict[str, int | dict[str, int]] = {
         "created": created,
         "updated": updated,
         "finalized": finalized,
         "skipped": skipped,
+        "skip_reasons": skip_reasons,
     }
     logger.info("ghost_eval pass: %s", counters)
     return counters

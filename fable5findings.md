@@ -385,6 +385,106 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-31 — `927dc415` fix(ledger): vetoed proposals persisted snake_case, so estimatedNotional never matched
+
+`ID:MODEL2OFF`. Implements `docs/IMPL_REFUSAL_LEDGER.md`. Ran the §0
+diagnostic first, exactly as instructed, before touching
+`build_veto_ledger`:
+
+```sql
+SELECT risk_veto_rule, final_action, proposal->>'estimatedNotional' AS notional,
+       user_response, triggered_at
+  FROM agent_decisions
+ WHERE risk_approved IS FALSE AND risk_veto_rule IS NOT NULL
+ ORDER BY triggered_at DESC LIMIT 20;
+```
+
+Result: 6 rows, all `single_name_concentration`, all `notional: null`.
+Per the doc's own decision table that is **Case 1 — the write side never
+populated it**, not the aggregation. Confirmed by dumping the raw
+`proposal` JSONB for those rows directly: all 6 carry
+`estimated_notional` (snake_case), present and correct;
+`estimatedNotional` (camelCase) absent entirely.
+
+**Root cause:** `runtime.run_council` only builds the camelCase DTO
+(`_to_proposal_dto`) when `risk_approved` is True. For a vetoed proposal,
+`PostgresDecisionLog.record()`'s fallback persists `raw_state["proposal"]`
+untouched — the Drafter's snake_case dict — which no camelCase reader
+(`ghost_eval`, the veto ledger) can ever match. The identical bug
+independently broke `ghost_eval._entry_price()` too: **103 of 104**
+candidate rows were being skipped with `entry_is_none` before this fix.
+
+**Fix:**
+1. `runtime._to_decision_entry` normalizes the persisted proposal through
+   `_to_proposal_dto` regardless of `risk_approved` — does **not** touch
+   the separate, still-gated `proposal_dto` that drives the actionable
+   `"proposal"` key / push notification, so a veto still never looks
+   approvable.
+2. `ghost_eval._entry_price` and `ghost_service.build_veto_ledger`'s
+   notional sum now accept either key casing, rescuing the 6
+   already-written rows with no DB backfill.
+3. New `GET /api/v1/risk/vetoes/{rule}/exemplar` — the "story trade":
+   largest `abs(ghost_pnl)` among FINALIZED ghosts for a rule, never
+   most recent. 404s cleanly when nothing has finalized yet.
+
+**Verified live against real Postgres, not just tests:**
+- `build_veto_ledger`'s `total_blocked_notional`: **$0.00 → $29,107.74**.
+- `evaluate_ghosts()`: `{created: 6, updated: 7, finalized: 0,
+  skip_reasons: {entry_is_none: 97}}`. 0 ghosts reached `final` —
+  correctly so; these vetoes are from 2026-08-28, `short` horizon needs
+  5 elapsed trading days, so `final` won't hit until ~Sept 4.
+  `prevented_loss_usd` correctly still renders `None`, not `$0`.
+- **Caveat found and disclosed, not hidden:** `ghost_outcomes.
+  price_source = 'synthetic'` on all 7 rows — both this worktree's and
+  the original `apps/api/.env` have `ALPACA_API_KEY`/`SECRET` present as
+  keys but empty as values, so `engine.prices.select` silently falls
+  back to synthetic. The mechanism is verified correct; today's specific
+  dollar figures are not real market data yet.
+
+969 → 994 passed (+25), 11 skipped, zero regressions — re-confirmed
+independently by me, not just trusting the report. All 8 behaviors from
+the doc's §6 revert-check matrix actually broken and confirmed to fail,
+then restored, per CLAUDE.md §4.1. ruff/mypy checked against baseline
+via `git checkout HEAD -- <path>` (not `git stash` — see below).
+
+**Two honesty-rule decisions made explicitly, not silently:**
+- **§3 (old-account label):** left undone. `agent_decisions` has no
+  account-id column and all 132 rows share one `user_id` — the account
+  swap wasn't a user swap, so the boundary isn't mechanically queryable,
+  only inferable by date, and the one plausible cutover event
+  (`broker_connections.updated_at`) more likely reflects
+  `auto_approve_consent` shipping that day than an account swap.
+  Recommend labeling by date once a human confirms the real cutover.
+- **§5 (confidence bars):** chose "not yet calibrated" over wiring
+  reflection. `daily_cron.main()` already calls `reflection_agent_run`
+  unconditionally (that part of the doc is stale) — the real gap is
+  `COUNCIL_SCHEDULER_ENABLED=0` locally, so nothing invokes it
+  unattended. Did not flip that flag (real LLM-cost + auto-trading
+  consequences, outside scope) or run reflection manually (the only 6
+  gradeable decisions are all pre-contest). `/strategies/performance`
+  already exposes `lastReflectionAt`, so the frontend can render "not
+  yet calibrated" with zero backend change.
+
+**Found, flagged, not fixed (out of scope):** `biography_service.py` has
+the identical camelCase-only read gap for a vetoed row's displayed
+notional — spawned as a separate follow-up task.
+
+**Environment note — third independent confirmation of the git-stash
+risk in this batch:** this worktree's `git stash` collided with a
+DIFFERENT concurrently-running agent (the funnel-UI workstream) — the
+recovered stash content was confirmed identical to the funnel-UI work
+already reviewed and merged separately (`fab53c59`/`3640a64a`), and the
+now-fully-redundant stash entry was dropped after confirming that. `git
+stash` is not worktree-scoped in this environment; treat that as
+established, not a one-off.
+
+**Merge note, mine:** landed alongside the funnel view and both I5
+halves merged earlier today — `apps/api/app/routers/insights.py` had a
+real textual conflict (both this commit's `veto_exemplar` endpoint and
+the funnel endpoint insert at the same point in the file); combined both,
+kept every class/function from each side, confirmed with `ast.parse` and
+a full suite re-run after resolving.
+
 ### 2026-08-31 — `0eaaad8c`/`10374339` feat(mobile): demo banner + disabled buttons — and the gap between the two I5 halves
 
 `ID:MODEL2OFF`. Client half of `docs/IMPL_DEMO_SESSION.md` (`0eaaad8c`):
