@@ -11,7 +11,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 
-import { ApiError } from '@/lib/api';
+import { ApiError, runErrorMessage } from '@/lib/api';
 import { EmptyState, ErrorState, Skeleton, cn } from '@app/ui';
 
 import { DirectionPill, HeroHeadline, HeroSub, Tile, TileLabel } from '@/components/bento';
@@ -45,12 +45,12 @@ function closeErrorDetail(err: unknown): string {
       : null;
   if (code && CLOSE_ERROR_COPY[code]) return CLOSE_ERROR_COPY[code];
   if (code) return code;
-  return "Couldn't reach the agent server.";
+  return runErrorMessage(err);
 }
 
 export default function PositionsScreen() {
   const router = useRouter();
-  const { data, isLoading, isError, refetch } = useOpenPositions();
+  const { data, isLoading, isError, error, refetch } = useOpenPositions();
   const close = useClosePosition();
   const isDemo = useIsDemoSession();
   const list = data ?? [];
@@ -129,7 +129,7 @@ export default function PositionsScreen() {
           <Tile>
             <ErrorState
               title="Couldn't load positions"
-              description="The agent server isn't reachable. Try again in a moment."
+              description={runErrorMessage(error)}
               onRetry={() => refetch()}
             />
           </Tile>

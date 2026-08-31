@@ -17,7 +17,7 @@ import { Button, Card, cn } from '@app/ui';
 
 import { GoogleSignInButton } from '@/components/GoogleSignInButton';
 import { useGoogleSignIn } from '@/hooks/useGoogleSignIn';
-import { ApiError, request } from '@/lib/api';
+import { request, runErrorMessage } from '@/lib/api';
 
 interface RequestLoginResponse {
   expiresAt: string;
@@ -77,15 +77,7 @@ export default function LoginScreen() {
       });
       setChallenge(res);
     } catch (err) {
-      if (err instanceof ApiError) {
-        const detail =
-          typeof err.body === 'object' && err.body && 'detail' in err.body
-            ? String(err.body.detail)
-            : err.message;
-        setError(detail);
-      } else {
-        setError("Couldn't reach the agent server. Make sure the API is running.");
-      }
+      setError(runErrorMessage(err));
     } finally {
       setSubmitting(false);
     }
