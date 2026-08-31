@@ -385,6 +385,30 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-31 — `9f824b4b` docs(options): add the adjust_option_position gate asymmetry to the trap list
+
+`ID:MODEL2OFF`. Follow-up to `dcf58ca4` (below) and to the cross-session
+audit's `1b329241`/`b02a1977` schema fix. While merging agent work I found
+a second, fully independent worktree (`claude/keen-saha-f25628`, branched
+from an old point in history, never merged) that had rediscovered and
+fixed the *exact same* `adjust_option_position` gate gap 11 minutes after
+`dcf58ca4` landed — same three checks, same `GuardVerdict` reason
+strings, byte-for-byte equivalent logic. Confirmed via `git merge-base`
+that it branched before `dcf58ca4`, so it was never aware the fix had
+already shipped; its guard.py diff is now a pure no-op against main and I
+did not merge it. Its only genuinely new content — a docs/OPTIONS_PLAYBOOK.md
+§5 entry, and ~20 test permutations across all 5 adjust actions vs. main's
+4 — is a real signal this exact trap was worth documenting so a third pass
+doesn't burn time rediscovering it a third time. Added §5 item 6
+referencing the real merged commit (`dcf58ca4`), left the stale branch/
+worktree in place (worktree removal hit a Windows file-lock, harmless to
+leave; branch itself costs nothing to keep around). Did not port the extra
+20 tests over — the gate runs unconditionally before the action switch in
+both versions, so main's 4 tests (one per check) already prove it holds
+for all 5 actions by construction; the fuller matrix is redundant
+rigor, not a coverage gap. Verified: `docs/OPTIONS_PLAYBOOK.md` renders
+correctly; no code touched, no test run needed.
+
 ### 2026-08-31 — consolidated: `ffe75213`..`f3fbe74e` (6 commits) + cross-check/fix pass
 
 `ID:MODEL2OFF`. This is ONE entry standing in for 6 commits that should
