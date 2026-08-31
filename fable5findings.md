@@ -385,6 +385,62 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-31 — `81fa9b9c` feat(agents): llm.py tool-use support — the I2 foundation, now landed
+
+`ID:MODEL2OFF`. Implements `docs/IMPL_LLM_TOOLS.md` in full — **this is the
+gate**: `docs/IMPL_OPTIONS_AGENTS.md` (I2, two arguing options agents with
+guarded real trade tools) cannot start until this lands, per its own header.
+It has now landed and is fully verified; I2 is next.
+
+Three commits, each gated on its own green suite: (1) a block-walk helper
+replacing the old `msg.content[0].text` (which assumed the FIRST content
+block is always text — true for every existing council node, false for any
+tool-using response), with `LLMResponse` gaining `tool_calls`/`stop_reason`,
+both defaulted so no existing construction site breaks; (2) `complete_tools()`
+as a genuinely separate sibling method — NOT an overload of `complete()`,
+which hardcodes a single user turn and is on the hot path of all 5 council
+nodes; (3) `run_tool_loop()` in new `llm_loop.py`, where the round budget
+lives in the CALLER (`max_rounds=3` default), and the guarded `dispatch`
+callback is wrapped in try/except converting any raise to `is_error` — belt
+and suspenders on top of the contract already asked of callers.
+
+**Verified, not assumed — independently re-run by me, not just trusting the
+subagent's report:** true baseline 969 passed/11 skipped (`git stash`,
+matches the doc's own recorded number); after, **1005 passed in the
+worktree, 1019 on `main` post-merge** (+36 new tests on top of the 14 from
+I3-backend already merged), zero regressions, re-confirmed with my own full
+suite run both times. Ruff clean on all 3 touched files, re-checked
+directly. 6 revert-checks actually executed, each with the specific failure
+observed (not just "would fail"): the block-walk itself, `test_mock_never_
+emits_tool_use` (doc's own "#1 most important" — a mock returning a canned
+`ToolCall` failed all 4 parametrizations), `test_loop_bounded_at_max_rounds`
+(the other "most important"), dispatch-error-becomes-`is_error`, and both
+halves of the dual mock/cost-ledger role-registration branch (`_mock_response`
++ `infer_role_from_system_prompt`) — disabling either broke exactly one row,
+confirming correct isolation.
+
+`cost_ledger.py` ends with **zero net diff** — no new agent role was
+registered in this commit (correctly out of scope; I2 will add Bull/Bear),
+so the two "new role" tests are parametrized over the 7 roles that exist
+today, proving the dual-branch pattern holds as the template a real
+addition must not break.
+
+Two disclosed deviations from the doc's literal pseudocode, both
+improvements not behavior changes: `dispatch()` wrapped in try/except
+inside `run_tool_loop` even though the doc's own sketch has none (its own
+§6 trap #4 says "letting dispatch raise" is a mistake — this makes that
+belt-and-suspenders rather than relying solely on the caller's contract);
+`assert resp is not None` before the final return, needed for mypy strict,
+behavior-identical for every real caller.
+
+**Left open, noted not fixed (CLAUDE.md §4.2 — code wins, doc is wrong):**
+the doc's §0 calls `LLMResponse` "frozen"; it is a plain `@dataclass`, not
+`frozen=True`, and always has been. Out of scope to change here.
+
+**Merge note:** touches only `llm.py`/`llm_loop.py`/its own test file — zero
+overlap with the I3/I4 frontend work merged earlier today, clean merge, no
+conflicts.
+
 ### 2026-08-31 — `fab53c59`/`3640a64a` feat: the Contract Funnel view, backend + frontend
 
 `ID:MODEL2OFF`. Implements `docs/IMPL_CONTRACT_FUNNEL_UI.md` in full — the
