@@ -385,7 +385,151 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
-### 2026-08-31 — docs: PLAN_AUTO_APPROVE.md's "not built" header was stale — the feature shipped 08-30
+### 2026-09-01 — `36930944`/`abdbce7c` fix(agents): why every position was long/calls-only — one deliberate gate, two real bugs
+
+`ID:MODEL2OFF`. User looked at their real position list and asked: every
+position is long (equity buys, and every option position is a CALL — no
+puts, no shorts, anywhere). Is the agent structurally incapable of a
+bearish trade, or has the market just not favored one? Mid-task the
+mandate was raised explicitly: options must be tradable in both
+directions by morning, and if equity shorting is genuinely missing that
+matters too — but the post-LLM risk veto stack (MIN_FIT_TO_TRADE, premium
+caps, drawdown halt, min_council_confidence, wash_sale, pdt_block,
+options_disabled, …) was explicitly off-limits to loosen. Answer required
+tracing the equity strategy layer, the options Bull/Bear council, and
+checking the real production DB — not guessing. Did all three.
+
+**Verified live against the real production Postgres** (`DATABASE_URL`
+from `apps/api/.env`, read-only queries only, script discarded after —
+not committed): 188 `agent_decisions` rows total, all one tenant
+(`43221580-69bc-4134-8e1e-5af75499d874`), 2026-08-26 through 2026-08-31.
+`final_action`: 137 HOLD / 43 BUY / 8 VETOED — **zero SELL rows, ever, of
+any kind.** `reasoning->'strategy_fit'->>'allow_shorts'` is `false` on
+180/188 rows (the other 8 are the options-council's own separate write
+path, which doesn't persist that block — see the open item below) —
+never `true`, anywhere. `reasoning->'strategy_fit'->'winner'->>'direction'`
+is `"long"` on all 126 rows that ever picked a winner, `None` on the other
+62 — never `"short"`. Even the full ranked candidate list
+(`reasoning->'strategy_fit'->'ranked'`, every strategy scored, not just
+the winner) contains a `"short"` entry on **zero** rows across the whole
+history. Of the 8 rows that ever reached `is_option=true` (a contract
+actually selected), 100% are `contract_type=call`, `direction=long`; the 2
+that got risk-vetoed (`min_council_confidence`) were vetoed calls, not
+puts. 9 more rows reached the options Bull/Bear council and resolved
+`"Agents did not agree (abstained)."` without ever attempting a trade.
+
+**Equity shorts: NOT a bug. Deliberate, documented, fully built, off by a
+fail-closed flag.** `ALLOW_SHORTS` (`engine.env.env_flag`, default off,
+typo-safe) gates a real, tested short-selling stack:
+`forbid_short_phase_0` (master switch), `shortable_check` (borrow),
+`short_requires_stop` (bracket geometry — a short's stop must sit ABOVE
+entry), `short_unbounded_loss_cap`/`short_gross_exposure_cap` (tighter
+notional caps because a short's loss is convex/unbounded, unlike a long's).
+All real code, all covered (`test_paper_short_open_with_allow_shorts` and
+friends). `apps/api/.env` (local) and `.env.example` both read
+`ALLOW_SHORTS=0` explicitly, matching the DB's own history. **Not
+changed** — the user's mandate said equity shorts "matter too" only if
+genuinely missing, and this is a reviewed, working, intentionally-disabled
+feature, not a gap. Turning it on live is a one-line Railway env var, no
+code change, and is the user's call to make (same standing as any other
+live risk-posture change) — flagged in the response, not flipped here.
+
+**Options PUTs: two real, compounding, evidenced bugs. Both fixed, neither
+touching a risk veto.** Traced every hop the coordinator asked about —
+`engine/options/selection.py`'s contract funnel genuinely searches PUTs
+for a "short" thesis (`wanted_type = "call" if direction == "long" else
+"put"`, no hardcoding); the `open_option_trade` tool schema genuinely
+accepts `"direction": "short"`; `ToolGuard._before_open_option_trade`
+requires the model's `direction` arg to equal `ctx.resolved_direction`
+with no long-only special case; `resolve()` doesn't drop a PUT
+recommendation, it just requires both agents to independently agree
+(working as designed, not a bug). The actual two bugs were both upstream
+of all of that:
+
+1. `strategy_fit_node` called `best_strategy(..., allow_shorts=
+   env_flag("ALLOW_SHORTS"))` unconditionally, for an options pass exactly
+   like an equity one. A cleanly bearish underlying — the best PUT
+   candidate there is — scored badly on every strategy's LONG side, never
+   cleared `MIN_FIT_TO_TRADE` (0.42, **unchanged**), and the options
+   Bull/Bear council never even ran for it (`graph.py`'s
+   `if not state.get("selected_strategy"): return state` fires before the
+   options fork). Both downstream consumers of a "short"
+   `selected_direction` were already correctly built and tested for it —
+   `drafter._draft_option_proposal`'s existing
+   `test_options_drafter_bearish_thesis_buys_a_put_but_side_stays_buy`
+   passed all along by constructing `selected_direction="short"` BY HAND,
+   because production never generated it. Fixed in `36930944`:
+   `strategy_fit_node` now also scores "short" when the pass is already
+   options-eligible (`ALLOW_OPTIONS=1` + `asset_class='option'`),
+   regardless of `ALLOW_SHORTS` — because a bought PUT never opens a short
+   position, it was never supposed to need that flag. A plain equity pass
+   is provably unaffected (new test:
+   `test_short_direction_never_scored_for_a_plain_equity_pass`).
+2. `OPTIONS_BEAR`'s prompt has always said "do NOT return null merely
+   because you found no BEARISH edge" — convert a weak edge into an
+   honest low-conviction "long". `OPTIONS_BULL` had no mirror rule, so it
+   defaulted to null the moment the call case looked weak, even when the
+   same evidence argued for a put — and `resolve()` only trades when BOTH
+   independently agree, so this alone meant the pair could functionally
+   only ever agree on "long". Caught live, not hypothesised: the META row
+   at 2026-08-31T16:56:24Z has Bear's own persisted `bear_case` reading
+   "...so buying a put to express the bearish structural trend ... is
+   more consistent with the evidence than the proposed long call" — and
+   the pass still resolved `abstained` because Bull's own answer was also
+   a stand-down. Fixed in `abdbce7c`: `OPTIONS_BULL` now carries the same
+   anti-null instruction, mirrored.
+
+**What I did NOT touch, on purpose:** `MIN_FIT_TO_TRADE` (still 0.42),
+`resolve()`'s agreement requirement and conviction-gap threshold, any of
+the 13 options risk rules, any of the shared equity risk rules, the
+contract funnel's thresholds, `ALLOW_SHORTS`'s own default or its equity
+behavior (pinned by a new test:
+`test_allow_shorts_alone_still_scores_short_for_a_plain_equity_pass`).
+Both fixes are on the "agents propose" side of CLAUDE.md §3's line, not
+the "deterministic code disposes" side.
+
+**Verified:** full `apps/agents` suite 344 passed/1 skipped, full
+`packages/engine` 428 passed, full `apps/api` 433 passed/10 skipped — all
+green after both fixes. Every new test revert-checked per CLAUDE.md §4.1
+(fix temporarily reverted via `git stash`, confirmed the new tests fail —
+3 of 4 strategy_fit tests, the 1 prompt test — with the exact expected
+failure, restored). Environment note for whoever runs pytest here next:
+this worktree's `.venv`-shared editable installs (`_editable_impl_*.pth`
+under the MAIN checkout's `.venv`) point at the **main checkout's**
+`apps/agents`/`packages/engine`/etc, not this worktree's copies —
+`PYTHONPATH` must be prepended with this worktree's own
+`packages/engine;packages/broker;apps/agents;apps/api` or pytest silently
+tests the wrong (unmodified) source tree. Lost real time to this before
+noticing; leaving it here so it isn't rediscovered from scratch.
+
+**Left open / not verified this pass:**
+- Did not verify Railway's CURRENT live env vars directly (no Railway
+  access this session) — inferred `ALLOW_SHORTS`/`ALLOW_OPTIONS`/
+  `USE_OPTIONS_AGENT`'s effective production values from local `.env` +
+  the DB's own `reasoning.strategy_fit` history (which is a real record of
+  what actually ran, not a guess) rather than a direct Railway variable
+  read. If Railway's values differ from local right now, that would only
+  ever make the fix MORE likely to matter (both bugs were "even when
+  everything else is on, this one gate still says no"), not less.
+- Did not verify against a live Anthropic call that OPTIONS_BULL's edited
+  prompt actually changes real model behavior — that is fundamentally not
+  unit-testable; the new test pins the INSTRUCTION's presence and wording,
+  not the model's response to it. First real signal will be the next live
+  options council pass once deployed.
+- Noticed but did NOT chase (CLAUDE.md §4.7 — out of scope for this ask):
+  on 2026-08-31 the SAME symbols (MSFT, AAPL) each produced TWO
+  differently-shaped options decision rows minutes apart — one camelCase
+  (`isOption`/`contractType`, the new Bull/Bear `options_council` path,
+  ending HOLD/BUY) and one snake_case (`is_option`/`contract_type`, the
+  OLDER shared-equity-council options branch in `drafter.py`, ending
+  `VETOED` via the ordinary `risk_officer`/`min_council_confidence` rule).
+  Both are individually correct and already tested, but I did not
+  determine WHY the same symbol hits both mechanisms on the same day
+  (likely something in how `USE_OPTIONS_AGENT`/`instrument_preference` is
+  decided per-pass rather than per-symbol) — flagged for the user
+  separately rather than silently expanding this fix's scope.
+
+
 
 `ID:MODEL2OFF`. User pointed at `docs/PLAN_AUTO_APPROVE.md` and asked to
 start implementing Plan E (unattended entry execution). Before dispatching

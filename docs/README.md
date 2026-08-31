@@ -230,7 +230,7 @@ uv run --package agents python -m trading_agents.jobs.daily_cron --force
 | `AGENTS_REQUIRE_REAL_DATA` | off | `1` = refuse to run on synthetic features |
 | `DRAWDOWN_HALT_THRESHOLD_PCT` | `-3.0` | Circuit breaker trip point |
 | `ALLOW_OPTIONS` | **off** | `1` = the council may draft options. Off ⇒ `options_disabled` vetoes every option. Both this **and** a watchlist row's `asset_class='option'` are required |
-| `ALLOW_SHORTS` | **off** | `1` = the fit node scores short directions. Off ⇒ `forbid_short_phase_0` vetoes every short |
+| `ALLOW_SHORTS` | **off** | `1` = the fit node scores short directions for an EQUITY pass, and `forbid_short_phase_0`/`shortable_check`/`short_requires_stop`/`short_unbounded_loss_cap` stop vetoing every short. Off ⇒ equities stay long-only. Does **not** gate a PUT: an options-eligible pass (`ALLOW_OPTIONS=1` + a `asset_class='option'` watchlist row) scores the short direction regardless of this flag, because buying a put never opens a short position — see `docs/OPTIONS_PLAYBOOK.md` §1.2 |
 
 Both safety switches **fail closed** — an unset, empty, or misspelled value leaves them
 off. That is the direction that cannot lose money by accident.

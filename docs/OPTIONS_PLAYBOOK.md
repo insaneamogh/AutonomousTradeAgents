@@ -26,6 +26,38 @@ a simplification for the contest; it is what bounds the loss.
 > nothing in the code does it yet. Per that plan's own build order, it
 > lands only after "deploy, watch one session of pure ratchet evidence."
 
+> ⚠️ **A real gap fixed 2026-09-01: no PUT had ever been drafted in
+> production, and it was not "the market's been bullish."** Every one of
+> the 8 real options decisions in the live DB (2026-08-26 through
+> 2026-08-31) was a CALL. Root cause was two compounding bugs, both fixed,
+> neither touching a risk veto (see §1.2 and §5.7):
+> 1. `strategy_fit_node` scored ONLY the "long" direction for EVERY pass,
+>    options or not, because it read `ALLOW_SHORTS` unconditionally. Since
+>    that flag is off, a cleanly bearish underlying — the best PUT
+>    candidate there is — never cleared `MIN_FIT_TO_TRADE` and the options
+>    Bull/Bear council never even ran for it. `MIN_FIT_TO_TRADE` itself
+>    (0.42) was **not** touched; the fix only widens which directions get
+>    measured against that same, unchanged floor, and only for a pass that
+>    is already options-eligible (`ALLOW_OPTIONS=1` + an
+>    `asset_class='option'` watchlist row) — a plain equity pass is
+>    provably unaffected (`test_short_direction_never_scored_for_a_plain_
+>    equity_pass`).
+> 2. `OPTIONS_BEAR` has always told the model not to default to `null`
+>    merely for lack of a bearish edge — convert a weak edge into an
+>    honest, low-conviction "long" instead. `OPTIONS_BULL` carried no
+>    mirror-image rule, so it had every incentive to answer `null` the
+>    moment the call case looked weak, even when the same evidence argued
+>    for a put. Caught live: on 2026-08-31 Bear's own persisted thesis for
+>    META read "buying a put ... is more consistent with the evidence than
+>    the proposed long call" — and the pass still resolved `abstained`
+>    because Bull independently said `null` instead of also "short".
+>    `OPTIONS_BULL` now carries the same anti-null instruction, mirrored.
+>
+> Nothing about `resolve()`'s agreement requirement changed — the pair
+> still only trades when BOTH independently reach the same direction, and
+> still sizes on whichever is less confident. See `fable5findings.md`'s
+> 2026-09-01 entry for the full evidence trail and every test.
+
 ---
 
 ## 0. The one-line version
@@ -86,7 +118,40 @@ input, never an LLM output.
 A bearish view is expressed by *buying a put*, never by selling a call.
 `OptionLegDetails.action` is `buy_to_open` at every single site — this is
 load-bearing, because `engine.risk.rules._short.opens_short` must never
-mistake a bought put for a short position.
+mistake a bought put for a short position. Precisely *because* a put never
+opens a short position, reaching a "short" thesis for an options pass does
+**not** require `ALLOW_SHORTS` — see the next paragraph, which is the one
+place this used to be wired wrong.
+
+**Getting a "short" thesis in front of the options council at all —
+fixed 2026-09-01.** `strategy_fit_node` decides direction before anything
+else runs, and it used to call `best_strategy(..., allow_shorts=
+env_flag("ALLOW_SHORTS"))` unconditionally — for an options pass exactly
+like an equity one. With `ALLOW_SHORTS` off (the default, and what
+production has always run), `best_strategy` never scored "short" for
+*any* pass, so a cleanly bearish underlying — the best PUT candidate
+there is — scored badly on every strategy's LONG side, never cleared
+`MIN_FIT_TO_TRADE`, and the options Bull/Bear council never even ran for
+it (`graph.py`'s `if not state.get("selected_strategy"): return state`
+fires before the options fork). `strategy_fit_node` now also scores
+"short" whenever the pass is already options-eligible
+(`ALLOW_OPTIONS=1` and the watchlist row says `asset_class='option'`),
+regardless of `ALLOW_SHORTS` — a plain equity pass is unaffected either
+way, and `MIN_FIT_TO_TRADE` itself did not move. `reasoning.strategy_fit.
+options_may_score_short` on the decision row says which reason applied.
+
+**Both agents equally willing to say "short" — fixed 2026-09-01.**
+`OPTIONS_BEAR`'s prompt has always told the model not to return `null`
+merely for lack of a bearish edge — convert a weak edge into an honest,
+low-conviction "long" instead of silently standing down. `OPTIONS_BULL`
+had no mirror-image instruction, so it defaulted to `null` the moment the
+call case looked weak, even when the identical evidence argued for a
+put — and `resolve()` only ever trades on a direction *both* agents reach
+independently, so this alone meant the pair could functionally only ever
+agree on "long". `OPTIONS_BULL` now carries the same anti-null instruction
+in the opposite direction. See `trading_agents.options.prompts`' module
+docstring and `fable5findings.md`'s 2026-09-01 entry for the live evidence
+this was caught against.
 
 ### 1.3 The contract funnel — `engine/options/selection.py`
 
@@ -399,6 +464,21 @@ stay comparable across days.
    long as the LLM called *that* tool instead. Fixed in `dcf58ca4`. When
    adding a new hard-coded gate to one mutating tool, grep for the other
    and add it there too, in the same commit.
+7. **A flag that gates a genuinely dangerous equity feature can quietly
+   gate a harmless options one too, if both read the same boolean.**
+   `ALLOW_SHORTS` exists to keep the unbounded-loss equity short-selling
+   machinery off by default; a bought PUT carries none of that risk (loss
+   bounded at the premium, no borrow, no forced buy-in) and was never
+   supposed to need it. But `strategy_fit_node` called `best_strategy` with
+   the SAME `allow_shorts` value regardless of instrument, so until
+   2026-09-01 no options pass ever scored "short" in production, silently,
+   for five days straight, with a fully-built and fully-tested downstream
+   (contract funnel, Bull/Bear resolution, ToolGuard) that had nothing
+   wrong with it and nothing to do. Before assuming two features are
+   correctly independent because they're gated by different-sounding
+   names, check what boolean actually reaches the scoring call — a shared
+   env-var READ is not the same thing as a shared RISK, and only one of
+   the two should gate the other.
 
 ---
 
