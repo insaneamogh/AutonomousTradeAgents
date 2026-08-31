@@ -1,13 +1,26 @@
 """/api/v1/positions — open agent positions + user-initiated close.
 
-GET  /api/v1/positions                     open agent-managed positions
-POST /api/v1/positions/{decision_id}/close close one now (manual override)
+GET  /api/v1/positions                        open agent-managed positions
+POST /api/v1/positions/{decision_id}/close     close one now (manual override)
+POST /api/v1/positions/unmanaged/{symbol}/close  close a position with NO
+                                                  decision behind it at all
 
 The close is the in-app counterpart to "let the agent handle it": the user
 can flatten a position themselves at any time. It routes through the SAME
 deterministic risk gate + bracket-cancel + audit persist as the agent's
 own closes — only the recorded ``close_reason`` differs ('user_manual').
 Entries are never auto-placed; this is purely an exit control.
+
+The second route exists because the first can't reach every row the GET
+above lists: an "unmanaged" position (``managed=False``, no
+``decision_id``) was opened outside this app, or predates this
+deployment's decision history, so there is no ``AgentDecision`` row to
+look up by id. It is keyed by ``symbol`` instead — the broker's own
+position key (OCC for an option, ticker for equity) — and ownership is
+enforced structurally: it only ever acts inside the CALLING user's own
+broker connection, so there is no cross-user id to guess in the first
+place. See ``position_manager.close_unmanaged_position_now`` for the full
+reasoning.
 """
 
 from __future__ import annotations
@@ -44,6 +57,53 @@ async def open_positions(
 ) -> list[OpenPositionDto]:
     """Open agent-managed positions for the caller, with live marks + exit plan."""
     return await list_open_positions(user.id)
+
+
+@router.post(
+    "/unmanaged/{symbol}/close",
+    response_model=ClosePositionResponse,
+    response_model_by_alias=True,
+)
+async def close_unmanaged_position(
+    symbol: str,
+    user: AuthedUser = Depends(require_real_auth),
+) -> ClosePositionResponse:
+    """Flatten a broker position with NO agent decision behind it — see the
+    module docstring. Registered ahead of ``/{decision_id}/close`` in this
+    file (path shape differs — 3 segments vs. 2 — so the two never
+    actually compete for the same request, but the more specific route
+    reads clearer listed first).
+
+    Ownership: enforced structurally, not by an owner-field comparison —
+    this only ever looks inside the CALLING user's OWN broker connection
+    (``with_broker_client(user.id, ...)`` inside
+    ``close_unmanaged_position_now``), so there is no other user's
+    position reachable through this path at all, regardless of what
+    ``symbol`` is passed.
+    """
+    from app.services.orders.position_manager import close_unmanaged_position_now
+    from engine.db.session import async_session_factory
+
+    result = await close_unmanaged_position_now(
+        user_id=user.id,
+        symbol=symbol,
+        session_factory=async_session_factory(),
+    )
+
+    err = result.get("error")
+    if err in _CLOSE_ERROR_STATUS:
+        raise HTTPException(status_code=_CLOSE_ERROR_STATUS[err], detail=err)
+
+    return ClosePositionResponse(
+        symbol=symbol,
+        closed=bool(result.get("closed")),
+        error=err,
+        detail=(
+            "Close blocked by a risk rule — try again shortly."
+            if err == "risk_vetoed"
+            else None
+        ),
+    )
 
 
 @router.post(

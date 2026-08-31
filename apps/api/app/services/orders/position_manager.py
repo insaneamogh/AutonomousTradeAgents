@@ -51,6 +51,15 @@ Scope rules:
 
 Runs per user from the reconciler fleet tick. Postgres-only (the decision
 rows ARE the position ledger).
+
+This module ALSO holds the user-initiated close paths, which are not part
+of the per-tick sweep above and can fire any time the user taps "Close" in
+the app: ``close_position_now`` (decision-keyed — agent or manual-mode
+positions that have a decision row) and ``close_unmanaged_position_now``
+(symbol-keyed — a broker position with NO decision behind it at all, e.g.
+opened directly at the broker). Both route through the SAME risk gate +
+bracket-cancel + broker abstraction as the agent's own closes above; only
+the audit trail (what gets linked/stamped) and the lookup key differ.
 """
 
 from __future__ import annotations
@@ -65,7 +74,11 @@ from sqlalchemy import desc, select, text, update
 
 from app.services.broker.broker_use import with_broker_client
 from app.services.orders.executor import _build_risk_context
-from app.services.orders.order_store import persist_linked_order_submit, persist_order_result
+from app.services.orders.order_store import (
+    persist_linked_order_submit,
+    persist_order_result,
+    persist_unlinked_order_submit,
+)
 from engine.options.exits import RatchetOutcome, option_exit_signal, option_ratchet_signal
 from engine.options.expiry import dte
 from engine.risk import RiskCaps
@@ -612,6 +625,240 @@ async def close_position_now(
     return {"closed": initiated, "error": None if initiated else "risk_vetoed"}
 
 
+async def close_unmanaged_position_now(
+    *,
+    user_id: str,
+    symbol: str,
+    session_factory: async_sessionmaker,
+) -> dict:
+    """User-initiated close of a position that exists at the broker with NO
+    agent decision behind it at all (opened directly at the broker, or
+    predating this deployment's decision history — see
+    ``positions_service._unmanaged`` / ``OpenPositionDto.managed=False``).
+
+    ``close_position_now`` above cannot reach these: it looks up an
+    ``AgentDecision`` by id, and there is no decision row to look up.
+    Keyed instead by ``symbol`` — the broker's own position key (OCC for an
+    option, ticker for equity), exactly what ``OpenPositionDto.symbol``
+    already carries for an unmanaged row.
+
+    Ownership is enforced STRUCTURALLY rather than by a stored owner field:
+    this always opens the CALLING user's own broker connection
+    (``with_broker_client(user_id, ...)``) and only ever matches a position
+    inside THAT connection's own ``list_positions()``. There is no shared
+    resource keyed by a guessable id here — unlike a decision_id, a bare
+    ticker doesn't let caller A touch caller B's account, because the
+    lookup never leaves caller A's own broker session. A symbol that isn't
+    actually held by the caller (typo, already closed, or literally
+    someone else's position) simply doesn't show up and comes back
+    ``no_open_position`` — the same answer as "you don't have this."
+
+    Deliberately simpler than ``_close_position``: that function also
+    serves the agent's OWN closes, which must fall back to a stored
+    proposal's ``isOption``/``multiplier``/expiry when the broker already
+    shows the position flat (e.g. an option that just expired — see
+    ``test_close_position_option_falls_back_to_proposal_when_unheld``).
+    There is no proposal here to fall back to, so this only ever proceeds
+    when the broker CURRENTLY shows the position open — no fallback branch
+    is needed or possible.
+
+    The resulting order is persisted via ``persist_unlinked_order_submit``
+    — ``agent_decision_id`` is always NULL. That absence, structurally, IS
+    the audit signal that separates this from every other close in this
+    file: an agent close or a decision-linked manual close both carry a
+    `close_reason` stamped on the owning decision ('agent_time' /
+    'user_manual' / …); an unmanaged close has no decision row to stamp,
+    so "unlinked order, no agent_decision_id, logged reason=
+    user_manual_unmanaged" is the record instead.
+
+    Returns ``{closed: bool, error: str | None}``. ``error`` is one of
+    no_open_position / close_in_flight / risk_vetoed.
+
+    Thin gate-and-validate wrapper around ``_close_unmanaged_position``,
+    which holds the actual broker/risk/persist mechanics and has no
+    Postgres gate of its own — same split as ``close_position_now`` /
+    ``_close_position`` above, and for the same reason: it lets tests call
+    the ungated worker directly against a fake broker, with no live
+    Postgres needed, exactly like the existing ``_close_position`` tests.
+    """
+    import os
+
+    if os.environ.get("USE_POSTGRES", "").strip().lower() not in ("1", "true", "yes", "on"):
+        # MockStore dev mode has no orders table and no reconciler snapshot
+        # — there is no unmanaged-position ledger to read in the first
+        # place (positions_service.list_open_positions returns [] too).
+        return {"closed": False, "error": "no_open_position"}
+
+    wire_symbol = symbol.strip().upper()
+    if not wire_symbol:
+        return {"closed": False, "error": "no_open_position"}
+
+    try:
+        uid = uuid.UUID(user_id)
+    except (ValueError, TypeError):
+        return {"closed": False, "error": "no_open_position"}
+
+    # Same shape as close_position_now above: the in-flight re-entrance
+    # guard is checked HERE, once, against its own short-lived session,
+    # before ever touching the broker — not inside the worker below (which
+    # mirrors `_close_position` in having no in-flight check of its own).
+    async with session_factory() as session:
+        if await _has_in_flight_unmanaged_close(session, user_id=uid, symbol=wire_symbol):
+            return {"closed": False, "error": "close_in_flight"}
+
+    return await _close_unmanaged_position(user_id=user_id, symbol=wire_symbol)
+
+
+async def _close_unmanaged_position(*, user_id: str, symbol: str) -> dict:
+    """The actual broker/risk/persist mechanics behind
+    ``close_unmanaged_position_now`` — no Postgres gate and no in-flight
+    check here (the public wrapper already applied both); ``symbol`` is
+    expected pre-normalized (stripped + uppercased) by the caller. Mirrors
+    ``_close_position``'s own shape: that function likewise has no
+    in-flight check of its own — ``close_position_now`` and
+    ``manage_positions_for_user`` each check it themselves before calling in.
+
+    No ``session_factory`` parameter, unlike ``_close_position``: that
+    function ends by stamping ``close_reason`` on the owning decision row.
+    There is no decision row here to stamp — the unlinked ``orders`` row
+    IS the whole record (see ``persist_unlinked_order_submit``) — so there
+    is nothing left for this function to write via a session at all.
+    """
+    from broker.types import OccSymbol, OrderRequest, OrderType, Side, TimeInForce
+    from engine.options.contracts import contract_type_of, to_risk_proposal
+    from engine.risk import OptionLegDetails, RiskProposal, evaluate
+    from engine.risk import Side as RiskSide
+
+    # Named to match `_close_position`'s local below — this path has no
+    # decision/OCC-vs-underlying distinction to resolve (there is no
+    # `agent_decisions.symbol` to differ from); `symbol` IS the wire symbol.
+    wire_symbol = symbol
+    client_order_id = f"user-close-unmanaged-{uuid.uuid4()}"
+
+    async with with_broker_client(user_id, broker="alpaca") as (broker, conn):
+        risk_ctx = await _build_risk_context(broker, user_id=user_id)
+        held = next(
+            (
+                p for p in risk_ctx.open_positions
+                if p.symbol.upper() == wire_symbol and p.qty != 0
+            ),
+            None,
+        )
+        if held is None:
+            return {"closed": False, "error": "no_open_position"}
+
+        qty = abs(int(held.qty))
+        is_option = bool(held.is_option)
+        multiplier = int(held.multiplier or 1)
+
+        if is_option:
+            db_side = "SELL"
+            broker_close_side = Side.SELL_TO_CLOSE
+            order_type = OrderType.LIMIT
+            last_price = (
+                held.market_value / (held.qty * multiplier) if held.qty else 1.0
+            )
+            occ = OccSymbol.try_parse(wire_symbol)
+            option = OptionLegDetails(
+                underlying_symbol=occ.underlying if occ is not None else wire_symbol,
+                occ_symbol=wire_symbol,
+                contract_type=(
+                    contract_type_of(occ.contract_type) if occ is not None
+                    else contract_type_of("call")
+                ),
+                strike=occ.strike if occ is not None else 0.0,
+                expiry=occ.expiry if occ is not None else date.today(),
+                multiplier=multiplier,
+                action="sell_to_close",
+            )
+            risk_proposal: RiskProposal = to_risk_proposal(
+                symbol=wire_symbol,
+                side=RiskSide.SELL,
+                qty=qty,
+                estimated_notional=round(qty * last_price * multiplier, 2),
+                last_price=last_price,
+                confidence=1.0,  # exits aren't conviction-gated
+                option=option,
+            )
+        else:
+            is_short = held.qty < 0
+            close_side = RiskSide.BUY if is_short else RiskSide.SELL
+            broker_close_side = Side.BUY if is_short else Side.SELL
+            db_side = broker_close_side.value
+            order_type = OrderType.MARKET
+            last_price = held.market_value / held.qty if held.qty else 1.0
+            risk_proposal = RiskProposal(
+                symbol=wire_symbol,
+                side=close_side,
+                qty=qty,
+                estimated_notional=round(qty * abs(last_price), 2),
+                last_price=abs(last_price),
+                confidence=1.0,  # exits aren't conviction-gated
+            )
+
+        risk_decision = evaluate(risk_proposal, risk_ctx, None)
+        if not risk_decision.approved:
+            logger.warning(
+                "position_manager: unmanaged close VETOED for %s user=%s — %s (%s)",
+                wire_symbol, user_id, risk_decision.veto_rule, risk_decision.reason,
+            )
+            return {"closed": False, "error": "risk_vetoed"}
+
+        canceled = await broker.cancel_open_orders(wire_symbol)
+        if canceled:
+            logger.info(
+                "position_manager: canceled %d resting orders on %s before unmanaged close",
+                canceled, wire_symbol,
+            )
+
+        order_row_id = await persist_unlinked_order_submit(
+            user_id=user_id,
+            broker_connection_id=conn.id,
+            client_order_id=client_order_id,
+            symbol=wire_symbol,
+            side=db_side,
+            qty=qty,
+            is_paper=conn.is_paper,
+            order_type=order_type.value,
+            is_option=is_option,
+            multiplier=multiplier,
+            option_action="sell_to_close" if is_option else None,
+        )
+
+        order = await broker.place_order(
+            OrderRequest(
+                symbol=wire_symbol,
+                side=broker_close_side,
+                qty=qty,
+                order_type=order_type,
+                limit_price=round(abs(last_price), 2) if order_type is OrderType.LIMIT else None,
+                time_in_force=TimeInForce.DAY,
+                client_order_id=client_order_id,
+            )
+        )
+
+        if order_row_id is not None:
+            try:
+                await persist_order_result(order_row_id=order_row_id, broker_order=order)
+            except Exception:
+                logger.exception(
+                    "position_manager: persist_order_result failed (unmanaged close)"
+                )
+
+    logger.info(
+        "position_manager: user_manual_unmanaged close %d %s for user=%s (broker_order=%s)",
+        qty, wire_symbol, user_id, order.broker_order_id,
+    )
+    _notify_close(
+        user_id=user_id,
+        symbol=wire_symbol,
+        qty=qty,
+        label="closed at your request — no council decision was behind this position",
+        side=broker_close_side.value,
+    )
+    return {"closed": True, "error": None}
+
+
 async def cancel_pending_order_now(
     session,
     session_factory: async_sessionmaker,
@@ -690,6 +937,30 @@ async def _has_in_flight_close(session, decision_id) -> bool:
     stmt = (
         select(Order.id)
         .where(Order.agent_decision_id == decision_id)
+        .where(Order.status.in_(IN_FLIGHT_STATUSES))
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none() is not None
+
+
+async def _has_in_flight_unmanaged_close(session, *, user_id: uuid.UUID, symbol: str) -> bool:
+    """Same re-entrance guard as ``_has_in_flight_close``, for a close with
+    no decision to key on. Scoped by ``agent_decision_id IS NULL`` (an
+    unmanaged close is by definition unlinked — see
+    ``persist_unlinked_order_submit``) AND ``user_id`` (unlike the
+    decision-keyed guard, a bare symbol isn't already scoped to one user —
+    two different users can each hold their own unmanaged AAPL position)
+    AND ``symbol`` (the broker's own key — OCC for an option, ticker for
+    equity).
+    """
+    from app.services.orders.order_sync import IN_FLIGHT_STATUSES
+    from engine.db.models import Order
+
+    stmt = (
+        select(Order.id)
+        .where(Order.user_id == user_id)
+        .where(Order.agent_decision_id.is_(None))
+        .where(Order.symbol == symbol)
         .where(Order.status.in_(IN_FLIGHT_STATUSES))
         .limit(1)
     )

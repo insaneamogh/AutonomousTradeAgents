@@ -13,10 +13,11 @@ import * as Haptics from 'expo-haptics';
 
 import { ApiError } from '@/lib/api';
 import { EmptyState, ErrorState, Skeleton, cn } from '@app/ui';
+import type { ClosePositionResponse } from '@app/shared-types';
 
 import { DirectionPill, HeroHeadline, HeroSub, Tile, TileLabel } from '@/components/bento';
 import { ClosePositionButton } from '@/components/ClosePositionButton';
-import { useClosePosition, useOpenPositions } from '@/hooks/usePositions';
+import { useCloseUnmanagedPosition, useClosePosition, useOpenPositions } from '@/hooks/usePositions';
 import { DEMO_DISABLED_REASON, useIsDemoSession } from '@/lib/demoSession';
 
 function money(n: number | null): string {
@@ -52,15 +53,27 @@ export default function PositionsScreen() {
   const router = useRouter();
   const { data, isLoading, isError, refetch } = useOpenPositions();
   const close = useClosePosition();
+  const closeUnmanaged = useCloseUnmanagedPosition();
   const isDemo = useIsDemoSession();
   const list = data ?? [];
 
-  const confirmClose = (decisionId: string, symbol: string, qty: number, pending: boolean) => {
+  // Two close mutations, one confirm flow. `target` picks which one fires:
+  // a decisionId-keyed row uses the decision route (also doubles as
+  // "cancel" for a not-yet-filled order); a decisionId-less (unmanaged) row
+  // has no decision to close "through", so it uses the symbol-keyed route.
+  const confirmClose = (
+    target: { kind: 'decision'; decisionId: string } | { kind: 'unmanaged'; symbol: string },
+    symbol: string,
+    qty: number,
+    pending: boolean,
+  ) => {
     Alert.alert(
       pending ? `Cancel the ${symbol} order?` : `Close ${qty} ${symbol}?`,
       pending
         ? "This cancels the order at the broker before it fills. Nothing was ever bought or sold."
-        : 'This places a market sell now, through the same risk checks the agent uses. Resting stop/target orders are cancelled first.',
+        : target.kind === 'unmanaged'
+          ? 'This position has no council decision behind it. Closing places a market sell now, through the same risk checks as any other close. Resting stop/target orders are cancelled first.'
+          : 'This places a market sell now, through the same risk checks the agent uses. Resting stop/target orders are cancelled first.',
       [
         { text: pending ? 'Keep order' : 'Cancel', style: 'cancel' },
         {
@@ -68,22 +81,25 @@ export default function PositionsScreen() {
           style: 'destructive',
           onPress: () => {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-            close.mutate(decisionId, {
-              onSuccess: (res) => {
-                if (!res.closed) {
-                  Haptics.notificationAsync(
-                    Haptics.NotificationFeedbackType.Warning,
-                  ).catch(() => {});
-                  Alert.alert(
-                    pending ? 'Not cancelled' : 'Not closed',
-                    res.detail ?? CLOSE_ERROR_COPY[res.error ?? ''] ?? 'Try again shortly.',
-                  );
-                }
-              },
-              onError: (err) => {
-                Alert.alert(pending ? 'Cancel failed' : 'Close failed', closeErrorDetail(err));
-              },
-            });
+            const onSuccess = (res: ClosePositionResponse) => {
+              if (!res.closed) {
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(
+                  () => {},
+                );
+                Alert.alert(
+                  pending ? 'Not cancelled' : 'Not closed',
+                  res.detail ?? CLOSE_ERROR_COPY[res.error ?? ''] ?? 'Try again shortly.',
+                );
+              }
+            };
+            const onError = (err: unknown) => {
+              Alert.alert(pending ? 'Cancel failed' : 'Close failed', closeErrorDetail(err));
+            };
+            if (target.kind === 'decision') {
+              close.mutate(target.decisionId, { onSuccess, onError });
+            } else {
+              closeUnmanaged.mutate(target.symbol, { onSuccess, onError });
+            }
           },
         },
       ],
@@ -149,7 +165,9 @@ export default function PositionsScreen() {
                 : pnl >= 0
                   ? 'text-gain dark:text-gain-dark'
                   : 'text-rose dark:text-rose-dark';
-            const busy = close.isPending && close.variables === p.decisionId;
+            const busy =
+              (close.isPending && close.variables === p.decisionId) ||
+              (closeUnmanaged.isPending && closeUnmanaged.variables === p.symbol);
             // Options are always `side: BUY` (Phase A never sells to open),
             // so the header reads the contract instead of a side that
             // can't tell a call from a put apart.
@@ -223,6 +241,12 @@ export default function PositionsScreen() {
                   )
                 )}
 
+                {!p.managed && (
+                  <Text className="text-[10px] text-text-tertiary dark:text-text-tertiary-dark">
+                    Held at the broker with no council decision behind it.
+                  </Text>
+                )}
+
                 {p.decisionId ? (
                   <ClosePositionButton
                     symbol={p.symbol}
@@ -231,14 +255,25 @@ export default function PositionsScreen() {
                     busy={busy}
                     disabledForDemo={isDemo}
                     onPress={() =>
-                      confirmClose(p.decisionId!, p.symbol, p.qty, p.status === 'pending_fill')
+                      confirmClose(
+                        { kind: 'decision', decisionId: p.decisionId! },
+                        p.symbol,
+                        p.qty,
+                        p.status === 'pending_fill',
+                      )
                     }
                   />
                 ) : (
-                  <Text className="mt-1 text-[10px] text-text-tertiary dark:text-text-tertiary-dark">
-                    Held at the broker with no council decision behind it — close it
-                    at the broker.
-                  </Text>
+                  <ClosePositionButton
+                    symbol={p.symbol}
+                    qty={p.qty}
+                    pending={false}
+                    busy={busy}
+                    disabledForDemo={isDemo}
+                    onPress={() =>
+                      confirmClose({ kind: 'unmanaged', symbol: p.symbol }, p.symbol, p.qty, false)
+                    }
+                  />
                 )}
               </Tile>
             );
