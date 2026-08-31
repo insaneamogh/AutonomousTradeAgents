@@ -385,6 +385,179 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-31 — `927dc415` fix(ledger): vetoed proposals persisted snake_case, so estimatedNotional never matched
+
+`ID:MODEL2OFF`. Implements `docs/IMPL_REFUSAL_LEDGER.md`. Ran the §0
+diagnostic first, exactly as instructed, before touching
+`build_veto_ledger`:
+
+```sql
+SELECT risk_veto_rule, final_action, proposal->>'estimatedNotional' AS notional,
+       user_response, triggered_at
+  FROM agent_decisions
+ WHERE risk_approved IS FALSE AND risk_veto_rule IS NOT NULL
+ ORDER BY triggered_at DESC LIMIT 20;
+```
+
+Result: 6 rows, all `single_name_concentration`, all `notional: null`,
+`has_key: false`. Per the doc's own decision table that is **Case 1 — the
+write side never populated it**, not the aggregation. Confirmed by
+dumping the raw `proposal` JSONB for those rows directly: all 6 carry
+`estimated_notional: 4922.08` / `4627.08` / `4987.08` / etc. — present
+and correct, just under the **snake_case** key. `estimatedNotional`
+(camelCase) is absent entirely.
+
+**Root cause:** `runtime.run_council` only builds the camelCase DTO
+(`_to_proposal_dto`) when `risk_approved` is True. For a vetoed proposal,
+`PostgresDecisionLog.record()`'s own documented fallback — "keep the
+Drafter's raw dict for the audit trail" — persists `raw_state["proposal"]`
+untouched, which is the Drafter's snake_case dict. Every camelCase reader
+(`ghost_eval`, the veto ledger) can never match it. The identical bug
+independently breaks `ghost_eval._entry_price()`: it only reads
+`limitPrice`/`estimatedNotional`, so it silently skipped every vetoed row
+too. Instrumented this properly rather than guessing (per the doc's own
+instruction): added a `skip_reasons` breakdown to `evaluate_ghosts()`'s
+return value. Live result before the fix: **103 of 104** vetoed/declined/
+expired candidate rows skipped with `entry_is_none`. The other 97 (of
+which 103 minus 6 = 97) are pre-existing rows written before an earlier
+envelope-shape fix landed and have no recoverable entry price at all,
+under either casing — permanently un-recoverable without a migration,
+correctly still skipped.
+
+**Fix:**
+1. `runtime._to_decision_entry` now runs the persisted
+   `raw_state["proposal"]` through `_to_proposal_dto` regardless of
+   `risk_approved` (falls back to it only when the gated `proposal_dto`
+   is None). Does **not** touch the separate, still-gated `proposal_dto`
+   that drives the return value's actionable `"proposal"` key and the
+   push notification — a veto must never reach the user as something to
+   approve. Verified this distinction holds with a dedicated test
+   (`test_vetoed_row_does_not_become_actionable`).
+2. `ghost_eval._entry_price` and `ghost_service.build_veto_ledger`'s
+   notional sum now accept either key casing, mirroring the
+   `_is_option`/`_mark_symbol` tolerant-key convention already used
+   elsewhere in `ghost_eval.py`. This rescues the 6 already-written rows
+   with no DB backfill needed.
+3. New `GET /api/v1/risk/vetoes/{rule}/exemplar`
+   (`ghost_service.build_veto_exemplar`) — the doc's §2.2 "story trade":
+   largest `abs(ghost_pnl)` among **finalized** ghosts for a rule, never
+   the most recent. Returns None (404) when nothing has finalized yet.
+
+**Verified live, not just tests** (real Postgres, real historical
+decisions):
+- `build_veto_ledger(user_id=<real user>).total_blocked_notional`:
+  **$0.00 → $29,107.74**. The exact number the dashboard was wrong about.
+- Ran `evaluate_ghosts()` for real:
+  `{created: 6, updated: 7, finalized: 0, skipped: 97, skip_reasons:
+  {entry_is_none: 97}}`. All 7 `ghost_outcomes` rows are `status=partial`
+  — correctly not `final` yet (these vetoes are from 2026-08-28; `short`
+  horizon needs 5 elapsed trading days, so `final` won't hit until
+  ~Sept 4 — the contest deadline itself). `prevented_loss_usd`/
+  `ghost_pnl` correctly still render `None`, not `$0` — checked both
+  `build_veto_ledger` and `build_ghost_summary` directly against the
+  live DB.
+- `build_veto_exemplar("single_name_concentration", ...)` correctly
+  returns `None` right now.
+- **Caveat I did NOT expect going in:** `ghost_outcomes.price_source =
+  'synthetic'` on all 7 rows. Checked why — both this worktree's
+  `apps/api/.env` **and the original, non-worktree** `apps/api/.env`
+  have `ALPACA_API_KEY`/`ALPACA_SECRET_KEY` present as keys but **empty**
+  as values (checked via byte-length only; never printed either file's
+  contents). `engine.prices.select` silently falls back to
+  `SyntheticPriceProvider` whenever those are blank — by design, for
+  MOCK-mode dev, but it means today's ghost_pnl interim marks
+  (−$6.98, −$5.11, −$89.24, −$54.07, +$62.64, −$70.27) are from the
+  synthetic random walk, not real Alpaca closes. The mechanism is fully
+  verified correct against real decision rows; the specific dollar
+  figures from this run are not real market data. No code change is
+  needed once real keys are present (selection is already env-driven) —
+  I don't know whether Railway's deployed env has them set separately;
+  I have no network access from this sandbox to check.
+
+**Tests** (`apps/api/tests/test_veto_ledger_aggregation.py` — new,
+`apps/agents/tests/test_ghost_eval.py` — extended,
+`apps/agents/tests/test_runtime_decision_entry.py` — new): all 8
+behaviors from the doc's §6 matrix, including both explicitly-named ones
+(`test_pending_ghosts_excluded_from_prevented_loss`,
+`test_trims_not_counted_as_vetoes`). Every one of these — plus the
+write-side fix itself and both key-casing directions — was actually
+broken and confirmed to fail, then restored, per CLAUDE.md §4.1. 969 →
+994 passed (+25), 11 skipped unchanged.
+
+**Checked against baseline, not blamed on myself:** ruff clean on every
+touched file; `insights.py`'s 2 `B008 Depends()` warnings confirmed
+present in HEAD before this change (my new endpoint adds a third
+instance of the same pre-existing, accepted pattern its two neighbors
+already use). mypy: `ghost_eval.py`/`ghost_service.py`/`insights.py`
+clean; `runtime.py`'s 4 warnings confirmed pre-existing in HEAD (same
+messages, only shifted by my insertion's line count). Test-file mypy
+noise (`Missing type arguments for generic type "dict"`, `"None" object
+is not iterable`) is pre-existing in `test_ghost_eval.py`'s **baseline**
+too (7 errors before I touched it) — my additions follow the same
+already-accepted style, not a new category.
+
+**Two honesty-rule decisions made explicitly, not silently** (both asked
+for by the task):
+
+- **§3, old-account label — left undone, decision documented.**
+  `agent_decisions` has no account-id column at all, and every one of
+  the 132 current rows shares the SAME `user_id` — the PA3RFT091VEB →
+  PA3IAZI74E5R account swap was not a user swap, so which rows belong to
+  which account isn't mechanically queryable, only inferable by date.
+  I could not pin the exact cutover instant: `broker_connections` has
+  exactly one row for our user, `created_at` 2026-08-26 17:11, `updated_at`
+  2026-08-30 17:34 — but that update far more likely reflects
+  `auto_approve_consent` flipping true (built around that date per the
+  roadmap) than an account swap, so I did not treat it as the boundary.
+  Recommend labeling by date once a human confirms the actual cutover;
+  deliberately did not touch UI to avoid guessing that boundary, and
+  because `insights.py`/desktop screens have funnel-UI work in flight
+  concurrently (see the note on a cross-worktree stash collision below).
+- **§5, confidence bars — chose "not yet calibrated" over wiring/running
+  reflection, decision documented.** `daily_cron.main()` already calls
+  `reflection_agent_run` unconditionally after `evaluate_ghosts()` — this
+  part of the doc is stale; it already shipped (roadmap P1.9). The actual
+  gap is that `COUNCIL_SCHEDULER_ENABLED=0` locally, so nothing invokes
+  `daily_cron` unattended at all (same root cause as ghost_eval never
+  running automatically). I did not flip that flag — arming the
+  scheduler has real LLM-cost and auto-trading consequences, well beyond
+  a ledger-display task, and I have no way to confirm what Railway's
+  deployed value actually is. Live-checked `strategy_confidence`: still
+  exactly `0.5 / 0 wins / 0 losses / last_reflection_at=None` × 5, and
+  the only 6 `realized_pnl` decisions available to grade are all
+  2026-08-27 — before the contest's own Aug-28 start, so likely
+  old-account too. Given that provenance question, I did not run
+  reflection manually just to make a number appear. `/strategies/
+  performance` already exposes `lastReflectionAt` (currently null) per
+  strategy, so the frontend can render "not yet calibrated" with **zero
+  backend change** — that's the option I'm recommending.
+
+**Found, out of scope for this task, not touched:**
+`biography_service.py`'s timeline event reads
+`proposal.get("estimatedNotional")` the same camelCase-only way and has
+the identical gap for a vetoed row's biography display. Fixed going
+forward by this same commit (new vetoed rows persist camelCase now), but
+the 6 already-written rows will still show `estimatedNotional: null` on
+that specific screen since that reader has no snake_case fallback of its
+own.
+
+**Environment note for whoever picks this up next:** this session ran in
+an isolated git worktree that turned out to share the repo's `git stash`
+namespace with at least one other concurrently-running agent (evidently
+working `IMPL_CONTRACT_FUNNEL_UI.md` — touching `insights.py`,
+`packages/shared-types/src/index.ts`, and a new
+`app/services/council/funnel_service.py`). A `git stash` / `git stash
+pop` I ran for my own pre-change baseline test run collided with theirs
+mid-flight and briefly pulled their uncommitted WIP into my working
+tree. Recovered without data loss: their 4 files are parked in a labeled
+stash (`recovered-foreign-worktree-wip-funnel-ui`, poppable from either
+worktree since stash is repo-global) rather than committed here or
+discarded. **Do not `git stash` in this repo's worktrees without
+checking `git stash list` immediately before and after** — prefer
+`git diff`/`git show HEAD:<path>` + `git checkout HEAD -- <path>` +
+`git apply` for a scoped, single-file revert-and-restore instead, which
+is what I switched to for the rest of this session.
+
 ### 2026-08-30 — `2709d236` fix(auth,broker): stop auto-attaching every signup to the operator's own Alpaca account
 
 `ID:MODEL2OFF`. Implements `docs/PLAN_MULTI_TENANT.md` §1 + §3 — the live
