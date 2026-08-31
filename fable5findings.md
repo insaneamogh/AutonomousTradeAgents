@@ -385,6 +385,56 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-31 — `9296071d` feat(desktop): render the Refusal Ledger's honesty rules
+
+`ID:MODEL2OFF`. First landed piece of the 5 new IMPL specs (`docs/IMPL_*.md`,
+commit `604a2001`) — implements `docs/IMPL_REFUSAL_LEDGER.md` §2/§4, the
+rendering half only (a parallel subagent workstream, `I4-backend`, is
+diagnosing and fixing why the underlying numbers are `$0` — this entry is
+purely "make the UI honest about whatever numbers it's given").
+
+**What changed:** trims now render in their own "Risk also shrank N trades"
+section, explicitly never folded into `totalVetoes` (a trim let a smaller
+trade through; a veto let nothing through). A `null` ghost P&L renders the
+literal word "pending", never `$0` — the doc's central honesty rule, since a
+completed $0 and an unmeasured one must never look the same. A ghost that
+would have *made* money (a miss, not a save) renders amber and is shown, not
+hidden next to the wins. Dashboard/Insights tiles render `"$— · N marks
+pending"` instead of a bare `$0` when nothing has finalized yet. The risk
+profile in force (`reasoning["risk_profile"]`) is captioned on the ledger —
+falls back to "disclosure pending" honestly, since the backend doesn't stamp
+that field yet. New `ExemplarCard` ("story trade") wired to a rule-row click
+against a documented `VetoExemplarResponse` shape the backend hasn't built
+yet either — degrades to a clear message instead of crashing.
+
+**Found before writing any code:** `packages/shared-types/src/index.ts`'s
+`VetoLedgerResponse` never declared `trims`/`totalTrims` at all, even though
+`apps/api/app/routers/insights.py` already returns them — the frontend was
+structurally incapable of rendering data the API already sends.
+
+**Verified, not assumed:** built by a subagent in an isolated worktree, then
+independently re-verified by me directly (not just trusting its report) —
+`pnpm --filter mobile exec jest --silent` -> 5 suites/41 tests passing (up
+from 3/28), `tsc --noEmit -p apps/mobile/tsconfig.json` clean. The subagent
+revert-checked (CLAUDE.md §4.1) the trims-into-vetoes guard, the
+pending-vs-$0 render, and the missed-tone render independently — each
+matching test failed for the right reason when broken, then was restored.
+
+**Left open, explicitly, for the parallel backend workstream:** the
+`GET /api/v1/risk/vetoes/{rule}/exemplar` endpoint needs building, and
+`reasoning["risk_profile"]` needs to be stamped at write-time and threaded
+onto `VetoLedgerResponse.riskProfile`.
+
+**Environment note for whoever runs the next batch of parallel subagents:**
+one of the other concurrently-running agents (I3-backend) discovered `git
+stash` is **not worktree-scoped** — all worktrees off one repo share a single
+stash stack. Two agents both doing "`git stash`, run baseline, `git stash
+pop`" concurrently can pop *each other's* stash into the wrong working tree.
+It recovered safely by reconstructing verified content and re-checking
+before committing, but the next round of parallel dispatches should avoid
+`git stash` for baseline comparisons entirely (use `git diff <base>..HEAD`
+or a separate clean checkout instead).
+
 ### 2026-08-30 — `2709d236` fix(auth,broker): stop auto-attaching every signup to the operator's own Alpaca account
 
 `ID:MODEL2OFF`. Implements `docs/PLAN_MULTI_TENANT.md` §1 + §3 — the live
