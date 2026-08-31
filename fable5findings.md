@@ -385,6 +385,58 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-31 — `70bcbd20` feat(auth): read-only demo-session link for judges (IMPL_DEMO_SESSION.md)
+
+`ID:MODEL2OFF`. A judge-facing link that shows the REAL trading account
+with REAL history and changes nothing — built on the existing security
+boundary (`require_real_auth` already refuses any `AuthedUser` with
+`is_dev_bypass=True`, and every one of the 6 money-moving routes already
+calls it) rather than a new authorization mechanism. Two `typ`s reusing
+`verify()`'s existing generic `expected_typ` check (not a new mechanism):
+a long-lived `typ="demo"` link token minted **offline** by
+`scripts/mint_demo_link.py`, and a short-lived `typ="access"` token (same
+15-min TTL as any other) carrying an `extra={"demo": true}` marker — both
+`mint_access`'s `extra` param and `Claims.extra` already existed pre-this-
+commit, reused rather than invented.
+
+Closed the 3 routes that accepted the OLD dev-bypass and would otherwise
+have been reachable by a demo session, in the order the doc's own §6
+requires (ship this before closing those and judges reach them): `/agent/run`
++ `/run/start` (unbounded LLM spend/call), `/watchlist` add+remove (changes
+what the agent trades), `/review/{id}/grade` (pollutes calibration data) —
+each swapped `get_current_user` for `require_real_auth`, zero new
+authorization code.
+
+**Verified, not assumed — independently re-checked by me, not just the
+subagent's report:** 969→990 passed/11 skipped in isolation, →**1040 on
+`main` post-merge** (+21, zero regressions). Went through all 20 ruff
+findings on the 8 touched files LINE BY LINE (not by trusting a stash-based
+"zero net-new" claim, given the confirmed git-stash cross-contamination risk
+in this environment's worktrees — see the funnel-view entry above): the 12
+`Depends()`-in-default findings are the same FastAPI idiom already present
+at every `Depends(...)` call site in this repo, tripped identically whether
+the dependency inside is `get_current_user` or `require_real_auth`; the 4
+`datetime.UTC`-alias findings are all inside untouched pre-existing
+`mint()`/`verify()`; the 3 unused-`noqa` findings in `rate_limit.py` are the
+same pattern on 3 untouched limiter functions — the new `check_demo_rate()`
+this commit adds carries no `noqa` at all. Confirmed zero net-new findings.
+
+Revert-checked (CLAUDE.md §4.1): `test_demo_session_refused_by_every_
+mutating_route` and `test_every_mutating_route_uses_require_real_auth` (the
+latter introspects the actual FastAPI dependant tree — confirmed it names
+the real offending route when reverted, not a stub that always passes) both
+independently confirmed to fail when broken, restored. Verified live,
+end-to-end, beyond unit tests: minted a real link, exchanged it via a real
+`TestClient`, confirmed `GET /account` → 200 with real data on that session
+while `POST /watchlist` and `POST /circuit-breaker/acknowledge` both → 401
+on the exact same session.
+
+**Left open, explicitly out of scope for this commit:** the mobile client's
+`?demo=` query-param handling, session storage, and the read-only banner /
+disabled-button UI — a separate parallel workstream (I5-frontend) covers
+this, reviewed separately. `DEMO_SESSION_ENABLED=1` needs setting on Railway
+by the operator before this is live anywhere.
+
 ### 2026-08-31 — `81fa9b9c` feat(agents): llm.py tool-use support — the I2 foundation, now landed
 
 `ID:MODEL2OFF`. Implements `docs/IMPL_LLM_TOOLS.md` in full — **this is the
