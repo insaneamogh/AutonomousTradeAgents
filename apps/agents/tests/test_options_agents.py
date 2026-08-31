@@ -22,6 +22,9 @@ pinning directly, not just one worth catching one layer up.
 
 from __future__ import annotations
 
+import asyncio
+import json
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -44,7 +47,13 @@ from broker.types import Side as BrokerSide
 from engine.features.technicals import DailyBar
 from engine.options.selection import ContractQuote
 from engine.risk import MockRiskContextProvider, RiskCaps
+from trading_agents.cost_ledger import infer_role_from_system_prompt
+from trading_agents.llm import LLM, LLMResponse
+from trading_agents.llm import ToolCall as LLMToolCall
 from trading_agents.memory import InMemoryDecisionLog
+from trading_agents.options.agents import run_bull_and_bear, run_options_agents
+from trading_agents.options.prompts import OPTIONS_BEAR, OPTIONS_BULL
+from trading_agents.options.resolution import AgentView, resolve
 from trading_agents.options.tools import readonly
 from trading_agents.options.tools import registry as options_registry
 from trading_agents.options.tools.guard import GuardContext, ToolGuard, dispatch_tool_call
@@ -60,6 +69,8 @@ from trading_agents.options.tools.readonly import (
 )
 from trading_agents.options.tools.registry import REGISTRY
 from trading_agents.options.tools.schemas import READ_ONLY_TOOLS
+from trading_agents.state import CouncilState
+from trading_agents.strategies import STRATEGY_REGISTRY
 
 
 @dataclass
@@ -1038,3 +1049,385 @@ async def test_read_only_tool_allowed_through_the_guards_before_gate() -> None:
         registry=options_registry.REGISTRY,
     )
     assert out["is_error"] is False, out
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Bull/Bear agents + resolution (options/agents.py, options/resolution.py,
+# options/prompts.py) — docs/IMPL_OPTIONS_AGENTS.md §3-4.
+#
+# Three groups:
+#   1. resolution.py in isolation — pure Python, no LLM, no guard.
+#   2. Role-phrase registration (llm.py::_mock_response +
+#      cost_ledger.py::infer_role_from_system_prompt) — neither raises on
+#      a miss, so this needs an explicit test (docs/IMPL_OPTIONS_AGENTS.md
+#      §3.1).
+#   3. The sequencing itself: parallel argument -> resolve -> (only on
+#      proceed) the Bull-only tool-calling hop, through the REAL guard and
+#      REAL registry these tests reuse from above.
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _state(**overrides: Any) -> CouncilState:
+    base: dict[str, Any] = {
+        "symbol": "NVDA",
+        "horizon": "short",
+        "context": {},
+        "user_id": str(uuid.uuid4()),
+        "council_run_id": str(uuid.uuid4()),
+    }
+    base.update(overrides)
+    return base  # type: ignore[return-value]
+
+
+def _enable_auto_trade(monkeypatch: pytest.MonkeyPatch, *, need_broker_creds: bool = False) -> None:
+    """Only the tests that actually drive a tool call through the REAL
+    guard need this — most of this section's tests never reach
+    ``guard.before`` at all (resolution never proceeded, or the fake's
+    ``complete_tools`` never emitted a tool call), so they don't call this.
+    """
+    monkeypatch.setenv("AUTO_TRADE_ENABLED", "1")
+    monkeypatch.delenv("TRADING_MODE", raising=False)
+    monkeypatch.delenv("LIVE_TRADING_ENABLED", raising=False)
+    if need_broker_creds:
+        monkeypatch.setenv("ALPACA_API_KEY", "test-key")
+        monkeypatch.setenv("ALPACA_SECRET_KEY", "test-secret")
+
+
+def _tool_call_response(name: str, args: dict[str, Any], *, call_id: str = "call-1") -> LLMResponse:
+    return LLMResponse(
+        text="",
+        model="test",
+        tool_calls=(LLMToolCall(id=call_id, name=name, input=args),),
+        stop_reason="tool_use",
+    )
+
+
+class _ScriptedLLM:
+    """A minimal LLM double for ``options/agents.py`` tests.
+
+    ``complete()`` (hop 1 — the argument phase) answers per-role from the
+    ``bull_view``/``bear_view`` dicts, keyed off the system prompt's role
+    phrase, exactly the way the REAL mock (``llm.py::_mock_response``)
+    keys off it — just without needing a real ``LLM`` instance.
+    ``complete_tools()`` (hop 2 — Bull's tool-calling hop, the only one
+    that ever happens) pops responses off ``trade_responses`` in order;
+    once exhausted it returns a plain no-tool-call text response, which is
+    what ends ``run_tool_loop`` — so a test only has to script as many
+    rounds as it actually cares about.
+    """
+
+    def __init__(
+        self,
+        *,
+        bull_view: dict[str, Any],
+        bear_view: dict[str, Any],
+        trade_responses: list[LLMResponse] | None = None,
+    ) -> None:
+        self.bull_view = bull_view
+        self.bear_view = bear_view
+        self._trade_responses = list(trade_responses or [])
+        self.complete_tools_calls: list[dict[str, Any]] = []
+
+    async def complete(self, *, system: str, user: str, **kwargs: Any) -> LLMResponse:
+        # Match the FULL role phrase, exactly like the real
+        # llm.py::_mock_response / cost_ledger.py::infer_role_from_system_prompt
+        # do — a bare "bull"/"bear" substring check is NOT safe here: the
+        # Bear prompt's own body legitimately mentions "the Bull Agent"
+        # (explaining the parallel-argument setup) well within the first
+        # 120 chars, so a loose check would misidentify Bear as Bull. Own
+        # bug, caught by test_no_tool_hop_when_resolution_does_not_proceed
+        # and test_full_pass_bull_and_bear_agree_and_a_trade_opens both
+        # failing identically the first time this fake was run for real.
+        role_line = system[:120].lower()
+        body = self.bull_view if "you are the options bull agent" in role_line else self.bear_view
+        return LLMResponse(text=json.dumps(body), model="test")
+
+    async def complete_tools(
+        self,
+        *,
+        system: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        **kwargs: Any,
+    ) -> LLMResponse:
+        self.complete_tools_calls.append({"system": system, "tools": tools})
+        if self._trade_responses:
+            return self._trade_responses.pop(0)
+        return LLMResponse(text="Standing down; no trade this pass.", model="test")
+
+
+# ─────────────────────────────────────────────────────────────────────
+# resolution.py — pure, no LLM, no guard.
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_conviction_is_the_min_not_the_mean() -> None:
+    """docs/IMPL_OPTIONS_AGENTS.md §4: `min()`, not the average. Revert
+    check: swap resolve()'s `min(bull.conviction, bear.conviction)` for
+    `(bull.conviction + bear.conviction) / 2` and this fails (0.7 != 0.5)."""
+    bull = AgentView(role="bull", direction="long", conviction=0.9, thesis="NVDA breaks 190 within 3 weeks.")
+    bear = AgentView(role="bear", direction="long", conviction=0.5, thesis="NVDA holds support within 3 weeks.")
+    result = resolve(bull, bear)
+    assert result.proceed
+    assert result.direction == "long"
+    assert result.conviction == 0.5
+    assert result.reason == "agreed"
+
+
+def test_agents_disagreeing_means_no_trade() -> None:
+    bull = AgentView(role="bull", direction="long", conviction=0.6, thesis="NVDA breaks 190 within 3 weeks.")
+    bear = AgentView(role="bear", direction="short", conviction=0.6, thesis="NVDA breaks down within 3 weeks.")
+    result = resolve(bull, bear)
+    assert not result.proceed
+    assert result.direction is None
+    assert result.reason == "agents_disagree"
+
+
+def test_either_agent_abstaining_means_no_trade() -> None:
+    bull = AgentView(role="bull", direction=None, conviction=0.0, thesis="No edge this pass.")
+    bear = AgentView(role="bear", direction="long", conviction=0.6, thesis="NVDA breaks 190 within 3 weeks.")
+    result = resolve(bull, bear)
+    assert not result.proceed
+    assert result.direction is None
+    assert result.reason == "abstained"
+
+
+def test_conviction_divergence_means_no_trade() -> None:
+    bull = AgentView(role="bull", direction="long", conviction=0.9, thesis="NVDA breaks 190 within 3 weeks.")
+    bear = AgentView(role="bear", direction="long", conviction=0.4, thesis="NVDA holds support within 3 weeks.")
+    result = resolve(bull, bear)
+    assert not result.proceed
+    assert result.direction is None
+    assert result.reason == "conviction_divergence"
+
+
+def test_options_prompts_strategy_list_matches_registry() -> None:
+    """Guards against the CLAUDE.md §4.4 drift: the strategy id list
+    embedded in both prompts must track STRATEGY_REGISTRY, not a
+    hand-copied snapshot of it."""
+    for strategy_id in STRATEGY_REGISTRY:
+        assert strategy_id in OPTIONS_BULL
+        assert strategy_id in OPTIONS_BEAR
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Role-phrase registration — llm.py::_mock_response +
+# cost_ledger.py::infer_role_from_system_prompt. Neither raises on a
+# miss, so this is the only thing that would catch a regression.
+# ─────────────────────────────────────────────────────────────────────
+
+
+async def test_bull_role_resolves_in_mock_and_cost_ledger(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    llm = LLM(api_key=None)
+    assert llm.mock is True
+
+    resp = await llm.complete(system=OPTIONS_BULL, user="Ticker: NVDA\nHorizon: short\n")
+    body = json.loads(resp.text)
+    assert "direction" in body, f"got the generic fallback mock shape: {body!r}"
+    assert body["direction"] in ("long", "short")
+
+    assert infer_role_from_system_prompt(OPTIONS_BULL) == "options_bull"
+
+
+async def test_bear_role_resolves_in_mock_and_cost_ledger(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    llm = LLM(api_key=None)
+    assert llm.mock is True
+
+    resp = await llm.complete(system=OPTIONS_BEAR, user="Ticker: NVDA\nHorizon: short\n")
+    body = json.loads(resp.text)
+    assert "direction" in body, f"got the generic fallback mock shape: {body!r}"
+    assert body["direction"] in ("long", "short")
+
+    assert infer_role_from_system_prompt(OPTIONS_BEAR) == "options_bear"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Concurrency — wall-clock, not call count (docs/IMPL_OPTIONS_AGENTS.md
+# §3.3 / PLAN doc §11.6: a sequential `await run_bull(); await run_bear()`
+# would still pass a "both got called" assertion while doubling latency).
+# ─────────────────────────────────────────────────────────────────────
+
+
+async def test_agents_run_concurrently() -> None:
+    delay = 0.2
+    body = {
+        "direction": "long", "strategy": "momentum", "conviction": 0.6,
+        "thesis": "NVDA breaks 190 within 3 weeks on volume expansion.",
+    }
+
+    class _SlowLLM:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, *, system: str, user: str, **kwargs: Any) -> LLMResponse:
+            self.calls += 1
+            await asyncio.sleep(delay)
+            return LLMResponse(text=json.dumps(body), model="test")
+
+    fake = _SlowLLM()
+    start = time.monotonic()
+    bull, bear = await run_bull_and_bear(_state(), fake)
+    elapsed = time.monotonic() - start
+
+    assert fake.calls == 2
+    assert bull.direction == "long"
+    assert bear.direction == "long"
+    # Sequential execution would take ~2x delay; concurrent stays near 1x.
+    assert elapsed < delay * 1.6, f"expected concurrent execution, took {elapsed:.3f}s for 2x{delay}s calls"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# The sequencing: parallel argument -> resolve -> (only on proceed) the
+# Bull-only tool-calling hop, through the REAL guard + REAL registry.
+# ─────────────────────────────────────────────────────────────────────
+
+
+async def test_only_bull_gets_the_trade_tool() -> None:
+    fake = _ScriptedLLM(
+        bull_view={
+            "direction": "long", "strategy": "momentum", "conviction": 0.6,
+            "thesis": "NVDA breaks 190 within 3 weeks.",
+        },
+        bear_view={
+            "direction": "long", "strategy": "momentum", "conviction": 0.55,
+            "thesis": "NVDA holds support within 3 weeks.",
+        },
+    )
+    result = await run_options_agents(_state(), fake, guard=_guard(), caps=RiskCaps(options_disabled=False))
+
+    assert result.resolution.proceed
+    assert len(fake.complete_tools_calls) == 1, "Bear must never get a tool-calling hop at all"
+    call = fake.complete_tools_calls[0]
+    assert call["system"][:120].lower().startswith("you are the options bull agent")
+    assert {t["name"] for t in call["tools"]} >= {"open_option_trade"}
+
+
+async def test_no_tool_hop_when_resolution_does_not_proceed() -> None:
+    """A HOLD (disagreement here) must never even attempt the tool-calling
+    hop — zero extra LLM calls for a pass that was never going to trade
+    (docs/PLAN_OPTIONS_AGENTS.md §8's latency table)."""
+    fake = _ScriptedLLM(
+        bull_view={
+            "direction": "long", "strategy": "momentum", "conviction": 0.6,
+            "thesis": "NVDA breaks 190 within 3 weeks.",
+        },
+        bear_view={
+            "direction": "short", "strategy": "momentum", "conviction": 0.6,
+            "thesis": "NVDA breaks down within 3 weeks.",
+        },
+    )
+    result = await run_options_agents(_state(), fake, guard=_guard(), caps=RiskCaps(options_disabled=False))
+
+    assert not result.resolution.proceed
+    assert result.resolution.reason == "agents_disagree"
+    assert result.trade_response is None
+    assert result.tool_transcript == ()
+    assert fake.complete_tools_calls == []
+
+
+async def test_trade_hop_guard_context_carries_the_resolved_direction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Proves the SEQUENCING: the tool-calling hop's GuardContext carries
+    resolution.py's RESOLVED direction, not Bull's own un-resolved (or a
+    missing) one. Made observable by having Bull's hop-2 tool call itself
+    CONTRADICT the resolution: the guard's own (separately tested)
+    ``direction_contradicts_resolution`` denial only fires when
+    ``ctx.resolved_direction`` is actually wired to what resolve()
+    decided.
+    """
+    _enable_auto_trade(monkeypatch)
+    contradicting_args = {**OPEN_ARGS, "direction": "short"}
+    fake = _ScriptedLLM(
+        bull_view={
+            "direction": "long", "strategy": "momentum", "conviction": 0.6,
+            "thesis": "NVDA breaks 190 within 3 weeks.",
+        },
+        bear_view={
+            "direction": "long", "strategy": "momentum", "conviction": 0.55,
+            "thesis": "NVDA holds support within 3 weeks.",
+        },
+        trade_responses=[_tool_call_response("open_option_trade", contradicting_args)],
+    )
+    result = await run_options_agents(_state(), fake, guard=_guard(), caps=RiskCaps(options_disabled=False))
+
+    assert result.resolution.proceed
+    assert result.resolution.direction == "long"
+    trade_calls = [c for c in result.tool_transcript if c["tool"] == "open_option_trade"]
+    assert len(trade_calls) == 1
+    assert trade_calls[0]["output"]["is_error"] is True
+    assert trade_calls[0]["output"]["content"]["denied"] == "direction_contradicts_resolution"
+
+
+async def test_second_open_attempt_in_same_pass_is_denied(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A model that calls ``open_option_trade`` TWICE in the same
+    tool-calling hop must not open two positions. ``tools/guard.py``'s own
+    ``one_open_per_pass`` rule only bites here if ``run_options_agents``
+    actually threads an incrementing call count through a FRESH
+    ``GuardContext`` across rounds — a ``ctx`` built once and reused
+    unchanged would let both attempts see ``calls_this_pass=0`` and both
+    succeed. Revert check: hardcode ``calls_this_pass=0`` in
+    ``run_options_agents``'s ``_dispatch`` closure and this fails (both
+    opens report ``is_error is False``)."""
+    _enable_auto_trade(monkeypatch, need_broker_creds=True)
+    fake = _ScriptedLLM(
+        bull_view={
+            "direction": "long", "strategy": "momentum", "conviction": 0.6,
+            "thesis": "NVDA breaks 190 within 3 weeks.",
+        },
+        bear_view={
+            "direction": "long", "strategy": "momentum", "conviction": 0.55,
+            "thesis": "NVDA holds support within 3 weeks.",
+        },
+        trade_responses=[
+            _tool_call_response("open_option_trade", dict(OPEN_ARGS), call_id="c1"),
+            _tool_call_response("open_option_trade", dict(OPEN_ARGS), call_id="c2"),
+        ],
+    )
+    guard = _guard()
+    with patch("trading_agents.options.tools.guard.fetch_option_candidates", _fetch_ok):
+        result = await run_options_agents(
+            _state(), fake, guard=guard, caps=RiskCaps(options_disabled=False), max_rounds=3
+        )
+
+    opens = [c for c in result.tool_transcript if c["tool"] == "open_option_trade"]
+    assert len(opens) == 2
+    assert opens[0]["output"]["is_error"] is False
+    assert opens[1]["output"]["is_error"] is True
+    assert opens[1]["output"]["content"]["denied"] == "one_open_per_pass"
+
+
+async def test_full_pass_bull_and_bear_agree_and_a_trade_opens(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The whole two-hop sequence, end to end: parallel argument -> resolve
+    -> only then does Bull's tool-calling hop run, through the REAL guard
+    and REAL registry, landing a real (fake-broker) fill — proving the
+    pieces this file owns (agents.py, resolution.py, prompts.py) compose
+    correctly with the already-shipped guard/trade tools, not just in
+    isolation."""
+    _enable_auto_trade(monkeypatch, need_broker_creds=True)
+    fake = _ScriptedLLM(
+        bull_view={
+            "direction": "long", "strategy": "momentum", "conviction": 0.6,
+            "thesis": "NVDA breaks 190 within 3 weeks on volume expansion.",
+        },
+        bear_view={
+            "direction": "long", "strategy": "momentum", "conviction": 0.55,
+            "thesis": "NVDA holds support within 3 weeks; liquidity checks out.",
+        },
+        trade_responses=[_tool_call_response("open_option_trade", dict(OPEN_ARGS))],
+    )
+    guard = _guard()
+    with patch("trading_agents.options.tools.guard.fetch_option_candidates", _fetch_ok):
+        result = await run_options_agents(_state(), fake, guard=guard, caps=RiskCaps(options_disabled=False))
+
+    assert result.resolution.proceed
+    assert result.resolution.reason == "agreed"
+    assert result.resolution.conviction == pytest.approx(0.55)  # min(0.6, 0.55), not the mean
+
+    opens = [c for c in result.tool_transcript if c["tool"] == "open_option_trade"]
+    assert len(opens) == 1
+    assert opens[0]["output"]["is_error"] is False
+    assert opens[0]["output"]["content"]["occ_symbol"] == "NVDA260918C00225000"
+    assert opens[0]["output"]["content"]["qty"] >= 1
