@@ -222,6 +222,127 @@ async def test_instrument_absent_on_hold_even_with_both_set(
 
 
 # ─────────────────────────────────────────────────────────────────────
+# strategy_fit_node scores SHORT for an options-eligible pass even with
+# ALLOW_SHORTS off — a PUT never opens an equity short, so it was never
+# supposed to need that flag. Mirror image of _CLEARS_FIT_FLOOR_FEATURES:
+# every directional number negated, so every strategy's LONG score stays
+# well under MIN_FIT_TO_TRADE while at least one clears it SHORT.
+# ─────────────────────────────────────────────────────────────────────
+
+_CLEARS_FIT_FLOOR_FEATURES_BEARISH = {
+    "technicals": {
+        "trend_regime": "downtrend",
+        "dma20_pct": -2.0,
+        "dma50_pct": -4.0,
+        "rsi_14": 45.0,
+        "atr_14": 2.0,
+        "volume_ratio_20d": 1.6,
+    },
+    "quant": {
+        "ret_252d_pct": -20.0,
+        "ret_63d_pct": -10.0,
+        "ret_21d_pct": -6.0,
+        "sharpe": -1.0,
+        "atr_zscore": 0.5,
+        "realized_vol_pct": 25.0,
+        "corr_benchmark": 0.5,
+        "price_zscore_20": -0.5,
+        "donchian_pct": 10.0,
+    },
+}
+
+
+async def test_short_direction_scored_for_options_eligible_pass_without_allow_shorts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bug this guards: a cleanly bearish underlying on an
+    options-flavoured pass must still be able to win — as a SHORT, i.e. a
+    PUT candidate — even though ALLOW_SHORTS is off. Before the fix,
+    ``best_strategy`` was only ever asked to score "long" here regardless
+    of instrument, so this exact fixture returned a HOLD (see the sibling
+    test below, which pins that a PLAIN EQUITY pass on the same fixture
+    correctly still HOLDs — this fix must not touch that)."""
+    monkeypatch.delenv("ALLOW_SHORTS", raising=False)
+    monkeypatch.setenv("ALLOW_OPTIONS", "1")
+    state = {
+        "symbol": "BEAR",
+        "context": dict(_CLEARS_FIT_FLOOR_FEATURES_BEARISH),
+        "instrument_preference": "option",
+    }
+    out = await strategy_fit_mod.strategy_fit_node(state)
+
+    assert out["selected_strategy"] is not None, (
+        "a clean downtrend must clear the fit floor SHORT on an options pass"
+    )
+    assert out["selected_direction"] == "short"
+    assert out["instrument"] == "option"
+    fit = out["strategy_fit"]
+    assert fit["allow_shorts"] is False, "the raw equity flag must read unaffected"
+    assert fit["options_may_score_short"] is True
+
+
+async def test_short_direction_never_scored_for_a_plain_equity_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same bearish fixture, no options instrument preference at all — the
+    equity path must stay exactly as long-only as it always was without
+    ALLOW_SHORTS. This is the regression guard for the fix above: it
+    proves the new SHORT-scoring is scoped to options-eligible passes only,
+    not a global loosening of best_strategy's default."""
+    monkeypatch.delenv("ALLOW_SHORTS", raising=False)
+    monkeypatch.delenv("ALLOW_OPTIONS", raising=False)
+    state = {"symbol": "BEAR", "context": dict(_CLEARS_FIT_FLOOR_FEATURES_BEARISH)}
+    out = await strategy_fit_mod.strategy_fit_node(state)
+
+    assert out["selected_strategy"] is None
+    assert out["selected_direction"] is None
+    assert out["final_action"] == "HOLD"
+    assert "instrument" not in out
+    assert out["strategy_fit"]["options_may_score_short"] is False
+
+
+async def test_short_direction_never_scored_when_allow_options_off_even_with_preference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The instrument PREFERENCE alone must not be enough — ALLOW_OPTIONS
+    is the master switch, mirroring the existing
+    ``test_instrument_absent_without_allow_options_flag`` case above."""
+    monkeypatch.delenv("ALLOW_SHORTS", raising=False)
+    monkeypatch.delenv("ALLOW_OPTIONS", raising=False)
+    state = {
+        "symbol": "BEAR",
+        "context": dict(_CLEARS_FIT_FLOOR_FEATURES_BEARISH),
+        "instrument_preference": "option",
+    }
+    out = await strategy_fit_mod.strategy_fit_node(state)
+
+    assert out["selected_strategy"] is None
+    assert out["final_action"] == "HOLD"
+    assert "instrument" not in out
+
+
+async def test_allow_shorts_alone_still_scores_short_for_a_plain_equity_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pre-existing behavior, unchanged: ALLOW_SHORTS=1 on a plain equity
+    pass (no options instrument at all) must still score and win SHORT —
+    this fix must not have made ALLOW_SHORTS itself do less than before."""
+    monkeypatch.setenv("ALLOW_SHORTS", "1")
+    monkeypatch.delenv("ALLOW_OPTIONS", raising=False)
+    state = {"symbol": "BEAR", "context": dict(_CLEARS_FIT_FLOOR_FEATURES_BEARISH)}
+    out = await strategy_fit_mod.strategy_fit_node(state)
+
+    assert out["selected_direction"] == "short"
+    assert "instrument" not in out
+    fit = out["strategy_fit"]
+    assert fit["allow_shorts"] is True
+    assert fit["options_may_score_short"] is False, (
+        "this pass won SHORT because ALLOW_SHORTS is on, not because it is "
+        "options-eligible — the audit trail must say so"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
 # strategy_fit_node's two distinct HOLD rationales — genuinely-no-fit vs.
 # too-thin-to-call-tradable (docs/PLAN_AGGRESSIVE_PROFILE.md §4)
 # ─────────────────────────────────────────────────────────────────────

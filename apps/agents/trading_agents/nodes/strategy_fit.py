@@ -39,6 +39,14 @@ working):
                          state["instrument_preference"] == "option" are
                          BOTH set and a strategy won. Absent otherwise,
                          which is every existing behavior, unchanged.
+
+``selected_direction`` can be "short" on an options-eligible pass even when
+``ALLOW_SHORTS`` is off: that flag gates the unbounded-loss EQUITY
+short-selling machinery only, and a "short" direction reaching the options
+fork only ever buys a PUT (bounded loss, Phase A in-scope — see
+docs/OPTIONS_PLAYBOOK.md §1.2). It can never surface for an equity pass
+(``instrument`` unset) unless ALLOW_SHORTS is genuinely on. See
+``strategy_fit_node``'s ``options_eligible_pass`` for where this is decided.
 """
 
 from __future__ import annotations
@@ -68,8 +76,36 @@ async def strategy_fit_node(state: CouncilState) -> CouncilState:
     priors = state.get("strategy_priors") or {}
     allow_shorts = env_flag("ALLOW_SHORTS")
 
+    # An options-eligible pass may score (and win on) the SHORT direction
+    # even when ALLOW_SHORTS is off. ALLOW_SHORTS exists to gate the
+    # unbounded-loss EQUITY short-selling machinery
+    # (engine.risk.rules.forbid_short_phase_0 and everything downstream of
+    # it) — it has nothing to do with buying a PUT, which only ever
+    # produces a bounded-loss BUY (drafter._draft_option_proposal and
+    # options.agents both force side="BUY"/buy_to_open regardless of
+    # direction — docs/OPTIONS_PLAYBOOK.md §1.2). Scoring only "long" here
+    # regardless of instrument meant a cleanly bearish underlying —
+    # precisely the case that makes the best PUT candidate — scored badly
+    # on every strategy's LONG side, never reached MIN_FIT_TO_TRADE, and
+    # the options Bull/Bear council (which can independently propose a
+    # PUT; see trading_agents.options.agents / options.prompts.OPTIONS_BEAR)
+    # never even ran for it. Both options consumers already handle a
+    # "short" selected_direction correctly and are tested doing so
+    # (test_options_drafter_bearish_thesis_buys_a_put_but_side_stays_buy in
+    # test_options_drafter.py) — this was the one upstream gate stopping a
+    # PUT from ever being tried. Computed BEFORE best_strategy() (not just
+    # re-derived for the instrument-gate branch near the end of this
+    # function) precisely so it can feed the scoring call below; the
+    # bottom-of-function gate reuses this same variable, so a "short"
+    # winner can only ever surface on a pass where `instrument` also ends
+    # up set to "option".
+    options_eligible_pass = (
+        env_flag("ALLOW_OPTIONS") and state.get("instrument_preference") == "option"
+    )
+    score_shorts = allow_shorts or options_eligible_pass
+
     winner, ranked = best_strategy(
-        features, priors=priors, allow_shorts=allow_shorts
+        features, priors=priors, allow_shorts=score_shorts
     )
 
     # Re-derived here (not threaded through `best_strategy`'s return value)
@@ -80,6 +116,13 @@ async def strategy_fit_node(state: CouncilState) -> CouncilState:
 
     fit_block: dict[str, Any] = {
         "allow_shorts": allow_shorts,
+        # Distinct from "allow_shorts" above: true only when the SHORT
+        # side was scored because this pass is options-eligible, NOT
+        # because ALLOW_SHORTS is on. Lets the audit trail tell "this pass
+        # could have surfaced a PUT" apart from "this pass could have
+        # opened an equity short" — the two read the same `winner.direction
+        # == "short"` downstream but mean very different things.
+        "options_may_score_short": options_eligible_pass and not allow_shorts,
         "winner": winner.as_dict() if winner else None,
         "ranked": [r.as_dict() for r in ranked[:MAX_RANKED_PERSISTED]],
         "priors_applied": dict(priors),
@@ -144,14 +187,17 @@ async def strategy_fit_node(state: CouncilState) -> CouncilState:
         "strategy_fit": fit_block,
     }
 
-    # Options instrument gate — additive, and the ONLY new branch in this
-    # node. Both the master ALLOW_OPTIONS env switch (mirrors ALLOW_SHORTS
-    # above — same env_flag helper, same fail-closed default) AND a
-    # per-run instrument preference must be set, and a strategy must have
-    # actually won (we are past the `winner is None` branch, so it has).
-    # When either condition is absent, `result` is exactly what this node
-    # has always returned — nothing above this comment changed.
-    if env_flag("ALLOW_OPTIONS") and state.get("instrument_preference") == "option":
+    # Options instrument gate — additive. Both the master ALLOW_OPTIONS env
+    # switch (mirrors ALLOW_SHORTS above — same env_flag helper, same
+    # fail-closed default) AND a per-run instrument preference must be
+    # set, and a strategy must have actually won (we are past the `winner
+    # is None` branch, so it has). When either condition is absent,
+    # `result` is exactly what this node has always returned. Reuses
+    # `options_eligible_pass` computed above the `best_strategy` call
+    # rather than re-deriving it — same condition either way, which is
+    # exactly what keeps a "short" winner from ever surfacing without
+    # `instrument` also being set to "option" here.
+    if options_eligible_pass:
         result["instrument"] = "option"
 
     return result
