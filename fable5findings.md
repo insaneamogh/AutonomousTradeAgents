@@ -385,6 +385,35 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-31 — `dcf58ca4` fix(options): adjust_option_position was missing the paper-only/market-hours gate
+
+`ID:MODEL2OFF`. Found while reviewing the (not-yet-merged) escalation-loop
+workstream: `_before_adjust_option_position` never checked
+`AUTO_TRADE_ENABLED`/paper-only/market-hours before allowing `EXIT_NOW` or
+`SCALE_IN` through — both reach `packages/broker` via `trade.py`'s
+`_exit_now`/`_scale_in` and place a real order once the guard says allow.
+`_before_open_option_trade` has always checked all three as its first
+three steps; `_before_adjust_option_position` had none, for any of its
+five actions — directly contradicting `PLAN_OPTIONS_AGENTS.md` §4's own
+words ("checked in `before`, regardless of any flag"). **I reviewed this
+exact file carefully when it first merged (`f80abc7f`) and missed this
+asymmetry** — it surfaced only because the escalation workstream needed
+to reach `adjust_option_position` from a live, scheduled path and, in
+verifying its own safety, found the gate its own call site depended on
+was never actually there upstream.
+
+Fix: the same three checks `open_option_trade` already runs, added to the
+top of `_before_adjust_option_position`, applied uniformly to every
+action (including `HOLD`/`TIGHTEN_STOP`/`RAISE_TAKE_PROFIT`, which never
+touch the broker) — one gate to reason about, not a narrower second one.
+
+Verified: added 4 new tests mirroring the 4 existing `open_option_trade`
+gate tests exactly. Revert-checked (CLAUDE.md §4.1): removed the gate,
+confirmed all 4 fail with the underlying `decision_not_found` instead of
+the safety denial (proving they test the real gate, not a coincidence),
+restored. Fixed 2 pre-existing `EXIT_NOW` end-to-end tests that predated
+this gate. 1184 → 1188 passed, 11 skipped, zero regressions, ruff clean.
+
 ### 2026-08-31 — `ed24dd36`/`f53792e2` feat(agents): the two arguing agents themselves — Bull/Bear + deterministic resolution
 
 `ID:MODEL2OFF`. On top of the guarded trade tools (previous entry): the
