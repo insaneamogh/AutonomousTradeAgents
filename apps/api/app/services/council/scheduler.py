@@ -329,11 +329,21 @@ class CouncilScheduler:
 
         # Budget stop. A violent open can trip many rules at once; cap the
         # spend rather than trusting the thresholds to stay conservative.
-        selected = list(triggered[:max_runs])
+        #
+        # OPTIONS FIRST. Before this, `triggered[:max_runs]` handed the
+        # budget out in scan order, so a handful of option underlyings
+        # competed with ~37 equities for 3 slots and usually lost. Options
+        # are the timing-sensitive instrument AND the one the contest
+        # requires, so they get the budget first; equities take what is
+        # left. Stable ordering within each group keeps scan-to-scan
+        # behaviour comparable.
+        opts = [s for s in triggered if instruments.get(s) == "option"]
+        eqs = [s for s in triggered if instruments.get(s) != "option"]
+        selected = (opts + eqs)[:max_runs]
         if len(triggered) > max_runs:
             logger.warning(
-                "%d symbols triggered, running the first %d (SCANNER_MAX_COUNCIL_RUNS)",
-                len(triggered), max_runs,
+                "%d symbols triggered (%d options), running %d (SCANNER_MAX_COUNCIL_RUNS): %s",
+                len(triggered), len(opts), max_runs, ", ".join(selected),
             )
 
         # Hand the council WHY it was woken, so the analysts see the named

@@ -165,6 +165,20 @@ class DecisionLog(Protocol):
         all-history scan."""
         ...
 
+    async def minutes_since_last_decision(
+        self, *, user_id: str | None, symbol: str
+    ) -> float | None:
+        """Minutes since the most recent decision for (user, symbol), or
+        ``None`` if there has never been one.
+
+        Exists because once-per-DAY is the wrong cadence for options. A
+        contract that had no setup at 14:00 can be a clean one at 15:30,
+        and options are a timing instrument — the daily dedup that is
+        right for a swing equity position silently caps options at one
+        look per session. Callers gate on a cooldown instead.
+        """
+        ...
+
 
 class InMemoryDecisionLog:
     """Process-local DecisionLog. The default for tests + CLI.
@@ -236,3 +250,21 @@ class InMemoryDecisionLog:
             if r.triggered_at.strftime("%Y-%m-%d") == day_utc:
                 return True
         return False
+
+    async def minutes_since_last_decision(
+        self, *, user_id: str | None, symbol: str
+    ) -> float | None:
+        from datetime import UTC as _UTC
+        from datetime import datetime as _dt
+
+        newest = None
+        for r in self._rows:
+            if user_id is not None and r.user_id != user_id:
+                continue
+            if r.symbol != symbol:
+                continue
+            if newest is None or r.triggered_at > newest:
+                newest = r.triggered_at
+        if newest is None:
+            return None
+        return (_dt.now(_UTC) - newest).total_seconds() / 60.0

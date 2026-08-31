@@ -131,6 +131,62 @@ async def _already_decided_today(
     )
 
 
+_DEFAULT_OPTIONS_RESCAN_COOLDOWN_MIN = 45
+
+
+def _options_rescan_cooldown_minutes() -> int:
+    """Minutes an OPTION symbol must wait before the council looks again.
+
+    Once-per-day is the right cadence for a swing equity position and the
+    wrong one for options. Options are a timing instrument: a symbol with
+    no setup at 14:00 can be a clean one at 15:30, and the daily dedup
+    silently capped every underlying at a single look per session — which
+    made "continuous options scanning" impossible no matter how often the
+    deterministic scanner ran.
+
+    So options get a COOLDOWN instead of a daily lock. The deterministic
+    scan still runs every SCANNER_INTERVAL_MINUTES and still only wakes the
+    council on a named trigger; this bounds how often that wake can spend
+    LLM budget on the same underlying. Malformed input keeps the default —
+    a typo must never remove the bound.
+    """
+    raw = os.environ.get("OPTIONS_RESCAN_COOLDOWN_MINUTES", "").strip()
+    if not raw:
+        return _DEFAULT_OPTIONS_RESCAN_COOLDOWN_MIN
+    try:
+        value = int(raw)
+    except ValueError:
+        log.warning(
+            "ignoring malformed OPTIONS_RESCAN_COOLDOWN_MINUTES=%r — keeping %d",
+            raw, _DEFAULT_OPTIONS_RESCAN_COOLDOWN_MIN,
+        )
+        return _DEFAULT_OPTIONS_RESCAN_COOLDOWN_MIN
+    return max(0, value)
+
+
+async def _should_skip(user_id: str, symbol: str, instrument: str) -> bool:
+    """Dedup gate. Equities: once per UTC day. Options: a cooldown."""
+    if instrument != "option":
+        if await _already_decided_today(user_id, symbol):
+            log.info("skip %s — already decided today", symbol)
+            return True
+        return False
+
+    cooldown = _options_rescan_cooldown_minutes()
+    if cooldown <= 0:
+        return False
+    since = await get_decision_log().minutes_since_last_decision(
+        user_id=user_id, symbol=symbol
+    )
+    if since is not None and since < cooldown:
+        log.info(
+            "skip %s — options cooldown (%.0f min since last look, need %d)",
+            symbol, since, cooldown,
+        )
+        return True
+    return False
+
+
 def _equity_resolver(user_id: str):
     """Latest reconciler-snapshot equity for the cron user (Postgres only).
     The sizer needs REAL equity — synthetic 100k sizing against a real
@@ -191,8 +247,7 @@ async def _run_one(
     requires BOTH ``ALLOW_OPTIONS`` and an "option" preference before it
     will set ``instrument`` on the state.
     """
-    if not force and await _already_decided_today(user_id, symbol):
-        log.info("skip %s — already decided today", symbol)
+    if not force and await _should_skip(user_id, symbol, instrument):
         return {"symbol": symbol, "skipped": True}
 
     result = await run_council(

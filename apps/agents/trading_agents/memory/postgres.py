@@ -302,6 +302,27 @@ class PostgresDecisionLog:
             )
             return (await session.execute(stmt)).scalar_one_or_none() is not None
 
+    async def minutes_since_last_decision(
+        self, *, user_id: str | None, symbol: str
+    ) -> float | None:
+        """Minutes since the newest decision for (user, symbol). Same
+        (user_id, symbol, triggered_at) index the daily check uses."""
+        uid = uuid.UUID(user_id) if user_id else FIXTURE_USER_ID
+        async with self._session_factory() as session:
+            stmt = (
+                select(AgentDecision.triggered_at)
+                .where(
+                    AgentDecision.user_id == uid,
+                    AgentDecision.symbol == symbol,
+                )
+                .order_by(AgentDecision.triggered_at.desc())
+                .limit(1)
+            )
+            newest = (await session.execute(stmt)).scalar_one_or_none()
+        if newest is None:
+            return None
+        return (datetime.now(UTC) - newest).total_seconds() / 60.0
+
 
 # ─────────────────────────────────────────────────────────────────────
 # StrategyConfidenceStore
