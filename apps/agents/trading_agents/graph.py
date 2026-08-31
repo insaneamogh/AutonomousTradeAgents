@@ -21,15 +21,33 @@ most symbols on most days, so it is the dominant term in the bill.
 The old Haiku Selector node is gone; ``trading_agents.nodes.strategy_fit``
 explains why it was removed rather than demoted to an explainer.
 
+**Technical/Fundamental/Macro run CONCURRENTLY, not one after another.**
+They are the same shape as ``options/agents.py``'s Bull/Bear pair — three
+independent reads of the SAME pre-computed feature dict, none reading
+another's output, so making them wait on each other bought nothing but
+wall-clock latency. ``_run_analysts_parallel`` runs whichever of the three
+the Router put in ``analyst_subset`` via ``asyncio.gather``, mirroring
+``run_bull_and_bear``'s pattern exactly. This is deliberately implemented
+as ONE combined step (a single linear-path block / a single LangGraph
+node) rather than three separate fanned-out LangGraph nodes: the three
+node functions all read-modify-write the shared ``degraded_nodes`` key
+(see ``nodes/_specialist.py``), and LangGraph rejects more than one write
+to the same channel key per super-step unless it carries a reducer.
+Merging the three results by hand in ``_merge_analyst_results`` gets the
+same wall-clock win without adding a reducer to ``CouncilState`` (which
+would also require touching ``router.py``/``drafter.py``, the other two
+read-modify-write callers of that key, well outside this change's scope).
+
 Live sequence:
-    strategy_fit → (HOLD, 0 calls) | router → analysts → drafter → risk
+    strategy_fit → (HOLD, 0 calls) | router → analysts (parallel) → drafter → risk
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import Any
 
 from engine.risk import RiskCaps
 from trading_agents.llm import LLM
@@ -60,6 +78,66 @@ try:
 except ImportError:
     _HAS_LANGGRAPH = False
     logger.info("langgraph not installed — running with plain asyncio fallback")
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Parallel analyst fan-out — shared by both code paths below.
+# ─────────────────────────────────────────────────────────────────────
+
+_AnalystFn = Callable[[CouncilState, LLM], Coroutine[Any, Any, CouncilState]]
+
+_ANALYSTS: tuple[tuple[str, _AnalystFn], ...] = (
+    ("technical", technical_analyst_node),
+    ("fundamental", fundamental_analyst_node),
+    ("macro", macro_analyst_node),
+)
+
+
+def _merge_analyst_results(
+    base_state: CouncilState, names: list[str], results: list[CouncilState]
+) -> CouncilState:
+    """Combine N independently-run analyst results into ONE state update.
+
+    Every analyst node's contract (``nodes/_specialist.py::run_specialist``)
+    is to return ``{**state, <own_name>: {...}, "degraded_nodes": [...]}`` —
+    a full copy of whatever state it was HANDED plus its own contribution.
+    Because all three analysts here are handed the exact same pre-fan-out
+    ``base_state`` (they run concurrently — none can see another's write),
+    the only keys that can actually differ across the N results are each
+    analyst's own key and ``degraded_nodes``. Reconstructing the merge by
+    hand — rather than letting three LangGraph nodes write concurrently —
+    is what avoids ever having two writers touch the same channel key in
+    one step; see the module docstring.
+    """
+    merged: dict[str, Any] = dict(base_state)
+    base_degraded = list(base_state.get("degraded_nodes") or [])
+    degraded = list(base_degraded)
+    for name, result in zip(names, results, strict=True):
+        merged[name] = result.get(name)
+        if name in (result.get("degraded_nodes") or []) and name not in degraded:
+            degraded.append(name)
+    merged["degraded_nodes"] = degraded
+    return merged  # type: ignore[return-value]
+
+
+async def _run_analysts_parallel(state: CouncilState, llm: LLM, subset: list[str]) -> CouncilState:
+    """Run every analyst named in ``subset`` concurrently, one hop.
+
+    Wall-clock concurrency is what matters, not just "both got awaited" —
+    a sequential ``await tech(); await fund(); await macro()`` would still
+    satisfy a call-count assertion while silently tripling latency for any
+    pass that runs all three. ``test_analysts_run_concurrently`` asserts on
+    elapsed time for exactly this reason (mirrors
+    ``test_agents_run_concurrently`` in ``test_options_agents.py``).
+    """
+    wanted = [(name, fn) for name, fn in _ANALYSTS if name in subset]
+    if not wanted:
+        return state
+    tasks: list[asyncio.Task[CouncilState]] = [
+        asyncio.create_task(fn(state, llm)) for _, fn in wanted
+    ]
+    results = await asyncio.gather(*tasks)
+    return _merge_analyst_results(state, [name for name, _ in wanted], list(results))
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -127,19 +205,24 @@ async def _run_linear(
     await _pace()
     await _emit("router", "completed", with_summary=True)
 
+    # Concurrent, not sequential — see the module docstring. All three
+    # (whichever are in ``subset``) fire "started" together, run via
+    # ``asyncio.gather`` inside ``_run_analysts_parallel``, and only then
+    # does anyone see "completed" — the wall-clock saving IS the point, so
+    # there is no honest way to stagger these events across real time
+    # without serializing the calls that produce them back out again.
     subset = state.get("analyst_subset", ["technical"])
-    for analyst, node_fn in (
-        ("technical", technical_analyst_node),
-        ("fundamental", fundamental_analyst_node),
-        ("macro", macro_analyst_node),
-    ):
-        if analyst in subset:
-            await _emit(analyst, "started")  # type: ignore[arg-type]
-            state = await node_fn(state, llm)
-            await _pace()
-            await _emit(analyst, "completed", with_summary=True)  # type: ignore[arg-type]
-        else:
+    wanted = [name for name, _ in _ANALYSTS if name in subset]
+    for analyst in wanted:
+        await _emit(analyst, "started")  # type: ignore[arg-type]
+    for analyst, _ in _ANALYSTS:
+        if analyst not in subset:
             await _emit(analyst, "skipped")  # type: ignore[arg-type]
+    if wanted:
+        state = await _run_analysts_parallel(state, llm, subset)
+        await _pace()
+        for analyst in wanted:
+            await _emit(analyst, "completed", with_summary=True)  # type: ignore[arg-type]
 
     await _emit("drafter", "started")
     state = await drafter_node(state, llm)
@@ -169,14 +252,14 @@ def _build_langgraph(llm: LLM, risk_caps: RiskCaps) -> Callable[[CouncilState], 
     async def _router(state: CouncilState) -> CouncilState:
         return await router_node(state, llm)
 
-    async def _tech(state: CouncilState) -> CouncilState:
-        return await technical_analyst_node(state, llm)
-
-    async def _fund(state: CouncilState) -> CouncilState:
-        return await fundamental_analyst_node(state, llm)
-
-    async def _macro(state: CouncilState) -> CouncilState:
-        return await macro_analyst_node(state, llm)
+    async def _analysts(state: CouncilState) -> CouncilState:
+        # ONE LangGraph node running all of technical/fundamental/macro
+        # concurrently, rather than three fanned-out nodes — see the
+        # module docstring for why (the shared ``degraded_nodes`` write
+        # would otherwise violate LangGraph's one-writer-per-key-per-step
+        # rule). A HOLD-worthy empty subset is a no-op inside the helper.
+        subset = state.get("analyst_subset", ["technical"])
+        return await _run_analysts_parallel(state, llm, subset)
 
     async def _strategy_fit(state: CouncilState) -> CouncilState:
         return await strategy_fit_node(state)
@@ -195,9 +278,7 @@ def _build_langgraph(llm: LLM, risk_caps: RiskCaps) -> Callable[[CouncilState], 
 
     g.add_node("strategy_fit", _strategy_fit)
     g.add_node("router", _router)
-    g.add_node("technical", _tech)
-    g.add_node("fundamental", _fund)
-    g.add_node("macro", _macro)
+    g.add_node("analysts", _analysts)
     g.add_node("drafter", _drafter)
     g.add_node("risk_officer", _risk)
     g.add_node("options_council", _options_council)
@@ -223,51 +304,13 @@ def _build_langgraph(llm: LLM, risk_caps: RiskCaps) -> Callable[[CouncilState], 
     })
     g.add_edge("options_council", END)
 
-    # Conditional fan-in: route through technical → fundamental → macro →
-    # drafter → risk_officer, skipping any analysts that aren't in the
-    # Router's analyst_subset. Phase 2 swaps the serial analyst path for
-    # parallel fan-out via a join node.
-
-    def _route_after_router(state: CouncilState) -> str:
-        subset = state.get("analyst_subset", ["technical"])
-        if "technical" in subset:
-            return "technical"
-        if "fundamental" in subset:
-            return "fundamental"
-        if "macro" in subset:
-            return "macro"
-        return "drafter"
-
-    g.add_conditional_edges("router", _route_after_router, {
-        "technical": "technical",
-        "fundamental": "fundamental",
-        "macro": "macro",
-        "drafter": "drafter",
-    })
-
-    def _after_technical(state: CouncilState) -> str:
-        subset = state.get("analyst_subset", [])
-        if "fundamental" in subset:
-            return "fundamental"
-        if "macro" in subset:
-            return "macro"
-        return "drafter"
-
-    g.add_conditional_edges("technical", _after_technical, {
-        "fundamental": "fundamental",
-        "macro": "macro",
-        "drafter": "drafter",
-    })
-
-    def _after_fundamental(state: CouncilState) -> str:
-        return "macro" if "macro" in state.get("analyst_subset", []) else "drafter"
-
-    g.add_conditional_edges("fundamental", _after_fundamental, {
-        "macro": "macro",
-        "drafter": "drafter",
-    })
-
-    g.add_edge("macro", "drafter")
+    # Single hop for all three analysts — ``_analysts`` runs whichever of
+    # technical/fundamental/macro the Router put in ``analyst_subset``
+    # concurrently (see the module docstring), so there is nothing left to
+    # branch on here: every non-options pass goes router -> analysts ->
+    # drafter, and an empty subset just makes ``_analysts`` a no-op.
+    g.add_edge("router", "analysts")
+    g.add_edge("analysts", "drafter")
 
     g.add_edge("drafter", "risk_officer")
     g.add_edge("risk_officer", END)

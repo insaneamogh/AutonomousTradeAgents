@@ -371,6 +371,92 @@ async def test_run_council_options_proposal_reaches_evaluate_option_and_is_appro
     assert "options_disabled" not in (result.get("risk_reason") or "")
 
 
+async def test_analysts_run_concurrently() -> None:
+    """Technical/Fundamental/Macro must run as ONE concurrent hop, not
+    three sequential ones.
+
+    Mirrors ``test_agents_run_concurrently`` in ``test_options_agents.py``
+    exactly, and for the same reason: a sequential ``await tech();
+    await fund(); await macro()`` still satisfies a call-count assertion
+    while silently tripling wall-clock latency for any pass that runs all
+    three analysts — which, before this test existed, is exactly what
+    ``graph.py`` did (a plain ``for`` loop over the three node functions
+    in ``_run_linear``, and a technical -> fundamental -> macro conditional
+    chain of separate LangGraph nodes in ``_build_langgraph``). Asserting
+    on elapsed time is the only way to pin "actually concurrent" rather
+    than "eventually all awaited".
+    """
+    import asyncio
+    import json
+    import time
+    from typing import Any
+
+    from trading_agents.graph import _run_analysts_parallel
+    from trading_agents.llm import LLMResponse
+
+    delay = 0.2
+    body = json.dumps({"score": 60.0, "confidence": 0.5, "thesis": "t", "citations": []})
+
+    class _SlowLLM:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, *, system: str, user: str, **kwargs: Any) -> LLMResponse:
+            self.calls += 1
+            await asyncio.sleep(delay)
+            return LLMResponse(text=body, model="test")
+
+    fake = _SlowLLM()
+    state = {"symbol": "NVDA", "horizon": "short", "context": {}}
+    start = time.monotonic()
+    result = await _run_analysts_parallel(state, fake, ["technical", "fundamental", "macro"])
+    elapsed = time.monotonic() - start
+
+    assert fake.calls == 3
+    assert result["technical"]["score"] == pytest.approx(60.0)
+    assert result["fundamental"]["score"] == pytest.approx(60.0)
+    assert result["macro"]["score"] == pytest.approx(60.0)
+    # Sequential execution would take ~3x delay; concurrent stays near 1x.
+    assert elapsed < delay * 1.6, (
+        f"expected concurrent execution, took {elapsed:.3f}s for 3x{delay}s calls"
+    )
+
+
+async def test_analysts_parallel_merges_degraded_nodes_without_duplication() -> None:
+    """``_merge_analyst_results`` reconstructs the shared ``degraded_nodes``
+    list by hand (see ``graph.py``'s module docstring for why: LangGraph
+    forbids >1 writer to the same channel key per step, which is exactly
+    what three concurrently-run analysts would otherwise be). Pin that the
+    merge names EXACTLY the analysts whose OWN call degraded — not zero,
+    not all three, and not duplicated when more than one degrades.
+    """
+    from trading_agents.graph import _run_analysts_parallel
+    from trading_agents.llm import LLMResponse
+
+    class _SelectivelyBrokenLLM:
+        """Fundamental and macro return unparseable JSON; technical is fine."""
+
+        async def complete(self, *, system: str, user: str, **kwargs) -> LLMResponse:  # type: ignore[no-untyped-def]
+            role_line = system[:120].lower()
+            if "fundamental" in role_line or "macro" in role_line:
+                return LLMResponse(text="not json", model="test")
+            return LLMResponse(
+                text='{"score": 70.0, "confidence": 0.6, "thesis": "ok", "citations": []}',
+                model="test",
+            )
+
+    state = {"symbol": "NVDA", "horizon": "short", "context": {}}
+    result = await _run_analysts_parallel(
+        state, _SelectivelyBrokenLLM(), ["technical", "fundamental", "macro"]
+    )
+
+    assert sorted(result["degraded_nodes"]) == ["fundamental", "macro"]
+    assert result["technical"]["score"] == pytest.approx(70.0)
+    # Degraded analysts still produce the neutral fallback, not a crash.
+    assert result["fundamental"]["score"] == pytest.approx(50.0)
+    assert result["macro"]["score"] == pytest.approx(50.0)
+
+
 async def test_drafter_skipped_when_fit_holds() -> None:
     """Integration: a HOLD from the deterministic fit node must skip the
     Router, every analyst, and the Drafter — the whole rest of the graph.
