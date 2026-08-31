@@ -85,6 +85,20 @@ inviting anyone.
 
 ### What is missing
 
+**Status 2026-08-31:** a fresh account hitting "Connect Alpaca paper" now sees the
+server's own warning — *"Alpaca OAuth is not configured on this server
+(ALPACA_OAUTH_CLIENT_ID/_SECRET)"*. That message is **correct and working as designed**
+(the code detects the placeholder client id and refuses to send the user into a
+dead end). It is telling you the two env vars are unset, not that anything is broken.
+
+⚠️ **Blocking unknown, checked 2026-08-31:** Alpaca's public OAuth docs confirm
+*"All API clients must authenticate with OAuth 2.0"* but **do not document the app
+registration flow, whether PAPER accounts are supported, the redirect-URI rules, or
+the scope list.** The pages referenced ("Register Your App", "OAuth Integration
+Guide") were not retrievable. **Resolve this with Alpaca support before building on
+it** — if OAuth is live-only, this route is closed and the shared demo login is the
+answer instead.
+
 1. **Register an OAuth app with Alpaca** (their dashboard) and set:
    ```
    ALPACA_OAUTH_CLIENT_ID=…
