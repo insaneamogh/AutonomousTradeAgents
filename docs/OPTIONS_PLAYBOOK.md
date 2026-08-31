@@ -44,6 +44,25 @@ var, default `conservative`. See §2 and §4.
 
 ---
 
+## 0.5 The two-agent options council (live)
+
+`USE_OPTIONS_AGENT=1` and `AUTO_TRADE_ENABLED=1` are **set in production**.
+An options pass now forks after `strategy_fit` into a Bull/Bear argument;
+the winner calls `open_option_trade`, and `ToolGuard.before` runs the full
+13-rule stack inside that call before anything reaches the broker. The
+agent supplies direction, strategy, conviction and a thesis — never a
+strike, expiry, contract or quantity, which stay deterministic.
+
+`risk_officer` is deliberately NOT downstream of that fork: a trade made
+there is already risk-cleared and already at the broker. `runtime` also
+skips its own audit write, because the trade tool already persisted one on
+the same `council_run_id` (see `nodes/options_council.py`).
+
+Rollback is one variable: `USE_OPTIONS_AGENT=0` returns options to the
+shared equity council.
+
+---
+
 ## 1. What it may buy
 
 ### 1.1 The decision to look at options at all

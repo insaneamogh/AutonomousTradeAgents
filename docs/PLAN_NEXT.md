@@ -30,7 +30,43 @@ made a whole workstream inert.
 
 ---
 
-## 0.5 🚨 BIGGEST BLOCKER — the agent cannot OPEN a trade at all
+## 0.4 🚨 CURRENT BLOCKER — the Anthropic API key is dead
+
+Verified 2026-08-31 by direct call with the exact Railway value:
+
+```
+prefix sk-ant-api03-K…  len=107   ->  HTTP 401
+```
+
+`AGENTS_REQUIRE_REAL_LLM=1` is set, so there is no mock fallback — a pass
+that reaches the router simply raises and writes **no decision row at all.**
+
+That is why the 14:00 sweep produced 14 rows from a 45-symbol watchlist,
+and why 7 of the 8 option symbols produced nothing: those 7 PASS
+`strategy_fit` (measured scores 0.46–0.88), so they reach the router and
+die. AMD is the only option symbol with a row because it is the only one
+that legitimately held at the deterministic gate (0.306).
+
+**Set a valid `ANTHROPIC_API_KEY` on Railway. Nothing else unblocks trading.**
+
+---
+
+## 0.45 Measured: strategy_fit is NOT over-holding
+
+Live scores, 2026-08-31, `RISK_PROFILE=aggressive_paper`, floor 0.42:
+
+```
+SPY  0.784   QQQ  0.789   NVDA 0.773   AAPL 0.877
+MSFT 0.650   TSLA 0.470   META 0.463   AMD  0.306 (holds, correctly)
+```
+
+7 of 8 pass comfortably. **Do not lower `MIN_FIT_TO_TRADE` to "get more
+trades"** — it is not what is holding, and the hard floor is 0.41 anyway
+(`vol_regime_switch`'s blind weight is exactly 0.400).
+
+---
+
+## 0.5 ~~BIGGEST BLOCKER — the agent cannot OPEN a trade at all~~ — RESOLVED
 
 `approval_mode` is hardcoded `"ask"`; `execute_proposal` is reachable only from two
 authenticated HTTP endpoints. The cron's last act is a push notification. So the
