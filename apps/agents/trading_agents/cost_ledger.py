@@ -218,6 +218,10 @@ def infer_role_from_system_prompt(system: str) -> str:
         return "drafter"
     if "you are the reflection agent" in line:
         return "reflection"
+    if "you are the options bull agent" in line:
+        return "options_bull"
+    if "you are the options bear agent" in line:
+        return "options_bear"
     return "unknown"
 
 

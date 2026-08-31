@@ -535,6 +535,31 @@ def _mock_response(*, system: str, user: str, model: str) -> LLMResponse:
                 "Earnings in two weeks add binary risk."
             ),
         }
+    elif "you are the options bull agent" in role_line:
+        body = {
+            "direction": "long",
+            "strategy": "momentum",
+            "conviction": 0.6,
+            "thesis": f"MOCK: {sym} breaks out within 3 weeks on volume expansion.",
+        }
+    elif "you are the options bear agent" in role_line:
+        # Agrees with the Bull mock by default (same direction, conviction
+        # within the 0.4 divergence band) — MOCK mode exists to let the
+        # WHOLE pipeline run offline (module docstring above), including
+        # the trade-hop path, the same way the equity mocks are tuned to
+        # cooperate (Router picks all three analysts, the Drafter's mock
+        # matches whatever side the prompt requires, etc.). A test that
+        # needs the two agents to DISAGREE injects its own fake LLM rather
+        # than relying on this shared generic mock for that scenario.
+        body = {
+            "direction": "long",
+            "strategy": "momentum",
+            "conviction": 0.55,
+            "thesis": (
+                f"MOCK: {sym} IV rank is unremarkable and liquidity clears the "
+                "funnel, but re-check the spread at fill time within 3 weeks."
+            ),
+        }
     elif "you are the reflection agent" in role_line:
         # Mock review — small positive nudge with a generic lesson. The
         # store will clamp regardless; we just need a deterministic shape.
