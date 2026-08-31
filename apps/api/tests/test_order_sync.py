@@ -22,7 +22,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.services.orders import order_sync as order_sync_mod
-from app.services.orders.order_sync import _apply_decision_lifecycle, _last_snapshot_mark
+from app.services.orders.order_sync import (
+    _apply_decision_lifecycle,
+    _broker_key_for_decision,
+    _last_snapshot_mark,
+)
 
 
 def _decision(**overrides: Any) -> SimpleNamespace:
@@ -327,3 +331,75 @@ async def test_external_close_equity_unaffected_by_absent_multiplier_key(
     update_stmt = session.execute.call_args_list[-1].args[0]
     # (104.25 - 100.00) * 10 = 42.50
     assert _values_of(update_stmt)["realized_pnl"] == Decimal("42.50")
+
+
+# ─────────────────────────────────────────────────────────────────────
+# _broker_key_for_decision — OCC-vs-underlying (the false "closed
+# externally" bug: an option genuinely still held at the broker was, before
+# this fix, ALWAYS matched against `held_qty` by the underlying, which is
+# never a key `held_qty` actually has (Alpaca reports option positions
+# keyed by their OCC contract) — so `_detect_external_closes` closed it on
+# the very first tick after every fill, permanently disabling the ratchet/
+# stop-loss/time-stop/expiry-sweep for that position.
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_broker_key_for_decision_is_underlying_for_equity() -> None:
+    decision = SimpleNamespace(symbol="NVDA", proposal={"side": "BUY"})
+    assert _broker_key_for_decision(decision) == "NVDA"
+
+
+def test_broker_key_for_decision_is_occ_symbol_for_option() -> None:
+    decision = SimpleNamespace(
+        symbol="NVDA",
+        proposal={"side": "BUY", "isOption": True, "occSymbol": "nvda261002c00225000"},
+    )
+    assert _broker_key_for_decision(decision) == "NVDA261002C00225000"
+
+
+async def test_external_close_detector_does_not_false_positive_on_option_still_held() -> None:
+    """The realistic shape: `symbol` is the underlying, `occSymbol` is the
+    contract (what runtime._to_proposal_dto / tools/trade.py's
+    _proposal_dto both actually persist) — unlike the OTHER
+    _detect_external_closes tests in this file, which set `symbol` directly
+    to the OCC string and so cannot distinguish the fixed code from the
+    buggy code (CLAUDE.md §4.2's "fixtures that make symbol and occ_symbol
+    indistinguishable" trap, recurring).
+
+    Before the fix: `held_qty` is keyed "AAPL260828C00250000" (the broker's
+    own symbol), but the lookup used `decision.symbol.upper()` ==
+    "AAPL" — never found, so a contract with 1 REAL, currently-held
+    contract at the broker was wrongly marked closed.
+    """
+    decision = SimpleNamespace(
+        id=uuid.uuid4(),
+        symbol="AAPL",
+        proposal={
+            "side": "BUY",
+            "isOption": True,
+            "occSymbol": "AAPL260828C00250000",
+            "multiplier": 100,
+        },
+        fill_qty=1,
+        fill_avg_price=Decimal("2.50"),
+    )
+
+    decisions_result = MagicMock()
+    decisions_result.scalars.return_value.all.return_value = [decision]
+    # Only ONE query is expected: recognizing the position as still held
+    # must `continue` before the in-flight check or the closing UPDATE ever
+    # run. If the OCC-vs-underlying bug regresses, the code proceeds past
+    # `continue` and tries a 2nd execute() this side_effect list can't
+    # satisfy, raising rather than silently passing.
+    session = MagicMock()
+    session.execute = AsyncMock(side_effect=[decisions_result])
+
+    position = SimpleNamespace(symbol="AAPL260828C00250000", qty=1)
+    broker = SimpleNamespace(list_positions=AsyncMock(return_value=[position]))
+
+    await order_sync_mod._detect_external_closes(
+        session, uuid.uuid4(), broker, user_id="00000000-0000-0000-0000-000000000001"
+    )
+
+    assert session.execute.await_count == 1
+    assert decision.fill_qty == 1  # untouched — never reached the UPDATE

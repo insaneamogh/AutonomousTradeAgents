@@ -104,6 +104,7 @@ __all__ = [
     "ToolGuard",
     "dispatch_tool_call",
     "persist_option_state",
+    "persist_placed_order",
     "stamp_position_closed",
 ]
 
@@ -1083,6 +1084,177 @@ async def persist_option_state(
     async with session_factory() as session:
         await session.execute(stmt, params)
         await session.commit()
+
+
+async def persist_placed_order(
+    session_factory: Any,
+    *,
+    user_id: str,
+    decision_id: str,
+    client_order_id: str,
+    underlying: str,
+    order: Any,
+    option_action: str,
+    multiplier: int = 100,
+) -> None:
+    """Writes the ``orders`` row for a trade THIS module placed directly.
+
+    ``open_option_trade`` and ``adjust_option_position``'s ``SCALE_IN``/
+    ``EXIT_NOW`` branches (``tools/trade.py``) are the only three call sites
+    in this codebase that reach ``packages/broker.place_order`` without
+    going through ``apps/api``'s ``executor.py``/``order_store.py``. None of
+    the three used to write a row here at all: the order was real at the
+    broker and ``agent_decisions`` got its audit row (via
+    ``decision_log.record`` / this module's own jsonb helpers), but
+    ``orders`` — the ONE table ``order_sync.py`` polls to converge
+    fill_qty/status back onto the decision — stayed empty forever.
+
+    That silently broke every downstream consumer keyed on ``fill_qty IS
+    NOT NULL``: ``position_manager.py``'s ratchet/stop-loss/time-stop loop
+    (``manage_positions_for_user``) AND its supposedly-unconditional DTE<=2
+    expiry sweep (``sweep_expiring_options_for_user``) both silently skip
+    any decision with a NULL ``fill_qty`` — so an option opened through this
+    path got NONE of docs/OPTIONS_PLAYBOOK.md §3's five exits, forever,
+    with nothing in the code raising or logging that fact. It also left
+    ``positions_service.list_open_positions`` showing the position as
+    perpetually "awaiting fill" (or, combined with the separate OCC-vs-
+    underlying matching bug in that module's ``_unmanaged()``, as broker-
+    side "unmanaged / no council decision behind it" instead).
+
+    Deliberately NOT the "pending row before the broker call, then update"
+    two-step ``apps/api/.../order_store.persist_order_submit`` uses for
+    exactly this reason (fail-closed: an order the DB doesn't know about is
+    an audit-chain break) — by the time this function can run,
+    ``broker.place_order`` has ALREADY returned synchronously with the
+    order's real state, so one INSERT with the real values is simpler and
+    equally accurate for the steady-state case. This IS a real, narrower
+    residual gap versus that stronger ordering: a crash between the broker
+    accepting the order and this INSERT landing would still leave a real
+    broker order with no local row. Closing that fully would mean reserving
+    the decision id and writing a pending order row BEFORE calling the
+    broker — a bigger restructuring of this module's id-assignment
+    convention (``PostgresDecisionLog.record()``'s "entry.id is
+    council_run_id") than this fix attempts; flagged here rather than
+    silently left implied-fixed.
+
+    No-ops (logs a warning) when ``session_factory`` is None — matches
+    every other persistence helper in this module (offline/dry-run mode has
+    no row to write to) — or when this user has no active paper Alpaca
+    ``broker_connections`` row, which ``orders.broker_connection_id`` (NOT
+    NULL) requires linking to.
+
+    Never raises. By the time this runs, ``broker.place_order`` has ALREADY
+    succeeded — a real order exists. A failure writing the AUDIT row must
+    not surface to ``dispatch_tool_call`` as ``tool_failed`` (which would
+    tell the model, falsely, that no trade happened, and tell
+    ``guard.after`` to skip the approval-mode stamp on a decision that is
+    now permanently indistinguishable from a genuinely-still-pending
+    proposal). Exactly the same "the broker action already happened; an
+    audit-write hiccup after the fact must not fail the request" contract
+    ``executor.py``'s own ``persist_order_result`` call site documents.
+    """
+    if session_factory is None:
+        logger.warning(
+            "persist_placed_order: no session factory (non-Postgres mode) — "
+            "orders row NOT written for client_order_id=%s (decision=%s)",
+            client_order_id, decision_id,
+        )
+        return
+    try:
+        uid = uuid.UUID(str(user_id))
+        did = uuid.UUID(str(decision_id))
+    except (ValueError, TypeError):
+        logger.warning(
+            "persist_placed_order: non-UUID user_id=%r or decision_id=%r — "
+            "skipping orders row for client_order_id=%s",
+            user_id, decision_id, client_order_id,
+        )
+        return
+
+    try:
+        from decimal import Decimal
+
+        from sqlalchemy import select
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        from engine.db.models import BrokerConnection, Order
+
+        async with session_factory() as session:
+            # This whole module is paper-only by construction
+            # (_is_paper_and_safe() is checked before ANY of the three call
+            # sites can reach the broker at all), so the connection filter
+            # mirrors that invariant rather than trusting an argument the
+            # caller could get wrong.
+            conn_stmt = (
+                select(BrokerConnection.id)
+                .where(
+                    BrokerConnection.user_id == uid,
+                    BrokerConnection.broker == "alpaca",
+                    BrokerConnection.is_paper.is_(True),
+                    BrokerConnection.status == "active",
+                )
+                .limit(1)
+            )
+            conn_id = (await session.execute(conn_stmt)).scalar_one_or_none()
+            if conn_id is None:
+                logger.warning(
+                    "persist_placed_order: no active paper alpaca broker_connections "
+                    "row for user=%s — orders row NOT written for client_order_id=%s "
+                    "(decision=%s)",
+                    user_id, client_order_id, decision_id,
+                )
+                return
+
+            status = (
+                order.status.value if hasattr(order.status, "value") else str(order.status)
+            )
+            avg_price = (
+                Decimal(str(order.avg_fill_price)) if order.avg_fill_price is not None else None
+            )
+            stmt = (
+                pg_insert(Order)
+                .values(
+                    id=uuid.uuid4(),
+                    user_id=uid,
+                    broker_connection_id=conn_id,
+                    agent_decision_id=did,
+                    client_order_id=client_order_id,
+                    broker_order_id=order.broker_order_id,
+                    symbol=underlying,
+                    # Order.side stays plain BUY/SELL (Phase A never holds a
+                    # short option leg) — the open/close nuance lives in
+                    # option_action, matching every other options order-writer
+                    # in this codebase (order_store.py, position_manager.py).
+                    side="BUY" if option_action == "buy_to_open" else "SELL",
+                    qty=int(order.qty),
+                    order_type="LIMIT",  # options are always LIMIT — see trade.py
+                    status=status,
+                    filled_qty=int(order.filled_qty or 0),
+                    avg_fill_price=avg_price,
+                    filled_at=order.filled_at,
+                    is_paper=True,
+                    is_option=True,
+                    multiplier=multiplier,
+                    option_action=option_action,
+                )
+                .on_conflict_do_nothing(constraint="uq_orders_client_order_id")
+            )
+            await session.execute(stmt)
+            await session.commit()
+    except Exception:  # noqa: BLE001 — order already placed; see docstring
+        logger.exception(
+            "persist_placed_order: failed to write orders row for "
+            "client_order_id=%s (decision=%s) — the broker order is real; "
+            "only the local audit row is missing",
+            client_order_id, decision_id,
+        )
+        return
+
+    logger.info(
+        "persist_placed_order: orders row written client_order_id=%s decision=%s "
+        "status=%s filled_qty=%s",
+        client_order_id, decision_id, status, order.filled_qty,
+    )
 
 
 async def stamp_position_closed(
