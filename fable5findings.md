@@ -385,6 +385,85 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-31 — `f80abc7f`/`51d1457f` feat(agents): guarded options trade tools — open_option_trade / adjust_option_position
+
+`ID:MODEL2OFF`. **This is the headline deliverable** — I2 of `docs/IMPL_
+OPTIONS_AGENTS.md`, two arguing options agents' actual trade tools (the
+Bull/Bear agent nodes themselves, `options/agents.py`/`prompts.py`/
+`resolution.py`, are next — not yet built). Two parallel subagents
+(I2-guard: `tools/guard.py`+`trade.py`; I2-readonly: `tools/readonly.py`+
+`registry.py`+6 read-only schemas) plus real reconciliation work, since
+neither workstream ever actually saw the other's code (see below).
+
+**The guard runs the full 12-step stack before `open_option_trade`
+reaches the broker** — market hours, symbol/strategy/direction/thesis
+validation, `select_contract`, `options_position_size`, then the SAME
+`engine.risk.evaluate()` every equity/options proposal already runs
+through. **The ratchet invariant is enforced with a real correctness
+catch**: both spec docs say `TIGHTEN_STOP` needs the value to "increase",
+which is backwards for `stop_loss_pct` given this repo's own convention
+(50.0→40.0 = "cut losers early", i.e. smaller = tighter) — implemented
+"strictly smaller than current" instead, per CLAUDE.md §4.2. Flagged
+prominently for whoever builds the Bull/Bear prompts next: they must
+tell the model this same direction or every `TIGHTEN_STOP` will be
+denied. Six read-only tools all reuse existing computation (funnel
+service, chain-fetch, ratchet math) rather than re-deriving it;
+`get_iv_rank` is honestly a process-local in-memory rank, never a
+fabricated vendor number, returning `null` below 5 samples.
+
+**Root cause of the reconciliation work, confirmed directly:** I wrote
+the frozen `schemas.py` contract earlier but never committed it — sat
+untracked the whole session. Neither subagent's isolated worktree had it
+(`git worktree add` only checks out committed content), so both
+independently reconstructed it byte-identical from the schema content
+quoted in their own dispatch prompts — no functional harm there, but it
+meant the two workstreams built against each other's INTENDED shape,
+never each other's actual code, and diverged in three real ways:
+
+1. `dispatch_tool_call` calls every handler as `(args, ctx, guard_payload)`
+   — I2-guard's own deliberate addition beyond the spec's literal 2-arg
+   pseudocode. I2-readonly's six handlers took only 2 args, built
+   against that literal spec. Fixed: `guard_payload: dict | None = None`
+   on all six — optional so the real 3-arg call and every existing 2-arg
+   test both keep working.
+2. `ToolGuard.before()` had no branch for the six read-only tool names —
+   would have denied all of them as `unknown_tool`, permanently, since
+   each workstream's own tests called handlers directly and never
+   exercised the real dispatch path together. Added a branch deriving
+   the allowed names from `schemas.py`'s own `READ_ONLY_TOOLS` (CLAUDE.md
+   §4.4 — not a second hand-written list).
+3. `registry.py` combined trivially (both docstrings literally
+   anticipated this: "merge is a non-event"). `test_options_agents.py`
+   needed real work — same filename, two non-overlapping files; combined
+   imports, and rewrote 4 tests that assumed the registry would only
+   ever hold 6 read-only entries. Added a new test proving the (2) fix
+   actually works through the real dispatch + real registry, not just
+   that the code compiles.
+
+**Verified, not assumed:** both subagents independently reproduced the
+true baseline (969 passed/11 skipped) in their own isolated runs. After
+combining + fixing all three gaps: 1171 passed/11 skipped on the full
+suite (+102 this commit, zero regressions across this session's entire
+run of merges today). ruff/mypy clean on the whole `options/` package
+and both test files. Reviewed the actual guard/trade/readonly code line
+by line (not just the reports) — the 12-step order, the ratchet
+invariant, the whole-column-overwrite prevention, the tenant-scoping
+defense-in-depth.
+
+**Left open, disclosed, not touched:** a per-position stop/TP override IS
+persisted by `adjust_option_position` but `position_manager.py`'s
+deterministic sweep still reads only the global `RiskCaps` values —
+wiring that is separate scope. `AUTO_TRADE_ENABLED`/`USE_OPTIONS_AGENT`
+ship off — this lands the guarded tools and their tests; it does not
+turn on autonomous trading, which stays the account owner's call.
+
+**The general lesson, a fourth data point on top of this session's other
+three:** "each subagent's own tests are green" is not proof two
+independently-built halves of one system actually work TOGETHER —
+particularly when (as here) a missing commit meant they never even ran
+against each other's real code during development, only against each
+one's own guess at the other's shape.
+
 ### 2026-08-31 — `701a7580` fix(biography): tolerate snake_case estimatedNotional on old vetoed rows
 
 `ID:MODEL2OFF`. Direct follow-up to `927dc415` (below), which explicitly
