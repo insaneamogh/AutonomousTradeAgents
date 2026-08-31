@@ -64,6 +64,47 @@ def test_close_requires_real_auth(client: TestClient) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────
+# POST /positions/unmanaged/{symbol}/close — closing a broker position
+# with NO agent decision behind it at all (see position_manager
+# .close_unmanaged_position_now). Deep mechanics (risk gate, side
+# derivation, unlinked persistence) are covered by the position_manager
+# tests; this pins the route surface — auth, and the mock-mode mapping —
+# exactly like the decision-keyed close endpoint above.
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_close_unmanaged_requires_real_auth(client: TestClient) -> None:
+    r = client.post("/api/v1/positions/unmanaged/NVDA/close")
+    assert r.status_code == 401
+
+
+def test_close_unmanaged_in_mock_mode_409(client: TestClient) -> None:
+    # No Postgres in this test process → close_unmanaged_position_now's own
+    # gate refuses before ever touching a broker. 409 (not 404): unlike a
+    # decision_id, "NVDA" isn't a resource identifier that either does or
+    # doesn't exist — it's "you don't currently hold this," the same
+    # category as "already closed."
+    r = client.post(
+        "/api/v1/positions/unmanaged/NVDA/close", headers=_bearer(client)
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"] == "no_open_position"
+
+
+def test_close_unmanaged_route_is_distinct_from_the_decision_route(
+    client: TestClient,
+) -> None:
+    """A symbol like "NVDA" is never a valid decision_id, but the two
+    routes must not be ambiguous regardless — pin that posting to the
+    decision-keyed route with a bare symbol still 404s as "not_found"
+    (no matching decision), not something confused with the unmanaged
+    route's 409."""
+    r = client.post("/api/v1/positions/NVDA/close", headers=_bearer(client))
+    assert r.status_code == 404
+    assert r.json()["detail"] == "not_found"
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Unmanaged broker positions
 #
 # A position held at the broker with no agent decision behind it used to

@@ -2,25 +2,32 @@
 
 Write discipline (matches the ``orders`` table docstring in engine.db.models):
 
-  1. ``persist_order_submit``  BEFORE the broker call. Inserts the row with
-     status='pending' keyed on our ``client_order_id``. A retry of the same
-     proposal hits ON CONFLICT DO NOTHING and returns the EXISTING row id, so
-     the (executor retry → broker dedupe) path stays idempotent end to end.
+  1. ``persist_order_submit`` / ``persist_linked_order_submit`` /
+     ``persist_unlinked_order_submit``  BEFORE the broker call. Inserts the
+     row with status='pending' keyed on our ``client_order_id``. A retry of
+     the same proposal hits ON CONFLICT DO NOTHING and returns the EXISTING
+     row id, so the (executor retry → broker dedupe) path stays idempotent
+     end to end. The three differ only in how ``agent_decision_id`` gets
+     resolved: from a proposal lookup, from an already-known decision (the
+     position manager's agent/manual closes), or always NULL (a close for
+     a position with no decision behind it at all — see
+     ``position_manager.close_unmanaged_position_now``). All three share
+     the actual INSERT via the private ``_insert_pending_order_row``.
   2. ``persist_order_result``  AFTER the broker acknowledges. Updates
      broker_order_id / status / fills, and pushes fill_qty + fill_avg_price
      up to the originating ``agent_decisions`` row.
 
 Failure semantics — decided with the audit-first product rule in mind:
 
-  - ``persist_order_submit`` raising must FAIL CLOSED in the caller: an
-    order the DB doesn't know about is an audit-chain break, so the
-    executor refuses to place it.
+  - Every ``persist_*_order_submit`` raising must FAIL CLOSED in the
+    caller: an order the DB doesn't know about is an audit-chain break, so
+    the executor refuses to place it.
   - ``persist_order_result`` raising is logged and swallowed by the caller:
     the order already exists at the broker; the order-poller reconciles the
     row on its next pass.
 
-Both functions return ``None`` / no-op when Postgres is inactive (MockStore
-dev mode) — there is no orders table to write.
+All three submit functions return ``None`` / no-op when Postgres is
+inactive (MockStore dev mode) — there is no orders table to write.
 
 The two reads the executor makes against ``agent_decisions`` at execution
 time — the council inputs the risk re-run needs, and the compare-and-swap
@@ -136,35 +143,26 @@ async def persist_order_submit(
     return row_id
 
 
-async def persist_linked_order_submit(
+async def _insert_pending_order_row(
     *,
-    user_id: str,
-    broker_connection_id: str,
-    decision_id: uuid.UUID,
+    user_id: uuid.UUID,
+    broker_connection_id: uuid.UUID,
+    decision_id: uuid.UUID | None,
     client_order_id: str,
     symbol: str,
     side: str,
     qty: int,
     is_paper: bool,
-    order_type: str = "MARKET",
-    is_option: bool = False,
-    multiplier: int = 1,
-    option_action: str | None = None,
-) -> uuid.UUID | None:
-    """Pending ``orders`` row for an order that already knows its decision
-    (the position manager's closes). Same idempotency + fail-closed
-    semantics as ``persist_order_submit``."""
-    if not env_flag("USE_POSTGRES"):
-        return None
-
-    uid = _to_uuid(user_id)
-    conn_id = _to_uuid(broker_connection_id)
-    if uid is None or conn_id is None:
-        raise ValueError(
-            f"persist_linked_order_submit: non-UUID user_id={user_id!r} "
-            f"or broker_connection_id={broker_connection_id!r}"
-        )
-
+    order_type: str,
+    is_option: bool,
+    multiplier: int,
+    option_action: str | None,
+) -> uuid.UUID:
+    """Shared INSERT body for ``persist_linked_order_submit`` and
+    ``persist_unlinked_order_submit`` — identical row shape, differing only
+    in whether ``agent_decision_id`` names a real decision or is NULL.
+    Callers have already resolved ``USE_POSTGRES`` and validated the uuids
+    before reaching here."""
     from sqlalchemy import select
     from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -177,8 +175,8 @@ async def persist_linked_order_submit(
             pg_insert(Order)
             .values(
                 id=uuid.uuid4(),
-                user_id=uid,
-                broker_connection_id=conn_id,
+                user_id=user_id,
+                broker_connection_id=broker_connection_id,
                 agent_decision_id=decision_id,
                 client_order_id=client_order_id,
                 symbol=symbol,
@@ -198,6 +196,108 @@ async def persist_linked_order_submit(
 
         row_id_stmt = select(Order.id).where(Order.client_order_id == client_order_id)
         return (await session.execute(row_id_stmt)).scalar_one()
+
+
+async def persist_linked_order_submit(
+    *,
+    user_id: str,
+    broker_connection_id: str,
+    decision_id: uuid.UUID,
+    client_order_id: str,
+    symbol: str,
+    side: str,
+    qty: int,
+    is_paper: bool,
+    order_type: str = "MARKET",
+    is_option: bool = False,
+    multiplier: int = 1,
+    option_action: str | None = None,
+) -> uuid.UUID | None:
+    """Pending ``orders`` row for an order that already knows its decision
+    (the position manager's agent/manual closes). Same idempotency +
+    fail-closed semantics as ``persist_order_submit``."""
+    if not env_flag("USE_POSTGRES"):
+        return None
+
+    uid = _to_uuid(user_id)
+    conn_id = _to_uuid(broker_connection_id)
+    if uid is None or conn_id is None:
+        raise ValueError(
+            f"persist_linked_order_submit: non-UUID user_id={user_id!r} "
+            f"or broker_connection_id={broker_connection_id!r}"
+        )
+
+    return await _insert_pending_order_row(
+        user_id=uid,
+        broker_connection_id=conn_id,
+        decision_id=decision_id,
+        client_order_id=client_order_id,
+        symbol=symbol,
+        side=side,
+        qty=qty,
+        is_paper=is_paper,
+        order_type=order_type,
+        is_option=is_option,
+        multiplier=multiplier,
+        option_action=option_action,
+    )
+
+
+async def persist_unlinked_order_submit(
+    *,
+    user_id: str,
+    broker_connection_id: str,
+    client_order_id: str,
+    symbol: str,
+    side: str,
+    qty: int,
+    is_paper: bool,
+    order_type: str = "MARKET",
+    is_option: bool = False,
+    multiplier: int = 1,
+    option_action: str | None = None,
+) -> uuid.UUID | None:
+    """Pending ``orders`` row for a close with NO agent decision behind it
+    AT ALL (``position_manager.close_unmanaged_position_now`` — a position
+    opened outside this app, or predating this deployment's decision
+    history). ``agent_decision_id`` is always NULL here.
+
+    Unlike ``persist_order_submit``'s "unlinked" branch — which logs a
+    WARNING because it expected to find a matching decision and didn't —
+    the absence here is by construction, not a data gap: an unmanaged
+    position has no decision row to link to, ever. This IS the audit
+    signal that distinguishes a user-initiated close of an unmanaged
+    position from every other close this module persists: an agent close
+    or a decision-linked manual close both carry `agent_decision_id` +
+    a `close_reason` stamped on that decision; this row carries neither,
+    by design. Same idempotency + fail-closed semantics as the other two
+    ``persist_*_order_submit`` functions.
+    """
+    if not env_flag("USE_POSTGRES"):
+        return None
+
+    uid = _to_uuid(user_id)
+    conn_id = _to_uuid(broker_connection_id)
+    if uid is None or conn_id is None:
+        raise ValueError(
+            f"persist_unlinked_order_submit: non-UUID user_id={user_id!r} "
+            f"or broker_connection_id={broker_connection_id!r}"
+        )
+
+    return await _insert_pending_order_row(
+        user_id=uid,
+        broker_connection_id=conn_id,
+        decision_id=None,
+        client_order_id=client_order_id,
+        symbol=symbol,
+        side=side,
+        qty=qty,
+        is_paper=is_paper,
+        order_type=order_type,
+        is_option=is_option,
+        multiplier=multiplier,
+        option_action=option_action,
+    )
 
 
 async def persist_order_result(

@@ -5,6 +5,16 @@
  * exit: the user can flatten any position themselves. It routes through
  * the server's deterministic risk gate (same path as the agent's own
  * closes), so the mutation can come back closed=false with a risk reason.
+ *
+ * Two close mutations, matching the two server routes:
+ *   - useClosePosition          POST /positions/{decisionId}/close
+ *     For any row with a decisionId — agent-managed or manual-mode-with-
+ *     a-decision. Also doubles as "Cancel order" for a not-yet-filled row.
+ *   - useCloseUnmanagedPosition POST /positions/unmanaged/{symbol}/close
+ *     For a row with NO decisionId at all (`managed: false`) — a position
+ *     opened outside this app, or predating this deployment's decision
+ *     history. There is no decision to close "through", so this is keyed
+ *     by the broker's own symbol instead.
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -29,6 +39,21 @@ export function useClosePosition() {
     mutationFn: (decisionId) =>
       request<ClosePositionResponse>(
         `/api/v1/positions/${encodeURIComponent(decisionId)}/close`,
+        { method: 'POST' },
+      ),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: POSITIONS_KEY });
+      qc.invalidateQueries({ queryKey: ['portfolio'] });
+    },
+  });
+}
+
+export function useCloseUnmanagedPosition() {
+  const qc = useQueryClient();
+  return useMutation<ClosePositionResponse, Error, string>({
+    mutationFn: (symbol) =>
+      request<ClosePositionResponse>(
+        `/api/v1/positions/unmanaged/${encodeURIComponent(symbol)}/close`,
         { method: 'POST' },
       ),
     onSettled: () => {

@@ -385,6 +385,154 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-09-01 — feat(positions): close an unmanaged position from the app (no more "close at broker")
+
+`ID:MODEL2OFF`. User complaint: real paper option positions on the Positions
+screen, labeled MANUAL/UNMANAGED, showed "close at broker" as dead text —
+"why do i need to go to broker api to actually close the trade? user should
+be able to close it." Task: build a real close action reachable from the
+UI, for both agent-managed and manual/unmanaged positions.
+
+**First finding — most of this already existed.** `close_position_now` +
+`cancel_pending_order_now` (`apps/api/app/services/orders/position_manager.py`)
+and `POST /api/v1/positions/{decision_id}/close` (`routers/positions.py`)
+were already fully built, tested, and wired to a working button on BOTH
+screens (`Positions.tsx` desktop, `app/positions.tsx` mobile) for any row
+with a `decisionId` — agent-managed AND manual-mode-with-a-decision. And
+"Cancel order" for a not-yet-filled row already works end to end through
+the SAME endpoint (`close_position_now` dispatches to
+`cancel_pending_order_now` when `fill_qty` is null) — confirmed via the
+existing `test_cancel_pending_order_cancels_at_the_broker_and_updates_status`
+/ `..._with_no_working_order_refuses` tests, both already green. Neither of
+these needed fixing.
+
+**The actual gap**, confirmed by reading `positions_service.py`'s own
+docstring: a genuinely **unmanaged** position (`managed=False`,
+`decision_id=None` — opened directly at the broker, or predating this
+deployment's decision history) has NO `AgentDecision` row at all, so
+`close_position_now`'s decision_id lookup structurally cannot reach it.
+`_unmanaged()`'s own comment says it plainly: "the client offers no close
+button for them." Both screens rendered a dead `<span>`/`<Text>` instead —
+exactly the user's complaint, and exactly the MANUAL+UNMANAGED combination
+they described (an unmanaged row always shows `exitMode='manual'`, so it
+carries both pills).
+
+**What was built:**
+- `position_manager.close_unmanaged_position_now` (gated public wrapper,
+  mirrors `close_position_now`'s Postgres-gate-then-delegate shape) +
+  `_close_unmanaged_position` (ungated worker, mirrors `_close_position`
+  but simpler — no decision/proposal fallback branch is possible since
+  `held` must already exist at the broker to proceed at all). Keyed by
+  `symbol` (the broker's own position key — OCC for an option, ticker for
+  equity) instead of a decision_id. Same risk gate
+  (`engine.risk.evaluate`), same bracket-cancel, same broker abstraction as
+  every other close in this file.
+- Ownership is enforced STRUCTURALLY, not by an owner-field check: the
+  close only ever opens the CALLING user's own broker connection
+  (`with_broker_client(user_id, ...)`) and only matches a position inside
+  THAT connection's own `list_positions()` — there is no shared resource
+  keyed by a guessable id for a second user to reach.
+- `order_store.persist_unlinked_order_submit` (+ shared
+  `_insert_pending_order_row` helper, refactored out of
+  `persist_linked_order_submit` with no behavior change to that function).
+  `agent_decision_id` is always NULL — structurally, that absence IS the
+  audit signal distinguishing a user-initiated unmanaged close from every
+  other close this module persists (an agent close or a decision-linked
+  manual close both stamp a `close_reason` on the owning decision; this
+  one has no decision to stamp, so "unlinked order + logged
+  reason=user_manual_unmanaged" is the record instead).
+- `POST /api/v1/positions/unmanaged/{symbol}/close` (`require_real_auth`,
+  same as the decision route) — registered ahead of `/{decision_id}/close`
+  in the file; the two never actually compete (different path-segment
+  counts) but the more specific route reads clearer listed first.
+- `ClosePositionResponse.decision_id` widened to `str | None` + new
+  `symbol: str | None` field (one response shape for both close routes) —
+  additive, backward compatible. Mirrored in
+  `packages/shared-types/src/index.ts`.
+- UI: both screens now render a real "Close"/"Close now" button for an
+  unmanaged row instead of dead text, via a new
+  `useCloseUnmanagedPosition()` hook (`apps/mobile/src/hooks/usePositions.ts`).
+  **Also added a confirmation gate that was missing on desktop**: the
+  existing decision-based Close button on `Positions.tsx` fired
+  `close.mutate()` directly on click with NO confirmation at all (the
+  mobile screen already had one via `Alert.alert`) — added a
+  `window.confirm()` gate ahead of BOTH the existing and the new mutation
+  on desktop, matching the mobile screen's existing behavior.
+
+**Verified live, not just tests green:**
+- Ran the real API against Postgres-off (MockStore) mode:
+  `OPTIONS .../positions/unmanaged/AAPL/close` → `allow: POST` (route
+  registered correctly); `POST` → `401` unauthenticated, `409
+  {"detail":"no_open_position"}` authenticated — matches the router's
+  `_CLOSE_ERROR_STATUS` mapping exactly.
+- Ran the ACTUAL Expo dev server (`expo start --web`, not the prebuilt
+  static export `apps/mobile/dist` that `apps/api`'s "Web UI enabled" path
+  serves — that export predates this change and does not contain it),
+  logged in via the dev-token flow, patched `window.fetch` in the live
+  page to inject two unmanaged rows (one equity, one losing option
+  contract — `AAPL260828C00250000`) alongside one normal agent-managed
+  row. Both desktop (`Positions.tsx`) and mobile (`app/positions.tsx`)
+  screens rendered a real, correctly-labeled "Close"/"Close now" button for
+  both unmanaged rows (previously dead text) and left the agent-managed
+  row's existing button untouched. On desktop: confirmed `window.confirm()`
+  genuinely gates the action (clicking Close with the dialog un-patched
+  produced ZERO network requests — auto-dismiss = cancel, correctly
+  blocked); with `window.confirm` monkey-patched to auto-accept, clicking
+  Close fired `POST /api/v1/positions/unmanaged/GME/close`, got back real
+  `409 {"detail":"no_open_position"}` from the real backend (correct for
+  this MockStore environment — no live broker/position exists), and the
+  UI's error banner correctly rendered "Close refused / This position was
+  already closed — nothing left to close." End-to-end: click → confirm
+  gate → real HTTP call → real router → real service → real structured
+  error → real UI rendering, all confirmed live, not mocked.
+- **Left unverified, and why**: could not click through the mobile
+  screen's `Alert.alert`-based confirm gate in a browser — verified by
+  reading `node_modules/react-native-web/src/exports/Alert/index.js` that
+  react-native-web's `Alert.alert` is a hard no-op (`static alert() {}`,
+  does nothing, no callback ever fires) under `expo start --web`. This is
+  pre-existing (the ORIGINAL decision-based close button already used
+  `Alert.alert` before this change) and does not affect production: the
+  prebuilt static web export served by `apps/api` is built from the
+  SEPARATE desktop tree (`src/desktop/`), so `app/positions.tsx` is only
+  ever reached on native iOS/Android in real usage, where `Alert.alert` is
+  the real native API and works normally. Confirmed the button itself
+  renders correctly and confirmed the mutation wiring by code review +
+  TypeScript + the fact that it's the identical call shape as the
+  already-shipped, already-working decision-based path — but did not watch
+  the mobile confirm→mutate transition fire live the way I did on desktop.
+
+**Tests**: 14 new (11 in `test_position_manager.py` covering
+`_close_unmanaged_position` long/short/option/no-position/audit-linkage +
+`_has_in_flight_unmanaged_close` + the gated wrapper's mock-mode/bad-uuid/
+in-flight/happy-path branches; 3 in `test_positions_route.py` covering
+auth + the mock-mode 409 + the two routes' non-collision). Per CLAUDE.md
+§4.1: temporarily hardcoded `is_short = False` in the new equity close
+branch (the exact short-covering bug class this codebase has shipped
+before) and confirmed `test_close_unmanaged_position_covers_a_short_with_a_buy`
+failed — with the SAME `forbid_short_phase_0` veto message the historical
+bug produced — then restored it and confirmed green again.
+
+Full suite: `1264 passed, 11 skipped` (up from the prior baseline — net
++14 from this change, matching the count above; no other deltas). Ruff on
+the touched files: 3 `B008` (`Depends()` in a default arg) — confirmed
+pre-existing/endemic by running ruff over the whole `routers/` directory
+(72 of the same warning repo-wide); not introduced by this change.
+`tsc --noEmit -p apps/mobile/tsconfig.json` clean. `jest --silent`:
+`73 passed` (unchanged — no new frontend unit tests added; the screens
+themselves have no pre-existing render-test precedent to extend, only the
+shared `ClosePositionButton` does, and it wasn't touched).
+
+**Left open** (out of scope for this task, noted for whoever picks these
+up): (1) `OpenPositionDto.is_option`/`contractType`/`strike`/`occSymbol`
+are NOT populated by `positions_service.py` for a REAL broker position
+today (confirmed by re-reading `_from_decision`/`_unmanaged` — neither sets
+them) — the schema comment says this is "a separate track's scope",
+matching the parallel investigation into mislabeled unmanaged positions
+mentioned in this task's brief; I did not touch it. (2) The desktop
+Close/Cancel button still bubbles its click up to the row's own
+`onClick` (opens the trade-biography panel) for a decision-backed row —
+pre-existing (present before this change too), not fixed here.
+
 ### 2026-08-31 — docs: PLAN_AUTO_APPROVE.md's "not built" header was stale — the feature shipped 08-30
 
 `ID:MODEL2OFF`. User pointed at `docs/PLAN_AUTO_APPROVE.md` and asked to

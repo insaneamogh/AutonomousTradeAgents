@@ -275,7 +275,13 @@ export interface OpenPositionDto {
 }
 
 export interface ClosePositionResponse {
-  decisionId: string;
+  /** null for the symbol-keyed unmanaged-close response (see `symbol`
+   * below) — there is no decision row to name. */
+  decisionId: string | null;
+  /** Populated instead of decisionId when this came back from
+   * POST /positions/unmanaged/{symbol}/close — a close with no agent
+   * decision behind it at all. Exactly one of decisionId/symbol is set. */
+  symbol: string | null;
   closed: boolean;
   /** null on success; otherwise not_found / already_closed / close_in_flight / risk_vetoed / … */
   error: string | null;

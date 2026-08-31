@@ -3,7 +3,10 @@
 One ``OpenPositionDto`` per open agent-managed decision (approved + not
 closed) OR per unmanaged broker position. Carries the exit plan so the
 mobile screen can show "who closes this and when" and offer a close-now
-button.
+button — including an unmanaged row (``decision_id=None``), which closes
+through the separate ``POST /positions/unmanaged/{symbol}/close`` route
+instead of ``POST /positions/{decision_id}/close``. Both return this same
+``ClosePositionResponse`` shape.
 
 Includes rows still awaiting a fill (``status="pending_fill"``): an
 approved proposal used to disappear from ``/approvals/pending`` the
@@ -73,7 +76,13 @@ class OpenPositionDto(CamelCaseModel):
 
 
 class ClosePositionResponse(CamelCaseModel):
-    decision_id: str
+    # None for the symbol-keyed unmanaged-close response (see `symbol`
+    # below) — there is no decision row to name.
+    decision_id: str | None = None
+    # Populated instead of decision_id when this response came from
+    # POST /positions/unmanaged/{symbol}/close — a close with no agent
+    # decision behind it at all. Exactly one of decision_id/symbol is set.
+    symbol: str | None = None
     closed: bool
     # None on success; otherwise not_found / not_owner / already_closed /
     # no_open_position / close_in_flight / risk_vetoed.

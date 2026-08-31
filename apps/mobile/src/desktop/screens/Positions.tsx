@@ -1,8 +1,9 @@
 /** Positions / portfolio — open agent-managed holdings + manual close. */
 
 import { useAccount } from '@/hooks/useAccount';
-import { useClosePosition, useOpenPositions } from '@/hooks/usePositions';
+import { useCloseUnmanagedPosition, useClosePosition, useOpenPositions } from '@/hooks/usePositions';
 import { DEMO_DISABLED_REASON, useIsDemoSession } from '@/lib/demoSession';
+import type { OpenPositionDto } from '@app/shared-types';
 
 import { ago, signedPct, signedUsd, tone, usd } from '../format';
 import {
@@ -27,8 +28,27 @@ export function PositionsScreen() {
   const positions = useOpenPositions();
   const account = useAccount();
   const close = useClosePosition();
+  const closeUnmanaged = useCloseUnmanagedPosition();
   const [selected, setSelected] = useState<string | null>(null);
   const isDemo = useIsDemoSession();
+
+  // A native confirm() before anything irreversible fires — same gate the
+  // mobile app already applies via Alert.alert, just the web-native form
+  // of it (no bespoke modal system exists in this desktop tree yet).
+  const confirmAndClose = (p: OpenPositionDto) => {
+    const pending = p.status === 'pending_fill';
+    const message = pending
+      ? `Cancel the working ${p.symbol} order? This cancels it at the broker before it fills — nothing was ever bought or sold.`
+      : `Close ${p.qty} ${p.symbol} now? This places a market sell through the same risk checks the agent uses. Resting stop/target orders are cancelled first.`;
+    if (!window.confirm(message)) return;
+    close.mutate(p.decisionId!);
+  };
+
+  const confirmAndCloseUnmanaged = (p: OpenPositionDto) => {
+    const message = `Close ${p.qty} ${p.symbol} now? This position has no council decision behind it — closing places a market order directly, through the same risk checks as any other close.`;
+    if (!window.confirm(message)) return;
+    closeUnmanaged.mutate(p.symbol);
+  };
 
   if (positions.isError) {
     return (
@@ -188,7 +208,7 @@ export function PositionsScreen() {
                           <Button
                             size="sm"
                             kind={p.status === 'pending_fill' ? 'secondary' : 'primary'}
-                            onClick={() => close.mutate(p.decisionId!)}
+                            onClick={() => confirmAndClose(p)}
                             disabled={close.isPending || isDemo}
                             title={isDemo ? DEMO_DISABLED_REASON : undefined}
                             ariaLabel={
@@ -200,7 +220,16 @@ export function PositionsScreen() {
                             {p.status === 'pending_fill' ? 'Cancel order' : 'Close'}
                           </Button>
                         ) : (
-                          <span className="pg-caption pg-dim">close at broker</span>
+                          <Button
+                            size="sm"
+                            kind="primary"
+                            onClick={() => confirmAndCloseUnmanaged(p)}
+                            disabled={closeUnmanaged.isPending || isDemo}
+                            title={isDemo ? DEMO_DISABLED_REASON : undefined}
+                            ariaLabel={`Close the ${p.symbol} position now — no council decision behind it`}
+                          >
+                            Close
+                          </Button>
                         )}
                       </td>
                     </tr>
@@ -209,18 +238,20 @@ export function PositionsScreen() {
               </table>
               </div>
             )}
-            {close.isError ? (
+            {close.isError || closeUnmanaged.isError ? (
               <div className="pg-inset" style={{ borderColor: 'var(--pg-bear)' }}>
                 <Label>Close refused</Label>
                 <div className="pg-body-sm pg-bear" style={{ marginTop: 6 }}>
-                  {closeErrorMessage(close.error)}
+                  {closeErrorMessage(close.isError ? close.error : closeUnmanaged.error)}
                 </div>
               </div>
-            ) : close.data && !close.data.closed ? (
+            ) : (close.data && !close.data.closed) || (closeUnmanaged.data && !closeUnmanaged.data.closed) ? (
               <div className="pg-inset" style={{ borderColor: 'var(--pg-bear)' }}>
                 <Label>Close refused</Label>
                 <div className="pg-body-sm pg-bear" style={{ marginTop: 6 }}>
-                  {close.data.detail ?? close.data.error}
+                  {close.data && !close.data.closed
+                    ? (close.data.detail ?? close.data.error)
+                    : (closeUnmanaged.data!.detail ?? closeUnmanaged.data!.error)}
                 </div>
               </div>
             ) : null}

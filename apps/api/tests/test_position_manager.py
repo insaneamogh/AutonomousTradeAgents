@@ -25,11 +25,14 @@ import pytest
 from app.services.orders import position_manager as position_manager_mod
 from app.services.orders.position_manager import (
     _close_position,
+    _close_unmanaged_position,
     _exit_reason,
     _has_in_flight_close,
+    _has_in_flight_unmanaged_close,
     _option_exit_peak_update_stmt,
     _persist_option_exit_peak,
     _ratchet_outcome_for,
+    close_unmanaged_position_now,
     manage_positions_for_user,
 )
 from broker.types import Side
@@ -1142,3 +1145,342 @@ async def test_cancel_pending_order_with_no_working_order_refuses(
 
     assert result == {"closed": False, "error": "no_pending_order"}
     assert broker.cancelled_ids == []
+
+
+# ─────────────────────────────────────────────────────────────────────
+# close_unmanaged_position_now / _close_unmanaged_position — closing a
+# broker position with NO agent decision behind it at all.
+#
+# Same close mechanics as _close_position above (risk gate, bracket
+# cancel, correct side derivation), keyed by symbol instead of a decision
+# row. The worker (_close_unmanaged_position) mirrors _close_position's
+# tests almost exactly; the public wrapper additionally owns the
+# Postgres gate, uuid validation, and the in-flight re-entrance guard —
+# pinned separately since _close_position's own wrapper (close_position_now)
+# isn't unit-tested at all in this file (it needs a real decision row).
+# ─────────────────────────────────────────────────────────────────────
+
+
+async def test_close_unmanaged_position_closes_a_long_with_a_sell(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    broker = _FakeCloseBroker(
+        positions=[
+            _FakePosition(symbol="NVDA", qty=10, avg_entry_price=100.0, market_value=1000.0)
+        ]
+    )
+    conn = SimpleNamespace(id="conn-1", is_paper=True)
+
+    @asynccontextmanager
+    async def fake_broker_cm(_user_id, *, broker_=None, store=None, **_kw):
+        yield broker, conn
+
+    monkeypatch.setattr(position_manager_mod, "with_broker_client", fake_broker_cm)
+
+    result = await _close_unmanaged_position(
+        user_id="00000000-0000-0000-0000-000000000001", symbol="NVDA"
+    )
+
+    assert result == {"closed": True, "error": None}
+    assert len(broker.placed) == 1
+    placed = broker.placed[0]
+    assert placed.side == Side.SELL
+    assert placed.qty == 10
+
+
+async def test_close_unmanaged_position_covers_a_short_with_a_buy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A short (qty=-10) closes with a BUY-to-cover, not another SELL —
+    same short-covering fix _close_position already needed, re-derived
+    here from the HELD broker position since there is no decision row to
+    (wrongly) assume a side from."""
+    broker = _FakeCloseBroker(
+        positions=[
+            _FakePosition(symbol="TSLA", qty=-10, avg_entry_price=320.0, market_value=-3000.0)
+        ]
+    )
+    conn = SimpleNamespace(id="conn-1", is_paper=True)
+
+    @asynccontextmanager
+    async def fake_broker_cm(_user_id, *, broker_=None, store=None, **_kw):
+        yield broker, conn
+
+    monkeypatch.setattr(position_manager_mod, "with_broker_client", fake_broker_cm)
+
+    result = await _close_unmanaged_position(
+        user_id="00000000-0000-0000-0000-000000000001", symbol="TSLA"
+    )
+
+    assert result == {"closed": True, "error": None}
+    placed = broker.placed[0]
+    assert placed.side == Side.BUY
+    assert placed.qty == 10
+
+
+async def test_close_unmanaged_position_closes_an_option_with_sell_to_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Option branch: always SELL_TO_CLOSE + LIMIT, priced off the broker's
+    own fresh mark divided by the multiplier — is_option/multiplier read
+    straight off the HELD broker position (there is no stored proposal to
+    read them from at all, unlike the decision-keyed close's fallback)."""
+    broker = _FakeCloseBroker(
+        positions=[
+            _FakePosition(
+                symbol="AAPL260828C00250000",
+                qty=1,
+                avg_entry_price=2.50,
+                market_value=300.0,  # 1 contract * $3.00 mark * 100
+                multiplier=100,
+                is_option=True,
+            )
+        ]
+    )
+    conn = SimpleNamespace(id="conn-1", is_paper=True)
+
+    @asynccontextmanager
+    async def fake_broker_cm(_user_id, *, broker_=None, store=None, **_kw):
+        yield broker, conn
+
+    monkeypatch.setattr(position_manager_mod, "with_broker_client", fake_broker_cm)
+
+    result = await _close_unmanaged_position(
+        user_id="00000000-0000-0000-0000-000000000001", symbol="AAPL260828C00250000"
+    )
+
+    assert result == {"closed": True, "error": None}
+    placed = broker.placed[0]
+    assert placed.side == Side.SELL_TO_CLOSE
+    assert placed.qty == 1
+
+    request = broker.requests[0]
+    assert request.order_type.value == "LIMIT"
+    assert request.limit_price == 3.00
+    assert request.symbol == "AAPL260828C00250000"
+    assert broker.canceled == ["AAPL260828C00250000"]
+
+
+async def test_close_unmanaged_position_no_open_position_when_not_held_at_broker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The whole point of this path: a symbol the caller does NOT actually
+    hold (typo, already closed, or someone else's ticker) simply isn't in
+    THEIR OWN broker connection's position list — this is also how
+    cross-user ownership is enforced structurally (see the docstring)."""
+    broker = _FakeCloseBroker(positions=[])
+    conn = SimpleNamespace(id="conn-1", is_paper=True)
+
+    @asynccontextmanager
+    async def fake_broker_cm(_user_id, *, broker_=None, store=None, **_kw):
+        yield broker, conn
+
+    monkeypatch.setattr(position_manager_mod, "with_broker_client", fake_broker_cm)
+
+    result = await _close_unmanaged_position(
+        user_id="00000000-0000-0000-0000-000000000001", symbol="GME"
+    )
+
+    assert result == {"closed": False, "error": "no_open_position"}
+    assert broker.placed == []
+
+
+async def test_close_unmanaged_position_persists_an_unlinked_order_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The audit-trail assertion: the write goes through
+    persist_unlinked_order_submit (agent_decision_id always NULL), never
+    persist_linked_order_submit — structurally, there is no decision_id
+    parameter available to pass one even by accident."""
+    broker = _FakeCloseBroker(
+        positions=[
+            _FakePosition(symbol="NVDA", qty=5, avg_entry_price=100.0, market_value=500.0)
+        ]
+    )
+    conn = SimpleNamespace(id="conn-1", is_paper=True)
+
+    @asynccontextmanager
+    async def fake_broker_cm(_user_id, *, broker_=None, store=None, **_kw):
+        yield broker, conn
+
+    monkeypatch.setattr(position_manager_mod, "with_broker_client", fake_broker_cm)
+
+    persist_unlinked = AsyncMock(return_value=None)
+    persist_linked = AsyncMock(return_value=None)
+    monkeypatch.setattr(position_manager_mod, "persist_unlinked_order_submit", persist_unlinked)
+    monkeypatch.setattr(position_manager_mod, "persist_linked_order_submit", persist_linked)
+
+    result = await _close_unmanaged_position(
+        user_id="00000000-0000-0000-0000-000000000001", symbol="NVDA"
+    )
+
+    assert result == {"closed": True, "error": None}
+    persist_unlinked.assert_awaited_once()
+    persist_linked.assert_not_awaited()
+    call_kwargs = persist_unlinked.await_args.kwargs
+    assert "decision_id" not in call_kwargs
+    assert call_kwargs["symbol"] == "NVDA"
+    assert call_kwargs["side"] == "SELL"
+    assert call_kwargs["qty"] == 5
+
+
+async def test_has_in_flight_unmanaged_close_detects_pending_order() -> None:
+    assert (
+        await _has_in_flight_unmanaged_close(
+            _session(newer_sell_exists=True), user_id=uuid.uuid4(), symbol="NVDA"
+        )
+        is True
+    )
+
+
+async def test_has_in_flight_unmanaged_close_clear_when_none_pending() -> None:
+    assert (
+        await _has_in_flight_unmanaged_close(
+            _session(newer_sell_exists=False), user_id=uuid.uuid4(), symbol="NVDA"
+        )
+        is False
+    )
+
+
+# ── close_unmanaged_position_now — the gated public wrapper ───────────
+
+
+async def test_close_unmanaged_position_now_is_a_noop_in_mock_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """USE_POSTGRES unset (the default dev/test mode) — there is no
+    unmanaged-position ledger to read at all, so this must refuse WITHOUT
+    ever touching the broker. Proven by making with_broker_client raise if
+    it's ever entered."""
+    monkeypatch.delenv("USE_POSTGRES", raising=False)
+
+    @asynccontextmanager
+    async def exploding_broker_cm(*_a, **_kw):
+        raise AssertionError("must not touch the broker in mock mode")
+        yield  # pragma: no cover - unreachable, satisfies the generator shape
+
+    monkeypatch.setattr(position_manager_mod, "with_broker_client", exploding_broker_cm)
+
+    result = await close_unmanaged_position_now(
+        user_id="00000000-0000-0000-0000-000000000001",
+        symbol="NVDA",
+        session_factory=lambda: _FakeSessionCM(),
+    )
+
+    assert result == {"closed": False, "error": "no_open_position"}
+
+
+async def test_close_unmanaged_position_now_rejects_a_non_uuid_user_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("USE_POSTGRES", "1")
+
+    @asynccontextmanager
+    async def exploding_broker_cm(*_a, **_kw):
+        raise AssertionError("must not touch the broker for an invalid user_id")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(position_manager_mod, "with_broker_client", exploding_broker_cm)
+
+    result = await close_unmanaged_position_now(
+        user_id="not-a-uuid",
+        symbol="NVDA",
+        session_factory=lambda: _FakeSessionCM(),
+    )
+
+    assert result == {"closed": False, "error": "no_open_position"}
+
+
+async def test_close_unmanaged_position_now_blocks_when_already_in_flight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("USE_POSTGRES", "1")
+
+    @asynccontextmanager
+    async def exploding_broker_cm(*_a, **_kw):
+        raise AssertionError("must not touch the broker while a close is in flight")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(position_manager_mod, "with_broker_client", exploding_broker_cm)
+
+    result = await close_unmanaged_position_now(
+        user_id="00000000-0000-0000-0000-000000000001",
+        symbol="NVDA",
+        session_factory=_in_flight_session_factory(in_flight=True),
+    )
+
+    assert result == {"closed": False, "error": "close_in_flight"}
+
+
+async def test_close_unmanaged_position_now_happy_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end through the public wrapper: gate passes, no in-flight
+    close, delegates to the worker, which talks to the (fake) broker.
+
+    USE_POSTGRES=1 makes `_build_risk_context` -> `_load_db_state_or_fail`
+    try to reach a REAL Postgres connection too (same env var, checked a
+    second time deeper in the call chain) — harmless in production where
+    USE_POSTGRES=1 implies a real DB is actually configured, but there is
+    none in this test process, so that real halt/PDT read is faked here
+    the same way the broker is."""
+    monkeypatch.setenv("USE_POSTGRES", "1")
+
+    from app.services.orders import executor as executor_mod
+    from engine.risk import DbRiskState
+
+    monkeypatch.setattr(
+        executor_mod, "_load_db_state_or_fail", AsyncMock(return_value=DbRiskState())
+    )
+
+    broker = _FakeCloseBroker(
+        positions=[
+            _FakePosition(symbol="NVDA", qty=3, avg_entry_price=100.0, market_value=300.0)
+        ]
+    )
+    conn = SimpleNamespace(id="conn-1", is_paper=True)
+
+    @asynccontextmanager
+    async def fake_broker_cm(_user_id, *, broker_=None, store=None, **_kw):
+        yield broker, conn
+
+    monkeypatch.setattr(position_manager_mod, "with_broker_client", fake_broker_cm)
+    monkeypatch.setattr(
+        position_manager_mod, "persist_unlinked_order_submit", AsyncMock(return_value=None)
+    )
+
+    result = await close_unmanaged_position_now(
+        user_id="00000000-0000-0000-0000-000000000001",
+        # Lowercase + whitespace on the way in — must still match the
+        # broker's upper-cased symbol.
+        symbol=" nvda ",
+        session_factory=_in_flight_session_factory(in_flight=False),
+    )
+
+    assert result == {"closed": True, "error": None}
+    assert broker.placed[0].side == Side.SELL
+    assert broker.placed[0].qty == 3
+
+
+def _in_flight_session_factory(*, in_flight: bool):
+    """A ``session_factory`` whose async-CM session reports (or doesn't)
+    an in-flight order via ``scalar_one_or_none()`` — what
+    ``_has_in_flight_unmanaged_close`` reads. Plain ``_FakeSessionCM``
+    can't be reused as-is here: its ``execute`` is an UNCONFIGURED
+    ``AsyncMock``, whose auto-generated return value is a truthy
+    ``MagicMock`` — i.e. it would silently report "in flight" for every
+    caller, happy-path tests included, unless overridden like this.
+    """
+    result = MagicMock()
+    result.scalar_one_or_none = MagicMock(return_value=uuid.uuid4() if in_flight else None)
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=result)
+
+    class _CM:
+        async def __aenter__(self) -> MagicMock:
+            return session
+
+        async def __aexit__(self, *exc: object) -> bool:
+            return False
+
+    return lambda: _CM()
