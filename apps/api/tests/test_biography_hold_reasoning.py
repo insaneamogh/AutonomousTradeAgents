@@ -8,7 +8,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from app.services.council.biography_service import _proposed_or_held_summary
+from app.services.council.biography_service import (
+    _proposal_estimated_notional,
+    _proposed_or_held_summary,
+)
 
 
 def _row(**overrides: object) -> SimpleNamespace:
@@ -69,3 +72,25 @@ def test_a_stale_raw_state_envelope_is_treated_as_no_proposal() -> None:
     title, detail = _proposed_or_held_summary(row, envelope, side=None)
     assert "no strategy fit" in title
     assert detail == "no registered strategy cleared the floor"
+
+
+def test_estimated_notional_reads_the_camel_case_key() -> None:
+    """The normal case, post the ``927dc415`` write-side fix: a fresh
+    proposal (approved or vetoed) is always the camelCase DTO shape."""
+    assert _proposal_estimated_notional({"estimatedNotional": 4922.08}) == 4922.08
+
+
+def test_estimated_notional_falls_back_to_the_snake_case_key() -> None:
+    """The 6 rows vetoed before the ``927dc415`` fix landed still hold the
+    Drafter's raw snake_case dict (``estimated_notional``), not the
+    camelCase DTO shape (``estimatedNotional``) — this must not regress to
+    showing a blank notional on their biography timeline forever."""
+    assert _proposal_estimated_notional({"estimated_notional": 4922.08}) == 4922.08
+
+
+def test_estimated_notional_prefers_camel_case_when_both_present() -> None:
+    assert _proposal_estimated_notional({"estimatedNotional": 1.0, "estimated_notional": 2.0}) == 1.0
+
+
+def test_estimated_notional_is_none_when_neither_key_present() -> None:
+    assert _proposal_estimated_notional({}) is None

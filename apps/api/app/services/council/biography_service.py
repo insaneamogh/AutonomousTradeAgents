@@ -60,6 +60,20 @@ def _analyst_summaries(row: AgentDecision) -> list[dict[str, Any]]:
     return out
 
 
+def _proposal_estimated_notional(proposal: dict[str, Any]) -> Any:
+    """Tolerant of either key casing.
+
+    Before the fix in ``927dc415``, a VETOED decision's persisted
+    ``proposal`` held the Drafter's raw snake_case dict (``estimated_notional``)
+    rather than the camelCase DTO shape (``estimatedNotional``) every reader
+    expected — this file's own read was one of the readers that broke.
+    New rows are fixed at the write side going forward; the 6 already-
+    written rows from before the fix still need this fallback, same
+    pattern as ``ghost_eval.py``/``ghost_service.py``.
+    """
+    return proposal.get("estimatedNotional", proposal.get("estimated_notional"))
+
+
 def _proposed_or_held_summary(
     row: AgentDecision, proposal: dict[str, Any], side: str | None
 ) -> tuple[str, str]:
@@ -212,7 +226,7 @@ async def build_biography(decision_id: str, *, user_id: str) -> Biography | None
                 "selectorRationale": row.selector_rationale or None,
                 "analysts": _analyst_summaries(row),
                 "qty": proposal.get("qty"),
-                "estimatedNotional": proposal.get("estimatedNotional"),
+                "estimatedNotional": _proposal_estimated_notional(proposal),
             },
         )
     )
