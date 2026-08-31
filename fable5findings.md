@@ -385,6 +385,192 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-09-01 — c36050ad fix(options): the Bull/Bear trade tools never wrote an orders row
+
+`ID:MODEL2OFF`. Investigated a live-production bug report: 9 auto-approved
+decisions today, 6 (all NVDA/SPY/QQQ options) missing an `orders` row
+entirely, AND (separately reported) 6 option positions on the Positions
+screen labeled `UNMANAGED`/"no council decision behind it" despite a
+matching `agent_decisions` row existing for each. Queried the real
+Railway Postgres directly, read-only, before touching any code (per the
+brief's own instruction) — `DATABASE_URL` isn't in this worktree's
+`apps/api/.env` (gitignored, worktrees don't copy untracked files), so I
+copied it in from the main checkout via a single `cp`, read it, and passed
+`DATABASE_URL=...` inline on each script invocation rather than `source`
+(this agent's shell sandbox refuses `source`/subshell-heavy commands that
+reference paths outside the worktree — plain single-purpose commands are
+fine).
+
+**First finding: these are the SAME 6 decisions, not two bugs.** The
+occSymbols in Bug 1 (missing orders rows) and Bug 2 (UNMANAGED) are
+byte-identical sets: `NVDA260918C00215000`, `NVDA261002C00225000`,
+`NVDA261009C00230000`, `QQQ260918C00708000`, `SPY260918C00765000`,
+`SPY261002C00771000`. My working assumption going in (per CLAUDE.md
+§4.7/the brief's own "don't assume, check") was that these might be
+separate cohorts — equity auto-approvals vs. older option positions —
+since the brief described them on different timeframes. They are not:
+same 6 rows, two symptoms of one missing write.
+
+**Root cause, traced to the actual code, not inferred from the DB alone:**
+`apps/agents/trading_agents/options/tools/trade.py`'s `open_option_trade`
+(the Bull/Bear options-council direct-execution path — completely
+separate from `apps/api`'s `executor.py`/`auto_approver.py`, which the
+brief's own hypothesis assumed was involved and which is, in fact,
+innocent here) calls `broker.place_order()` directly and only ever wrote
+an `agent_decisions` row via `decision_log.record()`. Confirmed via
+`grep` and a full read: zero calls to `persist_order_submit`/
+`persist_linked_order_submit` anywhere in `trade.py` or `guard.py`, before
+this fix. `approval_mode='auto'`/`user_response='approved'` on these rows
+come from `guard.py`'s OWN `ToolGuard._stamp_auto_approval` (called from
+`after()`) — a function with the same name and shape as
+`apps/api/.../auto_approver.py`'s, but a completely separate
+implementation for a separate execution path. Verified this distinction
+by reading `PostgresDecisionLog.record()`
+(`apps/agents/trading_agents/memory/postgres.py`) end to end: it does not
+set `approval_mode`/`user_response` at all, so if `guard.after()` weren't
+also stamping them, these rows would look like an ordinary `'ask'`/`NULL`
+pending proposal — they don't, because `guard.after()` does that stamp
+right after the trade succeeds.
+
+**Consequence, not just an audit-trail gap:**
+`position_manager.py`'s `manage_positions_for_user` (the ratchet/
+stop-loss/time-stop loop) AND `sweep_expiring_options_for_user` (the
+supposedly-unconditional DTE<=2 expiry sweep) both filter
+`fill_qty IS NOT NULL`. With no `orders` row, `order_sync.py` never had
+anything to poll, so `fill_qty` stayed NULL forever — meaning **none of
+docs/OPTIONS_PLAYBOOK.md §3's five exits have been running on any of
+these 6 real, open, paper positions since they opened.**
+
+**Two more bugs found in the same investigation, same TRAP pattern
+(OPTIONS_PLAYBOOK.md §5 item 1: symbol=underlying, occSymbol=contract)
+but different code, found independently by a sibling agent's parallel
+investigation and cross-verified by me before fixing:**
+
+- `positions_service.py`'s `_unmanaged()` built its `covered` set from
+  `OpenPositionDto.symbol` (always the underlying) and compared it
+  against broker-reported keys (OCC for an option, confirmed by reading
+  `packages/broker/broker/alpaca.py::_position_from_alpaca` and
+  `packages/engine/engine/reconciler/snapshot.py`, which writes
+  `PositionsSnapshot.open_positions[].symbol` straight from
+  `broker.list_positions()`) — so a decision-backed option could NEVER
+  register as covered. This is the actual mechanism behind the
+  "UNMANAGED / no council decision behind it" label, independent of Bug 1
+  — it would still occur even for an option that DID get a proper
+  `orders` row and a populated `fill_qty` through the ordinary
+  human-approval path. Same mismatch also made `marks.get(d.symbol.upper())`
+  miss for every OPEN option, so `last_price`/`unrealized_pnl` silently
+  read `None` even for correctly-managed option positions.
+- `order_sync.py`'s `_detect_external_closes()` had the same mismatch on
+  the WRITE side: `held_qty` keyed by the broker's OCC symbol, looked up
+  by the decision's underlying — so a genuinely still-held option would
+  be wrongly stamped `close_reason='external_broker'` on the very first
+  tick after its `fill_qty` ever populated, permanently disabling exit
+  management right after "fixing" it looked like it worked. Hadn't fired
+  yet on the live 6 only because Bug 1 excludes them from this query too
+  (same `fill_qty IS NOT NULL` filter) — fixing Bug 1 alone, without this
+  one, would have let it fire the moment `fill_qty` first populated.
+
+`64979a8c` (2026-08-29, "address the broker by OCC contract, not the
+underlying") already fixed this exact trap in `executor.py` and
+`position_manager.py` ("the close path had the same bug in four more
+places") — its own diff-stat shows it touched only those two files, never
+`order_sync.py`/`positions_service.py`. These are the trap's 5th and 6th
+sites, not a new bug.
+
+**Third bug, from a sibling agent's live HTTP check against the deployed
+API** (GET `/api/v1/positions` returning `isOption:false`/`occSymbol:null`
+for every position, including the obviously-OCC ones): `schemas/
+positions.py`'s `OpenPositionDto` already had
+`is_option`/`occ_symbol`/`contract_type`/`strike`/`expiry_date`/
+`multiplier` fields — added, per its own comment, "purely additive, so the
+wire contract is ready the moment that track wires population." Nothing
+ever did. A $2,392-notional NVDA call was rendering as "NVDA LONG qty 4"
+with no indication it was a 100x-levered contract. Populated in both
+`_from_decision` (from the proposal JSONB) and `_unmanaged` (from the
+snapshot's `is_option`/`multiplier` plus `OccSymbol.try_parse` on the
+broker's own OCC string) — an unmanaged option's `symbol` now reports the
+underlying too, matching the managed path's display convention (it used
+to show the raw OCC string).
+
+**Fix:** new `guard.persist_placed_order()`, called from all three of
+`trade.py`'s `broker.place_order()` sites (open, scale-in, exit) right
+after each succeeds — writes the same `orders` row shape `order_store.py`
+already writes, so `order_sync.py` needs zero changes to pick these up
+going forward. Resolves `user_id -> broker_connection_id` via a direct
+`engine.db.models.BrokerConnection` read (packages/engine is a shared
+dependency; `apps/agents` deliberately does not depend on `apps/api` —
+matched the existing "reimplement, don't cross-import" precedent already
+documented in `guard.py`'s own `_trading_mode` docstring). Wrapped in its
+own try/except that logs and returns rather than raising: by the time it
+runs, the broker order is already real, so a DB hiccup here must not
+report `tool_failed` to the model (which would be a lie — the trade
+happened) — same contract `executor.py`'s own `persist_order_result` call
+site already documents. `positions_service.py`/`order_sync.py` got their
+own local `_broker_key_for_decision` helpers (small, duplicated per file
+rather than a new shared module — consistent with this codebase's
+existing convention for this exact cross-package-boundary tradeoff, but
+flagged in the commit as a reasonable follow-up refactor).
+
+**What I VERIFIED, and how:**
+- Live Postgres queries (read-only) confirmed: the 6 decisions'
+  `proposal->>'isOption'='true'`, `fill_qty IS NULL`, zero matching
+  `orders` rows by decision id, by symbol, and by
+  `client_order_id LIKE 'agent-exec-%'` (i.e., genuinely never attempted
+  via the human-approval path either) — this ruled out a deploy-lag
+  theory I considered and discarded once `70db7a9d`'s diff-stat showed
+  the persist-before-place ordering in `executor.py` predates these
+  trades by 3 days.
+  - Re-confirmed the SAME 6 decisions' current state right before writing
+  the backfill script (values unchanged from the first query).
+  - Queried the latest `positions_snapshot` row directly: all 6 OCC
+  contracts are real, live, filled Alpaca paper positions with exact
+  qty/avg_entry_price — used verbatim in the prepared backfill script.
+  - Full suite: `1268 passed, 11 skipped` (`apps/agents apps/api
+  packages/`), run with `PYTHONPATH` pointed at this worktree's source
+  (the worktree has no `.venv` of its own; used the main checkout's venv
+  interpreter with `PYTHONPATH` prepended so it resolves imports from
+  worktree source, confirmed by the parameter-rename test failures I'd
+  expect only against MY edited signatures).
+  - Revert-check per CLAUDE.md §4.1: `git stash push` on just the 4
+  source files (guard.py, trade.py, order_sync.py, positions_service.py),
+  keeping the new tests — collection fails with `ImportError` for
+  `persist_placed_order`/`_broker_key_for_decision` in exactly the 3
+  files that should reference them; `git stash pop` restored, full suite
+  green again (1268/11 skipped, unchanged).
+  - Found and fixed 4 pre-existing test call sites broken by
+  `_unmanaged`'s `managed: list[OpenPositionDto]` -> `covered: set[str]`
+  signature change (2 in `test_positions_service.py`, 1 local wrapper in
+  `test_positions_route.py`) — these were NOT part of my new coverage,
+  just mechanical fallout from the signature change, confirmed by
+  re-running the full suite before declaring done.
+
+**What I did NOT do, and why — left open, explicitly:**
+- **Did not run the data backfill.** The 6 existing broken decisions stay
+  exactly as broken as they were until someone runs
+  `scripts/backfill_option_orders_2026_08_31.py --apply` (dry-run by
+  default; prints what it would change; exact values already verified
+  live against the current snapshot). The code fix only stops this from
+  happening to NEW trades. I did not execute this against production
+  myself: the task's own process for this whole investigation was
+  "fix the code, I review and merge personally, it's safety-critical" —
+  a direct prod DB mutation is at least as consequential as a code merge
+  and wasn't itself asked for. This is the single most important thing
+  for whoever picks this up next to see: **the 6 positions are still
+  unmanaged until the backfill runs** (or until a human closes them
+  manually at the broker).
+- Did not consolidate the now-four+ separate implementations of "is this
+  decision an option, and if so what's its OCC symbol"
+  (`executor.py::_wire_symbol_for`, `position_manager.py`'s inline
+  version, and the two new ones this commit adds) into one shared
+  `packages/engine` helper — each of the two files I touched got its own
+  small local copy, matching the existing per-file convention, but a
+  shared helper would be a reasonable follow-up now that the trap has
+  bitten a 5th and 6th time.
+- Did not touch `apps/api`'s `auto_approver.py`/`executor.py` at all —
+  traced them thoroughly (they're where the brief's own hypothesis
+  pointed) and confirmed they are NOT implicated: the persist-before-place
+  ordering there is correct and already covered by existing tests.
+
 ### 2026-08-31 — docs: PLAN_AUTO_APPROVE.md's "not built" header was stale — the feature shipped 08-30
 
 `ID:MODEL2OFF`. User pointed at `docs/PLAN_AUTO_APPROVE.md` and asked to
