@@ -30,6 +30,15 @@ class Model:
     HAIKU = "claude-haiku-4-5-20251001"
 
 
+@dataclass(frozen=True)
+class ToolCall:
+    """One `tool_use` block the model emitted."""
+
+    id: str
+    name: str
+    input: dict[str, Any]
+
+
 @dataclass
 class LLMResponse:
     text: str
@@ -38,6 +47,28 @@ class LLMResponse:
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
+    tool_calls: tuple[ToolCall, ...] = ()
+    stop_reason: str | None = None
+
+
+def _extract_blocks(msg: Any) -> tuple[str, tuple[ToolCall, ...]]:
+    """Walk every content block instead of assuming content[0] is text.
+
+    The old `msg.content[0].text` broke on any response whose FIRST block
+    is not text — which is every tool-using response, and also a plain
+    text response that happens to lead with a thinking block. Behaviour is
+    identical for today's five council nodes (one text block in, the same
+    string out); it is strictly more robust for everything else.
+    """
+    texts: list[str] = []
+    calls: list[ToolCall] = []
+    for block in msg.content or []:
+        btype = getattr(block, "type", None)
+        if btype == "text":
+            texts.append(block.text)
+        elif btype == "tool_use":
+            calls.append(ToolCall(id=block.id, name=block.name, input=dict(block.input or {})))
+    return "\n".join(texts), tuple(calls)
 
 
 class LLM:
@@ -150,7 +181,7 @@ class LLM:
             temperature=float(os.environ.get("LLM_TEMPERATURE", "0.0")),
         )
 
-        text = msg.content[0].text if msg.content else ""
+        text, tool_calls = _extract_blocks(msg)
         usage = getattr(msg, "usage", None)
         resp = LLMResponse(
             text=text,
@@ -159,6 +190,8 @@ class LLM:
             output_tokens=getattr(usage, "output_tokens", 0) if usage else 0,
             cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) if usage else 0,
             cache_creation_tokens=getattr(usage, "cache_creation_input_tokens", 0) if usage else 0,
+            tool_calls=tool_calls,
+            stop_reason=getattr(msg, "stop_reason", None),
         )
         await _record_to_ledger(
             system,
