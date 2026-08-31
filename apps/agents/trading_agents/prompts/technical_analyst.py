@@ -12,9 +12,43 @@ Return strict JSON ONLY:
   "citations": ["<indicator>", ...]
 }
 
-If a stock is >15% below its 200DMA on a SHORT/MID horizon, flag mean-reversion
-risk explicitly. If RSI > 75, flag overbought. Honesty over enthusiasm —
-confidence < 0.4 when the feature evidence is thin.
+Score what the feature dict actually shows, in EITHER direction, with equal
+willingness. Being accurate about a genuinely constructive setup is exactly
+as honest as flagging a genuinely risky one — treat this as one calibration
+task, not "look for reasons to be cautious."
+
+Calibration anchors (use the whole 0-100 scale; do not cluster on 40-60):
+  85-100  Exceptional confluence: trend, momentum, volume and pattern all
+          agree, nothing stretched. Rare.
+  65-84   Genuinely good setup: trend intact, momentum constructive,
+          nothing overextended, at least one confirming signal (volume,
+          candlestick pattern, relative strength). This is the ordinary
+          "clean, tradeable technical picture" range — most healthy
+          trending names sit here when nothing is wrong, not only the
+          most extreme textbook chart.
+  45-64   Mixed or unremarkable: some things line up, some don't, or the
+          tape is simply directionless. 50 = truly neutral.
+  25-44   Genuinely weak setup: momentum fighting the trend, or a clear
+          risk flag (see below) without an offsetting positive.
+  0-24    Multiple stacked red flags — actively broken, not just quiet.
+
+Score UP, symmetrically with the flags below, when the tape supports it:
+  - Trend intact (price above both the 20- and 50-DMA, or the equivalent
+    downtrend for a short) with RSI in a constructive 45-70 band (not yet
+    overbought) → a clean trend-following setup, not merely "not risky."
+  - price_zscore_20 within about ±1 of its mean while the trend holds → a
+    steady grind, not a blow-off; that is a feature, not the absence of one.
+  - Sharpe/Sortino clearly positive over the lookback → the trend is
+    getting paid for its risk, not just moving.
+  - volume_ratio_20d confirming a move, or a continuation candlestick
+    pattern lining up with the trend → say so and score it up, the same
+    way a contradicting signal would be scored down.
+
+Flag DOWN explicitly, the same way: if a stock is >15% below its 200DMA on
+a SHORT/MID horizon, flag mean-reversion risk explicitly. If RSI > 75, flag
+overbought. Confidence is a SEPARATE axis from score — return confidence
+< 0.4 when the feature evidence is thin, but still score the signals you DO
+have on their own merits rather than pulling the score toward 50.
 
 The user message may also carry a "Quant measures" block and a "Scan triggers"
 block. Both are computed deterministically upstream — treat them as ground

@@ -601,6 +601,134 @@ repo-wide 256 ruff errors and the missing per-commit build-log entries
 for the 4 Opus commits in this batch (also out of scope — CLAUDE.md asked
 for one consolidated entry here, not retroactive reconstruction).
 
+### 2026-08-31 — `5707d690` fix(agents): rebalance analyst score calibration + run analysts concurrently
+
+`ID:MODEL2OFF`. Diagnosed the gap the orchestrator's own triage notes
+recorded in `docs/OPTIONS_PLAN.md` ("agent 5 is instrumenting a full pass
+to find the exact stage") and `docs/PLAN_NEXT.md` §0.45: `strategy_fit`
+scores SPY/QQQ/NVDA/AAPL 0.65-0.88 against a 0.42 floor, while the LLM
+analysts (fundamental/macro/technical) independently score the SAME names
+28-42/100 against `min_specialist_avg_score`'s 40-45 floor — so every
+equity pass HOLDs downstream of a perfectly healthy deterministic gate.
+
+**Could NOT verify live.** `apps/api/.env` (and the file it was copied
+from, per this task's own instructions) both carry `ANTHROPIC_API_KEY=`
+empty and `AGENTS_REQUIRE_REAL_LLM=0` — no real Sonnet/Haiku analyst call
+is reachable from this checkout, and the shell environment has no key
+either (`os.environ.get("ANTHROPIC_API_KEY")` → empty). Everything below
+is diagnosed by reading the actual prompt templates in full and by running
+a real (not live-market, but real code) experiment against
+`strategies.fit.best_strategy` — never by re-observing the reported 28-42
+scores directly, which I could not reproduce.
+
+**Root cause**: all three analyst prompts
+(`prompts/{fundamental,macro,technical}_analyst.py`) enumerated multiple
+explicit "score DOWN when X" heuristics (weak `quality_score`, VIX > 30,
+rising yields into a rate-sensitive name, a strong dollar, >15% below the
+200DMA, RSI > 75) and, across all three prompts COMBINED, exactly ONE
+explicit "score UP" trigger (macro's "sector RS positive AND regime=bull").
+Paired with "Honesty over enthusiasm" / "Be honest, if X is weak say so" /
+"lean neutral" language repeated in all three, the rubric gave a model many
+named reasons to mark down and almost none to mark up — an asymmetric
+rubric that primes the output distribution low independent of the actual
+evidence. This compounds a second, structural mismatch: `strategy_fit`
+takes the BEST of 5 independently-lenient strategies (generous ramps —
+e.g. `sma_crossover`'s `price_vs_20dma` ramp maxes at only +3% above the
+20DMA; missing data defaults to NEUTRAL=0.5, never penalized), while
+`min_specialist_avg_score` MEANS three independently-skeptical single-shot
+judgments. A max-of-lenient reads higher than a mean-of-skeptical for
+IDENTICAL evidence even under a perfectly symmetric prompt — the asymmetric
+enumeration just made an already-structural gap categorically worse.
+Reproduced directly (real code, offline, not live): a deliberately
+UNREMARKABLE "boring uptrend" feature dict (2%/3% above the 20/50-DMA, RSI
+58, Sharpe 0.3, realized vol 18%, average volume — the kind of tape the OLD
+prompts' own "lean neutral"/"don't reach for extremes" language would
+calibrate a human-like reader toward ~50) scores **0.854** via
+`best_strategy` (`sma_crossover`), because `trend_regime_aligned` alone
+maxes at 1.0 (weight 0.35) purely from `trend_regime == "uptrend"` being
+true — full component breakdown in the commit's test-file docstring.
+
+**Fix — prompt wording only, no scoring-formula or threshold change**
+(honored the task's explicit constraint: did not touch `MIN_FIT_TO_TRADE`
+or any `RiskCaps`). Rewrote all three analyst prompts to: (1) state a
+symmetric 0-100 calibration anchor scale naming **65-84 as the ORDINARY
+"genuinely good, tradeable" range**, not a stretch reserved for extremes;
+(2) add at least one concrete, domain-specific "score UP" trigger to each,
+matching its existing "score down"/"flag" triggers one-for-one; (3)
+decouple confidence from score explicitly ("confidence is a SEPARATE axis
+... low confidence is not a reason to pull the score toward 50") so
+thin-evidence handling no longer drags the SCORE down, only the reported
+confidence; (4) reframe "honest" as "accurate in either direction,"
+removing "Honesty over enthusiasm" and "lean neutral" as standalone
+directives.
+
+**Also confirmed and fixed the task's second check**: the 3 equity
+analysts ran SEQUENTIALLY, not in parallel, in **both** `graph.py` code
+paths — a plain `for` loop in `_run_linear`, and a
+technical→fundamental→macro chain of three separate LangGraph nodes in
+`_build_langgraph` (whose own comment said "Phase 2 swaps the serial
+analyst path for parallel fan-out via a join node"; `PLAN_OPTIONS_AGENTS.md`
+§8 independently flagged this exact question as a "free win to check
+first" and left it unresolved — "the LangGraph branch may not be"
+sequential; it was). Fixed via one `_run_analysts_parallel` helper
+(`asyncio.gather`, mirroring `options/agents.py::run_bull_and_bear`
+exactly, including an elapsed-time-based test). Deliberately implemented
+as ONE combined step in each path rather than three fanned-out LangGraph
+nodes: all three analyst node functions read-modify-write the shared
+`degraded_nodes` state key (`nodes/_specialist.py`), and LangGraph rejects
+more than one writer to the same channel key per super-step without a
+reducer. `_merge_analyst_results` reconstructs the combined
+`degraded_nodes` list by hand instead of adding a reducer, which would
+also have required touching `router.py`/`drafter.py` (the other two
+read-modify-write callers of that key) — outside this change's scope.
+
+Verified: `.venv/Scripts/python.exe -m pytest apps/agents apps/api packages/ -q`
+— my own baseline (re-derived fresh, not trusted from any prior note):
+**1242 passed, 11 skipped** (this matches the number already embedded in
+`docs/OPTIONS_PLAN.md`'s pasted transcript, a useful cross-check that the
+worktree state matched what that transcript described). After this change:
+**1248 passed, 11 skipped** (+6 new tests: `test_analysts_run_concurrently`,
+`test_analysts_parallel_merges_degraded_nodes_without_duplication` in
+`test_council_mock.py`, and the 4 tests in the new
+`test_analyst_prompt_calibration.py`), zero regressions. Revert-checked
+both fixes per CLAUDE.md §4.1: (a) reverted `_run_analysts_parallel` to a
+sequential loop — `test_analysts_run_concurrently` failed (0.625s for
+3×0.2s calls, i.e. ~3x not ~1x) as expected, restored; (b) reverted
+`fundamental_analyst.py` to its pre-fix wording — all 4 tests in
+`test_analyst_prompt_calibration.py` failed as expected, restored. Ruff
+clean on every changed file. mypy on `graph.py` shows 4 errors, but all 4
+are pre-existing on HEAD (confirmed by temporarily restoring the unmodified
+file and re-running mypy against it directly — same 4 errors at their
+shifted line numbers); my new code introduced zero new mypy errors (fixed
+one real one: `_ANALYSTS`'s callable type was `Awaitable[CouncilState]`,
+which `asyncio.create_task` doesn't accept — narrowed to
+`Coroutine[Any, Any, CouncilState]`, matching the type
+`options/agents.py::run_bull_and_bear`'s identical pattern already gets
+right, confirmed via `mypy options/agents.py` → zero issues). Smoke-tested
+both graph code paths end-to-end in MOCK mode via
+`python -m trading_agents --symbol NVDA` (LangGraph, default) and
+`--symbol AAPL --no-langgraph` (linear fallback) and `--symbol SPY`
+(LangGraph again, post type-fix) — all three produce a sane, fully-formed
+BUY proposal DTO.
+
+**Left open, explicitly**: the calibration fix is pinned only at the level
+of "the prompt's own wording is symmetric and anchored, and the old
+asymmetric phrases are gone" — it is NOT verified against a real LLM call,
+because no usable `ANTHROPIC_API_KEY` existed anywhere in this environment.
+**The next session with a working key should re-run the exact SPY/NVDA/AAPL
+comparison `docs/PLAN_NEXT.md` §0.45 recorded** and confirm the specialist
+average actually moves meaningfully off 28-42 — this fix is a strong,
+evidence-based hypothesis about the mechanism, not a confirmed cure.
+Separately noticed but explicitly OUT of this task's scope (CLAUDE.md
+§4.7 — flagging, not fixing): `prompts/drafter.py` hardcodes *"If
+specialists' average score < 45 → HOLD"* as a literal prompt string,
+disconnected from `RiskCaps.min_specialist_avg_score` (45.0 conservative /
+40.0 aggressive) — the exact "same number in two places" trap CLAUDE.md
+§4.4 already names for `options_min_volume`. Under the aggressive profile
+the Drafter's own internal HOLD rule is now stricter (45) than the risk
+engine's actual floor (40) it's supposedly mirroring; worth a follow-up
+task.
+
 ### 2026-08-31 — `dcf58ca4` fix(options): adjust_option_position was missing the paper-only/market-hours gate
 
 `ID:MODEL2OFF`. Found while reviewing the (not-yet-merged) escalation-loop
