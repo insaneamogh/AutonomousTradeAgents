@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
-from trading_agents.cost_ledger import reset_cost_ledger_for_tests
+from trading_agents.cost_ledger import infer_role_from_system_prompt, reset_cost_ledger_for_tests
 from trading_agents.llm import (
     LLM,
     LLMResponse,
@@ -22,7 +22,9 @@ from trading_agents.llm import (
     ToolCall,
     _extract_blocks,
     _flatten,
+    _mock_response,
 )
+from trading_agents.llm_loop import _assistant_blocks, run_tool_loop
 
 
 @pytest.fixture(autouse=True)
@@ -337,3 +339,266 @@ async def test_complete_tools_real_mode_omits_tool_choice_when_not_given(
     )
 
     assert "tool_choice" not in captured
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Commit 3 — run_tool_loop() (llm_loop.py)
+# ─────────────────────────────────────────────────────────────────────
+
+
+class _StubLLM:
+    """A controllable `complete_tools()` double: one canned `LLMResponse`
+    per call, plus every call's kwargs recorded for assertions.
+
+    Raises if asked for more rounds than were canned, rather than
+    repeating the last response forever — so a loop that fails to respect
+    `max_rounds` (or one that keeps looping when it shouldn't) surfaces as
+    an immediate, readable `AssertionError` instead of a silent hang.
+    """
+
+    def __init__(self, responses: list[LLMResponse]) -> None:
+        self._responses = list(responses)
+        self.calls: list[dict[str, Any]] = []
+
+    async def complete_tools(self, **kwargs: Any) -> LLMResponse:
+        self.calls.append(kwargs)
+        if len(self.calls) > len(self._responses):
+            raise AssertionError(
+                f"complete_tools called {len(self.calls)} times but only "
+                f"{len(self._responses)} response(s) were canned — the "
+                "round budget was not respected"
+            )
+        return self._responses[len(self.calls) - 1]
+
+
+async def test_loop_terminates_when_no_tool_calls() -> None:
+    """A response with no tool calls must return immediately — no second
+    request, and `dispatch` never invoked.
+
+    Revert-checked: temporarily removed the `if not resp.tool_calls: return`
+    early-out (always appended the assistant turn and looped again). The
+    stub only cans one response, so the forced second round raised the
+    stub's own "round budget was not respected" AssertionError, and
+    separately `_dispatch` (which asserts it is never called) would also
+    have failed. Restored after.
+    """
+    resp_no_tools = LLMResponse(text='{"verdict": "HOLD"}', model=Model.SONNET)
+    stub = _StubLLM([resp_no_tools])
+
+    async def _dispatch(call: ToolCall) -> dict[str, Any]:
+        raise AssertionError("dispatch must not be called when there are no tool calls")
+
+    final_resp, transcript = await run_tool_loop(
+        cast(LLM, stub),
+        system="You are the Bull Analyst.",
+        user="Ticker: NVDA",
+        tools=[_A_TOOL],
+        dispatch=_dispatch,
+    )
+
+    assert final_resp is resp_no_tools
+    assert transcript == []
+    assert len(stub.calls) == 1
+
+
+async def test_loop_bounded_at_max_rounds() -> None:
+    """A model that keeps calling tools forever must be cut off at
+    `max_rounds` — never a `max_rounds + 1`th request.
+
+    Revert-checked: temporarily changed `for _round in range(max_rounds)`
+    to `for _round in range(max_rounds + 1)`. This test then failed with
+    the stub's "complete_tools called 3 times but only 2 response(s) were
+    canned" AssertionError — proving it actually pins the cap rather than
+    just happening to pass. Restored after.
+    """
+    calls = tuple(
+        ToolCall(id=f"toolu_{i}", name="get_quote", input={"symbol": "NVDA"}) for i in range(2)
+    )
+    responses = [LLMResponse(text="", model=Model.SONNET, tool_calls=(c,)) for c in calls]
+    stub = _StubLLM(responses)
+
+    async def _dispatch(call: ToolCall) -> dict[str, Any]:
+        return {"content": {"price": 100.0}}
+
+    final_resp, transcript = await run_tool_loop(
+        cast(LLM, stub),
+        system="You are the Bull Analyst.",
+        user="Ticker: NVDA",
+        tools=[_A_TOOL],
+        dispatch=_dispatch,
+        max_rounds=2,
+    )
+
+    assert len(stub.calls) == 2
+    assert len(transcript) == 2
+    assert final_resp is responses[-1]
+
+
+async def test_dispatch_error_becomes_is_error_result() -> None:
+    """A `dispatch` that raises must not abort the loop — the exception is
+    caught and turned into an `is_error: True` tool_result, and the round
+    trip continues normally to completion.
+
+    Revert-checked: temporarily removed the `try/except` around
+    `await dispatch(call)` in `llm_loop.run_tool_loop`. This test then
+    failed with an uncaught `RuntimeError: boom` propagating out of
+    `run_tool_loop` instead of the loop completing normally. Restored
+    after.
+    """
+    call = ToolCall(id="toolu_1", name="open_option_trade", input={"symbol": "NVDA"})
+    resp_with_call = LLMResponse(text="", model=Model.SONNET, tool_calls=(call,))
+    resp_done = LLMResponse(text='{"verdict": "HOLD"}', model=Model.SONNET)
+    stub = _StubLLM([resp_with_call, resp_done])
+
+    async def _raising_dispatch(call: ToolCall) -> dict[str, Any]:
+        raise RuntimeError("boom")
+
+    final_resp, transcript = await run_tool_loop(
+        cast(LLM, stub),
+        system="You are the Bull Analyst.",
+        user="Ticker: NVDA",
+        tools=[_A_TOOL],
+        dispatch=_raising_dispatch,
+    )
+
+    assert final_resp is resp_done
+    assert len(transcript) == 1
+    assert transcript[0]["output"]["is_error"] is True
+
+    second_round_messages = stub.calls[1]["messages"]
+    tool_result_turn = second_round_messages[-1]
+    assert tool_result_turn["role"] == "user"
+    assert tool_result_turn["content"][0]["is_error"] is True
+    assert tool_result_turn["content"][0]["tool_use_id"] == "toolu_1"
+
+
+async def test_tool_result_echoes_tool_use_id() -> None:
+    """The `tool_result` block's `tool_use_id` must match the `ToolCall`'s
+    `id` exactly — a wrong or missing id makes the API reject the next
+    turn with a 400."""
+    call = ToolCall(id="toolu_specific_789", name="get_quote", input={"symbol": "NVDA"})
+    resp_with_call = LLMResponse(text="checking", model=Model.SONNET, tool_calls=(call,))
+    resp_done = LLMResponse(text="done", model=Model.SONNET)
+    stub = _StubLLM([resp_with_call, resp_done])
+
+    async def _dispatch(call: ToolCall) -> dict[str, Any]:
+        return {"content": {"price": 123.45}}
+
+    await run_tool_loop(
+        cast(LLM, stub),
+        system="You are the Bull Analyst.",
+        user="Ticker: NVDA",
+        tools=[_A_TOOL],
+        dispatch=_dispatch,
+    )
+
+    second_round_messages = stub.calls[1]["messages"]
+    tool_result_turn = second_round_messages[-1]
+    assert tool_result_turn["content"][0]["tool_use_id"] == "toolu_specific_789"
+
+
+async def test_loop_forwards_ledger_kwargs_to_complete_tools() -> None:
+    """`**ledger_kwargs` (council_run_id/user_id/agent_decision_id) must
+    reach `complete_tools()` unchanged — the loop is not the place those
+    get dropped."""
+    stub = _StubLLM([LLMResponse(text="ok", model=Model.SONNET)])
+
+    async def _dispatch(call: ToolCall) -> dict[str, Any]:
+        return {"content": "n/a"}
+
+    await run_tool_loop(
+        cast(LLM, stub),
+        system="You are the Bull Analyst.",
+        user="Ticker: NVDA",
+        tools=[_A_TOOL],
+        dispatch=_dispatch,
+        council_run_id="run-1",
+        user_id="user-1",
+    )
+
+    assert stub.calls[0]["council_run_id"] == "run-1"
+    assert stub.calls[0]["user_id"] == "user-1"
+
+
+def test_assistant_blocks_rebuilds_text_and_tool_use() -> None:
+    call = ToolCall(id="toolu_1", name="get_quote", input={"symbol": "NVDA"})
+    resp = LLMResponse(text="checking the price", model=Model.SONNET, tool_calls=(call,))
+    assert _assistant_blocks(resp) == [
+        {"type": "text", "text": "checking the price"},
+        {"type": "tool_use", "id": "toolu_1", "name": "get_quote", "input": {"symbol": "NVDA"}},
+    ]
+
+
+def test_assistant_blocks_omits_empty_text() -> None:
+    call = ToolCall(id="toolu_1", name="get_quote", input={"symbol": "NVDA"})
+    resp = LLMResponse(text="", model=Model.SONNET, tool_calls=(call,))
+    assert _assistant_blocks(resp) == [
+        {"type": "tool_use", "id": "toolu_1", "name": "get_quote", "input": {"symbol": "NVDA"}},
+    ]
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Role registration — the dual-branch pattern (§4)
+#
+# IMPL_LLM_TOOLS.md §4: a new agent role needs a branch in BOTH
+# `_mock_response` and `infer_role_from_system_prompt`, or it fails
+# silently (wrong shape from the mock / "unknown" in the cost ledger,
+# neither raises). This spec does not add a new role itself — that is
+# IMPL_OPTIONS_AGENTS.md's job — so these exercise the pattern against
+# every role registered TODAY, parametrized, as the template the next
+# role addition must not break: removing either branch for any one row
+# below fails that row's test.
+# ─────────────────────────────────────────────────────────────────────
+
+_GENERIC_FALLBACK_BODY = {"score": 50.0, "confidence": 0.2, "thesis": "MOCK: generic neutral response."}
+
+# (system prompt, cost-ledger role tag, a key present ONLY in that role's
+# `_mock_response` body — i.e. absent from the generic fallback).
+_ROLE_CASES: tuple[tuple[str, str, str], ...] = (
+    ("You are the Router on a quant desk.", "router", "analyst_subset"),
+    ("You are the Technical Analyst.", "technical", "citations"),
+    ("You are the Fundamental Analyst.", "fundamental", "citations"),
+    ("You are the Macro Analyst.", "macro", "citations"),
+    ("You are the Strategy Selector.", "selector", "strategy"),
+    (
+        "You are the Proposal Drafter. The only non-HOLD verdict allowed is BUY.",
+        "drafter",
+        "verdict",
+    ),
+    ("You are the Reflection Agent.", "reflection", "lessons"),
+)
+
+
+@pytest.mark.parametrize("system_prompt,expected_role,marker_key", _ROLE_CASES)
+def test_new_role_resolves_in_mock_response(
+    system_prompt: str, expected_role: str, marker_key: str
+) -> None:
+    """Every registered role must produce its own role-shaped mock body,
+    not the generic {score, confidence, thesis} fallback `_mock_response`
+    falls back to for an unrecognized prompt.
+
+    Revert-checked (router row): temporarily commented out the
+    `"you are the router" in role_line` branch in `_mock_response`. The
+    router-row parametrization then failed — the body fell through to the
+    generic fallback (no `analyst_subset` key, and equal to
+    `_GENERIC_FALLBACK_BODY`). Restored after.
+    """
+    resp = _mock_response(system=system_prompt, user="Ticker: NVDA", model=Model.SONNET)
+    body = json.loads(resp.text)
+    assert marker_key in body, f"{expected_role} branch did not fire — got fallback body {body}"
+    assert body != _GENERIC_FALLBACK_BODY
+
+
+@pytest.mark.parametrize("system_prompt,expected_role,marker_key", _ROLE_CASES)
+def test_new_role_resolves_in_cost_ledger(
+    system_prompt: str, expected_role: str, marker_key: str
+) -> None:
+    """The same system prompt must resolve to the matching role tag in the
+    cost ledger — never `"unknown"`.
+
+    Revert-checked (router row): temporarily commented out the
+    `"you are the router" in line: return "router"` branch in
+    `infer_role_from_system_prompt`. The router-row parametrization then
+    failed (`'unknown' != 'router'`). Restored after.
+    """
+    assert infer_role_from_system_prompt(system_prompt) == expected_role
