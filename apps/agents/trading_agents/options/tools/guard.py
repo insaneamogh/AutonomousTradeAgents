@@ -502,6 +502,25 @@ class ToolGuard:
     async def _before_adjust_option_position(
         self, args: Mapping[str, Any], ctx: GuardContext
     ) -> GuardVerdict:
+        # Same master-switch / paper-only / market-hours gate as
+        # _before_open_option_trade, checked here too and not just at the
+        # opening hop: EXIT_NOW and SCALE_IN both reach packages/broker
+        # (tools/trade.py's _exit_now/_scale_in place a real order), so
+        # without this an adjust call could place one regardless of
+        # AUTO_TRADE_ENABLED, live/paper mode, or market hours. Applied
+        # uniformly to every action (including HOLD/TIGHTEN_STOP/RAISE_
+        # TAKE_PROFIT, which never touch the broker) rather than only the
+        # two that place orders -- one gate to reason about, matching
+        # docs/PLAN_OPTIONS_AGENTS.md §4's "checked in before, regardless
+        # of any flag" for the paper-only check specifically, extended
+        # here to the same three checks the opening hop already has.
+        if not env_flag("AUTO_TRADE_ENABLED"):
+            return GuardVerdict(False, "auto_trade_disabled")
+        if not _is_paper_and_safe():
+            return GuardVerdict(False, "live_mode_refused")
+        if not is_us_market_open(self._clock()):
+            return GuardVerdict(False, "market_closed")
+
         action = str(args.get("action", ""))
         if action not in _ADJUST_ACTIONS:
             return GuardVerdict(False, "unknown_action")

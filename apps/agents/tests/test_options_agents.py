@@ -968,7 +968,7 @@ async def test_open_then_scale_in_end_to_end_through_dispatch(
     assert broker.orders[1].side == BrokerSide.BUY_TO_OPEN
 
 
-async def test_exit_now_end_to_end_closes_the_broker_position() -> None:
+async def test_exit_now_end_to_end_closes_the_broker_position(monkeypatch: Any) -> None:
     uid, did = uuid.uuid4(), uuid.uuid4()
     position = Position(
         symbol="NVDA260918C00225000",
@@ -986,6 +986,13 @@ async def test_exit_now_end_to_end_closes_the_broker_position() -> None:
     broker = FakeBroker(position=position)
     guard = _guard(session_factory=session_factory, broker_factory=lambda: broker)
     ctx = _ctx(user_id=str(uid))
+
+    # _before_adjust_option_position gates on the same master-switch/paper/
+    # market-hours check open_option_trade always had (merge-time fix,
+    # see fable5findings.md) — same setup as the open+scale-in test above.
+    monkeypatch.setenv("AUTO_TRADE_ENABLED", "1")
+    monkeypatch.delenv("TRADING_MODE", raising=False)
+    monkeypatch.delenv("LIVE_TRADING_ENABLED", raising=False)
 
     out = await dispatch_tool_call(
         _call(
@@ -1008,7 +1015,7 @@ async def test_exit_now_end_to_end_closes_the_broker_position() -> None:
     assert any("closed_at" in sql for sql in all_sql)
 
 
-async def test_exit_now_with_no_broker_position_is_a_safe_no_op() -> None:
+async def test_exit_now_with_no_broker_position_is_a_safe_no_op(monkeypatch: Any) -> None:
     uid, did = uuid.uuid4(), uuid.uuid4()
     session_factory = _FakeSessionFactory(
         get_result=_seeded_row(uid=uid, did=did, option_exit={})
@@ -1016,6 +1023,10 @@ async def test_exit_now_with_no_broker_position_is_a_safe_no_op() -> None:
     broker = FakeBroker(position=None)
     guard = _guard(session_factory=session_factory, broker_factory=lambda: broker)
     ctx = _ctx(user_id=str(uid))
+
+    monkeypatch.setenv("AUTO_TRADE_ENABLED", "1")
+    monkeypatch.delenv("TRADING_MODE", raising=False)
+    monkeypatch.delenv("LIVE_TRADING_ENABLED", raising=False)
 
     out = await dispatch_tool_call(
         _call(

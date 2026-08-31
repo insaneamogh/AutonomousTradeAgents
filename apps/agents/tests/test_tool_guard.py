@@ -387,6 +387,50 @@ async def test_one_open_per_pass_denies_a_second_call() -> None:
     assert verdict.reason == "one_open_per_pass"
 
 
+# ─────────────────────────────────────────────────────────────────────
+# adjust_option_position gets the SAME master-switch/paper/market-hours
+# gate as open_option_trade -- added after review found the original
+# _before_adjust_option_position had none at all, so EXIT_NOW/SCALE_IN
+# (both of which reach packages/broker) could place a real order
+# regardless of AUTO_TRADE_ENABLED, live/paper mode, or market hours.
+# Mirrors the four tests directly above; no session_factory/seeded row
+# needed since the gate now runs before any DB lookup.
+# ─────────────────────────────────────────────────────────────────────
+
+
+async def test_adjust_disabled_without_auto_trade_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AUTO_TRADE_ENABLED", raising=False)
+    guard = _guard()
+    ctx = _ctx()
+    verdict = await guard.before("adjust_option_position", {"action": "EXIT_NOW"}, ctx)
+    assert verdict == GuardVerdict(False, "auto_trade_disabled")
+
+
+async def test_adjust_never_acts_in_live_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TRADING_MODE", "live")
+    guard = _guard()
+    ctx = _ctx()
+    verdict = await guard.before("adjust_option_position", {"action": "EXIT_NOW"}, ctx)
+    assert verdict.reason == "live_mode_refused"
+
+
+async def test_adjust_never_acts_when_live_trading_enabled_even_in_paper_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LIVE_TRADING_ENABLED", "1")
+    guard = _guard()
+    ctx = _ctx()
+    verdict = await guard.before("adjust_option_position", {"action": "SCALE_IN"}, ctx)
+    assert verdict.reason == "live_mode_refused"
+
+
+async def test_adjust_market_closed_denied() -> None:
+    guard = _guard(clock=lambda: MARKET_CLOSED_NOW)
+    ctx = _ctx()
+    verdict = await guard.before("adjust_option_position", {"action": "HOLD"}, ctx)
+    assert verdict.reason == "market_closed"
+
+
 async def test_malformed_symbol_denied() -> None:
     guard = _guard()
     ctx = _ctx()
