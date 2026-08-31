@@ -17,6 +17,7 @@ import type { ReactTestRenderer } from 'react-test-renderer';
 import type { GhostSummaryResponse, VetoLedgerResponse } from '@app/shared-types';
 
 import { useCalibrationScorecard } from '@/hooks/useCalibration';
+import { useFunnel } from '@/hooks/useFunnel';
 import { useGhostSummary, useVetoLedger } from '@/hooks/useInsights';
 
 import { Pill } from '../primitives';
@@ -24,6 +25,7 @@ import { InsightsScreen } from './Insights';
 
 jest.mock('@/hooks/useInsights');
 jest.mock('@/hooks/useCalibration');
+jest.mock('@/hooks/useFunnel');
 jest.mock('../ExemplarCard', () => ({
   ExemplarCard: ({ rule }: { rule: string }) => `exemplar:${rule}`,
 }));
@@ -31,6 +33,11 @@ jest.mock('../ExemplarCard', () => ({
 const mockUseVetoLedger = useVetoLedger as jest.Mock;
 const mockUseGhostSummary = useGhostSummary as jest.Mock;
 const mockUseCalibrationScorecard = useCalibrationScorecard as jest.Mock;
+// The Contract Funnel section (landed in a parallel commit, merged into
+// this screen after this test file was first written) isn't what these
+// honesty-rule tests are about — an empty, loaded result keeps it out of
+// their way without asserting anything about it.
+const mockUseFunnel = useFunnel as jest.Mock;
 
 const GHOST_SUMMARY: GhostSummaryResponse = {
   windowDays: 30,
@@ -105,6 +112,12 @@ describe('InsightsScreen — veto ledger honesty rules', () => {
     });
     mockUseCalibrationScorecard.mockReturnValue({
       data: SCORECARD,
+      isLoading: false,
+      isError: false,
+      refetch: jest.fn(),
+    });
+    mockUseFunnel.mockReturnValue({
+      data: { windowDays: 30, aggregate: { stages: [], runs: 0, bought: 0, topRejectionReasons: [] }, recent: [] },
       isLoading: false,
       isError: false,
       refetch: jest.fn(),

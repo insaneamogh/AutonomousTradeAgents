@@ -7,8 +7,10 @@ import { useState } from 'react';
 import type { VetoRuleDto } from '@app/shared-types';
 
 import { useCalibrationScorecard } from '@/hooks/useCalibration';
+import { useFunnel } from '@/hooks/useFunnel';
 import { useGhostSummary, useVetoLedger } from '@/hooks/useInsights';
 
+import { ContractFunnel } from '../components/ContractFunnel';
 import { ExemplarCard } from '../ExemplarCard';
 import { ago, pendingAwareUsd, riskProfileCaption, ruleLabel, signedUsd, tone, usd } from '../format';
 import {
@@ -58,6 +60,8 @@ function WouldHaveCell({ rule }: { rule: VetoRuleDto }) {
   );
 }
 
+const FUNNEL_WINDOW_DAYS = 30;
+
 type Tab = 'vetoes' | 'ghost' | 'calibration';
 
 const TABS: { id: Tab; label: string }[] = [
@@ -72,6 +76,7 @@ export function InsightsScreen() {
   const vetoes = useVetoLedger(30);
   const ghost = useGhostSummary(30);
   const scorecard = useCalibrationScorecard(180);
+  const funnel = useFunnel(FUNNEL_WINDOW_DAYS);
 
   return (
     <>
@@ -94,6 +99,31 @@ export function InsightsScreen() {
           </Row>
         }
       />
+
+      {funnel.isError ? (
+        <div className="pg-grid pg-fade-up">
+          <Cell span={12}>
+            <DataStreamInterrupted
+              code="FUNNEL_READ_FAILED"
+              node="api · /v1/insights/funnel"
+              onRetry={() => void funnel.refetch()}
+              compact
+            />
+          </Cell>
+        </div>
+      ) : (
+        <div className="pg-grid pg-fade-up">
+          <Cell span={12}>
+            <ContractFunnel
+              stages={funnel.data?.aggregate.stages ?? []}
+              loading={funnel.isLoading}
+              windowDays={FUNNEL_WINDOW_DAYS}
+              runs={funnel.data?.aggregate.runs}
+              bought={funnel.data?.aggregate.bought}
+            />
+          </Cell>
+        </div>
+      )}
 
       {tab === 'vetoes' ? (
         vetoes.isError ? (
