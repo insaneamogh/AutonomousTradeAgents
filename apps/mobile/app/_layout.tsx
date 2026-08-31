@@ -8,6 +8,8 @@
 //   - Biometric gate            Face ID / Touch ID unlock on launch + resume
 //   - Deep-link handler         autotrader://auth/verify?... → /auth/verify
 //                               autotrader://broker/callback?... → /settings
+//   - Demo-session redemption   ?demo=<token> → POST /auth/demo → signIn()
+//                               (docs/IMPL_DEMO_SESSION.md)
 //   - Push registration         requests OS permission + posts device token
 //   - Notification handler      foreground display + tap → /approvals
 //   - Theme                     applies the persisted light/dark/system
@@ -16,7 +18,7 @@
 // Order matters: registerAuthSnapshot() must run BEFORE any TanStack Query
 // fetch fires (the queries read the access token via the interceptor).
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import {
   Slot,
@@ -32,10 +34,12 @@ import * as Linking from 'expo-linking';
 import * as Notifications from 'expo-notifications';
 
 import { BiometricGate } from '@/components/BiometricGate';
+import { DemoSessionBanner } from '@/components/DemoSessionBanner';
 import { DesktopShell, useIsDesktopSurface } from '@/components/DesktopShell';
 import { completeAlpacaOAuth, brokerConnectionsKey } from '@/hooks/useBrokerConnections';
 import { usePushRegistration } from '@/hooks/usePushRegistration';
-import { registerAuthSnapshot } from '@/lib/api';
+import { registerAuthSnapshot, request } from '@/lib/api';
+import { hasDemoParamInUrl, readAndStripDemoParam } from '@/lib/demoSession';
 import { queryClient } from '@/lib/queryClient';
 import { useAuthStore } from '@/stores/authStore';
 import { useThemeStore } from '@/stores/themeStore';
@@ -105,11 +109,22 @@ function RootGate() {
   // no-op until the user is authenticated + biometric-unlocked.
   usePushRegistration();
 
+  // True for exactly the render(s) between "the page loaded with `?demo=`
+  // in the URL" and "DemoSessionHandler's exchange settled" — see that
+  // component's docstring for why AuthBootstrap/AuthRouteGuard both need
+  // to know this. Computed once from the raw URL (not Expo Router's own
+  // param resolution — see `hasDemoParamInUrl`), so it's already correct
+  // before any child (including a data-fetching screen under `Slot`) gets
+  // a chance to mount. Always false on native and for every normal load.
+  const [demoPending, setDemoPending] = useState(() => hasDemoParamInUrl());
+
   return (
-    <AuthBootstrap>
+    <AuthBootstrap demoPending={demoPending}>
       <DeepLinkHandler />
       <PushTapHandler />
-      <AuthRouteGuard>
+      <DemoSessionHandler onSettled={() => setDemoPending(false)} />
+      <DemoSessionBanner />
+      <AuthRouteGuard demoPending={demoPending}>
         <BiometricGate enabled={isAuthed}>
           {/* Wide web + a live session → the Platinum Glass desktop tree
               REPLACES the router subtree. Everything else (native, narrow
@@ -141,8 +156,21 @@ function RootGate() {
  * its failure handler ran `clearAll()` and dropped status back to
  * 'unauthenticated' — silently logging the user back out immediately after
  * a successful login, with no error shown anywhere to explain why.
+ *
+ * Also skipped while `demoPending` — a `?demo=` judge link lands on a
+ * normal data-bearing route (Home), not a dedicated intermediary screen
+ * like `/auth/verify`, so `restore()` would otherwise race
+ * `DemoSessionHandler`'s exchange the exact same way. A demo session never
+ * has a stored refresh token to restore anyway (docs/IMPL_DEMO_SESSION.md
+ * §2.2 — "no refresh token"), so skipping `restore()` here costs nothing.
  */
-function AuthBootstrap({ children }: { children: React.ReactNode }) {
+function AuthBootstrap({
+  children,
+  demoPending,
+}: {
+  children: React.ReactNode;
+  demoPending: boolean;
+}) {
   const restore = useAuthStore((s) => s.restore);
   const segments = useSegments();
   const params = useGlobalSearchParams<{ email?: string; token?: string }>();
@@ -151,10 +179,12 @@ function AuthBootstrap({ children }: { children: React.ReactNode }) {
     Boolean(params.email && params.token);
 
   useEffect(() => {
-    if (isRedeemingMagicLink) return;
+    if (isRedeemingMagicLink || demoPending) return;
     void restore();
-    // restore is stable (Zustand setter); isRedeemingMagicLink is read once
-    // at mount (this route doesn't change under us) — intentional one-shot.
+    // restore is stable (Zustand setter); isRedeemingMagicLink/demoPending
+    // are read once at mount (this route doesn't change under us, and
+    // demoPending's initial value is exactly what we want here) —
+    // intentional one-shot.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   return <>{children}</>;
@@ -164,7 +194,13 @@ function AuthBootstrap({ children }: { children: React.ReactNode }) {
  * Redirects /(tabs) → /auth/login when unauthenticated, and /auth/* →
  * /(tabs) when authenticated.
  */
-function AuthRouteGuard({ children }: { children: React.ReactNode }) {
+function AuthRouteGuard({
+  children,
+  demoPending,
+}: {
+  children: React.ReactNode;
+  demoPending: boolean;
+}) {
   const status = useAuthStore((s) => s.status);
   const segments = useSegments();
   const router = useRouter();
@@ -178,6 +214,15 @@ function AuthRouteGuard({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (isDesktop) return;
     if (!rootNavigationState?.key) return;
+    // A `?demo=` link lands on a normal route (e.g. Home), whose own
+    // queries fire with no access token yet and can flip `status` to
+    // 'unauthenticated' well before DemoSessionHandler's POST /auth/demo
+    // round-trip resolves (there's no stored refresh token to race
+    // against, so that flip is fast). Without this guard that transient
+    // 'unauthenticated' bounces the judge to /auth/login and back the
+    // instant the exchange succeeds — a visible flash this guard exists
+    // to prevent.
+    if (demoPending) return;
     const inAuthGroup = segments[0] === 'auth';
 
     if (status === 'unauthenticated' && !inAuthGroup) {
@@ -185,7 +230,7 @@ function AuthRouteGuard({ children }: { children: React.ReactNode }) {
     } else if (status === 'authenticated' && inAuthGroup) {
       router.replace('/');
     }
-  }, [status, segments, router, rootNavigationState?.key, isDesktop]);
+  }, [status, segments, router, rootNavigationState?.key, isDesktop, demoPending]);
 
   return <>{children}</>;
 }
@@ -267,6 +312,82 @@ function DeepLinkHandler() {
     const sub = Linking.addEventListener('url', (event) => void handle(event.url));
     return () => sub.remove();
   }, [router, queryClientInstance, userId]);
+
+  return null;
+}
+
+/**
+ * Demo-session redemption (docs/IMPL_DEMO_SESSION.md §2.4).
+ *
+ * On load, a `?demo=<token>` query param (the judge link) is exchanged via
+ * POST /auth/demo for a real session, stored through the EXACT SAME
+ * `signIn()` path a magic-link redemption uses (see auth/verify.tsx) — no
+ * parallel storage. The query param is stripped from the address bar the
+ * instant it's read (`readAndStripDemoParam`, before the POST is even
+ * awaited) so it never lingers in the URL or rides along in a `Referer`
+ * header on whatever navigation happens next, win or lose.
+ *
+ * `onSettled` clears the parent's `demoPending` flag once the exchange
+ * resolves either way — see `AuthRouteGuard`'s docstring for why that flag
+ * needs to exist at all.
+ *
+ * Module-level (not component state) `demoExchangeAttempted` guard for the
+ * same reason auth/verify.tsx's `redeemedPairs` is module-level: a
+ * `useRef` does not survive a remount (Fast Refresh in dev, or a
+ * re-render of the router tree before this component settles), and this
+ * must fire at most once per page load regardless. Unlike a magic-link
+ * token, the demo token is meant to be reused (one link, many judges) —
+ * this guard is only about not double-firing within a single page load,
+ * not about one-shot redemption.
+ */
+let demoExchangeAttempted = false;
+
+interface DemoIssuedTokensResponse {
+  userId: string;
+  email: string;
+  accessToken: string;
+  refreshToken: string;
+  accessExpiresInSeconds: number;
+  refreshExpiresInSeconds: number;
+  /** Set by the demo exchange; absent from every normal login response. */
+  authMethod?: string;
+}
+
+function DemoSessionHandler({ onSettled }: { onSettled: () => void }) {
+  const params = useGlobalSearchParams<{ demo?: string }>();
+  const signIn = useAuthStore((s) => s.signIn);
+  const restore = useAuthStore((s) => s.restore);
+
+  useEffect(() => {
+    const token = params.demo;
+    if (!token || demoExchangeAttempted) return;
+    demoExchangeAttempted = true;
+
+    // Strip first — before the exchange even starts — so the token is out
+    // of the address bar as early as possible, regardless of how long the
+    // POST takes or whether it succeeds.
+    readAndStripDemoParam();
+
+    void (async () => {
+      try {
+        const issued = await request<DemoIssuedTokensResponse>('/api/v1/auth/demo', {
+          method: 'POST',
+          body: { token },
+          skipAuth: true,
+        });
+        await signIn(issued);
+      } catch {
+        // Dead/expired/malformed link — the judge just re-clicks it (the
+        // link is reusable, unlike a one-shot magic link). Fall back to the
+        // normal restore path so an unrelated existing session (or a clean
+        // "please log in") still resolves instead of hanging at 'idle'.
+        void restore();
+      } finally {
+        onSettled();
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.demo]);
 
   return null;
 }

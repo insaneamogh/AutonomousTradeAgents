@@ -33,6 +33,10 @@ export type AuthStatus = 'idle' | 'restoring' | 'authenticated' | 'unauthenticat
 export interface AuthUser {
   userId: string;
   email: string;
+  /** Present + `'demo'` only for a read-only judge session
+   * (docs/IMPL_DEMO_SESSION.md) — mirrored from the server's
+   * `AuthedUser.auth_method`. Absent for every normal login. */
+  authMethod?: string;
 }
 
 interface IssuedTokensResponse {
@@ -42,6 +46,9 @@ interface IssuedTokensResponse {
   refreshToken: string;
   accessExpiresInSeconds: number;
   refreshExpiresInSeconds: number;
+  /** Only set by the demo-session exchange (`/api/v1/auth/demo`). A normal
+   * magic-link/Google/refresh response simply omits this field. */
+  authMethod?: string;
 }
 
 /**
@@ -157,10 +164,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   signIn: async (issued: IssuedTokensResponse) => {
     await saveRefreshToken(issued.refreshToken);
-    await savePersistedUser({ userId: issued.userId, email: issued.email });
+    await savePersistedUser({
+      userId: issued.userId,
+      email: issued.email,
+      authMethod: issued.authMethod,
+    });
     set({
       status: 'authenticated',
-      user: { userId: issued.userId, email: issued.email },
+      user: { userId: issued.userId, email: issued.email, authMethod: issued.authMethod },
       accessToken: issued.accessToken,
     });
   },

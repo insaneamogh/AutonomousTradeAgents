@@ -49,6 +49,10 @@ const store = Platform.OS === 'web' ? webStore : SecureStore;
 interface PersistedUser {
   userId: string;
   email: string;
+  /** Present + `'demo'` only for a read-only judge session
+   * (docs/IMPL_DEMO_SESSION.md). Absent for every normal login — purely
+   * additive, so an older persisted record still parses fine. */
+  authMethod?: string;
 }
 
 /** Save the refresh token. Called by the auth store on successful login + every refresh rotation. */

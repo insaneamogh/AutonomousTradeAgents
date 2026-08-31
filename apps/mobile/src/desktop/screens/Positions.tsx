@@ -2,6 +2,7 @@
 
 import { useAccount } from '@/hooks/useAccount';
 import { useClosePosition, useOpenPositions } from '@/hooks/usePositions';
+import { DEMO_DISABLED_REASON, useIsDemoSession } from '@/lib/demoSession';
 
 import { ago, signedPct, signedUsd, tone, usd } from '../format';
 import {
@@ -27,6 +28,7 @@ export function PositionsScreen() {
   const account = useAccount();
   const close = useClosePosition();
   const [selected, setSelected] = useState<string | null>(null);
+  const isDemo = useIsDemoSession();
 
   if (positions.isError) {
     return (
@@ -46,7 +48,11 @@ export function PositionsScreen() {
     <>
       <PageHead
         title="Positions"
-        sub="Everything the agent is holding, and who owns each exit."
+        sub={
+          isDemo
+            ? `${DEMO_DISABLED_REASON} — closing and cancelling are turned off.`
+            : 'Everything the agent is holding, and who owns each exit.'
+        }
         right={<Pill tone={rows.length > 0 ? 'bull' : 'neutral'}>{rows.length} OPEN</Pill>}
       />
 
@@ -183,7 +189,8 @@ export function PositionsScreen() {
                             size="sm"
                             kind={p.status === 'pending_fill' ? 'secondary' : 'primary'}
                             onClick={() => close.mutate(p.decisionId!)}
-                            disabled={close.isPending}
+                            disabled={close.isPending || isDemo}
+                            title={isDemo ? DEMO_DISABLED_REASON : undefined}
                             ariaLabel={
                               p.status === 'pending_fill'
                                 ? `Cancel the working ${p.symbol} order`

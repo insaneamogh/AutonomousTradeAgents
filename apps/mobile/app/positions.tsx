@@ -15,7 +15,9 @@ import { ApiError } from '@/lib/api';
 import { EmptyState, ErrorState, Skeleton, cn } from '@app/ui';
 
 import { DirectionPill, HeroHeadline, HeroSub, Tile, TileLabel } from '@/components/bento';
+import { ClosePositionButton } from '@/components/ClosePositionButton';
 import { useClosePosition, useOpenPositions } from '@/hooks/usePositions';
+import { DEMO_DISABLED_REASON, useIsDemoSession } from '@/lib/demoSession';
 
 function money(n: number | null): string {
   if (n == null) return '—';
@@ -50,6 +52,7 @@ export default function PositionsScreen() {
   const router = useRouter();
   const { data, isLoading, isError, refetch } = useOpenPositions();
   const close = useClosePosition();
+  const isDemo = useIsDemoSession();
   const list = data ?? [];
 
   const confirmClose = (decisionId: string, symbol: string, qty: number, pending: boolean) => {
@@ -109,9 +112,11 @@ export default function PositionsScreen() {
         <View>
           <HeroHeadline>Positions</HeroHeadline>
           <HeroSub>
-            {list.length > 0
-              ? `${list.length} open position${list.length === 1 ? '' : 's'} the agent is managing.`
-              : 'No open agent positions right now.'}
+            {isDemo
+              ? `${DEMO_DISABLED_REASON} — closing and cancelling are turned off.`
+              : list.length > 0
+                ? `${list.length} open position${list.length === 1 ? '' : 's'} the agent is managing.`
+                : 'No open agent positions right now.'}
           </HeroSub>
         </View>
 
@@ -219,33 +224,16 @@ export default function PositionsScreen() {
                 )}
 
                 {p.decisionId ? (
-                  <Pressable
+                  <ClosePositionButton
+                    symbol={p.symbol}
+                    qty={p.qty}
+                    pending={p.status === 'pending_fill'}
+                    busy={busy}
+                    disabledForDemo={isDemo}
                     onPress={() =>
                       confirmClose(p.decisionId!, p.symbol, p.qty, p.status === 'pending_fill')
                     }
-                    disabled={busy}
-                    accessibilityRole="button"
-                    accessibilityLabel={
-                      p.status === 'pending_fill'
-                        ? `Cancel the working ${p.symbol} order`
-                        : `Close ${p.qty} ${p.symbol} now`
-                    }
-                    className={cn(
-                      'mt-1 min-h-[44px] items-center justify-center rounded-lg',
-                      'border border-hairline dark:border-hairline-dark',
-                      busy && 'opacity-50',
-                    )}
-                  >
-                    <Text className="text-[13px] font-medium text-text-primary dark:text-text-primary-dark">
-                      {busy
-                        ? p.status === 'pending_fill'
-                          ? 'Cancelling…'
-                          : 'Closing…'
-                        : p.status === 'pending_fill'
-                          ? 'Cancel order'
-                          : 'Close now'}
-                    </Text>
-                  </Pressable>
+                  />
                 ) : (
                   <Text className="mt-1 text-[10px] text-text-tertiary dark:text-text-tertiary-dark">
                     Held at the broker with no council decision behind it — close it
