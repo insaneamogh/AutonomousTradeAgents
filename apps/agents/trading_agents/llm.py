@@ -203,6 +203,84 @@ class LLM:
         )
         return resp
 
+    async def complete_tools(
+        self,
+        *,
+        system: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        model: str = Model.SONNET,
+        max_tokens: int = 2048,
+        tool_choice: dict[str, Any] | None = None,
+        cache_system: bool = True,
+        council_run_id: str | None = None,
+        agent_decision_id: str | None = None,
+        user_id: str | None = None,
+    ) -> LLMResponse:
+        """One tool-enabled turn. The LOOP lives in the caller, not here —
+        this method is a single request/response so the caller owns how
+        many rounds it is willing to pay for (see ``llm_loop.run_tool_loop``).
+
+        Unlike ``complete()``, ``messages`` is caller-supplied rather than
+        hardcoded to a single user turn — a tool loop needs to append the
+        assistant's ``tool_use`` turn and the following ``tool_result`` turn
+        onto the same list across rounds.
+        """
+        if self._mock:
+            # The mock is TEXT ONLY (see `_mock_response`) — it never emits
+            # a `tool_use` block. `run_tool_loop` terminates the round trip
+            # on "no tool calls"; a mock that emitted one would loop until
+            # `max_rounds` on every test that touches this path.
+            resp = _mock_response(system=system, user=_flatten(messages), model=model)
+            await _record_to_ledger(
+                system,
+                resp,
+                is_mock=True,
+                council_run_id=council_run_id,
+                agent_decision_id=agent_decision_id,
+                user_id=user_id,
+            )
+            return resp
+
+        client = self._get_client()
+        system_blocks: list[dict[str, Any]] = [{"type": "text", "text": system}]
+        if cache_system:
+            system_blocks[0]["cache_control"] = {"type": "ephemeral"}
+
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "system": system_blocks,
+            "messages": messages,
+            "temperature": float(os.environ.get("LLM_TEMPERATURE", "0.0")),
+            "tools": tools,
+        }
+        if tool_choice is not None:
+            kwargs["tool_choice"] = tool_choice
+        msg = await client.messages.create(**kwargs)
+
+        text, tool_calls = _extract_blocks(msg)
+        usage = getattr(msg, "usage", None)
+        resp = LLMResponse(
+            text=text,
+            model=model,
+            input_tokens=getattr(usage, "input_tokens", 0) if usage else 0,
+            output_tokens=getattr(usage, "output_tokens", 0) if usage else 0,
+            cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) if usage else 0,
+            cache_creation_tokens=getattr(usage, "cache_creation_input_tokens", 0) if usage else 0,
+            tool_calls=tool_calls,
+            stop_reason=getattr(msg, "stop_reason", None),
+        )
+        await _record_to_ledger(
+            system,
+            resp,
+            is_mock=False,
+            council_run_id=council_run_id,
+            agent_decision_id=agent_decision_id,
+            user_id=user_id,
+        )
+        return resp
+
     @staticmethod
     def parse_json(text: str) -> dict[str, Any]:
         """Lenient JSON parse — strips Markdown fences if the model wrapped its output."""
@@ -318,6 +396,30 @@ def _cost_of(resp: LLMResponse) -> float | None:
 # ─────────────────────────────────────────────────────────────────────
 # Mock response generator — keyed on system-prompt keywords
 # ─────────────────────────────────────────────────────────────────────
+
+
+def _flatten(messages: list[dict[str, Any]]) -> str:
+    """Pull one representative user-turn string out of a tool loop's
+    ``messages`` list for ``_mock_response`` to key off of.
+
+    The first turn is always ``{"role": "user", "content": <str>}`` (see
+    ``llm_loop.run_tool_loop``); a later round instead appends a
+    ``tool_result`` block list. Walk backward so the most recent user turn
+    wins either way, and flatten a block list to one string.
+    """
+    for msg in reversed(messages):
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = [
+                str(block.get("content", block)) if isinstance(block, dict) else str(block)
+                for block in content
+            ]
+            return "\n".join(parts)
+    return ""
 
 
 def _extract_required_side(user: str) -> str:
