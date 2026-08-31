@@ -30,6 +30,7 @@ from app.services.orders.position_manager import (
     _option_exit_peak_update_stmt,
     _persist_option_exit_peak,
     _ratchet_outcome_for,
+    manage_positions_for_user,
 )
 from broker.types import Side
 from engine.options.exits import RatchetOutcome
@@ -435,6 +436,163 @@ async def test_manage_positions_persists_the_peak_only_when_it_advanced(
 
     assert count == 0  # both hold — nothing closes this tick
     assert persisted == ["AAA"]  # only the position whose peak actually moved
+
+
+# ── Escalation wiring (docs/IMPL_OPTIONS_AGENTS.md §5) ─────────────────
+#
+# The escalation LOGIC (trigger detection, rate limits, the fail-safe) is
+# unit- and integration-tested in apps/agents/tests/test_options_agents.py
+# against trading_agents.options.escalation directly. What belongs HERE is
+# narrower: does manage_positions_for_user call the escalation check AT
+# ALL, for the RIGHT decisions, with the RIGHT arguments, and does a
+# failure inside it get swallowed the same way _persist_option_exit_peak's
+# already is? `maybe_escalate_option_position` is monkeypatched to a fake
+# throughout — driving the REAL LLM/guard path through here would need
+# `is_us_market_open(datetime.now(UTC))` to be true at whatever real
+# moment the suite happens to run, which is exactly the environment-
+# dependent flakiness this split avoids.
+
+
+async def test_manage_positions_calls_escalation_when_ratchet_holds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recent = datetime.now(UTC) - timedelta(hours=1)
+    d = _option_decision(occ="AAA250101C00100000", days_held=1)
+    d.symbol = "AAA"
+    d.triggered_at = recent
+    d.user_responded_at = recent
+
+    session = MagicMock()
+    session.execute = AsyncMock(
+        side_effect=[_ScalarsResult([d]), _ScalarOneResult(None)]
+    )
+    session_cm = _FakeSessionCM()
+    session_cm.session = session
+
+    monkeypatch.setattr(
+        position_manager_mod, "_option_pl_pct_by_symbol",
+        AsyncMock(return_value={"AAA250101C00100000": 40.0}),  # armed, HOLD
+    )
+    monkeypatch.setattr(position_manager_mod, "_persist_option_exit_peak", AsyncMock())
+
+    calls: list[dict[str, Any]] = []
+
+    async def _fake_maybe_escalate(**kwargs: Any) -> Any:
+        calls.append(kwargs)
+        return SimpleNamespace(should_escalate=True, material_change="ratchet_armed", reason=None)
+
+    monkeypatch.setattr(
+        position_manager_mod, "maybe_escalate_option_position", _fake_maybe_escalate
+    )
+
+    budget = object()  # a plain sentinel — this test only checks identity
+    llm = object()
+    guard = object()
+    count = await manage_positions_for_user(
+        user_id="00000000-0000-0000-0000-000000000001",
+        session_factory=lambda: session_cm,
+        caps=RiskCaps(),
+        escalation_budget=budget,
+        llm=llm,
+        guard=guard,
+    )
+
+    assert count == 0  # the ratchet held — nothing closes
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["decision"] is d
+    assert call["dte"] is None  # this fixture's proposal has no expiryDate
+    assert call["budget"] is budget  # threaded through unchanged, not rebuilt
+    assert call["llm"] is llm
+    assert call["guard"] is guard
+    assert call["ratchet_outcome"].armed is True
+    assert call["ratchet_outcome"].action == "HOLD"
+
+
+async def test_manage_positions_never_escalates_an_equity_position(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`ratchet_outcome is None` for a non-option decision — the
+    escalation check must never even be attempted, since "armed"/"trail
+    line" mean nothing for an equity position."""
+    # `_decision`'s own `days_held` is relative to the FIXED `NOW`
+    # constant, but `manage_positions_for_user` computes `now` as the REAL
+    # wall clock (see test_manage_positions_persists_the_peak_only_when_it_advanced's
+    # own docstring for this exact gotcha) — an un-adjusted `triggered_at`
+    # would fire the TIME STOP instead, routing this decision to the close
+    # path and never reaching the branch this test means to exercise.
+    d = _decision(days_held=1)
+    recent = datetime.now(UTC) - timedelta(hours=1)
+    d.triggered_at = recent
+    d.user_responded_at = recent
+
+    session = MagicMock()
+    session.execute = AsyncMock(
+        side_effect=[_ScalarsResult([d]), _ScalarOneResult(None)]
+    )
+    session_cm = _FakeSessionCM()
+    session_cm.session = session
+
+    calls: list[Any] = []
+
+    async def _fake_maybe_escalate(**kwargs: Any) -> Any:
+        calls.append(kwargs)
+        raise AssertionError("must not be called for an equity position")
+
+    monkeypatch.setattr(
+        position_manager_mod, "maybe_escalate_option_position", _fake_maybe_escalate
+    )
+
+    count = await manage_positions_for_user(
+        user_id="00000000-0000-0000-0000-000000000001",
+        session_factory=lambda: session_cm,
+        caps=RiskCaps(),
+    )
+
+    assert count == 0
+    assert calls == []
+
+
+async def test_manage_positions_swallows_an_escalation_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mirrors the existing "continuing without it" convention right next
+    to this call site (`_persist_option_exit_peak`'s own try/except): an
+    exception raised inside the escalation check must not crash the rest
+    of this user's tick, and must not be mistaken for a reason to close."""
+    recent = datetime.now(UTC) - timedelta(hours=1)
+    d = _option_decision(occ="AAA250101C00100000", days_held=1)
+    d.symbol = "AAA"
+    d.triggered_at = recent
+    d.user_responded_at = recent
+
+    session = MagicMock()
+    session.execute = AsyncMock(
+        side_effect=[_ScalarsResult([d]), _ScalarOneResult(None)]
+    )
+    session_cm = _FakeSessionCM()
+    session_cm.session = session
+
+    monkeypatch.setattr(
+        position_manager_mod, "_option_pl_pct_by_symbol",
+        AsyncMock(return_value={"AAA250101C00100000": 40.0}),
+    )
+    monkeypatch.setattr(position_manager_mod, "_persist_option_exit_peak", AsyncMock())
+
+    async def _raising_maybe_escalate(**_kwargs: Any) -> Any:
+        raise RuntimeError("simulated escalation bug")
+
+    monkeypatch.setattr(
+        position_manager_mod, "maybe_escalate_option_position", _raising_maybe_escalate
+    )
+
+    count = await manage_positions_for_user(
+        user_id="00000000-0000-0000-0000-000000000001",
+        session_factory=lambda: session_cm,
+        caps=RiskCaps(),
+    )
+
+    assert count == 0  # the tick completed despite the escalation bug
 
 
 # ── close_reason length — String(20) in the DB ───────────────────────────

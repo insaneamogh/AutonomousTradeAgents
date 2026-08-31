@@ -23,18 +23,35 @@ from trading_agents.options.agents import (
     run_bull_and_bear,
     run_options_agents,
 )
-from trading_agents.options.prompts import OPTIONS_BEAR, OPTIONS_BULL
+from trading_agents.options.escalation import (
+    EscalationBudget,
+    EscalationOutcome,
+    EscalationTrigger,
+    PositionBrief,
+    evaluate_escalation_trigger,
+    maybe_escalate,
+    run_escalation,
+)
+from trading_agents.options.prompts import OPTIONS_BEAR, OPTIONS_BULL, OPTIONS_ESCALATION
 from trading_agents.options.resolution import AgentView, Resolution, resolve
 
 __all__ = [
     "OPTIONS_BEAR",
     "OPTIONS_BULL",
+    "OPTIONS_ESCALATION",
     "AgentView",
+    "EscalationBudget",
+    "EscalationOutcome",
+    "EscalationTrigger",
     "OptionsAgentsResult",
+    "PositionBrief",
     "Resolution",
+    "evaluate_escalation_trigger",
+    "maybe_escalate",
     "resolve",
     "run_bear",
     "run_bull",
     "run_bull_and_bear",
+    "run_escalation",
     "run_options_agents",
 ]

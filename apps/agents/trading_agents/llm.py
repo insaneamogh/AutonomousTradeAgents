@@ -560,6 +560,22 @@ def _mock_response(*, system: str, user: str, model: str) -> LLMResponse:
                 "funnel, but re-check the spread at fill time within 3 weeks."
             ),
         }
+    elif "you are the options escalation agent" in role_line:
+        # Deliberately NEVER a tool call — see this function's own
+        # docstring ("MOCK is TEXT ONLY") and options/escalation.py's
+        # module docstring: this is the mechanism the fail-safe (§5.3)
+        # relies on in MOCK mode. The body's shape doesn't matter to any
+        # caller (nothing parses this as JSON — the escalation hop only
+        # ever looks at `resp.tool_calls`, which stays empty for every
+        # role), but HOLD is the honest canned answer for a role whose
+        # entire job is "usually do nothing."
+        body = {
+            "action": "HOLD",
+            "reason": (
+                "MOCK: standing pat — the deterministic trailing ratchet is "
+                "already managing this position every tick."
+            ),
+        }
     elif "you are the reflection agent" in role_line:
         # Mock review — small positive nudge with a generic lesson. The
         # store will clamp regardless; we just need a deterministic shape.

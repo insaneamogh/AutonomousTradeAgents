@@ -34,6 +34,7 @@ from unittest.mock import patch
 
 import pytest
 from test_tool_guard import (
+    MARKET_CLOSED_NOW,
     MARKET_OPEN_NOW,
     OPEN_ARGS,
     FakeBroker,
@@ -45,6 +46,7 @@ from test_tool_guard import (
 from broker.types import Position
 from broker.types import Side as BrokerSide
 from engine.features.technicals import DailyBar
+from engine.options.exits import option_ratchet_signal
 from engine.options.selection import ContractQuote
 from engine.risk import MockRiskContextProvider, RiskCaps
 from trading_agents.cost_ledger import infer_role_from_system_prompt
@@ -52,7 +54,19 @@ from trading_agents.llm import LLM, LLMResponse
 from trading_agents.llm import ToolCall as LLMToolCall
 from trading_agents.memory import InMemoryDecisionLog
 from trading_agents.options.agents import run_bull_and_bear, run_options_agents
-from trading_agents.options.prompts import OPTIONS_BEAR, OPTIONS_BULL
+from trading_agents.options.escalation import (
+    DEFAULT_COOLDOWN_S,
+    DEFAULT_MAX_PER_DAY,
+    EscalationBudget,
+    PositionBrief,
+    _render_escalation_brief,
+    build_position_brief,
+    evaluate_escalation_trigger,
+    load_escalation_state,
+    maybe_escalate,
+    run_escalation,
+)
+from trading_agents.options.prompts import OPTIONS_BEAR, OPTIONS_BULL, OPTIONS_ESCALATION
 from trading_agents.options.resolution import AgentView, resolve
 from trading_agents.options.tools import readonly
 from trading_agents.options.tools import registry as options_registry
@@ -1431,3 +1445,658 @@ async def test_full_pass_bull_and_bear_agree_and_a_trade_opens(monkeypatch: pyte
     assert opens[0]["output"]["is_error"] is False
     assert opens[0]["output"]["content"]["occ_symbol"] == "NVDA260918C00225000"
     assert opens[0]["output"]["content"]["qty"] >= 1
+
+
+# ─────────────────────────────────────────────────────────────────────
+# The escalation loop (options/escalation.py) — docs/IMPL_OPTIONS_AGENTS.md
+# §5 / docs/PLAN_OPTIONS_AGENTS.md §5. Four groups:
+#   1. Role-phrase registration, same reasoning as Bull/Bear above.
+#   2. The pure material-change trigger, one test per named trigger plus a
+#      quiet tick that must NOT fire.
+#   3. Rate limits: auto-trade/paper/market gates, cooldown, daily cap,
+#      and the fleet-tick budget.
+#   4. End-to-end through `maybe_escalate` — the fail-safe (error -> no
+#      order, protection unchanged), MOCK mode (same), and a real
+#      TIGHTEN_STOP round trip proving the escalation's own bookkeeping
+#      write does not clobber a concurrent guard write to the same key.
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _permissive_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Clears every gate `_mutation_gate_reason` checks EXCEPT market
+    hours (the caller still picks `now`) — used by every trigger/rate-
+    limit test that isn't itself testing one of these three gates."""
+    monkeypatch.setenv("AUTO_TRADE_ENABLED", "1")
+    monkeypatch.delenv("TRADING_MODE", raising=False)
+    monkeypatch.delenv("LIVE_TRADING_ENABLED", raising=False)
+
+
+def _ratchet(*, pl: float | None, peak: float | None) -> Any:
+    """Real `option_ratchet_signal` output at RiskCaps()'s default knobs
+    (arm 35%, giveback 30%, hard TP 150%, stop 50%) — using the actual
+    ratchet math rather than hand-built RatchetOutcome instances keeps
+    every fixture below a combination the real system could actually
+    produce."""
+    return option_ratchet_signal(
+        unrealized_pl_pct=pl, peak_pl_pct=peak, arm_pct=35.0, giveback_frac=0.30,
+        hard_take_profit_pct=150.0, stop_loss_pct=50.0,
+    )
+
+
+# ── 1. Role-phrase registration ─────────────────────────────────────
+
+
+async def test_escalation_role_resolves_in_mock_and_cost_ledger(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    llm = LLM(api_key=None)
+    assert llm.mock is True
+
+    resp = await llm.complete(system=OPTIONS_ESCALATION, user="decision_id: x\n")
+    body = json.loads(resp.text)
+    assert "action" in body, f"got the generic fallback mock shape: {body!r}"
+
+    assert infer_role_from_system_prompt(OPTIONS_ESCALATION) == "options_escalation"
+
+
+# ── 2. The material-change trigger ──────────────────────────────────
+
+
+def test_ratchet_armed_trigger_fires(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Crossing +35% for the first time both arms the ratchet AND is the
+    single named trigger docs §5.1 calls "the ratchet just armed".
+    Revert-checked: inverting `not was_armed_before` to `was_armed_before`
+    in `_detect_material_change` made this test fail (`should_escalate is
+    False`, `material_change is None`) — restored after confirming red."""
+    _permissive_env(monkeypatch)
+    outcome = _ratchet(pl=40.0, peak=None)
+    assert outcome.armed  # sanity: 40 >= the 35% arm threshold
+
+    trigger = evaluate_escalation_trigger(
+        ratchet_outcome=outcome, was_armed_before=False, dte=30,
+        last_escalation_at=None, escalations_today=0, last_escalated_peak_pct=None,
+        now=MARKET_OPEN_NOW,
+    )
+    assert trigger.should_escalate is True
+    assert trigger.material_change == "ratchet_armed"
+
+
+def test_quiet_tick_does_not_escalate(monkeypatch: pytest.MonkeyPatch) -> None:
+    _permissive_env(monkeypatch)
+    outcome = _ratchet(pl=10.0, peak=10.0)
+    assert not outcome.armed
+
+    trigger = evaluate_escalation_trigger(
+        ratchet_outcome=outcome, was_armed_before=False, dte=30,
+        last_escalation_at=None, escalations_today=0, last_escalated_peak_pct=None,
+        now=MARKET_OPEN_NOW,
+    )
+    assert trigger.should_escalate is False
+    assert trigger.material_change is None
+    assert trigger.reason == "no_material_change"
+
+
+def test_peak_advanced_trigger_fires(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Already armed (so `ratchet_armed` does NOT re-fire); peak has
+    advanced >=15pp since the persisted `last_escalated_peak_pct`."""
+    _permissive_env(monkeypatch)
+    outcome = _ratchet(pl=55.0, peak=40.0)
+    assert outcome.armed
+    assert outcome.peak_pl_pct == 55.0
+
+    trigger = evaluate_escalation_trigger(
+        ratchet_outcome=outcome, was_armed_before=True, dte=30,
+        last_escalation_at=None, escalations_today=0, last_escalated_peak_pct=40.0,
+        now=MARKET_OPEN_NOW,
+    )
+    assert trigger.should_escalate is True
+    assert trigger.material_change == "peak_advanced"
+
+
+def test_peak_advanced_below_threshold_does_not_fire(monkeypatch: pytest.MonkeyPatch) -> None:
+    _permissive_env(monkeypatch)
+    outcome = _ratchet(pl=50.0, peak=40.0)  # advanced 10pp, below the 15pp trigger
+    assert outcome.armed
+
+    trigger = evaluate_escalation_trigger(
+        ratchet_outcome=outcome, was_armed_before=True, dte=30,
+        last_escalation_at=None, escalations_today=0, last_escalated_peak_pct=40.0,
+        now=MARKET_OPEN_NOW,
+    )
+    assert trigger.should_escalate is False
+    assert trigger.reason == "no_material_change"
+
+
+def test_near_trail_line_trigger_fires(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Peak 100 (persisted, unchanged this tick), 30% giveback -> trail
+    line 70. Current premium 75 is a HOLD (above the trail line) but
+    within 10pp of it."""
+    _permissive_env(monkeypatch)
+    outcome = _ratchet(pl=75.0, peak=100.0)
+    assert outcome.action == "HOLD"
+    assert outcome.trail_line_pct == pytest.approx(70.0)
+    assert not outcome.peak_advanced  # 75 < persisted peak 100
+
+    trigger = evaluate_escalation_trigger(
+        ratchet_outcome=outcome, was_armed_before=True, dte=30,
+        last_escalation_at=None, escalations_today=0, last_escalated_peak_pct=100.0,
+        now=MARKET_OPEN_NOW,
+    )
+    assert trigger.should_escalate is True
+    assert trigger.material_change == "near_trail_line"
+
+
+def test_dte_low_trigger_fires(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fires even on an otherwise-quiet, never-armed position."""
+    _permissive_env(monkeypatch)
+    outcome = _ratchet(pl=5.0, peak=None)
+    assert not outcome.armed
+
+    trigger = evaluate_escalation_trigger(
+        ratchet_outcome=outcome, was_armed_before=False, dte=5,
+        last_escalation_at=None, escalations_today=0, last_escalated_peak_pct=None,
+        now=MARKET_OPEN_NOW,
+    )
+    assert trigger.should_escalate is True
+    assert trigger.material_change == "dte_low"
+
+    # One DTE above the threshold: the same quiet position must NOT fire.
+    trigger_above = evaluate_escalation_trigger(
+        ratchet_outcome=outcome, was_armed_before=False, dte=6,
+        last_escalation_at=None, escalations_today=0, last_escalated_peak_pct=None,
+        now=MARKET_OPEN_NOW,
+    )
+    assert trigger_above.should_escalate is False
+
+
+# ── 3. Rate limits ───────────────────────────────────────────────────
+
+
+def test_auto_trade_disabled_blocks_escalation(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AUTO_TRADE_ENABLED", raising=False)
+    outcome = _ratchet(pl=40.0, peak=None)
+
+    trigger = evaluate_escalation_trigger(
+        ratchet_outcome=outcome, was_armed_before=False, dte=30,
+        last_escalation_at=None, escalations_today=0, last_escalated_peak_pct=None,
+        now=MARKET_OPEN_NOW,
+    )
+    assert trigger.should_escalate is False
+    assert trigger.material_change == "ratchet_armed"  # the change WAS real
+    assert trigger.reason == "auto_trade_disabled"
+
+
+def test_live_mode_blocks_escalation(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AUTO_TRADE_ENABLED", "1")
+    monkeypatch.setenv("TRADING_MODE", "live")
+    outcome = _ratchet(pl=40.0, peak=None)
+
+    trigger = evaluate_escalation_trigger(
+        ratchet_outcome=outcome, was_armed_before=False, dte=30,
+        last_escalation_at=None, escalations_today=0, last_escalated_peak_pct=None,
+        now=MARKET_OPEN_NOW,
+    )
+    assert trigger.should_escalate is False
+    assert trigger.reason == "live_mode_refused"
+
+
+def test_market_closed_blocks_escalation(monkeypatch: pytest.MonkeyPatch) -> None:
+    _permissive_env(monkeypatch)
+    outcome = _ratchet(pl=40.0, peak=None)
+
+    trigger = evaluate_escalation_trigger(
+        ratchet_outcome=outcome, was_armed_before=False, dte=30,
+        last_escalation_at=None, escalations_today=0, last_escalated_peak_pct=None,
+        now=MARKET_CLOSED_NOW,
+    )
+    assert trigger.should_escalate is False
+    assert trigger.reason == "market_closed"
+
+
+def test_cooldown_blocks_escalation(monkeypatch: pytest.MonkeyPatch) -> None:
+    _permissive_env(monkeypatch)
+    outcome = _ratchet(pl=40.0, peak=None)
+    last_escalation_at = MARKET_OPEN_NOW - timedelta(seconds=DEFAULT_COOLDOWN_S - 100)
+
+    trigger = evaluate_escalation_trigger(
+        ratchet_outcome=outcome, was_armed_before=False, dte=30,
+        last_escalation_at=last_escalation_at, escalations_today=1,
+        last_escalated_peak_pct=None, now=MARKET_OPEN_NOW,
+    )
+    assert trigger.should_escalate is False
+    assert trigger.reason == "cooldown_active"
+
+    # Just past the cooldown window: must be allowed again.
+    trigger_after = evaluate_escalation_trigger(
+        ratchet_outcome=outcome, was_armed_before=False, dte=30,
+        last_escalation_at=MARKET_OPEN_NOW - timedelta(seconds=DEFAULT_COOLDOWN_S + 1),
+        escalations_today=1, last_escalated_peak_pct=None, now=MARKET_OPEN_NOW,
+    )
+    assert trigger_after.should_escalate is True
+
+
+def test_daily_cap_blocks_escalation(monkeypatch: pytest.MonkeyPatch) -> None:
+    _permissive_env(monkeypatch)
+    outcome = _ratchet(pl=40.0, peak=None)
+
+    trigger = evaluate_escalation_trigger(
+        ratchet_outcome=outcome, was_armed_before=False, dte=30,
+        last_escalation_at=None, escalations_today=DEFAULT_MAX_PER_DAY,
+        last_escalated_peak_pct=None, now=MARKET_OPEN_NOW,
+    )
+    assert trigger.should_escalate is False
+    assert trigger.reason == "daily_cap_reached"
+
+    trigger_below = evaluate_escalation_trigger(
+        ratchet_outcome=outcome, was_armed_before=False, dte=30,
+        last_escalation_at=None, escalations_today=DEFAULT_MAX_PER_DAY - 1,
+        last_escalated_peak_pct=None, now=MARKET_OPEN_NOW,
+    )
+    assert trigger_below.should_escalate is True
+
+
+async def test_maybe_escalate_reads_cooldown_from_env_when_not_overridden(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``escalation_env_config()`` must actually be consulted by
+    ``maybe_escalate`` — a literal ``DEFAULT_COOLDOWN_S`` baked into its
+    signature would make ``OPTIONS_ESCALATION_COOLDOWN_S`` a documented
+    no-op. 1000s has elapsed since the last escalation — past the
+    DEFAULT 900s cooldown, so this would be ALLOWED if the default were
+    used; with the env override raising it to 10000s it must stay
+    blocked. Revert-checked: temporarily hardcoded
+    `cooldown_s = DEFAULT_COOLDOWN_S` at the top of `maybe_escalate`,
+    ignoring both the parameter and the env read — this test then failed
+    (`should_escalate` came back True) — restored after confirming red."""
+    _permissive_env(monkeypatch)
+    monkeypatch.setenv("OPTIONS_ESCALATION_COOLDOWN_S", "10000")
+    outcome = _ratchet(pl=40.0, peak=None)
+    decision = _decision(
+        proposal={"occSymbol": "NVDA260918C00225000", "isOption": True},
+        reasoning={
+            "option_exit": {
+                "last_escalation_at": (MARKET_OPEN_NOW - timedelta(seconds=1000)).isoformat(),
+            }
+        },
+    )
+
+    trigger = await maybe_escalate(
+        decision=decision, ratchet_outcome=outcome, dte=30, now=MARKET_OPEN_NOW,
+        budget=EscalationBudget(), llm=_ScriptedLLM(bull_view={}, bear_view={}), guard=_guard(),
+        caps=RiskCaps(options_disabled=False), session_factory=None,
+    )
+    assert trigger.should_escalate is False
+    assert trigger.reason == "cooldown_active"
+
+
+def test_escalation_budget_allows_one_then_denies() -> None:
+    budget = EscalationBudget()
+    assert budget.try_consume() is True
+    assert budget.try_consume() is False
+    assert budget.remaining == 0
+
+
+async def test_fleet_tick_budget_exhausted_denies_a_second_position(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The SAME budget instance, shared across two DIFFERENT positions in
+    one simulated fleet tick (mirroring `reconciler_fleet.py` threading
+    one `EscalationBudget` across every user's `manage_positions_for_user`
+    call) — the second material change in the tick must be denied purely
+    on the budget, with its own trigger still correctly detected."""
+    _permissive_env(monkeypatch)
+    budget = EscalationBudget()
+    outcome = _ratchet(pl=40.0, peak=None)
+
+    first = _decision(proposal={"occSymbol": "AAA260918C00100000", "isOption": True})
+    second = _decision(proposal={"occSymbol": "BBB260918C00100000", "isOption": True})
+
+    trigger_one = await maybe_escalate(
+        decision=first, ratchet_outcome=outcome, dte=30, now=MARKET_OPEN_NOW,
+        budget=budget, llm=_ScriptedLLM(bull_view={}, bear_view={}), guard=_guard(),
+        caps=RiskCaps(options_disabled=False), session_factory=None,
+    )
+    trigger_two = await maybe_escalate(
+        decision=second, ratchet_outcome=outcome, dte=30, now=MARKET_OPEN_NOW,
+        budget=budget, llm=_ScriptedLLM(bull_view={}, bear_view={}), guard=_guard(),
+        caps=RiskCaps(options_disabled=False), session_factory=None,
+    )
+
+    assert trigger_one.should_escalate is True
+    assert trigger_two.should_escalate is False
+    assert trigger_two.material_change == "ratchet_armed"  # real change, just no budget left
+    assert trigger_two.reason == "fleet_tick_budget_exhausted"
+
+
+# ── 4. End-to-end through maybe_escalate ─────────────────────────────
+
+
+class _RaisingLLM:
+    """Simulates an Anthropic outage / timeout: `complete_tools` raises
+    before ever producing a response, so `run_tool_loop` cannot possibly
+    have seen a tool call."""
+
+    async def complete_tools(self, **_kwargs: Any) -> LLMResponse:
+        raise RuntimeError("simulated Anthropic outage")
+
+
+def _option_exit_writes(session_factory: _FakeSessionFactory) -> list[dict[str, Any]]:
+    return [
+        json.loads(params["payload"])
+        for sess in session_factory.sessions
+        for stmt, params in sess.execute_log
+        if "'{option_exit}'" in str(stmt)
+    ]
+
+
+async def test_run_escalation_errored_on_llm_exception() -> None:
+    """One layer below `maybe_escalate` — `run_escalation` itself must
+    convert an LLM exception into `errored=True` with an EMPTY transcript,
+    never let it propagate."""
+    brief = PositionBrief(
+        decision_id=str(uuid.uuid4()), underlying="NVDA", entry_premium=2.20,
+        current_pl_pct=40.0, peak_pl_pct=40.0, trail_line_pct=None, armed=True,
+        dte=30, days_held=2, thesis="NVDA breaks 190 within 3 weeks.",
+        deadline=None, deadline_passed=False, trigger="ratchet_armed",
+    )
+    outcome = await run_escalation(
+        brief=brief, user_id=str(uuid.uuid4()), now=MARKET_OPEN_NOW,
+        llm=_RaisingLLM(), guard=_guard(), caps=RiskCaps(options_disabled=False),
+    )
+    assert outcome.errored is True
+    assert outcome.tool_transcript == ()
+
+
+async def test_run_escalation_mock_mode_emits_no_tool_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    llm = LLM(api_key=None)
+    assert llm.mock is True
+
+    brief = PositionBrief(
+        decision_id=str(uuid.uuid4()), underlying="NVDA", entry_premium=2.20,
+        current_pl_pct=40.0, peak_pl_pct=40.0, trail_line_pct=None, armed=True,
+        dte=30, days_held=2, thesis="NVDA breaks 190 within 3 weeks.",
+        deadline=None, deadline_passed=False, trigger="ratchet_armed",
+    )
+    outcome = await run_escalation(
+        brief=brief, user_id=str(uuid.uuid4()), now=MARKET_OPEN_NOW,
+        llm=llm, guard=_guard(), caps=RiskCaps(options_disabled=False),
+    )
+    assert outcome.errored is False
+    assert outcome.tool_transcript == ()
+
+
+async def test_escalation_failure_holds_and_places_no_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    """THE fail-safe test (docs §5.3): an LLM failure must never move a
+    position. Revert-checked: temporarily removed the try/except around
+    `run_tool_loop` in `escalation.py::run_escalation` — this test then
+    raised `RuntimeError: simulated Anthropic outage` instead of
+    completing, confirming it actually exercises the fail-safe path.
+    Restored after confirming red, then green again."""
+    _permissive_env(monkeypatch)
+    uid, did = uuid.uuid4(), uuid.uuid4()
+    option_exit_before = {
+        "stop_loss_pct": 45.0, "take_profit_pct": 80.0, "adds_this_position": 0,
+    }
+    row = _seeded_row(uid=uid, did=did, option_exit=dict(option_exit_before))
+    session_factory = _FakeSessionFactory(get_result=row)
+    broker = FakeBroker()
+    guard = _guard(session_factory=session_factory, broker_factory=lambda: broker)
+
+    decision = _decision(
+        user_id=str(uid), decision_id=str(did),
+        proposal={"occSymbol": "NVDA260918C00225000", "isOption": True},
+        reasoning={"option_exit": dict(option_exit_before)},
+    )
+    outcome = _ratchet(pl=40.0, peak=None)
+
+    trigger = await maybe_escalate(
+        decision=decision, ratchet_outcome=outcome, dte=30, now=MARKET_OPEN_NOW,
+        budget=EscalationBudget(), llm=_RaisingLLM(), guard=guard,
+        caps=RiskCaps(options_disabled=False), session_factory=session_factory,
+    )
+
+    assert trigger.should_escalate is True  # a real material change WAS present
+    assert broker.orders == []  # nothing was ever dispatched to the broker
+
+    writes = _option_exit_writes(session_factory)
+    assert writes, "expected the escalation bookkeeping write to still happen"
+    assert writes[-1]["stop_loss_pct"] == 45.0
+    assert writes[-1]["take_profit_pct"] == 80.0
+    assert writes[-1]["adds_this_position"] == 0
+
+
+async def test_mock_mode_never_escalates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mirrors `test_llm_tools.py::test_mock_never_emits_tool_use`'s
+    reasoning, through the REAL escalation path rather than
+    `complete_tools()` in isolation — MOCK mode must be safe to run this
+    specific path against in CI."""
+    _permissive_env(monkeypatch)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    llm = LLM(api_key=None)
+    assert llm.mock is True
+
+    uid, did = uuid.uuid4(), uuid.uuid4()
+    option_exit_before = {
+        "stop_loss_pct": 45.0, "take_profit_pct": 80.0, "adds_this_position": 0,
+    }
+    row = _seeded_row(uid=uid, did=did, option_exit=dict(option_exit_before))
+    session_factory = _FakeSessionFactory(get_result=row)
+    broker = FakeBroker()
+    guard = _guard(session_factory=session_factory, broker_factory=lambda: broker)
+
+    decision = _decision(
+        user_id=str(uid), decision_id=str(did),
+        proposal={"occSymbol": "NVDA260918C00225000", "isOption": True},
+        reasoning={"option_exit": dict(option_exit_before)},
+    )
+    outcome = _ratchet(pl=40.0, peak=None)
+    assert outcome.armed  # sanity: this WOULD be a "ratchet_armed" material change
+
+    trigger = await maybe_escalate(
+        decision=decision, ratchet_outcome=outcome, dte=30, now=MARKET_OPEN_NOW,
+        budget=EscalationBudget(), llm=llm, guard=guard,
+        caps=RiskCaps(options_disabled=False), session_factory=session_factory,
+    )
+
+    assert trigger.should_escalate is True
+    assert broker.orders == []  # MOCK never emits a tool_use block
+
+    writes = _option_exit_writes(session_factory)
+    assert writes[-1]["stop_loss_pct"] == 45.0
+    assert writes[-1]["take_profit_pct"] == 80.0
+    assert writes[-1]["adds_this_position"] == 0
+
+
+class _StatefulRow:
+    """Unlike `_FakeSessionFactory`'s fixed `get_result`, this row's
+    `.reasoning` actually mutates across writes — needed to prove
+    `_persist_escalation_attempt` merges over whatever the GUARD's own
+    concurrent write (TIGHTEN_STOP, via `persist_option_state`) already
+    committed, rather than clobbering it from a stale in-memory
+    snapshot. See `escalation.py::_persist_escalation_attempt`'s
+    docstring for the race this guards against.
+
+    Carries every field ``guard.py::_load_open_option_decision`` actually
+    reads (``user_id``/``closed_at``/``proposal``/``symbol``/``reasoning``/
+    ``fill_qty``) — this row is read through the REAL guard, not a stub of
+    it, so it needs the real shape.
+    """
+
+    def __init__(
+        self, *, user_id: uuid.UUID, proposal: dict[str, Any], reasoning: dict[str, Any],
+        symbol: str = "NVDA", fill_qty: int | None = 4, closed_at: datetime | None = None,
+    ) -> None:
+        self.user_id = user_id
+        self.proposal = proposal
+        self.reasoning = reasoning
+        self.symbol = symbol
+        self.fill_qty = fill_qty
+        self.closed_at = closed_at
+
+
+class _StatefulSession:
+    def __init__(self, row: _StatefulRow) -> None:
+        self._row = row
+
+    async def get(self, _model: Any, _pk: Any) -> _StatefulRow:
+        return self._row
+
+    async def execute(self, _stmt: Any, params: Any = None) -> None:
+        if params and "payload" in params:
+            # Mirrors _option_exit_merge_stmt's real jsonb_set semantics:
+            # a whole-VALUE replace of the `option_exit` key only.
+            self._row.reasoning = {
+                **self._row.reasoning, "option_exit": json.loads(params["payload"]),
+            }
+
+    async def commit(self) -> None:
+        return None
+
+    async def __aenter__(self) -> _StatefulSession:
+        return self
+
+    async def __aexit__(self, *_exc: Any) -> bool:
+        return False
+
+
+class _StatefulSessionFactory:
+    def __init__(self, row: _StatefulRow) -> None:
+        self._row = row
+
+    def __call__(self) -> _StatefulSession:
+        return _StatefulSession(self._row)
+
+
+async def test_maybe_escalate_tighten_stop_does_not_clobber_a_concurrent_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End to end through the REAL guard + REAL registry: the model calls
+    TIGHTEN_STOP, the guard allows it (30 < the current 45) and persists
+    the new stop via `tools/guard.py::persist_option_state` — THEN
+    `maybe_escalate`'s own bookkeeping write must not revert that.
+
+    Revert-checked: temporarily made `_persist_escalation_attempt` merge
+    from `current = {}` (simulating "ignore whatever is actually in the
+    DB right now") instead of the freshly-read row — this test then
+    failed (`stop_loss_pct` back to 45.0 instead of the just-tightened
+    30.0), confirming it actually exercises the fresh-read-before-merge
+    fix. Restored after confirming red, then green again.
+    """
+    monkeypatch.setenv("AUTO_TRADE_ENABLED", "1")
+    monkeypatch.delenv("TRADING_MODE", raising=False)
+    monkeypatch.delenv("LIVE_TRADING_ENABLED", raising=False)
+
+    uid, did = uuid.uuid4(), uuid.uuid4()
+    option_exit_before = {
+        "stop_loss_pct": 45.0, "take_profit_pct": 80.0, "adds_this_position": 0,
+    }
+    row = _StatefulRow(
+        user_id=uid,
+        proposal={"occSymbol": "NVDA260918C00225000", "isOption": True},
+        reasoning={
+            "option_exit": dict(option_exit_before),
+            "contract_funnel": {"stage": "kept"},  # must survive untouched too
+        },
+    )
+    session_factory = _StatefulSessionFactory(row)
+    guard = _guard(session_factory=session_factory, clock=lambda: MARKET_OPEN_NOW)
+
+    decision = _decision(
+        user_id=str(uid), decision_id=str(did),
+        proposal={"occSymbol": "NVDA260918C00225000", "isOption": True},
+        reasoning={"option_exit": dict(option_exit_before)},
+    )
+    outcome = _ratchet(pl=40.0, peak=None)
+    fake = _ScriptedLLM(
+        bull_view={}, bear_view={},
+        trade_responses=[_tool_call_response(
+            "adjust_option_position",
+            {
+                "decision_id": str(did), "action": "TIGHTEN_STOP",
+                "value": 30.0, "reason": "vol dropped",
+            },
+        )],
+    )
+
+    trigger = await maybe_escalate(
+        decision=decision, ratchet_outcome=outcome, dte=30, now=MARKET_OPEN_NOW,
+        budget=EscalationBudget(), llm=fake, guard=guard,
+        caps=RiskCaps(options_disabled=False), session_factory=session_factory,
+    )
+
+    assert trigger.should_escalate is True
+    # The guard's OWN write landed...
+    assert row.reasoning["option_exit"]["stop_loss_pct"] == 30.0
+    # ...and the escalation's bookkeeping write did NOT revert it, and did
+    # not disturb a sibling key elsewhere in `reasoning`.
+    assert row.reasoning["option_exit"]["take_profit_pct"] == 80.0
+    assert row.reasoning["option_exit"]["adds_this_position"] == 0
+    assert "last_escalation_at" in row.reasoning["option_exit"]
+    assert row.reasoning["contract_funnel"] == {"stage": "kept"}
+
+
+async def test_escalation_persists_bookkeeping_across_a_rollover_day(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`escalations_today` resets when `escalations_date` is not "today" —
+    a stale, malformed, or yesterday's counter must never suppress a
+    fresh day's escalations."""
+    _permissive_env(monkeypatch)
+    outcome = _ratchet(pl=40.0, peak=None)
+    yesterday = (MARKET_OPEN_NOW - timedelta(days=1)).date()
+
+    state = load_escalation_state(
+        {"escalations_today": DEFAULT_MAX_PER_DAY, "escalations_date": yesterday.isoformat()}
+    )
+    assert state.escalations_today == DEFAULT_MAX_PER_DAY
+
+    trigger = evaluate_escalation_trigger(
+        ratchet_outcome=outcome, was_armed_before=False, dte=30,
+        last_escalation_at=None,
+        escalations_today=0,  # what the caller passes AFTER applying the rollover
+        last_escalated_peak_pct=None, now=MARKET_OPEN_NOW,
+    )
+    assert trigger.should_escalate is True
+
+
+def test_load_escalation_state_defaults_are_safe_on_malformed_input() -> None:
+    """Garbage/missing values degrade to "never escalated" rather than
+    raising — the same defensive contract every other reader of this
+    JSONB blob in this codebase already follows."""
+    state = load_escalation_state(
+        {"last_escalation_at": "not-a-date", "escalations_today": "nonsense",
+         "last_escalated_peak_pct": "nonsense", "armed": "true"}
+    )
+    assert state.last_escalation_at is None
+    assert state.escalations_today == 0
+    assert state.last_escalated_peak_pct is None
+    assert state.was_armed is True  # "true" (a non-empty str) IS truthy — bool("true") is True
+
+
+def test_build_position_brief_reads_entry_premium_and_thesis() -> None:
+    decision = _decision(
+        proposal={
+            "occSymbol": "NVDA260918C00225000", "isOption": True,
+            "rationale": "NVDA breaks 190 within 3 weeks on volume expansion.",
+        },
+        fill_avg_price=2.20,
+    )
+    # `_decision`'s own `entered_days_ago` is relative to the REAL
+    # wall-clock `datetime.now(UTC)`, not the fixed `now` this test passes
+    # to `build_position_brief` — set `entered_at` explicitly relative to
+    # THAT `now` instead, or `days_held` would drift with the real date.
+    decision.user_responded_at = MARKET_OPEN_NOW - timedelta(days=2)
+    decision.triggered_at = decision.user_responded_at
+    outcome = _ratchet(pl=40.0, peak=None)
+
+    brief = build_position_brief(
+        decision, ratchet_outcome=outcome, dte=12, trigger="ratchet_armed", now=MARKET_OPEN_NOW,
+    )
+    assert brief.entry_premium == 2.20
+    assert brief.days_held == 2
+    assert brief.thesis == "NVDA breaks 190 within 3 weeks on volume expansion."
+    assert brief.deadline is not None
+    assert brief.trigger == "ratchet_armed"
+    assert brief.peak_pl_pct == outcome.peak_pl_pct
+
+    rendered = _render_escalation_brief(brief)
+    assert str(decision.id) in rendered
+    assert "ratchet_armed" in rendered

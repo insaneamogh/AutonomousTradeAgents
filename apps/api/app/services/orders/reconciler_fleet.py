@@ -178,6 +178,18 @@ class ReconcilerFleet:
                     logger.exception("fleet: mock fallback tick failed")
             return 0
 
+        # ONE budget for the WHOLE fleet tick, shared by reference across
+        # every user's `manage_positions_for_user` call below —
+        # docs/IMPL_OPTIONS_AGENTS.md §5.1's "1 escalation per fleet tick"
+        # is a system-wide cap across ALL positions being managed this
+        # tick, not a per-user or per-position one. A fresh budget built
+        # PER USER here would let every user in the fleet escalate once,
+        # defeating the point of the cap (bounding this WHOLE tick's added
+        # latency, not each user's slice of it).
+        from trading_agents.options.escalation import EscalationBudget
+
+        escalation_budget = EscalationBudget()
+
         reconciled = 0
         for uid in user_ids:
             try:
@@ -204,7 +216,9 @@ class ReconcilerFleet:
                 from app.services.orders.position_manager import manage_positions_for_user
 
                 closes = await manage_positions_for_user(
-                    user_id=uid, session_factory=self.session_factory
+                    user_id=uid,
+                    session_factory=self.session_factory,
+                    escalation_budget=escalation_budget,
                 )
                 if closes:
                     logger.info("fleet: position manager initiated %d close(s) for %s", closes, uid)

@@ -222,6 +222,8 @@ def infer_role_from_system_prompt(system: str) -> str:
         return "options_bull"
     if "you are the options bear agent" in line:
         return "options_bear"
+    if "you are the options escalation agent" in line:
+        return "options_escalation"
     return "unknown"
 
 

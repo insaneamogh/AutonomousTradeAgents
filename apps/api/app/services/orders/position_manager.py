@@ -19,6 +19,19 @@ executes the parts a broker-side bracket can't:
                  position that already hit its target should not sit for
                  two more sessions waiting on the calendar. See
                  ``engine.options.exits``.
+  ESCALATION     (options only, docs/IMPL_OPTIONS_AGENTS.md §5) — when
+                 none of the above fired (the deterministic checks all
+                 said "keep holding") AND the trailing ratchet reports a
+                 MATERIAL change (just armed / peak advanced ≥15pp since
+                 the last escalation / price within 10pp of the trail
+                 line / DTE≤5), a single LLM gets ONE guarded chance to
+                 tighten protection, bank the take-profit, close early, or
+                 scale in — never to loosen anything. This is a SECONDARY
+                 layer on top of the ratchet, which keeps running
+                 regardless of what the escalation agent does or whether
+                 it runs at all; see ``trading_agents.options.escalation``
+                 for the full design rationale and the fail-safe
+                 (error/timeout/MOCK mode → nothing changes).
 
 Scope rules:
   - ONLY decisions with ``exit_mode='agent'``. Manual-mode positions are
@@ -46,7 +59,7 @@ import json
 import logging
 import uuid
 from datetime import UTC, date, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import desc, select, text, update
 
@@ -81,9 +94,26 @@ async def manage_positions_for_user(
     user_id: str,
     session_factory: async_sessionmaker,
     caps: RiskCaps | None = None,
+    escalation_budget: Any | None = None,
+    llm: Any | None = None,
+    guard: Any | None = None,
 ) -> int:
     """One pass: close every agent-managed position whose exit condition
-    fired. Returns the number of closes initiated."""
+    fired. Returns the number of closes initiated.
+
+    ``escalation_budget``/``llm``/``guard`` are injectable purely for the
+    escalation loop (see the ESCALATION scope rule above) — production
+    leaves all three ``None`` and gets sane per-call defaults (a
+    fresh, one-shot ``EscalationBudget`` and lazily-constructed
+    ``LLM()``/``ToolGuard()`` instances, both cheap to build — see
+    ``trading_agents.options.tools.guard.ToolGuard``'s own "cheap to
+    construct" docstring). ``ReconcilerFleet.tick()`` constructs ONE
+    ``EscalationBudget`` per tick and threads the SAME instance into every
+    user's call so the "1 escalation per fleet tick" cap
+    (docs/IMPL_OPTIONS_AGENTS.md §5.1) is enforced across the WHOLE fleet,
+    not per user. Tests inject fakes for all three so this path never
+    needs a real Anthropic key or a real broker to exercise.
+    """
     from engine.db.models import AgentDecision
 
     uid = uuid.UUID(user_id)
@@ -110,6 +140,27 @@ async def manage_positions_for_user(
             for d in open_decisions
         )
         option_pl_pct = await _option_pl_pct_by_symbol(user_id) if has_option else {}
+
+        # Lazily constructed, and ONLY when this user actually has an open
+        # option position — an equity-only book never touches
+        # `trading_agents` at all. Constructed ONCE per user-tick and
+        # reused across every decision below; both are cheap, stateless-
+        # per-call resolvers (see their own docstrings), not per-decision
+        # state.
+        escalation_llm = llm
+        escalation_guard = guard
+        if has_option and (escalation_llm is None or escalation_guard is None):
+            from trading_agents.llm import LLM
+            from trading_agents.options.tools.guard import ToolGuard
+
+            escalation_llm = escalation_llm if escalation_llm is not None else LLM()
+            escalation_guard = escalation_guard if escalation_guard is not None else ToolGuard()
+
+        budget = escalation_budget
+        if budget is None:
+            from trading_agents.options.escalation import EscalationBudget
+
+            budget = EscalationBudget()
 
         closes = 0
         for decision in open_decisions:
@@ -143,6 +194,34 @@ async def manage_positions_for_user(
                         decision.symbol, decision.id,
                     )
             if reason is None:
+                # The deterministic ratchet/stop/time/expiry checks all
+                # said "keep holding" this tick. `ratchet_outcome is None`
+                # for a non-option decision, a non-ratchet-managed option
+                # (caps.options_ratchet_enabled off), or one with no OCC
+                # symbol — none of those are escalation candidates at all,
+                # since "armed"/"trail line" only mean anything when the
+                # ratchet is the thing managing this position.
+                if ratchet_outcome is not None:
+                    try:
+                        dte_value = _option_dte(decision, now)
+                        await maybe_escalate_option_position(
+                            decision=decision,
+                            ratchet_outcome=ratchet_outcome,
+                            dte=dte_value,
+                            now=now,
+                            budget=budget,
+                            llm=escalation_llm,
+                            guard=escalation_guard,
+                            caps=caps,
+                            session_factory=session_factory,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "position_manager: escalation check failed for "
+                            "%s (%s) — continuing; the deterministic ratchet "
+                            "keeps running untouched",
+                            decision.symbol, decision.id,
+                        )
                 continue
             # Re-entrance guard: a SELL we placed on a prior tick may still
             # be pending/accepted (closed_at only lands when it FILLS, via
@@ -325,6 +404,58 @@ def _coerce_expiry_date(value: object) -> date | None:
         except ValueError:
             return None
     return None
+
+
+def _option_dte(decision, now: datetime) -> int | None:
+    """Days to expiry for one decision's stored proposal, or ``None`` when
+    it isn't an option / has no parseable expiry. Used only by the
+    escalation trigger below — ``sweep_expiring_options_for_user`` (the
+    UNCONDITIONAL DTE≤2 force-close) computes this independently in its
+    own query and must keep doing so; this helper does not replace it."""
+    proposal = decision.proposal or {}
+    if not bool(proposal.get("isOption", proposal.get("is_option", False))):
+        return None
+    expiry = _coerce_expiry_date(proposal.get("expiryDate", proposal.get("expiry_date")))
+    if expiry is None:
+        return None
+    return dte(expiry, now)
+
+
+async def maybe_escalate_option_position(
+    *,
+    decision,
+    ratchet_outcome: RatchetOutcome,
+    dte: int | None,
+    now: datetime,
+    budget: Any,
+    llm: Any,
+    guard: Any,
+    caps: RiskCaps,
+    session_factory: async_sessionmaker,
+) -> Any:
+    """Thin, lazily-importing wrapper around
+    ``trading_agents.options.escalation.maybe_escalate`` — see that
+    module for the trigger conditions, rate limits, the single-agent
+    design decision, and the fail-safe. Lazy import matches this file's
+    OWN convention for reaching into sibling packages (``broker.types``,
+    ``engine.db.models`` are imported the same way, inline, throughout
+    this file) and ``apps/api``'s existing precedent for calling INTO
+    ``trading_agents`` (``app.services.council.scheduler`` already does
+    this, also lazily, for the equity council).
+    """
+    from trading_agents.options.escalation import maybe_escalate
+
+    return await maybe_escalate(
+        decision=decision,
+        ratchet_outcome=ratchet_outcome,
+        dte=dte,
+        now=now,
+        budget=budget,
+        llm=llm,
+        guard=guard,
+        caps=caps,
+        session_factory=session_factory,
+    )
 
 
 async def sweep_expiring_options_for_user(
