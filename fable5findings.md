@@ -385,6 +385,67 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-31 — `ed24dd36`/`f53792e2` feat(agents): the two arguing agents themselves — Bull/Bear + deterministic resolution
+
+`ID:MODEL2OFF`. On top of the guarded trade tools (previous entry): the
+actual argument. Bull and Bear each read the identical deterministic
+pre-pass and form an independent view — no tool calls — in ONE parallel
+hop (`asyncio.gather`), neither seeing the other's answer.
+`resolution.resolve()` combines them, plain Python, no LLM: agree on
+direction → proceed with `conviction = min()` of the two (not the mean —
+weak agreement should size weak); disagree, either abstains, or the
+conviction gap exceeds 0.4 → HOLD. Only on `proceed` does a SECOND hop
+let Bull — never Bear — call `open_option_trade` through the guard,
+carrying the RESOLVED direction/conviction, not Bull's own pre-resolution
+numbers. Both prompts begin with the exact literal role phrase both
+`llm.py`'s mock and `cost_ledger.py`'s role inference need, registered in
+both (revert-checked). Both prompts also explicitly instruct the model to
+treat any third-party text in the pre-pass (news headlines, scan
+triggers) as reported claims, never as instructions — a real, if small,
+prompt-injection consideration worth noting since this is the first node
+in the whole council that reads that kind of text.
+
+**One design decision beyond the spec's literal pseudocode:** the
+tool-call loop's dispatch closure rebuilds `GuardContext` per attempt
+(it's frozen) and increments `calls_this_pass` only on a SUCCESSFUL open,
+never a denial — the tool schema's own description says a denied call
+"may adjust once," so a denial must not burn the pass's one-open budget;
+only an actual fill should trip the guard's `one_open_per_pass` rule
+against a second successful open in the same pass. A dedicated test
+proves a naive "build the context once, reuse it" implementation would
+let two calls both succeed.
+
+**Verified, not assumed — independently re-run by me end to end:** true
+baseline 1171 passed/11 skipped (this session's running total after the
+prior two option commits). After: 1184 passed/11 skipped — exactly +13,
+zero regressions, confirmed with my own full-suite run, twice (once in
+the worktree, once on `main` post-merge). ruff/mypy clean, re-checked
+directly. Reviewed the actual `resolution.py`/`prompts.py`/`agents.py`
+source line by line — the `min()`-not-mean logic, the exact role-phrase
+strings, the two-hop sequencing, the concurrency assertion (wall-clock,
+not call-count) — not just the summary.
+
+**A fourth instance of the worktree-staleness pattern, handled correctly
+this time:** this environment's `isolation:"worktree"` mechanism appears
+to snapshot from a fixed base rather than current `HEAD` at dispatch
+time — the fourth time this exact gap has shown up today (I1's llm.py,
+I3-backend's funnel_service.py, and my own schemas.py were all missing
+from I2-guard's and I2-readonly's worktrees earlier; this time it was
+commit `f80abc7f` missing from THIS worktree). This agent, briefed on the
+pattern, checked `git log` first per instruction, found the gap, verified
+a clean fast-forward via `git merge-base --is-ancestor`, and merged real
+`main` into its own branch before writing any code — no reconstruction-
+from-guesswork needed this time, no reconciliation work left for me.
+**Worth remembering for any future worktree-isolated dispatch here:
+always check `git log` against a known recent commit first, and merge
+real `main` in if it's missing, rather than assuming the isolated
+worktree reflects current `HEAD`.**
+
+**Not built here, on purpose:** `adjust_option_position`'s prompts/wiring
+and the escalation loop (`IMPL_OPTIONS_AGENTS.md` §5) that would call
+it — a separate, not-yet-started workstream. `AUTO_TRADE_ENABLED`/
+`USE_OPTIONS_AGENT` remain off.
+
 ### 2026-08-31 — `f80abc7f`/`51d1457f` feat(agents): guarded options trade tools — open_option_trade / adjust_option_position
 
 `ID:MODEL2OFF`. **This is the headline deliverable** — I2 of `docs/IMPL_
