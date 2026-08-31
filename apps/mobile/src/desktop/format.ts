@@ -71,3 +71,25 @@ export function humanize(value: string): string {
   const spaced = value.replace(/[_-]+/g, ' ').trim();
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
+
+const RISK_PROFILE_CAPTIONS: Record<string, string> = {
+  conservative: 'under the 1%/5% conservative caps',
+  aggressive_paper: 'under the 2.5%/12% aggressive caps',
+};
+
+/** Verified against `RiskCaps.aggressive_paper()` (packages/engine/engine/risk/types.py):
+ * options_max_premium_pct 1.0→2.5, options_max_total_premium_pct 5.0→12.0. */
+export function riskProfileCaption(profile: string | null | undefined): string {
+  if (!profile) return 'risk profile disclosure pending';
+  return RISK_PROFILE_CAPTIONS[profile] ?? `under the "${profile}" risk profile`;
+}
+
+/** `usd()`, except a legitimate `$0` next to at least one still-marking
+ * ghost renders as "$— · N marks pending" instead — a completed $0 and an
+ * unmeasured one must never look the same. */
+export function pendingAwareUsd(amount: number | null | undefined, pendingCount: number): string {
+  if (pendingCount > 0 && (amount == null || amount === 0)) {
+    return `$— · ${pendingCount} mark${pendingCount === 1 ? '' : 's'} pending`;
+  }
+  return usd(amount);
+}

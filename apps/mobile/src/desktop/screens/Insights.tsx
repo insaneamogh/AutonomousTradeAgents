@@ -4,11 +4,13 @@
  */
 
 import { useState } from 'react';
+import type { VetoRuleDto } from '@app/shared-types';
 
 import { useCalibrationScorecard } from '@/hooks/useCalibration';
 import { useGhostSummary, useVetoLedger } from '@/hooks/useInsights';
 
-import { ago, ruleLabel, signedUsd, tone, usd } from '../format';
+import { ExemplarCard } from '../ExemplarCard';
+import { ago, pendingAwareUsd, riskProfileCaption, ruleLabel, signedUsd, tone, usd } from '../format';
 import {
   Card,
   CardHead,
@@ -24,6 +26,37 @@ import {
   Stack,
   StatTile,
 } from '../primitives';
+import type { Tone } from '../primitives';
+
+function wouldHaveTone(ghostPnl: number | null | undefined): Tone {
+  if (ghostPnl == null) return 'neutral';
+  if (ghostPnl < 0) return 'bull';
+  if (ghostPnl > 0) return 'warn';
+  return 'neutral';
+}
+
+function wouldHaveLabel(ghostPnl: number | null | undefined): string {
+  if (ghostPnl == null) return 'pending';
+  if (ghostPnl < 0) return 'saved';
+  if (ghostPnl > 0) return 'missed';
+  return 'even';
+}
+
+/** The per-rule "would have" cell — §4.1/§4.3 of the doc: a `null` ghost
+ * renders the literal word "pending", never `$0`; a positive ghost (money
+ * the veto cost, not saved) renders amber "missed" rather than being
+ * hidden next to the wins. */
+function WouldHaveCell({ rule }: { rule: VetoRuleDto }) {
+  if (rule.ghostPnl == null) {
+    return <span className="pg-caption pg-dim">pending</span>;
+  }
+  return (
+    <Row gap={6} style={{ justifyContent: 'flex-end' }}>
+      <span className="pg-num">{signedUsd(rule.ghostPnl)}</span>
+      <Pill tone={wouldHaveTone(rule.ghostPnl)}>{wouldHaveLabel(rule.ghostPnl)}</Pill>
+    </Row>
+  );
+}
 
 type Tab = 'vetoes' | 'ghost' | 'calibration';
 
@@ -35,6 +68,7 @@ const TABS: { id: Tab; label: string }[] = [
 
 export function InsightsScreen() {
   const [tab, setTab] = useState<Tab>('vetoes');
+  const [selectedRule, setSelectedRule] = useState<string | null>(null);
   const vetoes = useVetoLedger(30);
   const ghost = useGhostSummary(30);
   const scorecard = useCalibrationScorecard(180);
@@ -90,46 +124,102 @@ export function InsightsScreen() {
                 loading={vetoes.isLoading}
               />
             </Cell>
-            <Cell span={12}>
+            <Cell span={selectedRule ? 8 : 12}>
               <Card>
                 <CardHead label="Rules that fired" right={<Pill>DETERMINISTIC</Pill>} />
+                <span className="pg-caption" style={{ display: 'block', marginTop: -6, marginBottom: 4 }}>
+                  {vetoes.data ? riskProfileCaption(vetoes.data.riskProfile) : ' '}
+                </span>
                 {vetoes.isLoading || !vetoes.data || vetoes.data.rules.length === 0 ? (
                   <SkelRows rows={6} h={20} />
                 ) : (
-                  <table className="pg-table">
-                    <thead>
-                      <tr>
-                        <th>Rule</th>
-                        <th className="pg-num-right">Fired</th>
-                        <th className="pg-num-right">Blocked notional</th>
-                        <th className="pg-num-right">Ghost P&L</th>
-                        <th className="pg-num-right">Loss prevented</th>
-                        <th className="pg-num-right">Last</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {vetoes.data.rules.map((r) => (
-                        <tr key={r.rule}>
-                          <td>
-                            <span className="pg-num" style={{ fontSize: 13 }}>
-                              {ruleLabel(r.rule)}
-                            </span>
-                          </td>
-                          <td className="pg-num-right">{r.count}</td>
-                          <td className="pg-num-right">{usd(r.blockedNotional)}</td>
-                          <td className="pg-num-right">
-                            <span className={(r.ghostPnl ?? 0) < 0 ? 'pg-bear' : 'pg-bull'}>
-                              {r.ghostPnl != null ? signedUsd(r.ghostPnl) : '—'}
-                            </span>
-                          </td>
-                          <td className="pg-num-right pg-bull">
-                            {r.preventedLossUsd != null ? usd(r.preventedLossUsd) : '—'}
-                          </td>
-                          <td className="pg-num-right pg-dim">{ago(r.lastAt)}</td>
+                  <div style={{ overflowX: 'auto' }}>
+                    <table className="pg-table">
+                      <thead>
+                        <tr>
+                          <th>Rule</th>
+                          <th className="pg-num-right">Fired</th>
+                          <th className="pg-num-right">Blocked notional</th>
+                          <th className="pg-num-right">Would have</th>
+                          <th className="pg-num-right">Last</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {vetoes.data.rules.map((r) => (
+                          <tr
+                            key={r.rule}
+                            className="pg-row-btn"
+                            onClick={() => setSelectedRule(r.rule === selectedRule ? null : r.rule)}
+                          >
+                            <td>
+                              <span className="pg-num" style={{ fontSize: 13 }}>
+                                {ruleLabel(r.rule)}
+                              </span>
+                            </td>
+                            <td className="pg-num-right">{r.count}</td>
+                            <td className="pg-num-right">{usd(r.blockedNotional)}</td>
+                            <td className="pg-num-right">
+                              <WouldHaveCell rule={r} />
+                            </td>
+                            <td className="pg-num-right pg-dim">{ago(r.lastAt)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </Card>
+            </Cell>
+
+            {selectedRule ? (
+              <Cell span={4}>
+                <ExemplarCard rule={selectedRule} onClose={() => setSelectedRule(null)} />
+              </Cell>
+            ) : null}
+
+            <Cell span={12}>
+              <Card>
+                <CardHead
+                  label={
+                    vetoes.data
+                      ? `Risk also shrank ${vetoes.data.totalTrims} trade${vetoes.data.totalTrims === 1 ? '' : 's'}`
+                      : 'Risk also shrank trades'
+                  }
+                  right={<Pill tone="warn">TRIM · NOT A VETO</Pill>}
+                />
+                {vetoes.isLoading || !vetoes.data ? (
+                  <SkelRows rows={2} h={18} />
+                ) : vetoes.data.trims.length === 0 ? (
+                  <div className="pg-empty">
+                    <p className="pg-empty-body">No trims in this window — every approved trade sized as proposed.</p>
+                  </div>
+                ) : (
+                  <>
+                    <span className="pg-caption" style={{ display: 'block', marginBottom: 8 }}>
+                      A trim resized an APPROVED trade smaller; it never counts toward the {vetoes.data.totalVetoes}{' '}
+                      vetoes above — a veto let nothing through, a trim let a smaller trade through.
+                    </span>
+                    <table className="pg-table">
+                      <thead>
+                        <tr>
+                          <th>Rule</th>
+                          <th className="pg-num-right">Trades resized</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {vetoes.data.trims.map((t) => (
+                          <tr key={t.rule}>
+                            <td>
+                              <span className="pg-num" style={{ fontSize: 13 }}>
+                                {ruleLabel(t.rule)}
+                              </span>
+                            </td>
+                            <td className="pg-num-right">{t.count}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </>
                 )}
               </Card>
             </Cell>
@@ -145,7 +235,9 @@ export function InsightsScreen() {
             <Cell span={6}>
               <StatTile
                 label="Loss avoided"
-                value={ghost.data ? usd(ghost.data.savedUsd) : '—'}
+                value={
+                  ghost.data ? pendingAwareUsd(ghost.data.savedUsd, ghost.data.vetoed.pendingCount) : '—'
+                }
                 caption="What vetoed picks would have lost"
                 tone="bull"
                 loading={ghost.isLoading}
@@ -154,7 +246,9 @@ export function InsightsScreen() {
             <Cell span={6}>
               <StatTile
                 label="Upside missed"
-                value={ghost.data ? usd(ghost.data.missedUsd) : '—'}
+                value={
+                  ghost.data ? pendingAwareUsd(ghost.data.missedUsd, ghost.data.declined.pendingCount) : '—'
+                }
                 caption="What declined picks would have made"
                 tone="bear"
                 loading={ghost.isLoading}
