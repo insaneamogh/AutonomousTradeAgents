@@ -385,6 +385,60 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-31 — docs: PLAN_AUTO_APPROVE.md's "not built" header was stale — the feature shipped 08-30
+
+`ID:MODEL2OFF`. User pointed at `docs/PLAN_AUTO_APPROVE.md` and asked to
+start implementing Plan E (unattended entry execution). Before dispatching
+anything, checked whether `apps/api/app/services/orders/auto_approver.py`
+already existed — it did: `3bce40b2`/`4e46507e`/`9475c83b`, merged
+2026-08-30 22:17-22:18, a full day before this check. The doc's own "Status:
+plan, not built" header never got updated — the exact CLAUDE.md §4.2 trap
+("docs/OPTIONS_PLAN.md says 'proposal, not built' — most of it shipped"),
+now confirmed a second time on a different doc.
+
+Independently re-verified the shipped code rather than trust the plan doc's
+old claims or the commit messages: `ReconcilerFleet.tick()` calls
+`auto_approve_for_user` immediately after `manage_positions_for_user`
+(correct order — exits free premium before entries consume it); a real
+gate 2b (per-connection `auto_approve_consent`, DB column + migration +
+router + store, not a stub) sits on top of the plan's original seven gates;
+`test_auto_approver.py` has 19 tests covering every gate in the plan's
+revert-check matrix plus the added 2b cases. Personally revert-checked gate
+2 (the single most safety-critical line: hard-coded paper-only, must never
+become configurable) — inverted `if not (trading_mode() == "paper" and not
+env_flag("LIVE_TRADING_ENABLED")):` to `if False and ...`, confirmed
+`test_never_auto_approves_in_live_mode` and
+`test_never_auto_approves_when_live_trading_enabled` both fail exactly as
+predicted, restored, confirmed all 19 tests in the file pass again.
+
+Updated the doc's header to point at the real merged commits and the real
+file location (`.../auto_approver.py`, a separate module, not inline in
+`executor.py` as an earlier draft of the plan implied). Left the rest of
+the document as accurate historical design background.
+
+**Not verified this pass:** whether `AUTO_APPROVE_ENABLED` is actually set
+on the live Railway deployment right now, or whether any real
+`agent_decisions` row has ever carried `approval_mode='auto'` — that needs
+either Railway access (blocked this session — see below) or a working
+`DATABASE_URL` against the real Postgres (local `.env`'s value doesn't
+reach it: `password authentication failed for user "app"`). The user
+separately reported seeing "options getting picked by the app auto mode,"
+which is consistent with this feature being live and enabled, but that's
+an observation, not something I confirmed against a database row.
+
+**Railway access, separately:** the user provided a Railway token this
+session. `railway whoami --json` against it failed —
+`invalid peer certificate: UnknownIssuer` reaching
+`backboard.railway.com`. A raw `curl` to the same host AND to
+`api.github.com` both failed too, via a DIFFERENT error
+(`schannel: ... CRYPT_E_NO_REVOCATION_CHECK`), while `git` (bundles its own
+TLS stack rather than using Windows schannel) reaches `github.com` fine.
+Best read: this sandboxed shell's network egress doesn't reach
+`backboard.railway.com` at all, independent of the token's validity —
+not something a different token would fix, and not something to route
+around by disabling TLS verification. Left as an open item; did not
+retry with `--browserless` or any cert-bypass flag.
+
 ### 2026-08-31 — `9f824b4b` docs(options): add the adjust_option_position gate asymmetry to the trap list
 
 `ID:MODEL2OFF`. Follow-up to `dcf58ca4` (below) and to the cross-session

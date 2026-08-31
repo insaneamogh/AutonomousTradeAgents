@@ -1,6 +1,23 @@
 # Plan E — auto-approve: let the agent open a trade unattended
 
-**Status:** plan, not built. Written 2026-08-30 by `ID:MODEL1REAL`.
+**Status: BUILT AND MERGED** (`3bce40b2`/`4e46507e`/`9475c83b`, 2026-08-30
+22:17 UTC+5:30). Written 2026-08-30 by `ID:MODEL1REAL`; this header was stale
+for most of a day (CLAUDE.md §4.2's own trap) — corrected 2026-08-31 after
+independently re-verifying the shipped code against every claim below:
+`auto_approve_for_user` lives at `apps/api/app/services/orders/auto_approver.py`
+(not `.../executor.py` alongside `execute_proposal` — separate file, imports
+it), is wired into `ReconcilerFleet.tick()` immediately after
+`manage_positions_for_user` as this doc requires, ships an added gate 2b
+(per-connection `auto_approve_consent`, not in this doc's original design) on
+top of the seven gates below, and gate 2 was personally revert-checked
+(inverted the condition, confirmed `test_never_auto_approves_in_live_mode`
+and `test_never_auto_approves_when_live_trading_enabled` both fail, restored,
+confirmed all 19 tests in `test_auto_approver.py` pass). Whether
+`AUTO_APPROVE_ENABLED` is actually set on the live Railway deployment right
+now was NOT verified this pass — that's an operator/env question, not a code
+one. The rest of this document is the original design and is still accurate
+background; treat "not built" language below as historical.
+
 **Priority: 0. Nothing else produces a trade Mon–Thu without this.**
 
 ---
