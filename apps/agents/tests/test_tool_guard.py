@@ -21,11 +21,11 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from broker.types import Order, OrderStatus
+from broker.types import Order, OrderStatus, Position
 from broker.types import Side as BrokerSide
 from engine.options import ContractQuote, ContractSelectionResult
 from engine.risk import MockRiskContextProvider, RiskCaps
@@ -41,6 +41,7 @@ from trading_agents.options.tools.guard import (
     _parses_timeframe,
     _tool_log_append_stmt,
     dispatch_tool_call,
+    persist_placed_order,
 )
 from trading_agents.options.tools.trade import adjust_option_position, open_option_trade
 
@@ -142,16 +143,33 @@ class FakeBroker:
 
 
 class _FakeAsyncSession:
-    def __init__(self, get_result: Any, execute_log: list[Any]) -> None:
+    def __init__(
+        self,
+        get_result: Any,
+        execute_log: list[Any],
+        execute_results: list[Any] | None = None,
+    ) -> None:
         self._get_result = get_result
         self.execute_log = execute_log
         self.committed = False
+        # Queue of return values for successive .execute() calls — e.g. a
+        # scalar-lookup result feeding persist_placed_order's broker
+        # connection query. `None` (the default) preserves this fake's
+        # original behavior of returning None from every execute(), which
+        # every caller that only inspects execute_log (never the return
+        # value) already relies on.
+        self._execute_results = (
+            list(execute_results) if execute_results is not None else None
+        )
 
     async def get(self, model: Any, pk: Any) -> Any:
         return self._get_result
 
-    async def execute(self, stmt: Any, params: Any = None) -> None:
+    async def execute(self, stmt: Any, params: Any = None) -> Any:
         self.execute_log.append((stmt, params))
+        if self._execute_results:
+            return self._execute_results.pop(0)
+        return None
 
     async def commit(self) -> None:
         self.committed = True
@@ -168,14 +186,28 @@ class _FakeSessionFactory:
     ``session_factory()`` to get a fresh async-context-managed session per
     call, exactly like every real caller in this codebase does."""
 
-    def __init__(self, get_result: Any = None) -> None:
+    def __init__(self, get_result: Any = None, execute_results: list[Any] | None = None) -> None:
         self.get_result = get_result
         self.sessions: list[_FakeAsyncSession] = []
+        self._execute_results = execute_results
 
     def __call__(self) -> _FakeAsyncSession:
-        session = _FakeAsyncSession(self.get_result, [])
+        session = _FakeAsyncSession(
+            self.get_result, [], execute_results=self._execute_results
+        )
         self.sessions.append(session)
         return session
+
+
+class _ScalarResult:
+    """Bare-minimum stand-in for a SQLAlchemy ``Result`` — supports only the
+    one method ``persist_placed_order``'s connection lookup calls."""
+
+    def __init__(self, value: Any) -> None:
+        self._value = value
+
+    def scalar_one_or_none(self) -> Any:
+        return self._value
 
 
 def _guard(**kwargs: Any) -> ToolGuard:
@@ -256,6 +288,48 @@ async def test_open_trade_happy_path_reaches_broker_and_persists_decision() -> N
     assert result["occ_symbol"] == "NVDA260918C00225000"
     assert result["decision_id"] == ctx.council_run_id
     assert result["qty"] >= 1
+
+
+async def test_open_trade_persists_an_orders_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Before this fix, ``open_option_trade`` placed a REAL broker order and
+    wrote ONLY an ``agent_decisions`` row via ``decision_log.record`` —
+    ``orders`` (the ONE table ``order_sync.py`` polls to converge fill_qty/
+    status back onto the decision) stayed empty forever. That silently
+    disabled every fill_qty-gated exit mechanism for the position (the
+    ratchet, the mandatory DTE<=2 expiry sweep) and left it permanently
+    showing as "awaiting fill" — or, combined with a separate OCC-vs-
+    underlying matching bug, as broker-side "unmanaged" — regardless of how
+    real and filled it actually was at the broker.
+
+    Patches ``persist_placed_order`` at its ``trade.py`` import site (the
+    same convention this file already uses for ``fetch_option_candidates``)
+    rather than exercising a live DB — that function has its own dedicated
+    unit tests in ``test_options_agents.py``/this file's persistence
+    section; this test only pins that ``open_option_trade`` actually CALLS
+    it, with the right identifiers.
+    """
+    fake_persist = AsyncMock()
+    monkeypatch.setattr(
+        "trading_agents.options.tools.trade.persist_placed_order", fake_persist
+    )
+
+    guard = _guard()
+    ctx = _ctx()
+    with patch("trading_agents.options.tools.guard.fetch_option_candidates", _fetch_ok):
+        verdict = await guard.before("open_option_trade", OPEN_ARGS, ctx)
+    assert verdict.allow, verdict.reason
+
+    result = await open_option_trade(OPEN_ARGS, ctx, verdict.payload)
+
+    fake_persist.assert_awaited_once()
+    _, kwargs = fake_persist.await_args
+    assert kwargs["decision_id"] == result["decision_id"]
+    assert kwargs["user_id"] == ctx.user_id
+    assert kwargs["client_order_id"] == f"agent-open-{ctx.council_run_id}"
+    assert kwargs["underlying"] == "NVDA"
+    assert kwargs["option_action"] == "buy_to_open"
+    assert kwargs["multiplier"] == verdict.payload["option"].multiplier
+    assert kwargs["order"].broker_order_id == result["order_id"]
 
 
 async def test_open_trade_places_a_limit_buy_to_open_never_a_market_order() -> None:
@@ -718,6 +792,52 @@ async def test_exit_now_always_allowed_regardless_of_state() -> None:
     assert verdict.allow is True
 
 
+async def test_exit_now_persists_an_orders_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Same bug as open_option_trade, in the close direction: _exit_now
+    placed a real SELL_TO_CLOSE at the broker but never wrote an orders
+    row, so order_sync.py had nothing to converge the close's fill/status
+    against."""
+    uid, did = uuid.uuid4(), uuid.uuid4()
+    row = _seeded_row(uid=uid, did=did, option_exit={"adds_this_position": 0})
+    session_factory = _FakeSessionFactory(get_result=row)
+    position = Position(
+        symbol="NVDA260918C00225000",
+        qty=2,
+        avg_entry_price=2.20,
+        market_value=460.0,
+        unrealized_pl=20.0,
+        unrealized_pl_pct=4.5,
+        multiplier=100,
+        is_option=True,
+    )
+    broker = FakeBroker(position=position)
+    guard = _guard(session_factory=session_factory, broker_factory=lambda: broker)
+    ctx = _ctx(user_id=str(uid))
+
+    fake_persist = AsyncMock()
+    monkeypatch.setattr(
+        "trading_agents.options.tools.trade.persist_placed_order", fake_persist
+    )
+
+    verdict = await guard.before(
+        "adjust_option_position",
+        {"decision_id": str(did), "action": "EXIT_NOW", "reason": "bail"},
+        ctx,
+    )
+    assert verdict.allow is True
+    result = await adjust_option_position(
+        {"decision_id": str(did), "action": "EXIT_NOW", "reason": "bail"}, ctx, verdict.payload
+    )
+    assert result["changed"] is True
+
+    fake_persist.assert_awaited_once()
+    _, kwargs = fake_persist.await_args
+    assert kwargs["decision_id"] == str(did)
+    assert kwargs["underlying"] == "NVDA"
+    assert kwargs["option_action"] == "sell_to_close"
+    assert kwargs["multiplier"] == 100
+
+
 async def test_hold_always_allowed_and_changes_nothing() -> None:
     uid, did = uuid.uuid4(), uuid.uuid4()
     row = _seeded_row(uid=uid, did=did, option_exit={"stop_loss_pct": 45.0})
@@ -824,6 +944,40 @@ async def test_scale_in_approved_when_room_remains() -> None:
         )
     assert verdict.allow, verdict.reason
     assert verdict.payload["option_state"]["adds_this_position"] == 1
+
+
+async def test_scale_in_persists_an_orders_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Same bug again: _scale_in placed a real BUY_TO_OPEN add-on at the
+    broker but never wrote an orders row for it."""
+    uid, did = uuid.uuid4(), uuid.uuid4()
+    row = _seeded_row(uid=uid, did=did, option_exit={"adds_this_position": 0})
+    session_factory = _FakeSessionFactory(get_result=row)
+    guard = _guard(session_factory=session_factory)
+    ctx = _ctx(user_id=str(uid))
+
+    fake_persist = AsyncMock()
+    monkeypatch.setattr(
+        "trading_agents.options.tools.trade.persist_placed_order", fake_persist
+    )
+
+    with patch("trading_agents.options.tools.guard.fetch_option_candidates", _fetch_ok):
+        verdict = await guard.before(
+            "adjust_option_position",
+            {"decision_id": str(did), "action": "SCALE_IN", "reason": "add"},
+            ctx,
+        )
+    assert verdict.allow, verdict.reason
+    result = await adjust_option_position(
+        {"decision_id": str(did), "action": "SCALE_IN", "reason": "add"}, ctx, verdict.payload
+    )
+    assert result["changed"] is True
+
+    fake_persist.assert_awaited_once()
+    _, kwargs = fake_persist.await_args
+    assert kwargs["decision_id"] == str(did)
+    assert kwargs["underlying"] == "NVDA"
+    assert kwargs["option_action"] == "buy_to_open"
+    assert kwargs["multiplier"] == 100
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -945,3 +1099,163 @@ async def test_dispatch_tool_call_end_to_end_open_and_audit() -> None:
     assert len(broker.orders) == 1
     assert broker.orders[0].side == BrokerSide.BUY_TO_OPEN
     assert len(session_factory.sessions) >= 1
+
+
+# ─────────────────────────────────────────────────────────────────────
+# persist_placed_order — the orders-row write itself (see trade.py's three
+# call sites for the wiring tests; these pin the INSERT's own correctness)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _placed_order(
+    *, filled_qty: int = 0, avg_fill_price: float | None = None, qty: int = 4
+) -> Order:
+    return Order(
+        broker_order_id="broker-order-1",
+        client_order_id="agent-open-abc",
+        symbol="NVDA260918C00225000",
+        side=BrokerSide.BUY_TO_OPEN,
+        qty=qty,
+        filled_qty=filled_qty,
+        avg_fill_price=avg_fill_price,
+        status=OrderStatus.ACCEPTED if filled_qty == 0 else OrderStatus.FILLED,
+        submitted_at=datetime(2026, 9, 2, 15, 0, tzinfo=UTC),
+    )
+
+
+async def test_persist_placed_order_writes_the_row() -> None:
+    """The core of the fix: given a real (fake) session that finds an
+    active paper broker_connections row, the INSERT actually carries the
+    right values — underlying symbol (never the OCC string), plain "BUY"
+    side, the real option_action/multiplier, and the broker's own
+    broker_order_id/status/filled_qty so order_sync.py has something
+    accurate to converge against on the next tick."""
+    conn_id = uuid.uuid4()
+    session_factory = _FakeSessionFactory(execute_results=[_ScalarResult(conn_id)])
+    user_id = str(uuid.uuid4())
+    decision_id = str(uuid.uuid4())
+    order = _placed_order(filled_qty=0)
+
+    await persist_placed_order(
+        session_factory,
+        user_id=user_id,
+        decision_id=decision_id,
+        client_order_id="agent-open-abc",
+        underlying="NVDA",
+        order=order,
+        option_action="buy_to_open",
+        multiplier=100,
+    )
+
+    session = session_factory.sessions[0]
+    assert session.committed is True
+    assert len(session.execute_log) == 2  # the connection SELECT, then the INSERT
+    insert_stmt, _ = session.execute_log[1]
+
+    from sqlalchemy.dialects import postgresql as pg_dialect
+
+    compiled = insert_stmt.compile(dialect=pg_dialect.dialect())
+    params = compiled.params
+    assert params["symbol"] == "NVDA"  # the underlying, never the OCC string
+    assert params["side"] == "BUY"
+    assert params["client_order_id"] == "agent-open-abc"
+    assert params["broker_connection_id"] == conn_id
+    assert params["agent_decision_id"] == uuid.UUID(decision_id)
+    assert params["broker_order_id"] == "broker-order-1"
+    assert params["is_option"] is True
+    assert params["is_paper"] is True
+    assert params["option_action"] == "buy_to_open"
+    assert params["multiplier"] == 100
+    assert params["status"] == "accepted"
+    assert params["filled_qty"] == 0
+
+
+async def test_persist_placed_order_noop_without_session_factory() -> None:
+    """Offline/dry-run mode (no Postgres) — must not raise."""
+    await persist_placed_order(
+        None,
+        user_id=str(uuid.uuid4()),
+        decision_id=str(uuid.uuid4()),
+        client_order_id="agent-open-abc",
+        underlying="NVDA",
+        order=_placed_order(),
+        option_action="buy_to_open",
+    )
+
+
+async def test_persist_placed_order_noop_without_broker_connection() -> None:
+    """No active paper alpaca broker_connections row for this user — must
+    log and return, never raise (and never insert)."""
+    session_factory = _FakeSessionFactory(execute_results=[_ScalarResult(None)])
+
+    await persist_placed_order(
+        session_factory,
+        user_id=str(uuid.uuid4()),
+        decision_id=str(uuid.uuid4()),
+        client_order_id="agent-open-abc",
+        underlying="NVDA",
+        order=_placed_order(),
+        option_action="buy_to_open",
+    )
+
+    session = session_factory.sessions[0]
+    assert session.committed is False
+    assert len(session.execute_log) == 1  # only the connection SELECT ran
+
+
+async def test_persist_placed_order_never_raises_on_a_db_failure() -> None:
+    """By the time this runs, the broker order is ALREADY real. A DB hiccup
+    writing the audit row must be swallowed, not propagated — the same
+    contract executor.py's own persist_order_result call site documents.
+    Simulated here with a session whose execute() raises outright."""
+
+    class _ExplodingSession:
+        async def __aenter__(self) -> "_ExplodingSession":
+            return self
+
+        async def __aexit__(self, *exc: Any) -> bool:
+            return False
+
+        async def execute(self, *args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("connection pool exhausted")
+
+    def _session_factory() -> _ExplodingSession:
+        return _ExplodingSession()
+
+    # Must not raise.
+    await persist_placed_order(
+        _session_factory,
+        user_id=str(uuid.uuid4()),
+        decision_id=str(uuid.uuid4()),
+        client_order_id="agent-open-abc",
+        underlying="NVDA",
+        order=_placed_order(),
+        option_action="buy_to_open",
+    )
+
+
+async def test_persist_placed_order_sell_to_close_side() -> None:
+    conn_id = uuid.uuid4()
+    session_factory = _FakeSessionFactory(execute_results=[_ScalarResult(conn_id)])
+
+    await persist_placed_order(
+        session_factory,
+        user_id=str(uuid.uuid4()),
+        decision_id=str(uuid.uuid4()),
+        client_order_id="agent-exit-abc",
+        underlying="NVDA",
+        order=_placed_order(filled_qty=4, avg_fill_price=3.00),
+        option_action="sell_to_close",
+        multiplier=100,
+    )
+
+    session = session_factory.sessions[0]
+    _, _ = session.execute_log[0]
+    insert_stmt, _ = session.execute_log[1]
+
+    from sqlalchemy.dialects import postgresql as pg_dialect
+
+    params = insert_stmt.compile(dialect=pg_dialect.dialect()).params
+    assert params["side"] == "SELL"
+    assert params["option_action"] == "sell_to_close"
+    assert params["filled_qty"] == 4

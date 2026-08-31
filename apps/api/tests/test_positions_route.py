@@ -86,7 +86,12 @@ def _unmanaged(positions: list[dict], managed: list | None = None) -> list:
 
     return fn(
         {str(p["symbol"]).upper(): p for p in positions},
-        managed or [],
+        # Real callers pass the broker-side KEY set (OCC for an option,
+        # plain symbol otherwise — see positions_service._broker_key_for_
+        # decision); this suite only exercises plain-equity coverage, so a
+        # direct .symbol set reproduces that contract without needing a
+        # real AgentDecision-shaped object.
+        {str(m.symbol).upper() for m in (managed or [])},
         _Snapshot(positions, datetime(2026, 8, 27, tzinfo=UTC)),
     )
 

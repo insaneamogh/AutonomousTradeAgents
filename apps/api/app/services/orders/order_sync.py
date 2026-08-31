@@ -284,6 +284,34 @@ async def _maybe_record_pdt(
 # ─────────────────────────────────────────────────────────────────────
 
 
+def _broker_key_for_decision(decision: object) -> str:
+    """The key ``broker.list_positions()`` (and the ``positions_snapshot``
+    it feeds) uses for this decision's position: the OCC contract for an
+    option, the plain symbol otherwise.
+
+    ``agent_decisions.symbol`` is ALWAYS the underlying (docs/
+    OPTIONS_PLAYBOOK.md §5.1 — the same convention ``executor.py``'s
+    ``_wire_symbol_for`` and ``position_manager.py``'s close path already
+    enforce). Before this helper existed, ``_detect_external_closes`` below
+    compared the underlying directly against ``held_qty`` (keyed by the
+    broker's OCC symbol for an option) — so `held_qty.get(symbol, 0)` was
+    ALWAYS 0 for every option position, no matter how many contracts were
+    genuinely still held, and this function would mark it
+    ``close_reason='external_broker'`` on the very first tick after it
+    filled. That silently disabled every fill_qty-and-closed_at-gated exit
+    mechanism for the position it had just falsely closed — the SAME class
+    of bug ``positions_service.py``'s own ``_broker_key_for_decision``
+    fixes for the read path; a shared helper in ``packages/engine`` would
+    be a reasonable follow-up so this stops being reimplemented per file.
+    """
+    proposal = (getattr(decision, "proposal", None) or {})
+    if bool(proposal.get("isOption", proposal.get("is_option", False))):
+        occ = proposal.get("occSymbol") or proposal.get("occ_symbol")
+        if occ:
+            return str(occ).upper()
+    return decision.symbol.upper()  # type: ignore[attr-defined]
+
+
 async def _detect_external_closes(
     session: AsyncSession,
     uid: uuid.UUID,
@@ -313,10 +341,11 @@ async def _detect_external_closes(
 
     for decision in open_decisions:
         symbol = decision.symbol.upper()
+        broker_key = _broker_key_for_decision(decision)
         # != 0, not > 0: Alpaca reports a held SHORT as a NEGATIVE qty, and
         # "still held" must be true for that case too — v1 ignores partial
         # external reductions either way.
-        if held_qty.get(symbol, 0) != 0:
+        if held_qty.get(broker_key, 0) != 0:
             continue
 
         # An exit of OURS in flight explains the gap — not external. Any
@@ -334,7 +363,10 @@ async def _detect_external_closes(
 
         entry_side = str((decision.proposal or {}).get("side", "BUY"))
         multiplier = int((decision.proposal or {}).get("multiplier", 1) or 1)
-        approx_exit = await _last_snapshot_mark(session, uid, symbol, multiplier=multiplier)
+        # broker_key, not symbol: _last_snapshot_mark matches against the
+        # SAME snapshot position dicts held_qty was built from above, which
+        # are OCC-keyed for an option.
+        approx_exit = await _last_snapshot_mark(session, uid, broker_key, multiplier=multiplier)
         realized: Decimal | None = None
         if approx_exit is not None and decision.fill_avg_price is not None and decision.fill_qty:
             # Same entry-side-keyed sign flip as the ordinary close path —

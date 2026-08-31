@@ -34,6 +34,7 @@ from trading_agents.memory.decision_log import DecisionEntry
 from trading_agents.options.tools.guard import (
     GuardContext,
     persist_option_state,
+    persist_placed_order,
     stamp_position_closed,
 )
 
@@ -132,6 +133,7 @@ async def open_option_trade(
     decision = guard_payload["risk_decision"]
 
     broker = broker_factory()
+    client_order_id = _client_order_id("open", str(ctx.council_run_id))
     order = await broker.place_order(
         OrderRequest(
             symbol=option.occ_symbol,
@@ -140,7 +142,7 @@ async def open_option_trade(
             order_type=OrderType.LIMIT,
             limit_price=round(limit_price, 2),
             time_in_force=TimeInForce.DAY,
-            client_order_id=_client_order_id("open", str(ctx.council_run_id)),
+            client_order_id=client_order_id,
         )
     )
 
@@ -186,6 +188,21 @@ async def open_option_trade(
         },
     )
     saved = await decision_log.record(entry)
+
+    # The ONE audit-chain write this function used to skip entirely — see
+    # persist_placed_order's own docstring for why that silently disabled
+    # every fill_qty-gated exit mechanism (the ratchet, the mandatory
+    # expiry sweep) for every position opened through this tool.
+    await persist_placed_order(
+        guard_payload.get("session_factory"),
+        user_id=ctx.user_id,
+        decision_id=saved.id,
+        client_order_id=client_order_id,
+        underlying=guard_payload["underlying"],
+        order=order,
+        option_action="buy_to_open",
+        multiplier=option.multiplier,
+    )
 
     return {
         "decision_id": saved.id,
@@ -277,6 +294,7 @@ async def _exit_now(guard_payload: dict[str, Any], ctx: GuardContext) -> dict[st
     )
     limit_price = current_mark if current_mark and current_mark > 0 else position.avg_entry_price
 
+    client_order_id = _client_order_id("exit", str(decision_id))
     order = await broker.place_order(
         OrderRequest(
             symbol=occ_symbol,
@@ -285,8 +303,23 @@ async def _exit_now(guard_payload: dict[str, Any], ctx: GuardContext) -> dict[st
             order_type=OrderType.LIMIT,
             limit_price=round(limit_price, 2) if limit_price else None,
             time_in_force=TimeInForce.DAY,
-            client_order_id=_client_order_id("exit", str(decision_id)),
+            client_order_id=client_order_id,
         )
+    )
+
+    # Same audit-chain write open_option_trade now does on entry — an exit
+    # this tool places needs an orders row exactly as much as an open does,
+    # or order_sync.py has nothing to converge the close's fill/closed_at
+    # against either.
+    await persist_placed_order(
+        guard_payload.get("session_factory"),
+        user_id=ctx.user_id,
+        decision_id=decision_id,
+        client_order_id=client_order_id,
+        underlying=guard_payload["underlying"],
+        order=order,
+        option_action="sell_to_close",
+        multiplier=multiplier,
     )
 
     await stamp_position_closed(
@@ -316,6 +349,9 @@ async def _scale_in(guard_payload: dict[str, Any], ctx: GuardContext) -> dict[st
     session_factory = guard_payload.get("session_factory")
 
     broker = guard_payload["broker_factory"]()
+    client_order_id = _client_order_id(
+        f"add{option_state.get('adds_this_position', 0)}", str(decision_id)
+    )
     order = await broker.place_order(
         OrderRequest(
             symbol=occ_symbol,
@@ -324,10 +360,21 @@ async def _scale_in(guard_payload: dict[str, Any], ctx: GuardContext) -> dict[st
             order_type=OrderType.LIMIT,
             limit_price=round(limit_price, 2),
             time_in_force=TimeInForce.DAY,
-            client_order_id=_client_order_id(
-                f"add{option_state.get('adds_this_position', 0)}", str(decision_id)
-            ),
+            client_order_id=client_order_id,
         )
+    )
+
+    # Same reasoning as open_option_trade/_exit_now: a scale-in is a real
+    # second fill against the same position and needs its own orders row.
+    await persist_placed_order(
+        session_factory,
+        user_id=ctx.user_id,
+        decision_id=decision_id,
+        client_order_id=client_order_id,
+        underlying=guard_payload["underlying"],
+        order=order,
+        option_action="buy_to_open",
+        multiplier=100,
     )
 
     await persist_option_state(session_factory, decision_id=decision_id, state=option_state)
