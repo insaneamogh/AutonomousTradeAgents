@@ -13,6 +13,7 @@ import {
   TradingLockedError,
   isTradingUnlocked,
   request,
+  runErrorMessage,
   setTradingUnlocked,
 } from '@/lib/api';
 
@@ -107,18 +108,40 @@ describe('request(): network-error retry', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('retries at most once, then surfaces the failure', async () => {
+  it('retries at each backoff step in order, then surfaces the failure once the cap is hit', async () => {
+    // A single 1s retry (the original fix) was found to not reliably
+    // outlast a real Railway cold start/redeploy — this pins the widened
+    // budget: 2 retries at 1s then 2s, the SAME schedule TanStack Query's
+    // own default already gives every query on the same screen
+    // (queryClient.ts's `retry: 2`). Spying on setTimeout (rather than
+    // waiting the real ~3s) both keeps this fast and proves the exact
+    // delays used, not just the call count.
+    const delays: number[] = [];
+    const setTimeoutSpy = jest
+      .spyOn(global, 'setTimeout')
+      .mockImplementation(((fn: () => void, ms?: number) => {
+        delays.push(ms ?? 0);
+        fn();
+        return 0 as unknown as ReturnType<typeof setTimeout>;
+      }) as unknown as typeof setTimeout);
+
     const fetchMock = jest.fn().mockRejectedValue(new TypeError('Failed to fetch'));
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    await expect(
-      request('/api/v1/agent/run/start', {
-        method: 'POST',
-        skipAuth: true,
-        retryOnNetworkError: true,
-      }),
-    ).rejects.toThrow('Failed to fetch');
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    try {
+      await expect(
+        request('/api/v1/agent/run/start', {
+          method: 'POST',
+          skipAuth: true,
+          retryOnNetworkError: true,
+        }),
+      ).rejects.toThrow('Failed to fetch');
+      // 1 initial attempt + 2 retries.
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(delays).toEqual([1_000, 2_000]);
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
   });
 
   it('never retries a caller-initiated abort', async () => {
@@ -153,5 +176,48 @@ describe('request(): network-error retry', () => {
       }),
     ).rejects.toMatchObject({ status: 502 });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * `runErrorMessage` — ONE shared implementation for "what do we tell the
+ * user about this failed call", imported by the desktop council launcher,
+ * the phone "Run" button, and the theater screen. It used to be a
+ * module-private copy inside the desktop screen only (untested, since
+ * nothing outside that file could reach it) — the phone and theater
+ * screens each grew their OWN hardcoded string instead of sharing it, and
+ * those copies never got the fix this file already had. Promoting it here
+ * is what makes that class of drift structurally impossible going forward.
+ */
+describe('runErrorMessage', () => {
+  it('prefers the server-provided string detail (own hand-raised 422s)', () => {
+    const err = new ApiError(422, { detail: 'AMZN is not a tradable US equity or ETF.' });
+    expect(runErrorMessage(err)).toBe('AMZN is not a tradable US equity or ETF.');
+  });
+
+  it('reads the first message out of a FastAPI validation-array detail', () => {
+    const err = new ApiError(422, {
+      detail: [{ loc: ['body', 'symbol'], msg: 'string does not match regex', type: 'value_error' }],
+    });
+    expect(runErrorMessage(err)).toBe('string does not match regex');
+  });
+
+  it('names the daily budget explicitly on 429', () => {
+    const err = new ApiError(429, null);
+    expect(runErrorMessage(err)).toBe('Daily council budget reached. Try again tomorrow.');
+  });
+
+  it('falls back to a generic status message for any other 4xx/5xx', () => {
+    const err = new ApiError(500, null);
+    expect(runErrorMessage(err)).toBe('The server refused the request (500). Try again.');
+  });
+
+  it("does not blame the caller's connection when the error carries no status", () => {
+    // The shape `fetch()` rejecting actually produces — no `status`, no
+    // `body`. This is the one this whole fix exists for: the old copy in
+    // this exact spot used to read "check your connection and try again".
+    expect(runErrorMessage(new TypeError('Failed to fetch'))).toBe(
+      "The server didn't respond - it may still be starting up. Try again in a moment.",
+    );
   });
 });

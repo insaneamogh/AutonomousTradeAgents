@@ -90,6 +90,51 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Turn any error `request()` can throw into something true to say out loud.
+ *
+ * ONE implementation, imported everywhere a call's error needs displaying.
+ * This used to be copy-pasted per-screen, and the copies drifted: the
+ * desktop council launcher got rewritten to stop blaming the user's
+ * connection on a status-less failure, but the phone "Run" button
+ * (`app/(tabs)/approvals.tsx`) and the theater screen
+ * (`app/council/[runId].tsx`) each carried their OWN hardcoded string that
+ * never got the memo — so the exact complaint the earlier fix targeted
+ * kept reproducing on every surface that wasn't hand-patched. Import this
+ * instead of writing another copy.
+ *
+ * A 422 is the server telling us exactly what is wrong with the input —
+ * showing "the agent server may be cold" for it sends the user chasing
+ * infrastructure when the real problem was e.g. the ticker they picked.
+ * Two shapes of 422 exist and both need handling: our own hand-raised
+ * errors carry `{detail: "<plain string>"}`, but FastAPI's own pydantic
+ * validation carries `{detail: [{loc, msg, type}, ...]}` — an ARRAY.
+ *
+ * A response with no `status` at all (network failure, CORS, DNS, or a
+ * container that hadn't finished booting yet) is the only case that's
+ * genuinely infrastructure, so that keeps the "may still be starting up"
+ * wording rather than blaming the caller's connection.
+ */
+export function runErrorMessage(err: unknown): string {
+  const e = err as { status?: number; body?: { detail?: unknown } } | null;
+  const detail = e?.body?.detail;
+  if (typeof detail === 'string' && detail) return detail;
+  if (Array.isArray(detail) && detail.length > 0) {
+    const first = detail[0] as { msg?: unknown } | undefined;
+    if (typeof first?.msg === 'string') return first.msg;
+  }
+  if (e?.status === 429) return 'Daily council budget reached. Try again tomorrow.';
+  if (typeof e?.status === 'number') {
+    return `The server refused the request (${e.status}). Try again.`;
+  }
+  // Reached only when the error carries NO status — `fetch` rejected and no
+  // response ever arrived, and every automatic network retry already
+  // failed. Deliberately does not blame the caller's connection: the
+  // observed cause is our own container restarting or still cold-starting,
+  // not their wifi.
+  return "The server didn't respond - it may still be starting up. Try again in a moment.";
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Trading lock
 //
@@ -150,17 +195,27 @@ export interface RequestOptions {
    */
   skipAuth?: boolean;
   /**
-   * Retry ONCE when `fetch` itself rejects — i.e. no HTTP response was
-   * ever received (connection refused/reset, DNS, a container restarting
+   * Retry when `fetch` itself rejects — i.e. no HTTP response was ever
+   * received (connection refused/reset, DNS, a container restarting
    * mid-flight). Never retries a response that arrived, whatever its
    * status.
    *
+   * Up to `NETWORK_RETRY_DELAYS_MS.length` retries (currently 2, at 1s then
+   * 2s), deliberately matching TanStack Query's own default query backoff
+   * (`queryClient.ts`'s `retry: 2` with its built-in exponential delay) —
+   * a single 1s retry turned out to not reliably outlast a real Railway
+   * cold start/redeploy, so a mutation that opts in now gets exactly the
+   * same resilience budget every GET on the same screen already gets for
+   * free. Below that budget, a container that is still booting reads as
+   * "the server didn't respond" even though the SAME blip would have
+   * healed invisibly on any query.
+   *
    * OPT-IN PER CALL, and it must stay that way. TanStack retries queries
-   * twice by default but mutations zero times (`queryClient.ts`), which is
-   * the correct default precisely because `orders/execute`,
-   * `approvals/decision` and `positions/close` are mutations — silently
-   * re-sending one of those is how you place a trade twice. Only set this
-   * on a call where a duplicate is harmless.
+   * but mutations zero times by default, which is the correct default
+   * precisely because `orders/execute`, `approvals/decision` and
+   * `positions/close` are mutations — silently re-sending one of those is
+   * how you place a trade twice. Only set this on a call where a duplicate
+   * is harmless.
    */
   retryOnNetworkError?: boolean;
 }
@@ -194,7 +249,7 @@ function currentAuth(): AuthSnapshot | null {
 // ─────────────────────────────────────────────────────────────────────
 
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  return _request<T>(path, options, /* retried */ false, /* networkRetried */ false);
+  return _request<T>(path, options, /* retried */ false, /* networkRetryCount */ 0);
 }
 
 /** A caller-initiated abort must never be retried — it is not a failure. */
@@ -204,13 +259,19 @@ function isAbortError(err: unknown): boolean {
   );
 }
 
-const NETWORK_RETRY_DELAY_MS = 1_000;
+// Same shape as TanStack Query's default `retryDelay` (queryClient.ts's
+// queries get `retry: 2` plus that same exponential backoff) — two retries,
+// 1s then 2s. A single 1s retry (the original fix) was not always enough to
+// outlast a genuine Railway cold start/redeploy; this gives the mutation the
+// identical multi-second window every query on the same screen already
+// survives on, no more, no less.
+const NETWORK_RETRY_DELAYS_MS = [1_000, 2_000];
 
 async function _request<T>(
   path: string,
   options: RequestOptions,
   retried: boolean,
-  networkRetried: boolean,
+  networkRetryCount: number,
 ): Promise<T> {
   const method = options.method ?? 'GET';
   if (isTradingRequest(path, method)) {
@@ -243,13 +304,15 @@ async function _request<T>(
       signal: options.signal,
     });
   } catch (err) {
-    if (isAbortError(err) || !options.retryOnNetworkError || networkRetried) throw err;
-    // One retry, after a beat. The observed cause is a container restart
-    // (Railway redeploy / cold start): the first click lands while the old
-    // process is gone and the new one is not listening yet, and a second
-    // attempt a moment later succeeds.
-    await new Promise((resolve) => setTimeout(resolve, NETWORK_RETRY_DELAY_MS));
-    return _request<T>(path, options, retried, /* networkRetried */ true);
+    const delay = NETWORK_RETRY_DELAYS_MS[networkRetryCount];
+    if (isAbortError(err) || !options.retryOnNetworkError || delay === undefined) throw err;
+    // The observed cause is a container restart (Railway redeploy / cold
+    // start): the first click lands while the old process is gone and the
+    // new one is not listening yet, or is still inside its startup work
+    // (lifespan hasn't finished, so nothing is accepting connections yet),
+    // and a later attempt succeeds once it is.
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    return _request<T>(path, options, retried, networkRetryCount + 1);
   }
 
   const text = await res.text();
@@ -266,7 +329,7 @@ async function _request<T>(
     if (auth) {
       const fresh = await auth.refresh();
       if (fresh) {
-        return _request<T>(path, options, /* retried */ true, networkRetried);
+        return _request<T>(path, options, /* retried */ true, networkRetryCount);
       }
     }
   }

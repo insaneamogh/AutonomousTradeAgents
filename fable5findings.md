@@ -729,6 +729,95 @@ the Drafter's own internal HOLD rule is now stricter (45) than the risk
 engine's actual floor (40) it's supposedly mirroring; worth a follow-up
 task.
 
+### 2026-08-31 — `d8cf7871` fix(mobile): the "server didn't respond" fix never reached two screens
+
+`ID:MODEL2OFF`. Task: the user reported "server didn't respond" on a first
+council run is STILL happening despite bcaf0693 (diagnosis) + d150471d
+(the network-error-retry fix). Also asked to rule the dead Railway
+`ANTHROPIC_API_KEY` (this file's own 0.4 entry below) in or out as the cause.
+
+**Verified live (via a new test, not just reading the source):** an upstream
+LLM auth failure does NOT hang. Wrote
+`apps/api/tests/test_agent_run_llm_failure.py`, which injects a real
+`anthropic.AuthenticationError` mid-council-pass (fake `AsyncAnthropic`,
+patched `graph.strategy_fit_node` to force a pass rather than coupling to a
+symbol's synthetic-hash outcome) through the ACTUAL HTTP surface
+(`POST /agent/run/start` → `GET .../progress`). Result: the POST returns 202
+in <2s regardless of the LLM outcome (the background-task pattern in
+`agent_runs.py` — `AgentRunRegistry.start` fires the pass via
+`asyncio.create_task`, never awaited by the handler — already guarantees
+this), and the existing `except Exception` in `_drive()` already catches the
+failure and records a real, legible error (`"Error code: 401 - invalid
+x-api-key"`) onto the run, fast (the SDK doesn't retry a 401). **Revert-check:**
+narrowing that `except` to `except RuntimeError` makes the new test fail
+exactly as predicted (run stuck at `status="running"` forever) — the test
+has teeth.
+
+So the dead key, if it recurs, was never going to explain a hang by itself.
+Chasing why the symptom still reproduces found the real cause: TWO mobile
+screens the prior fix never touched, both independent of the LLM key:
+
+1. `app/(tabs)/approvals.tsx` — the actual phone/narrow-web "Run" button —
+   had its OWN hardcoded string ("Couldn't start the run - is the server
+   reachable?"), never migrated. d150471d only edited the DESKTOP screen's
+   module-private `runErrorMessage`; this screen never imported it.
+2. `app/council/[runId].tsx` — the theater screen a successful Run click
+   lands in — still had the literal PRE-FIX fallback string ("Couldn't reach
+   the agent server.") with no retry button, shown whenever the progress
+   poll itself blips or a failed run's `error` is empty. Its desktop twin
+   (`Council.tsx`) already had a proper `DataStreamInterrupted`/`onRetry`
+   treatment.
+
+**Fixed:**
+- Promoted `runErrorMessage` into `apps/mobile/src/lib/api.ts` (exported),
+  rewired all three call sites (desktop `Picks.tsx`, phone `approvals.tsx`,
+  theater `[runId].tsx`) to import the one implementation instead of
+  hand-rolling a copy — structurally prevents this exact drift recurring.
+- `[runId].tsx` now shows the run's real server-side error on a genuine
+  failure vs. the shared transport message on a poll blip, plus a "Try
+  again" button.
+- Widened `retryOnNetworkError` from 1 retry/1s to 2 retries at 1s/2s,
+  matching TanStack Query's own default query backoff (`queryClient.ts`) —
+  a single 1s retry was never guaranteed to outlast a real Railway cold
+  start/redeploy.
+- `apps/api/app/main.py`: `lifespan()` was `await`ing `warm_symbol_cache()`
+  directly — a live Alpaca fetch its own comment says takes ~6s — which
+  blocks EVERY request (health checks included) on every fresh container
+  boot, independent of the LLM key. Its contract was already best-effort;
+  moved to a fire-and-forget `asyncio.create_task`, cancelled on shutdown.
+
+**Verified:** full Python suite 1243 passed/11 skipped (was 1242/11 — +1 is
+the new test, nothing else moved); `pnpm --filter mobile exec jest --silent`
+9 suites/73 passed; `tsc --noEmit` clean; `ruff check` clean on every
+touched/new file. Both new-behavior tests (Python + the widened-retry JS
+test) revert-checked and confirmed to fail on the old behavior.
+
+**Left open / could NOT verify:** the deployed `ANTHROPIC_API_KEY`'s CURRENT
+live status (no Railway access, no usable local key). Whether the user is on
+the phone build or the narrow desktop-web view — fixed both since I
+couldn't tell which. The live Railway cold-start duration — no way to
+measure it directly; the `warm_symbol_cache` fix is justified by the code's
+own "~6s" comment + the structural fact that lifespan blocks all traffic
+until it returns, not by a live before/after measurement. Separately found
+and deliberately NOT touched (flagged as a follow-up task, out of scope for
+the council-run path this was scoped to): `app/positions.tsx`,
+`app/auth/login.tsx`, `app/auth/verify.tsx`, and
+`src/desktop/screens/Positions.tsx` each carry their own independent
+"Couldn't reach the agent server"-style hardcoded string.
+
+**Also found and worked around, worth flagging for whoever reads this next:**
+this session's file-edit tool silently corrupted a directly-typed curly
+apostrophe into an invalid UTF-8 byte (decoded back as U+FFFD) in
+`api.test.ts` on this Windows box — a live, reproduced instance of this
+file's own "PS mojibake hazard" dev-env-quirk note, just via the edit tool
+rather than PowerShell itself. Worked around by keeping new string literals
+plain-ASCII and doing a couple of edits via a Python read/replace/write
+(`encoding='utf-8'`) instead of the edit tool wherever the surrounding text
+already contained a non-ASCII character (e.g. main.py's pre-existing em-dash
+in a log message, preserved byte-for-byte by extracting and reusing it
+programmatically rather than retyping it). Worth the same caution in any
+future session on this box.
+
 ### 2026-08-31 — `dcf58ca4` fix(options): adjust_option_position was missing the paper-only/market-hours gate
 
 `ID:MODEL2OFF`. Found while reviewing the (not-yet-merged) escalation-loop

@@ -27,6 +27,7 @@ import { CircuitBreakerBanner } from '@/components/CircuitBreakerBanner';
 import { usePendingApprovals } from '@/hooks/useApprovals';
 import { useActivity } from '@/hooks/useActivity';
 import { useStartCouncilRun } from '@/hooks/useCouncilRun';
+import { runErrorMessage } from '@/lib/api';
 
 const TICKERS = ['NVDA', 'AAPL', 'MSFT', 'TSLA', 'AMD', 'AMZN', 'GOOGL'] as const;
 
@@ -156,7 +157,7 @@ export default function PicksScreen() {
           </View>
           {startRun.isError && (
             <Text className="text-[12px] text-rose dark:text-rose-dark">
-              Couldn&apos;t start the run - is the server reachable?
+              {runErrorMessage(startRun.error)}
             </Text>
           )}
           <BentoCTA
