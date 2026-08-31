@@ -226,6 +226,7 @@ export function Button({
   ariaLabel,
   style,
   type = 'button',
+  title,
 }: {
   children: ReactNode;
   onClick?: () => void;
@@ -235,10 +236,21 @@ export function Button({
   ariaLabel?: string;
   style?: CSSProperties;
   type?: 'button' | 'submit';
+  /** Native browser tooltip on hover — e.g. why a disabled button is
+   * disabled. Optional; most callers don't need it. */
+  title?: string;
 }) {
   const cls = ['pg-btn', `pg-btn-${kind}`, size === 'sm' ? 'pg-btn-sm' : ''].filter(Boolean).join(' ');
   return (
-    <button type={type} className={cls} onClick={onClick} disabled={disabled} aria-label={ariaLabel} style={style}>
+    <button
+      type={type}
+      className={cls}
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={ariaLabel}
+      style={style}
+      title={title}
+    >
       {children}
     </button>
   );

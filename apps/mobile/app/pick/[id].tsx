@@ -30,6 +30,7 @@ import {
 } from '@/components/bento';
 import { useDecideApproval, usePendingApprovals } from '@/hooks/useApprovals';
 import { useBrokerConnections } from '@/hooks/useBrokerConnections';
+import { DEMO_DISABLED_REASON, useIsDemoSession } from '@/lib/demoSession';
 
 /** ISO 8601 date ("2026-10-16") -> "Oct 16" for a compact contract label. */
 function formatExpiry(iso: string): string {
@@ -51,6 +52,7 @@ export default function PickDetailScreen() {
   const decide = useDecideApproval();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [exitMode, setExitMode] = useState<ExitMode>('agent');
+  const isDemo = useIsDemoSession();
 
   // Real broker label for the confirm sheet — not a hardcoded "Alpaca paper".
   const activeConn = (connections ?? []).find((c) => c.status === 'active');
@@ -246,11 +248,12 @@ export default function PickDetailScreen() {
             <BentoCTA
               label="Approve"
               onPress={() => setConfirmOpen(true)}
-              disabled={decide.isPending}
+              disabled={decide.isPending || isDemo}
               accessibilityLabel={
-                isOption
+                (isOption
                   ? `Approve ${p.symbol} ${contractLabel} $${p.strike ?? ''}`
-                  : `Approve ${p.symbol} ${isBuy ? 'buy' : 'sell'}`
+                  : `Approve ${p.symbol} ${isBuy ? 'buy' : 'sell'}`) +
+                (isDemo ? ` — ${DEMO_DISABLED_REASON}` : '')
               }
             />
           </View>
@@ -258,11 +261,17 @@ export default function PickDetailScreen() {
             <BentoQuiet
               label="Pass"
               onPress={decline}
-              disabled={decide.isPending}
-              accessibilityLabel={`Decline ${p.symbol} pick`}
+              disabled={decide.isPending || isDemo}
+              accessibilityLabel={`Decline ${p.symbol} pick${isDemo ? ` — ${DEMO_DISABLED_REASON}` : ''}`}
             />
           </View>
         </View>
+
+        {isDemo ? (
+          <Text className="text-center text-[11px] text-text-tertiary dark:text-text-tertiary-dark">
+            {DEMO_DISABLED_REASON}.
+          </Text>
+        ) : null}
       </ScrollView>
 
       <Modal
@@ -318,8 +327,8 @@ export default function PickDetailScreen() {
               <BentoCTA
                 label={decide.isPending ? 'Submitting…' : 'Confirm & execute'}
                 onPress={approveAndExecute}
-                disabled={decide.isPending}
-                accessibilityLabel={`Confirm approval of ${p.symbol} order`}
+                disabled={decide.isPending || isDemo}
+                accessibilityLabel={`Confirm approval of ${p.symbol} order${isDemo ? ` — ${DEMO_DISABLED_REASON}` : ''}`}
               />
               <BentoQuiet label="Cancel" onPress={() => setConfirmOpen(false)} />
             </View>

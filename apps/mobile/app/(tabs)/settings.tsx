@@ -25,6 +25,7 @@ import {
   useRevokeBrokerConnection,
 } from '@/hooks/useBrokerConnections';
 import { revokeRegisteredDevice } from '@/hooks/usePushRegistration';
+import { DEMO_DISABLED_REASON, useIsDemoSession } from '@/lib/demoSession';
 import { useAuthStore } from '@/stores/authStore';
 import { useBiometricStore } from '@/stores/biometricStore';
 import { useNotificationsStore } from '@/stores/notificationsStore';
@@ -438,6 +439,7 @@ function brokerLabel(connection: BrokerConnection): string {
 function ConnectedBrokerCard({ connection }: { connection: BrokerConnection }) {
   const revoke = useRevokeBrokerConnection();
   const isEnvLinked = connection.connectionSource === 'environment';
+  const isDemo = useIsDemoSession();
 
   const confirmDisconnect = () => {
     Alert.alert(
@@ -492,11 +494,15 @@ function ConnectedBrokerCard({ connection }: { connection: BrokerConnection }) {
         label={revoke.isPending ? 'Disconnecting…' : 'Disconnect'}
         onPress={confirmDisconnect}
         variant="destructive"
-        disabled={revoke.isPending}
-        accessibilityLabel={`Disconnect ${brokerLabel(connection)}`}
+        disabled={revoke.isPending || isDemo}
+        accessibilityLabel={`Disconnect ${brokerLabel(connection)}${isDemo ? ` — ${DEMO_DISABLED_REASON}` : ''}`}
         testID={`disconnect-${connection.broker}`}
       />
-      {isEnvLinked ? (
+      {isDemo ? (
+        <Text className="text-[12px] leading-[17px] text-text-tertiary dark:text-text-tertiary-dark">
+          {DEMO_DISABLED_REASON}.
+        </Text>
+      ) : isEnvLinked ? (
         <Text className="text-[12px] leading-[17px] text-text-tertiary dark:text-text-tertiary-dark">
           Will relink automatically while the server has Alpaca keys configured.
         </Text>

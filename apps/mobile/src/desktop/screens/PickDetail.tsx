@@ -13,6 +13,7 @@ import { useState } from 'react';
 
 import { useAccount } from '@/hooks/useAccount';
 import { useDecideApproval, usePendingApprovals } from '@/hooks/useApprovals';
+import { DEMO_DISABLED_REASON, useIsDemoSession } from '@/lib/demoSession';
 import type { DecisionResponse, ExitMode } from '@app/shared-types';
 
 import { ago, humanize, ruleLabel, usd } from '../format';
@@ -41,6 +42,7 @@ export function PickDetailScreen({ id }: { id: string }) {
   const { back, go } = useNav();
   const [exitMode, setExitMode] = useState<ExitMode>('agent');
   const [result, setResult] = useState<DecisionResponse | null>(null);
+  const isDemo = useIsDemoSession();
 
   if (pending.isError) {
     return (
@@ -206,7 +208,8 @@ export function PickDetailScreen({ id }: { id: string }) {
               <Button
                 kind="primary"
                 onClick={() => submit('approved')}
-                disabled={decide.isPending}
+                disabled={decide.isPending || isDemo}
+                title={isDemo ? DEMO_DISABLED_REASON : undefined}
                 ariaLabel={
                   isOption
                     ? `Approve ${pick.qty} ${pick.symbol} ${contractLabel} $${pick.strike ?? ''}`
@@ -222,7 +225,8 @@ export function PickDetailScreen({ id }: { id: string }) {
               </Button>
               <Button
                 onClick={() => submit('declined')}
-                disabled={decide.isPending}
+                disabled={decide.isPending || isDemo}
+                title={isDemo ? DEMO_DISABLED_REASON : undefined}
                 ariaLabel={`Pass on ${pick.symbol}`}
               >
                 <IconCross size={16} />
@@ -230,9 +234,13 @@ export function PickDetailScreen({ id }: { id: string }) {
               </Button>
             </Stack>
 
-            <span className="pg-caption">
-              Approving routes through the deterministic risk gate one more time before the order is sent.
-            </span>
+            {isDemo ? (
+              <span className="pg-caption pg-dim">{DEMO_DISABLED_REASON}.</span>
+            ) : (
+              <span className="pg-caption">
+                Approving routes through the deterministic risk gate one more time before the order is sent.
+              </span>
+            )}
           </Card>
         </Cell>
 

@@ -11,6 +11,7 @@ import {
 import { useAddWatchlistSymbol, useRemoveWatchlistSymbol, useWatchlist } from '@/hooks/useWatchlist';
 import { useHealthFull } from '@/hooks/useHealthFull';
 import { useTickerCombobox } from '@/hooks/useTickerCombobox';
+import { DEMO_DISABLED_REASON, useIsDemoSession } from '@/lib/demoSession';
 import { useAuthStore } from '@/stores/authStore';
 import { useThemeStore } from '@/stores/themeStore';
 import type { ThemePreference } from '@/stores/themeStore';
@@ -63,6 +64,7 @@ export function SettingsScreen() {
   const { colorScheme } = useColorScheme();
   const email = useAuthStore((s) => s.user?.email ?? '');
   const signOut = useAuthStore((s) => s.signOut);
+  const isDemo = useIsDemoSession();
 
   const combobox = useTickerCombobox(8);
   const { query, setQuery, open, close, setOpen, activeIndex, moveActive, hits, selectIndex, selectActive, reset } =
@@ -191,12 +193,17 @@ export function SettingsScreen() {
                           <Button
                             size="sm"
                             onClick={() => revoke.mutate(c.id)}
-                            disabled={revoke.isPending}
+                            disabled={revoke.isPending || isDemo}
+                            title={isDemo ? DEMO_DISABLED_REASON : undefined}
                             ariaLabel={`Revoke the ${c.broker} connection`}
                           >
                             Revoke
                           </Button>
-                          {c.connectionSource === 'environment' ? (
+                          {isDemo ? (
+                            <span className="pg-caption" style={{ textAlign: 'right', maxWidth: 168 }}>
+                              {DEMO_DISABLED_REASON}.
+                            </span>
+                          ) : c.connectionSource === 'environment' ? (
                             <span className="pg-caption" style={{ textAlign: 'right', maxWidth: 168 }}>
                               Will relink automatically while the server has Alpaca keys configured.
                             </span>
