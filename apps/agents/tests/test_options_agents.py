@@ -1235,6 +1235,43 @@ def test_options_prompts_strategy_list_matches_registry() -> None:
         assert strategy_id in OPTIONS_BEAR
 
 
+def test_adjust_schema_description_matches_stop_loss_sign_convention() -> None:
+    """CLAUDE.md §4.4 drift check, a THIRD location for the same claim.
+
+    ``tools/guard.py``'s module docstring documents a deliberate,
+    load-bearing sign convention: ``TIGHTEN_STOP`` requires the new
+    ``stop_loss_pct`` to be STRICTLY SMALLER than the current one (this
+    repo's ``RiskCaps.options_stop_loss_pct`` convention — smaller
+    magnitude is the TIGHTER stop), a deliberate deviation from the plan
+    docs' literal "may only move UP (tighter)" wording. That docstring
+    explicitly says this must reach "whoever builds the Bull/Bear
+    prompts" — and ``prompts.py::OPTIONS_ESCALATION`` does state it
+    correctly ("Move the stop to a SMALLER stop_loss_pct... a SMALLER
+    number is the TIGHTER stop").
+
+    But the ``ADJUST_OPTION_POSITION`` tool schema's own ``description``
+    is a THIRD place making the same claim, and it reaches the model too:
+    ``llm.py::complete_tools`` passes the raw schema dicts (``description``
+    included) straight into the Messages API's ``tools`` param, verbatim,
+    every round. It previously still carried the plan docs' backwards
+    literal wording ("Stops and take-profits may only move UP (tighter/
+    higher)") -- contradicting both guard.py's actual enforcement and the
+    escalation prompt the model reads in the very same turn.
+    """
+    from trading_agents.options.tools.schemas import ADJUST_OPTION_POSITION
+
+    description = ADJUST_OPTION_POSITION["description"].lower()
+    assert "may only move up (tighter" not in description, (
+        "schema still claims stops move UP to tighten -- backwards for "
+        "stop_loss_pct per guard.py's TIGHTEN_STOP handling and "
+        "OPTIONS_ESCALATION's own wording"
+    )
+    assert "smaller" in description and "stop" in description, (
+        "schema must state stop_loss_pct's real tightening direction "
+        "(a SMALLER value), matching guard.py and OPTIONS_ESCALATION"
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Role-phrase registration — llm.py::_mock_response +
 # cost_ledger.py::infer_role_from_system_prompt. Neither raises on a

@@ -385,6 +385,198 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-31 — consolidated: `ffe75213`..`f3fbe74e` (6 commits) + cross-check/fix pass
+
+`ID:MODEL2OFF`. This is ONE entry standing in for 6 commits that should
+each have gotten their own (CLAUDE.md §6 requires one per commit; none of
+these got it at the time). Per the dispatching instruction, I am not
+reconstructing full historical detail for each — just what they did and
+what I verified about how they interact with the options work that landed
+earlier the same day (`51d1457f`..`ab4bda33`, the Bull/Bear agents +
+guard + tools + escalation loop).
+
+**Identity note, because it matters for the next reader:** of these 6,
+`ffe75213`/`fcb00320`/`ef14352e`/`a7b3a379` all carry `ID:MODEL1REAL`
+(Opus) — this was NOT a second model's session, contrary to how this task
+was framed when dispatched to me. The last two, `c3565e0a` and
+`f3fbe74e`, carry **no identity trailer and no conventional-commit
+message at all** — both bodies are verbatim, all-caps user instruction
+text ("FIX EVERYTHING DELEGATE 5 SUB AGENTS" / "5 SUBAGENTS"), which reads
+as the user's own prompt landing in the log verbatim rather than a
+model-authored summary. Whoever picks this repo up next should know the
+git-log channel (CLAUDE.md §0) was not followed for these two.
+
+**What the 6 commits did, briefly:**
+- `ffe75213` — `list_option_contracts` never paginated Alpaca's
+  `/v2/options/contracts` (100-row default, no auto-page). 98% of every
+  chain arrived with no `open_interest`, so `_passes_liquidity` failed
+  everything and the funnel emptied to zero on every symbol, SPY
+  included. Now loops `next_page_token` (limit 10k, 20-page hard stop).
+- `fcb00320` — wired `run_options_agents` into both graph branches behind
+  `USE_OPTIONS_AGENT` + `instrument=="option"` + a fit strategy. Handles
+  the double-write hazard (`decision_row_written`) and skips
+  `risk_officer` downstream of a trade the guard already risk-cleared.
+- `ef14352e` — docs only: recorded that the Railway Anthropic key 401s
+  under `AGENTS_REQUIRE_REAL_LLM=1` (no mock fallback, no decision row on
+  raise), and that measured `strategy_fit` scores (0.46-0.88 vs a 0.42
+  floor) mean that gate is not what was holding options back.
+- `a7b3a379` — options moved from once-a-day dedup to a cooldown
+  (`OPTIONS_RESCAN_COOLDOWN_MINUTES`, default 45) and now take scan
+  budget before equities.
+- `c3565e0a` — the big one, 13 files. Three separate fixes bundled: (1)
+  **confidence fabrication**: `executor._re_run_risk` used to substitute
+  `conviction_level/5` (a 1-5 bet-size scaled down) for a missing
+  `council_confidence` (a 0-1 "how likely to work") and score THAT
+  against `min_council_confidence` — live case: AMZN drafted at
+  confidence 0.54, refused at approval-click as "0.40 below floor 0.42".
+  Fix: `RiskProposal.confidence` is now `float | None`;
+  `min_council_confidence` (both `risk/engine.py` AND
+  `options/risk.py::evaluate_option` — symmetrically) self-gates out
+  (returns `None`, not a veto) when confidence was never recorded, rather
+  than inventing a stand-in; `ApprovalProposalDto`/`_to_proposal_dto` now
+  actually persist `councilConfidence` (0 of 30 approved equity rows
+  carried it before this). (2) **options agents abstaining on
+  everything**: the pre-pass promised IV rank / funnel counts / liquidity
+  but rendered only strategy fit + patterns + one vol number; 6 of 6
+  observed abstentions cited the missing IV rank. Fixed by rendering
+  every promised block unconditionally via the shared
+  `nodes/_specialist.render_features` (same renderer the equity Technical
+  analyst uses) and adding an explicit prompt rule that `n/a` is a feed
+  limit, not a finding. (3) **the options Refusal Ledger**: guard denials
+  from `select_contract` onward now write an `agent_decisions` row via
+  the new `ToolGuard._ledger_refusal` before denying — previously every
+  such denial was returned to the model and persisted nowhere, so the
+  options path (the one the contest requires) was structurally invisible
+  to `ghost_service.build_veto_ledger`. Also a small mobile change:
+  `apps/mobile/src/lib/api.ts`'s `assertSecure` now lets
+  `http://localhost:*` through even in release builds, tagged
+  `// LOCAL-REPRO-HACK` — flagging this, not fixing it (out of scope):
+  it's a release-build HTTPS-guard relaxation with no test and no
+  tracked follow-up to remove it.
+- `f3fbe74e` — docs only (`docs/OPTIONS_PLAN.md`), no code.
+
+**What I actually checked, against the 4 specific risks named in this
+task's dispatch:**
+
+1. **`TIGHTEN_STOP` sign convention.** `tools/guard.py`'s docstring
+   (§"Sign convention", top of file) enforces: `TIGHTEN_STOP` needs a
+   STRICTLY SMALLER `stop_loss_pct` (smaller magnitude = tighter, this
+   repo's `RiskCaps.options_stop_loss_pct` convention);
+   `RAISE_TAKE_PROFIT` needs a strictly LARGER `take_profit_pct`. Checked
+   every place that makes the same claim to the model:
+   `options/prompts.py::OPTIONS_ESCALATION` states it correctly ("Move
+   the stop to a SMALLER stop_loss_pct... a SMALLER number is the
+   TIGHTER stop"). `options/escalation.py`'s own module docstring states
+   it correctly too. **But `options/tools/schemas.py`'s
+   `ADJUST_OPTION_POSITION["description"]` — a THIRD place carrying the
+   same claim, and one that reaches the model directly (`llm.py::
+   complete_tools` passes the raw schema dict, description included,
+   straight into the Messages API's `tools` param every round) — still
+   had the plan docs' literal-but-backwards wording: "Stops and
+   take-profits may only move UP (tighter/higher)."** This is a real
+   conflicting-signal bug: the model reads a correct system prompt and an
+   incorrect tool-schema description in the same turn. FIXED — reworded
+   to state each field's real direction separately (stop: smaller;
+   take-profit: larger). Added
+   `test_adjust_schema_description_matches_stop_loss_sign_convention` in
+   `apps/agents/tests/test_options_agents.py`; revert-checked per CLAUDE.md
+   §4.1 (confirmed it fails against the pre-fix text, passes after).
+   `agents.py`/`prompts.py` themselves needed no fix — they were already
+   correct.
+
+2. **`_ledger_refusal`'s reuse of `_proposal_dto`.** Traced every reader
+   of a persisted `agent_decisions.proposal` I could find:
+   `ghost_service.build_veto_ledger`/`build_veto_exemplar` (reads
+   `estimatedNotional`/`isOption`/`occSymbol` — already tolerant of both
+   camelCase and snake_case, matches `_proposal_dto`'s keys exactly, and
+   `estimatedNotional` already bakes in the option multiplier so no
+   double-count); `jobs/ghost_eval.py::evaluate_ghosts` (same fields,
+   correctly marks the OCC contract not the underlying, and a
+   `no_liquid_contract`/`size_rounds_to_zero` refusal — `ask=None`/`qty=0`
+   — is gracefully SKIPPED via named skip reasons `entry_is_none`/
+   `falsy_qty` rather than crashing or fabricating a ghost); `list_pending`
+   (filters `risk_approved.is_(True)`, so a VETOED refusal row never
+   surfaces there regardless of DTO shape); `position_manager.py`'s
+   option branches and `funnel_service.py` (reads `reasoning.
+   contract_funnel`, never `proposal`, so unaffected — and
+   `_ledger_refusal` deliberately does not set `contract_funnel`, which
+   its own docstring explains). Found no incompatibility. One thing
+   worth naming for the next reader: the equity path has ALWAYS written a
+   populated `proposal` on a VETOED row too, when the Drafter drafted
+   something before risk vetoed it (`runtime._to_decision_entry`'s
+   `audit_proposal = proposal_dto if proposal_dto is not None else
+   _to_proposal_dto(final)` fallback) — so "a VETOED row can have a real
+   proposal" was not entirely new, only new for the OPTIONS path
+   specifically (which previously wrote NO row at all for a guard
+   denial). No fix needed here.
+
+3. **Escalation loop vs. the now-wired options council.** Traced the
+   `council_run_id`/`decision_id` chain end to end for a real trade:
+   `runtime.run_council` generates `council_run_id` -> `state[
+   "council_run_id"]` -> `options/agents.py::run_options_agents` threads
+   it into `GuardContext.council_run_id` -> `trade.py::open_option_trade`
+   writes `DecisionEntry(id=str(ctx.council_run_id))` ->
+   `PostgresDecisionLog.record()` keeps that as the row's real PK ->
+   `options_council_node` reads it back as `trade["decision_id"]` and
+   sets `out["decision_id"]` -> `runtime.py` takes it via
+   `decision_row_written`. All the same string throughout. Confirmed
+   `build_position_brief`'s field reads (`limitPrice`, `rationale`,
+   `fill_avg_price`) match what `open_option_trade` actually persists,
+   and that `entered_at` (`user_responded_at` from
+   `ToolGuard._stamp_auto_approval`, falling back to `triggered_at`) is
+   always populated close to real open time either way. Confirmed
+   `escalation.py`'s reuse of `ctx.council_run_id = brief.decision_id`
+   (an already-open position's row id, not a fresh pass id) never
+   collides with `_ledger_refusal` (escalation never calls it —
+   `_before_adjust_option_position` has no ledger-refusal path) or with
+   `_persist_tool_log`'s `ctx.council_run_id` fallback (moot, since
+   `adjust_option_position`'s `decision_id` arg is schema-required and
+   always present). Also confirmed `manage_positions_for_user`'s query
+   (`fill_qty IS NOT NULL AND closed_at IS NULL AND user_response=
+   'approved'`) can never pick up a refusal row (`fill_qty` is always
+   `None` on one), so `build_position_brief` never runs against a VETOED
+   row's shape at all. No conflict found; no fix needed.
+
+4. **Suite/lint state, actually run just now (not carried forward from
+   any commit message):**
+   - `python -m uv run pytest apps/ packages/ -q` (after `uv sync
+     --all-packages`, clean tree, no concurrent edits):
+     **1254 passed, 11 skipped, 0 failed** (221s). This INCLUDES my new
+     test above. (A first background run overlapped with my own edits —
+     test added mid-run, fix landed after collection — and produced a
+     misleading transient "1 failed"; discard that number, it was a race
+     in my own process, not a real suite state. The 1254/11/0 figure is
+     from a clean re-run with the tree quiescent throughout.)
+   - `ruff check apps/agents/trading_agents/options/
+     apps/api/app/services/orders/position_manager.py
+     apps/api/app/services/orders/reconciler_fleet.py`: **all clean**.
+   - `ruff check apps/ packages/` (whole tree): **256 errors** — far more
+     than CLAUDE.md §7's stated "9 pre-existing... as of 2026-08-29".
+     Confirmed neither of my two changed files appears anywhere in that
+     output, so none of the 256 are mine; the "9" baseline in CLAUDE.md
+     is simply stale and should be treated as such by whoever reads it
+     next (I did not chase down when it grew, that's outside this task).
+   - `mypy apps/agents/trading_agents/options/
+     apps/api/app/services/orders/position_manager.py
+     apps/api/app/services/orders/reconciler_fleet.py`: **21 errors, 2
+     files** (`position_manager.py`, `reconciler_fleet.py`) — the options
+     package itself is mypy-clean (0 errors across 13 source files
+     checked). All 21 are `[type-arg]` (bare `async_sessionmaker`/`dict`/
+     `Task` generics) and `[no-untyped-def]`, and `git blame` traces every
+     flagged line back to `cf7b01f45` (2026-06-12) — predates both of
+     today's sessions by months, not something either introduced.
+
+**Net result of this pass:** one real, fixed bug (the schema-description
+sign-convention contradiction in item 1); everything else checked in
+items 2-4 held up. Fixed with a test that fails on revert and passes
+after (§4.1), committed separately from this doc update.
+
+**Left open / not mine to fix:** the `api.ts` `LOCAL-REPRO-HACK` release-
+build HTTPS bypass (flagged above, out of scope for this pass); the
+repo-wide 256 ruff errors and the missing per-commit build-log entries
+for the 4 Opus commits in this batch (also out of scope — CLAUDE.md asked
+for one consolidated entry here, not retroactive reconstruction).
+
 ### 2026-08-31 — `dcf58ca4` fix(options): adjust_option_position was missing the paper-only/market-hours gate
 
 `ID:MODEL2OFF`. Found while reviewing the (not-yet-merged) escalation-loop

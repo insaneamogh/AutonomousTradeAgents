@@ -67,8 +67,11 @@ ADJUST_OPTION_POSITION: dict[str, Any] = {
     "name": "adjust_option_position",
     "description": (
         "Act on an open option position whose trailing ratchet reported a "
-        "material change. Stops and take-profits may only move UP (tighter/"
-        "higher). Any request to loosen protection is refused."
+        "material change. Protection only ever narrows: take_profit_pct may "
+        "only move to a LARGER value (a higher target), and stop_loss_pct "
+        "may only move to a SMALLER value (this codebase's convention: a "
+        "smaller stop_loss_pct is the TIGHTER stop). Any request to loosen "
+        "protection is refused."
     ),
     "input_schema": {
         "type": "object",
