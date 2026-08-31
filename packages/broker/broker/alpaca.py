@@ -554,6 +554,16 @@ async def lookup_option_contract(
     return await asyncio.to_thread(_fetch)
 
 
+_CONTRACT_PAGE_LIMIT = 10_000
+"""Alpaca's documented max page size for /v2/options/contracts. Large
+pages mean a full chain is usually one request, not fifty."""
+
+_MAX_CONTRACT_PAGES = 20
+"""Hard stop on the paging loop. 20 x 10k covers any single underlying's
+chain many times over; the cap exists so a malformed next_page_token
+cannot spin forever inside a council pass."""
+
+
 async def list_option_contracts(
     underlying_symbols: list[str],
     *,
@@ -579,18 +589,47 @@ async def list_option_contracts(
 
     def _fetch() -> list[OptionContract]:
         client = TradingClient(api_key=api_key, secret_key=secret_key, paper=True)
-        request = GetOptionContractsRequest(
-            underlying_symbols=underlying_symbols,
-            status=AssetStatus.ACTIVE,
-            expiration_date_gte=expiration_date_gte,
-            expiration_date_lte=expiration_date_lte,
-            type=contract_type,
-        )
-        try:
-            response = client.get_option_contracts(request)
-        except Exception:
-            return []
-        return list(getattr(response, "option_contracts", None) or [])
+        # PAGINATED. This endpoint defaults to 100 rows and does NOT
+        # auto-paginate (unlike the market-data client, whose
+        # `_get_marketdata` loops on next_page_token for us).
+        #
+        # Measured live 2026-08-31 on SPY, 7-60 DTE:
+        #     chain snapshot        4674 contracts
+        #     this call, unpaged     100 contracts   <- one page
+        #     merged open_interest     58 populated
+        #     open_interest >= 100     10
+        #
+        # This is the ONLY source of open_interest, and
+        # `engine.options.selection._passes_liquidity` hard-fails on
+        # `open_interest is None` by design. So an unpaged fetch left 98%
+        # of every chain with no OI, every one of them failed the
+        # liquidity stage, and the funnel emptied to zero on EVERY symbol
+        # -- including SPY, the most liquid options chain there is.
+        # Options could never trade. Invisible behind a green suite
+        # because no test exercised this endpoint's paging shape.
+        out: list[OptionContract] = []
+        page_token: str | None = None
+        for _page in range(_MAX_CONTRACT_PAGES):
+            request = GetOptionContractsRequest(
+                underlying_symbols=underlying_symbols,
+                status=AssetStatus.ACTIVE,
+                expiration_date_gte=expiration_date_gte,
+                expiration_date_lte=expiration_date_lte,
+                type=contract_type,
+                limit=_CONTRACT_PAGE_LIMIT,
+                page_token=page_token,
+            )
+            try:
+                response = client.get_option_contracts(request)
+            except Exception:
+                # Partial data beats none: an OI-less contract merely fails
+                # the liquidity gate, which is the safe direction.
+                return out
+            out.extend(getattr(response, "option_contracts", None) or [])
+            page_token = getattr(response, "next_page_token", None)
+            if not page_token:
+                break
+        return out
 
     return await asyncio.to_thread(_fetch)
 
