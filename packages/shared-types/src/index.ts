@@ -416,11 +416,62 @@ export interface VetoRuleDto {
   lastAt?: string | null;
 }
 
+/** A rule that resized a trade rather than blocking it — kept separate
+ * from `VetoRuleDto`: a trim let a smaller trade through, a veto let
+ * nothing through. */
+export interface TrimRuleDto {
+  rule: string;
+  count: number;
+}
+
 export interface VetoLedgerResponse {
   windowDays: number;
   totalVetoes: number;
   totalBlockedNotional: number;
   rules: VetoRuleDto[];
+  trims: TrimRuleDto[];
+  totalTrims: number;
+  /** `reasoning["risk_profile"]` in force over this window — not yet sent
+   * by the API as of this writing (backend tracked separately), so this is
+   * optional/absent rather than a value the client can rely on. */
+  riskProfile?: string | null;
+}
+
+/**
+ * GET /api/v1/risk/vetoes/{rule}/exemplar — the single most extreme
+ * finalized refusal under one rule (docs/IMPL_REFUSAL_LEDGER.md §2.2).
+ * NOT YET BUILT server-side as of this writing — shape documented here
+ * ahead of that endpoint landing, mirroring the doc's own worked example
+ * (the NVDA260918C00225000 / max_premium_pct story trade).
+ */
+export interface VetoExemplarResponse {
+  rule: string;
+  /** False when every ghost under this rule in the window is still
+   * pending/partial — there is no finalized exemplar to show yet. */
+  found: boolean;
+  decisionId?: string | null;
+  symbol?: string | null;
+  occSymbol?: string | null;
+  side?: string | null;
+  qty?: number | null;
+  price?: number | null;
+  estimatedNotional?: number | null;
+  notionalPctOfEquity?: number | null;
+  capPct?: number | null;
+  bullCase?: string | null;
+  bearCase?: string | null;
+  rationale?: string | null;
+  markPrice?: number | null;
+  tradingDaysElapsed?: number | null;
+  ghostPnl?: number | null;
+  preventedLossUsd?: number | null;
+  /** ISO 8601 string. */
+  triggeredAt?: string | null;
+  /** ISO 8601 string. */
+  finalizedAt?: string | null;
+  riskProfile?: string | null;
+  /** 'ask' or 'auto' — see `DecisionSummaryDto.approvalMode`. */
+  approvalMode?: string | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────

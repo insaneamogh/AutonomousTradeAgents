@@ -25,7 +25,7 @@ import { useOpenPositions } from '@/hooks/usePositions';
 import { useScannerStatus } from '@/hooks/useScannerStatus';
 import type { ScanSignalDto } from '@/hooks/useScannerStatus';
 
-import { ago, ruleLabel, signedPct, signedUsd, tone, usd } from '../format';
+import { ago, pendingAwareUsd, ruleLabel, signedPct, signedUsd, tone, usd } from '../format';
 import { IconSpark } from '../icons';
 import { useNav } from '../nav';
 import {
@@ -180,7 +180,9 @@ export function DashboardScreen() {
         <Cell span={3}>
           <StatTile
             label="Risk saved"
-            value={ghost.data ? usd(ghost.data.savedUsd) : '—'}
+            value={
+              ghost.data ? pendingAwareUsd(ghost.data.savedUsd, ghost.data.vetoed.pendingCount) : '—'
+            }
             caption="Losses avoided by vetoes · 30d"
             tone={ghost.data && ghost.data.savedUsd > 0 ? 'bull' : 'neutral'}
             loading={ghost.isLoading}
@@ -189,7 +191,9 @@ export function DashboardScreen() {
         <Cell span={3}>
           <StatTile
             label="Regret"
-            value={ghost.data ? usd(ghost.data.missedUsd) : '—'}
+            value={
+              ghost.data ? pendingAwareUsd(ghost.data.missedUsd, ghost.data.declined.pendingCount) : '—'
+            }
             caption="Missed on declined picks · 30d"
             tone={ghost.data && ghost.data.missedUsd > 0 ? 'bear' : 'neutral'}
             loading={ghost.isLoading}
