@@ -89,6 +89,12 @@ def _demo_access_token(client: TestClient, user_id: str = DEMO_TEST_USER_ID) -> 
     body = r.json()
     assert body["refreshToken"] is None, "a demo session must never issue a refresh token"
     assert body["userId"] == user_id
+    assert body["authMethod"] == "demo", (
+        "the mobile client's useIsDemoSession() keys off this exact field to "
+        "show the read-only banner and disable mutating buttons — omitting it "
+        "would silently break that UI while still (correctly) 401ing the "
+        "underlying route, so this must not regress unnoticed"
+    )
     access_token: str = body["accessToken"]
     return access_token
 

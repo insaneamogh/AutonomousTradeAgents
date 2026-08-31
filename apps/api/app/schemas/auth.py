@@ -67,6 +67,12 @@ class IssuedTokensResponse(_Base):
     Every other issuer (verify/refresh/google) always sets a real value."""
     access_expires_in_seconds: int
     refresh_expires_in_seconds: int
+    auth_method: str | None = None
+    """``"demo"`` only for a demo session (``POST /auth/demo``) — the
+    client's ``useIsDemoSession()`` keys off this exact wire field
+    (``authMethod`` once camelCased) to show the read-only banner and
+    disable mutating buttons. Every other issuer omits it (defaults to
+    None), which the client already treats as "not a demo session"."""
 
 
 # ─────────────────────────────────────────────────────────────────────

@@ -348,6 +348,7 @@ async def demo(
         refresh_token=None,
         access_expires_in_seconds=access.access_expires_in_seconds,
         refresh_expires_in_seconds=0,
+        auth_method="demo",
     )
 
 
