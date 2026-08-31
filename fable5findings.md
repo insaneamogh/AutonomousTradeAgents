@@ -385,6 +385,55 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-31 — `0eaaad8c`/`10374339` feat(mobile): demo banner + disabled buttons — and the gap between the two I5 halves
+
+`ID:MODEL2OFF`. Client half of `docs/IMPL_DEMO_SESSION.md` (`0eaaad8c`):
+`?demo=<token>` exchanged through the exact same `authStore.signIn()` path a
+magic-link login uses, stripped from the URL immediately via
+`history.replaceState`; a persistent `DemoSessionBanner`; 6 mutating buttons
+(native + desktop trees for each of Approve/Decline, Close/Cancel,
+Revoke/Disconnect) DISABLED with a stated reason, never hidden. jest 3
+suites/28 tests → 9 suites/68 on `main` post-merge, tsc clean, both
+independently re-confirmed by me after installing the worktree's own
+`node_modules`.
+
+**The one thing worth remembering from this pair of commits:** reviewing
+I5-frontend against the ALREADY-MERGED I5-backend (`70bcbd20`) surfaced a
+real integration bug neither agent could have caught alone — the frontend's
+`useIsDemoSession()` reads `user.authMethod === 'demo'`, documented as
+"mirrored from the server ... through the exchange response," but the real,
+merged `IssuedTokensResponse` schema never had an `auth_method` field and
+the `/auth/demo` handler never set one. Every demo session would have
+gotten a completely silent, working-as-far-as-anyone-could-tell UI with the
+banner simply never appearing and the buttons never disabling — while the
+actual server-side security enforcement (`is_dev_bypass` → `require_real_auth`
+→ 401) stayed fully intact regardless, since that's a separate mechanism.
+**Neither git nor tsc would ever catch this**: two different files, no
+merge conflict; a wire-shape mismatch, not a type error, since a TS
+interface describing an HTTP response doesn't get validated against what
+the server actually sends. Only tracing the real data flow between two
+independently-built halves of the same spec surfaced it.
+
+Fixed separately, `10374339`, right before the frontend merge:
+`IssuedTokensResponse` gains `auth_method: str | None = None` (purely
+additive — every other issuer already omits it), the `/auth/demo` handler
+sets `auth_method="demo"`. Added the assertion to `_demo_access_token()`,
+the one helper all 12 of `test_demo_session.py`'s exchange-flow tests
+already share, so the coverage is broad rather than one isolated test.
+Revert-checked (CLAUDE.md §4.1): removed the fix, ran the suite — **12
+tests failed** with the exact `assert None == 'demo'` — confirming the new
+assertion genuinely catches the gap; restored, full suite 1040/11 unchanged
+(purely additive field, zero regressions).
+
+**The pattern, generalized, for whoever runs the next batch of parallel
+subagents against a spec split across a backend and a frontend workstream:**
+each agent will faithfully implement ITS OWN reading of the shared contract
+in isolation, and both halves can be individually correct, individually
+well-tested, and still not actually work together. A clean merge (no
+conflict markers) and green types (tsc/mypy) are necessary, not sufficient —
+after merging paired backend/frontend work, trace at least one real request
+through both sides by hand before calling it verified.
+
 ### 2026-08-31 — `70bcbd20` feat(auth): read-only demo-session link for judges (IMPL_DEMO_SESSION.md)
 
 `ID:MODEL2OFF`. A judge-facing link that shows the REAL trading account
