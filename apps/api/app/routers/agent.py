@@ -25,7 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi import status as http_status
 
 from app.core.config import get_settings
-from app.middleware.auth import AuthedUser, get_current_user
+from app.middleware.auth import AuthedUser, get_current_user, require_real_auth
 from app.schemas.agent import (
     AgentRunRequest,
     AgentRunResponse,
@@ -156,9 +156,16 @@ async def _execute_council(
 @router.post("/run", response_model=AgentRunResponse, response_model_by_alias=True)
 async def run(
     body: AgentRunRequest,
-    user: AuthedUser = Depends(get_current_user),
+    user: AuthedUser = Depends(require_real_auth),
 ) -> AgentRunResponse:
-    """Run the council synchronously. Auth-gated like the rest of v1."""
+    """Run the council synchronously.
+
+    ``require_real_auth`` (not the plain ``get_current_user`` every other
+    route here uses): a run spends real, unbounded LLM budget per call and
+    writes to the decision log, so a read-only demo session
+    (``docs/IMPL_DEMO_SESSION.md``) must never reach it — judges don't need
+    to trigger runs, the scheduler already produces them.
+    """
     return await _execute_council(body, user)
 
 
@@ -170,12 +177,13 @@ async def run(
 )
 async def run_start(
     body: AgentRunRequest,
-    user: AuthedUser = Depends(get_current_user),
+    user: AuthedUser = Depends(require_real_auth),
 ) -> AgentRunStartResponse:
     """Launch a council run in the background; poll /run/{id}/progress.
 
     One concurrent run per user — a double-tap returns the in-flight runId
-    instead of double-spending LLM calls.
+    instead of double-spending LLM calls. ``require_real_auth`` for the
+    same reason as ``/run`` above — see its docstring.
     """
     registry = get_run_registry()
 

@@ -19,7 +19,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from app.middleware.auth import AuthedUser, get_current_user
+from app.middleware.auth import AuthedUser, get_current_user, require_real_auth
 from app.schemas.review import (
     AgreementResponse,
     GradeRequest,
@@ -60,8 +60,12 @@ async def queue(
 async def grade(
     decision_id: str,
     body: GradeRequest,
-    user: AuthedUser = Depends(get_current_user),
+    user: AuthedUser = Depends(require_real_auth),
 ) -> GradeResponse:
+    """``require_real_auth``, not the plain ``get_current_user`` the GET
+    routes above use: a grade pollutes reflection/calibration data, so a
+    read-only demo session (docs/IMPL_DEMO_SESSION.md) must never reach
+    it."""
     try:
         return await apply_grade(
             operator_user_id=user.id,
