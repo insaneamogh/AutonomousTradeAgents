@@ -385,6 +385,66 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-31 — `fab53c59`/`3640a64a` feat: the Contract Funnel view, backend + frontend
+
+`ID:MODEL2OFF`. Implements `docs/IMPL_CONTRACT_FUNNEL_UI.md` in full — the
+"highest demo-value-per-hour" item per its own header, since every options
+council pass has been writing a `contract_funnel` block into
+`agent_decisions.reasoning` since 2026-08-30 and nothing read it back until
+now. Two subagent workstreams, reviewed and merged separately:
+
+**Backend (`3640a64a`):** new `GET /api/v1/insights/funnel`. Aggregation is
+pure Python (`build_funnel_report_from_rows`, testable with no DB), scoped
+by the same `ghost_service._tenant_filters` the veto ledger already uses.
+Absent-vs-zero handled correctly (a stage a given row never emitted
+contributes nothing to that stage's sum, rather than reading as a 100%
+rejection); `dropped` clamped at 0; `rejection_stage` derived from the
+counts themselves, not the stored `rejection_reason` string, so it's right
+even for `select_contract`'s `"no_candidates"` case. 969->983 passed, 11
+skipped, zero regressions; all 6 of the spec's revert-checks independently
+re-verified.
+
+**Frontend (`fab53c59`):** `ContractFunnel.tsx` — stepped horizontal bars,
+not a Sankey. Two mount points: Insights (window aggregate) and Decisions
+(the single selected decision's own run — chosen over `PickDetail` because
+that screen only ever shows a pending approval, and a HOLD never proposes
+one, which would make the spec's own "the HOLD case is the important one"
+unreachable there). `minWidth:2px` floor, real empty state (never a funnel
+of zeroes), HOLD banner as a lookup table keyed on the exact
+`_STAGE_REJECTION_REASONS` strings.
+
+**Both workstreams independently touched `packages/shared-types/src/index.ts`
+and (frontend) `Insights.tsx`, in parallel worktrees off the same 604a2001
+baseline — landing them together needed two hand-fixes, both mine, disclosed
+in `fab53c59`'s own commit body:**
+1. Both branches declared `FunnelStageDto`/`FunnelRunDto`/`FunnelAggregateDto`/
+   `FunnelResponse` independently, in different parts of the same file. Git's
+   line-based merge combined both sets with **no conflict marker** (the
+   insertions were non-overlapping lines) — which compiles fine as a diff but
+   is two colliding definitions of each interface. Caught by grepping for
+   duplicate `export interface Funnel` lines after merging, not by trusting
+   the merge went cleanly just because git didn't flag it.
+2. The refusal-ledger commit's `Insights.test.tsx` mocks every data hook the
+   screen uses and says outright "no QueryClientProvider needed because the
+   real useQuery never runs" — true when written, but it predates this
+   commit's `useFunnel()` call in the same screen. Merged in unmocked, the
+   real hook's real `useQuery` fired with no provider and failed 7 tests.
+   Fixed by adding the same `jest.mock` pattern already used for the other
+   three hooks.
+
+**The general lesson for whoever runs the next batch of parallel subagents:**
+a clean `git merge` with no conflict markers is not proof the result is
+correct when two branches touched the same file in different places — TS
+duplicate-declaration errors and a test file's own unmocked-hook assumptions
+are both invisible to git's line-based conflict detection. Ran the real test
+suites after every merge in this batch, not just checked for `CONFLICT` in
+the merge output.
+
+**Verified together, after both merges + both fixes:** 983 passed/11 skipped
+(Python, re-run independently), 6 suites/53 tests passing (jest, re-run
+independently — up from the 5/41 the ledger commit alone had), `tsc --noEmit`
+clean.
+
 ### 2026-08-31 — `9296071d` feat(desktop): render the Refusal Ledger's honesty rules
 
 `ID:MODEL2OFF`. First landed piece of the 5 new IMPL specs (`docs/IMPL_*.md`,
