@@ -1,4 +1,4 @@
-"""/api/v1/ghost + /api/v1/risk — regret analytics + veto scorecard.
+"""/api/v1/ghost + /api/v1/risk + /api/v1/insights/funnel.
 
 GET /api/v1/ghost/summary?windowDays=30
     "Risk saved you $X / your passes cost you $Y" headline numbers.
@@ -6,15 +6,22 @@ GET /api/v1/ghost/summary?windowDays=30
 GET /api/v1/risk/vetoes?windowDays=30
     Per-rule veto ledger: count, blocked notional, prevented loss
     (where a finalized ghost outcome exists).
+
+GET /api/v1/insights/funnel?windowDays=30&limit=20
+    The contract funnel — how many candidates survived each selection
+    stage, aggregated across the window plus the most recent runs.
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import Field
 
 from app.middleware.auth import AuthedUser, get_current_user
 from app.schemas.base import CamelCaseModel
+from app.services.council.funnel_service import FunnelStage, build_funnel_report
 from app.services.council.ghost_service import build_ghost_summary, build_veto_ledger
 from engine.env import env_flag
 
@@ -116,4 +123,81 @@ async def veto_ledger(
         ],
         trims=[TrimRuleDto(rule=t.rule, count=t.count) for t in ledger.trims],
         total_trims=ledger.total_trims,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# /api/v1/insights/funnel — the contract funnel
+# ─────────────────────────────────────────────────────────────────────
+
+
+class FunnelStageDto(CamelCaseModel):
+    key: str
+    label: str
+    survivors: int
+    dropped: int
+
+
+class FunnelRunDto(CamelCaseModel):
+    decision_id: str
+    symbol: str
+    triggered_at: str
+    stages: list[FunnelStageDto] = Field(default_factory=list)
+    rejection_reason: str | None = None
+    rejection_stage: str | None = None
+    selected_occ: str | None = None
+    outcome: str
+
+
+class FunnelAggregateDto(CamelCaseModel):
+    """Summed across the window — the headline number."""
+
+    stages: list[FunnelStageDto] = Field(default_factory=list)
+    runs: int
+    bought: int
+    top_rejection_reasons: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class FunnelResponse(CamelCaseModel):
+    window_days: int
+    aggregate: FunnelAggregateDto
+    recent: list[FunnelRunDto] = Field(default_factory=list)
+
+
+def _stage_dtos(stages: list[FunnelStage]) -> list[FunnelStageDto]:
+    return [
+        FunnelStageDto(key=s.key, label=s.label, survivors=s.survivors, dropped=s.dropped)
+        for s in stages
+    ]
+
+
+@router.get("/insights/funnel", response_model=FunnelResponse, response_model_by_alias=True)
+async def funnel(
+    window_days: int = Query(default=30, ge=1, le=365, alias="windowDays"),
+    limit: int = Query(default=20, ge=1, le=200),
+    user: AuthedUser = Depends(get_current_user),
+) -> FunnelResponse:
+    _require_postgres()
+    report = await build_funnel_report(window_days, user_id=user.id, limit=limit)
+    return FunnelResponse(
+        window_days=report.window_days,
+        aggregate=FunnelAggregateDto(
+            stages=_stage_dtos(report.aggregate.stages),
+            runs=report.aggregate.runs,
+            bought=report.aggregate.bought,
+            top_rejection_reasons=report.aggregate.top_rejection_reasons,
+        ),
+        recent=[
+            FunnelRunDto(
+                decision_id=r.decision_id,
+                symbol=r.symbol,
+                triggered_at=r.triggered_at.isoformat(),
+                stages=_stage_dtos(r.stages),
+                rejection_reason=r.rejection_reason,
+                rejection_stage=r.rejection_stage,
+                selected_occ=r.selected_occ,
+                outcome=r.outcome,
+            )
+            for r in report.recent
+        ],
     )

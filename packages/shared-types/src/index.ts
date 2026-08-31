@@ -475,6 +475,45 @@ export interface VetoExemplarResponse {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// /api/v1/insights/funnel — the contract funnel
+// ─────────────────────────────────────────────────────────────────────
+
+export interface FunnelStageDto {
+  key: string;
+  label: string;
+  survivors: number;
+  /** previous stage's survivors minus this stage's — never negative. */
+  dropped: number;
+}
+
+export interface FunnelRunDto {
+  decisionId: string;
+  symbol: string;
+  /** ISO 8601 string. */
+  triggeredAt: string;
+  stages: FunnelStageDto[];
+  rejectionReason: string | null;
+  /** Which stage's count hit zero — null when the run bought a contract. */
+  rejectionStage: string | null;
+  selectedOcc: string | null;
+  outcome: 'bought' | 'held';
+}
+
+export interface FunnelAggregateDto {
+  /** Summed across the window — the headline number. */
+  stages: FunnelStageDto[];
+  runs: number;
+  bought: number;
+  topRejectionReasons: Array<{ reason: string; count: number }>;
+}
+
+export interface FunnelResponse {
+  windowDays: number;
+  aggregate: FunnelAggregateDto;
+  recent: FunnelRunDto[];
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // /api/v1/review/scorecard — calibration scorecard
 // ─────────────────────────────────────────────────────────────────────
 
