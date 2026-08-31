@@ -863,6 +863,138 @@ Close/Cancel button still bubbles its click up to the row's own
 `onClick` (opens the trade-biography panel) for a decision-backed row —
 pre-existing (present before this change too), not fixed here.
 
+### 2026-09-01 — diagnosis, no code change: the "AWAITING FILL" positions are options that already filled, not stuck equity orders
+
+`ID:MODEL2OFF`. Asked to investigate NVDA/SPY/QQQ positions reported stuck
+"AWAITING FILL" for hours with no stop/target shown, and to verify whether
+CVX/BAC/VZ (which filled in the same batch) got a broker-side bracket.
+Read-only against the live production Postgres the whole way
+(`apps/api/.env`'s `DATABASE_URL` against the real Railway DB, via
+`engine.db.session.async_session_factory()` — same pattern CLAUDE.md's
+§4.3 asks for: measure the live funnel, don't reason about it). No writes,
+no code changes this session.
+
+**Finding 1 — the six "stuck" rows are OPTIONS proposals, not equity.**
+The task brief described them as equity buys (NVDA qty 4, SPY qty 2, NVDA
+qty 2, QQQ qty 1, SPY qty 2, NVDA qty 4). Queried `agent_decisions` for
+this user (`43221580-69bc-4134-8e1e-5af75499d874`) and every one of those
+six rows carries `proposal.isOption: true`, `proposal.orderType: "LIMIT"`,
+plus `occSymbol`/`strike`/`contractType`, and
+`estimatedNotional == qty * limitPrice * 100` (the options multiplier —
+e.g. QQQ qty=1 @ limitPrice 16.35 → estimatedNotional 1635.0, not 16.35).
+The six qtys match the report exactly (QQQ×1, SPY×2, NVDA×3). This rules
+out both hypotheses in the brief (equity limit-price-stale, missing equity
+bracket) — neither one applies; these six never touched the equity/
+executor.py path at all.
+
+**Finding 2 — equity order construction + bracket attachment: verified
+correct and working, live, no gap, no fix needed.**
+`apps/agents/trading_agents/nodes/drafter.py:296` hardcodes
+`"order_type": "MARKET"` for every equity proposal (a stale LIMIT price
+cannot occur — there is no equity code path that emits LIMIT).
+`apps/api/app/services/orders/executor.py:227-294` attaches a broker-side
+bracket (GTC, `take_profit_price`/`stop_loss_price`) whenever
+`exit_mode=agent` and the proposal carries both `stop_loss`/`target_price`
+(populated by `engine.sizing.atr_position_size` in the drafter). Queried
+literally every order row this user has ever placed — 9 total (CVX×2, BAC,
+VZ, XOM, UNP, SPY, JNJ, KO): **100% are `order_type=MARKET`,
+`order_class=OrderClass.BRACKET`, `status=filled`**, each with a real
+take-profit LIMIT leg + stop-loss STOP leg on the wire (`raw_response`'s
+`legs`), GTC, priced directly off that same proposal's stopLoss/
+targetPrice. The 5 orders submitted pre-market 2026-08-27 (09:27-09:32 UTC,
+before the 13:30 UTC/9:30 ET open) correctly sat accepted until the open
+and filled 1-5 minutes after it — expected Alpaca behavior for a DAY MARKET
+order submitted pre-open (`positions_service.py`'s own comment predicts
+exactly this), not a bug.
+
+**Finding 3 — the six option positions already filled at the broker and
+are running with ZERO exit management. This is worse than "still
+working."** `positions_snapshot` (populated every ~30s directly from
+`broker.list_positions()` — confirmed live and current: 5 consecutive rows
+18:53:29-18:55:35 UTC) shows all six as real, currently-open Alpaca
+positions: `NVDA260918C00215000` qty2@8.70, `NVDA261002C00225000`
+qty4@5.95, `NVDA261009C00230000` qty4@5.30, `QQQ260918C00708000`
+qty1@16.25, `SPY260918C00765000` qty2@9.35, `SPY261002C00771000` qty2@8.73
+— qty and fill price matching each decision's proposal almost exactly.
+Yet every one of the six `agent_decisions` rows still has `fill_qty IS
+NULL` (confirmed: 6/6, zero matching `orders` rows each). Root cause, read
+directly from the code:
+
+  - `apps/agents/trading_agents/options/tools/trade.py`'s `open_option_trade`
+    (the options council's trade tool — `docs/OPTIONS_PLAYBOOK.md` §0.5)
+    calls `broker.place_order(...)` directly, then writes ONLY an
+    `agent_decisions` row (`decision_log.record(entry)`), with
+    `fill_qty=order.filled_qty or None` captured once, synchronously,
+    milliseconds after submission (line ~176). It never calls anything
+    like `order_store.persist_order_submit`. Grepped `trade.py` + `guard.py`
+    for `Order(`/`persist_order`: zero matches, in either file. The equity
+    path's whole audit-chain mechanism — `executor.py` writes the `orders`
+    row BEFORE calling the broker specifically so a later poll has
+    something to find — was never built for this tool.
+  - `apps/api/app/services/orders/order_sync.py::_sync_open_orders` is the
+    ONLY code that ever re-polls a broker order for a later fill, and it
+    only looks at existing `orders` rows. Zero rows for these six means
+    zero chance of ever being polled, no matter how long they sit.
+    Confirmed `order_sync` itself is not the problem — it's exactly what
+    healed CVX/BAC/VZ from pending to filled within seconds, live, this
+    session.
+  - `apps/api/app/services/orders/position_manager.py:127` (the exit
+    ratchet: stop-loss/take-profit/trail/time-stop) and `:496` (the DTE≤2
+    expiry sweep — `OPTIONS_PLAYBOOK.md` §3: "not optional") both filter on
+    `AgentDecision.fill_qty.is_not(None)`. All six fail that filter, so
+    **none of the five documented option exits can fire on them, including
+    the unconditional expiry sweep.** They're real (paper) positions,
+    ~$10.7k notional combined, with no automated protection of any kind,
+    for as long as they're left alone.
+  - The Positions screen's "—/—" under STOP/TARGET for these (and for
+    every option position, filled or not) is separately correct and
+    by design, not a bug: `positions_service.py:186-187` reads
+    `proposal.get("stopLoss")`/`.get("targetPrice")`, and
+    `trade.py::_proposal_dto` never sets those keys for an option — Alpaca
+    cannot bracket a single-leg option (`OPTIONS_PLAYBOOK.md` §3). That
+    part of the report is expected behavior. `fill_qty` silently staying
+    NULL on a real position is the actual bug.
+
+**Scope note — overlaps with, but goes further than, the sibling
+worktree's assignment.** The task brief said a different agent in a
+different worktree is already investigating "why these six have no
+`orders` row," and asked me not to duplicate that. I didn't attempt a fix
+(no code changed this session) — but the framing "why is the row missing"
+undersells it: **these are not pending orders, they are open, filled,
+completely unmanaged positions, right now.** Closing this needs two
+things, not one: (a) `open_option_trade`/`adjust_option_position` persisting
+an `orders` row the way `executor.py` does, so future entries are pollable;
+and (b) a one-time backfill of `fill_qty`/`fill_avg_price` on the six
+`agent_decisions` rows that already exist and already filled (ids:
+`6dca9c80-4a0f-48b5-ab42-ca666dcf8d66`, `dc52edd3-03e3-4bfb-bfee-942725c5ab82`,
+`909e076d-827c-456d-abbb-e8ff08de9781`, `d52b169c-ccb4-4129-83e8-cbfb2936fe7c`,
+`c1f5e59e-c1b8-4635-b82a-7d806bd112d8`, `57baf2a5-d6c3-4fd4-9d76-ff8b0ef08976`)
+— (a) alone only protects the NEXT trade; these six stay exposed until
+someone also does (b). I did not do the backfill myself: it is a
+production data mutation, it wasn't what this task asked me to do
+(read-only), and it belongs with the other worktree's code fix, not
+separately from it.
+
+**Verified live, by direct query output (not inferred):** every claim
+above, against the real Railway Postgres — three read-only queries over
+`orders`, `agent_decisions`, `positions_snapshot` for user
+`43221580-69bc-4134-8e1e-5af75499d874`. **Not verified:** Alpaca's raw API
+response directly — this environment has no Alpaca credentials (local
+`.env` ships blank `ALPACA_API_KEY`/`ALPACA_SECRET_KEY`; the production
+OAuth token is encrypted with a `BROKER_TOKEN_ENCRYPTION_KEY` I don't have
+either). "These six are open positions at Alpaca" rests on
+`positions_snapshot`, itself a direct, unmodified `broker.list_positions()`
+read the reconciler took ~1-2 hours after the trades — the closest thing
+to broker ground truth this system records, but one hop removed from
+Alpaca's API itself.
+
+**Left open:** whether `open_option_trade`'s LIMIT-at-ask would ever
+realistically sit unfilled for a meaningful window (i.e. whether this
+would ALSO have been a genuine fill-latency problem if the audit-chain gap
+didn't exist) — moot for these six since they filled, but worth knowing.
+Not investigated; out of scope once the question turned out to be about
+missing plumbing rather than fill latency.
+
 ### 2026-08-31 — docs: PLAN_AUTO_APPROVE.md's "not built" header was stale — the feature shipped 08-30
 
 `ID:MODEL2OFF`. User pointed at `docs/PLAN_AUTO_APPROVE.md` and asked to
