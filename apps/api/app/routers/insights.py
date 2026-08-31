@@ -15,7 +15,11 @@ from pydantic import Field
 
 from app.middleware.auth import AuthedUser, get_current_user
 from app.schemas.base import CamelCaseModel
-from app.services.council.ghost_service import build_ghost_summary, build_veto_ledger
+from app.services.council.ghost_service import (
+    build_ghost_summary,
+    build_veto_exemplar,
+    build_veto_ledger,
+)
 from engine.env import env_flag
 
 router = APIRouter(tags=["insights"])
@@ -69,6 +73,26 @@ class VetoLedgerResponse(CamelCaseModel):
     total_trims: int = 0
 
 
+class VetoExemplarResponse(CamelCaseModel):
+    decision_id: str
+    rule: str
+    symbol: str
+    side: str
+    qty: int
+    entry_price: float
+    last_price: float | None = None
+    ghost_pnl: float
+    prevented_loss_usd: float
+    is_option: bool
+    occ_symbol: str | None = None
+    bull_case: str
+    bear_case: str
+    rationale: str
+    estimated_notional: float | None = None
+    triggered_at: str
+    horizon_days: int
+
+
 @router.get("/ghost/summary", response_model=GhostSummaryResponse, response_model_by_alias=True)
 async def ghost_summary(
     window_days: int = Query(default=30, ge=1, le=365, alias="windowDays"),
@@ -116,4 +140,43 @@ async def veto_ledger(
         ],
         trims=[TrimRuleDto(rule=t.rule, count=t.count) for t in ledger.trims],
         total_trims=ledger.total_trims,
+    )
+
+
+@router.get(
+    "/risk/vetoes/{rule}/exemplar",
+    response_model=VetoExemplarResponse,
+    response_model_by_alias=True,
+)
+async def veto_exemplar(
+    rule: str,
+    user: AuthedUser = Depends(get_current_user),
+) -> VetoExemplarResponse:
+    """The single most extreme refusal under ``rule`` — largest
+    ``abs(ghostPnl)`` among finalized ghosts, never the most recent."""
+    _require_postgres()
+    exemplar = await build_veto_exemplar(rule, user_id=user.id)
+    if exemplar is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"no finalized ghost outcome yet for rule {rule!r}",
+        )
+    return VetoExemplarResponse(
+        decision_id=exemplar.decision_id,
+        rule=exemplar.rule,
+        symbol=exemplar.symbol,
+        side=exemplar.side,
+        qty=exemplar.qty,
+        entry_price=exemplar.entry_price,
+        last_price=exemplar.last_price,
+        ghost_pnl=exemplar.ghost_pnl,
+        prevented_loss_usd=exemplar.prevented_loss_usd,
+        is_option=exemplar.is_option,
+        occ_symbol=exemplar.occ_symbol,
+        bull_case=exemplar.bull_case,
+        bear_case=exemplar.bear_case,
+        rationale=exemplar.rationale,
+        estimated_notional=exemplar.estimated_notional,
+        triggered_at=exemplar.triggered_at.isoformat(),
+        horizon_days=exemplar.horizon_days,
     )

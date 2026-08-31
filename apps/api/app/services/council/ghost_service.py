@@ -205,7 +205,7 @@ async def build_veto_ledger(window_days: int = 30, *, user_id: str) -> VetoLedge
         last_at: datetime | None = None
         for dec, ghost in pairs:
             p = dec.proposal or {}
-            n = p.get("estimatedNotional")
+            n = p.get("estimatedNotional", p.get("estimated_notional"))
             if isinstance(n, (int, float)):
                 notional += float(n)
             if ghost is not None and ghost.status == "final" and ghost.ghost_pnl is not None:
@@ -300,4 +300,83 @@ def count_trim_rules(reasonings: Sequence[object]) -> list[TrimRuleRow]:
     return sorted(
         (TrimRuleRow(rule=r, count=c) for r, c in counts.items()),
         key=lambda t: (-t.count, t.rule),
+    )
+
+
+@dataclass
+class VetoExemplar:
+    """The single most extreme finalized ghost under one rule — the "story
+    trade" (IMPL_REFUSAL_LEDGER.md §2.2): the council wanted it, risk said
+    no, and here is what it was worth."""
+
+    decision_id: str
+    rule: str
+    symbol: str
+    side: str
+    qty: int
+    entry_price: float
+    last_price: float | None
+    ghost_pnl: float
+    prevented_loss_usd: float
+    is_option: bool
+    occ_symbol: str | None
+    bull_case: str
+    bear_case: str
+    rationale: str
+    estimated_notional: float | None
+    triggered_at: datetime
+    horizon_days: int
+
+
+async def build_veto_exemplar(rule: str, *, user_id: str) -> VetoExemplar | None:
+    """Largest ``abs(ghost_pnl)`` among FINALIZED ghosts for ``rule`` —
+    never the most recent. None when nothing under this rule has finalized
+    yet (the caller renders that as "pending", not a missing rule)."""
+    try:
+        tenant = _tenant_filters(user_id)
+    except _NoSuchTenant:
+        return None
+    session_factory = async_session_factory()
+    async with session_factory() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(AgentDecision, GhostOutcome)
+                    .join(GhostOutcome, GhostOutcome.decision_id == AgentDecision.id)
+                    .where(
+                        AgentDecision.risk_approved.is_(False),
+                        AgentDecision.risk_veto_rule == rule,
+                        GhostOutcome.status == "final",
+                        GhostOutcome.ghost_pnl.is_not(None),
+                        *tenant,
+                    )
+                )
+            )
+            .all()
+        )
+    if not rows:
+        return None
+
+    dec, ghost = max(rows, key=lambda pair: abs(float(pair[1].ghost_pnl)))
+    p = dec.proposal or {}
+    ghost_pnl = float(ghost.ghost_pnl)
+    notional = p.get("estimatedNotional", p.get("estimated_notional"))
+    return VetoExemplar(
+        decision_id=str(dec.id),
+        rule=rule,
+        symbol=dec.symbol,
+        side=str(ghost.side),
+        qty=int(ghost.qty),
+        entry_price=float(ghost.entry_price),
+        last_price=float(ghost.last_price) if ghost.last_price is not None else None,
+        ghost_pnl=ghost_pnl,
+        prevented_loss_usd=round(max(0.0, -ghost_pnl), 2),
+        is_option=bool(p.get("isOption", p.get("is_option", False))),
+        occ_symbol=p.get("occSymbol") or p.get("occ_symbol"),
+        bull_case=str(dec.bull_case or p.get("bullCase") or p.get("bull_case") or ""),
+        bear_case=str(dec.bear_case or p.get("bearCase") or p.get("bear_case") or ""),
+        rationale=str(p.get("rationale") or ""),
+        estimated_notional=float(notional) if isinstance(notional, (int, float)) else None,
+        triggered_at=dec.triggered_at,
+        horizon_days=int(ghost.horizon_days),
     )
