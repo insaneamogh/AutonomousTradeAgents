@@ -385,6 +385,44 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-08-31 — `701a7580` fix(biography): tolerate snake_case estimatedNotional on old vetoed rows
+
+`ID:MODEL2OFF`. Direct follow-up to `927dc415` (below), which explicitly
+flagged this exact file as an out-of-scope instance of the same bug:
+`biography_service.py::build_biography` reads `proposal.get("estimatedNotional")`
+with no snake_case fallback, so the 6 decisions vetoed before `927dc415`
+landed show a blank notional on their trade-biography timeline, even
+though the same rows now show the correct dollar figure everywhere else.
+
+Grepped the rest of the codebase for the same pattern before assuming
+this was the only remaining instance: `position_manager.py`,
+`positions_service.py`, and `notifications.py` all read similarly-shaped
+multi-word camelCase fields (`timeStopDays`, `stopLoss`, `targetPrice`,
+`rMultiple`) off a `proposal` dict, but every one of those operates on an
+ALREADY-APPROVED proposal (an open position, or a pending-approval push)
+— which is only ever the camelCase DTO shape by construction, since
+`risk_approved=True` is required to reach any of those code paths at
+all, and that's exactly the gate that already produces the camelCase
+shape. Only `biography_service.py` reads the raw persisted column for a
+decision regardless of outcome, including vetoed ones — confirmed this
+is genuinely the one remaining instance, not assumed.
+
+Extracted `_proposal_estimated_notional()` as a small pure helper rather
+than fixing the read inline, matching this file's own established
+pattern (`_analyst_summaries`/`_proposed_or_held_summary` are both pure
+helpers pulled out of `build_biography` for the identical reason —
+that function needs a live DB session and three joined queries to
+exercise directly, disproportionately heavy for testing one field's
+fallback in isolation).
+
+Verified: 10/10 in the touched test file, 1069 passed/11 skipped on the
+full suite (1065 + 4 new, zero regressions). Revert-checked per CLAUDE.md
+§4.1 — removed the fallback, confirmed the new snake_case test fails
+with the exact `assert None == 4922.08`, restored. ruff clean on both
+touched files; the file's one pre-existing mypy finding (an unrelated
+Order/OrderFill annotation, line 190) confirmed nowhere near either
+touched region by reading the actual diff, not just asserted.
+
 ### 2026-08-31 — `927dc415` fix(ledger): vetoed proposals persisted snake_case, so estimatedNotional never matched
 
 `ID:MODEL2OFF`. Implements `docs/IMPL_REFUSAL_LEDGER.md`. Ran the §0
