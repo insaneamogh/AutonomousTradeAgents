@@ -11,6 +11,7 @@ import { usePendingApprovals } from '@/hooks/useApprovals';
 import { useStartCouncilRun } from '@/hooks/useCouncilRun';
 import { useSymbolSearch } from '@/hooks/useSymbolSearch';
 import { useWatchlist } from '@/hooks/useWatchlist';
+import { runErrorMessage } from '@/lib/api';
 import type { ApprovalProposalDto } from '@app/shared-types';
 
 import { ago, usd } from '../format';
@@ -153,43 +154,6 @@ function PlanStat({ label, value }: { label: string; value: string }) {
       </div>
     </div>
   );
-}
-
-/**
- * Turn a failed run into something true.
- *
- * A 422 is the server telling us exactly what is wrong with the ticker --
- * showing "the agent server may be cold" for it sent the user chasing
- * infrastructure when the real problem was the symbol they picked.
- *
- * Two shapes of 422 exist and were NOT both handled: our own
- * `assert_tradable` raises `{detail: "<plain string>"}`, but FastAPI's
- * own pydantic validation (the `Symbol` pattern on the request body)
- * raises `{detail: [{loc, msg, type}, ...]}` -- an ARRAY. The old check
- * only matched the string shape, so a ticker that failed validation
- * before `assert_tradable` ever ran fell through to the generic "server
- * may be cold" message -- exactly backwards, since this is the one case
- * where the server said precisely what was wrong. A response with no
- * `status` at all (network failure, CORS, DNS) is the only case that's
- * genuinely infrastructure, so that keeps the "cold" wording.
- */
-function runErrorMessage(err: unknown): string {
-  const e = err as { status?: number; body?: { detail?: unknown } } | null;
-  const detail = e?.body?.detail;
-  if (typeof detail === 'string' && detail) return detail;
-  if (Array.isArray(detail) && detail.length > 0) {
-    const first = detail[0] as { msg?: unknown } | undefined;
-    if (typeof first?.msg === 'string') return first.msg;
-  }
-  if (e?.status === 429) return 'Daily council budget reached. Try again tomorrow.';
-  if (typeof e?.status === 'number') {
-    return `The server refused the request (${e.status}). Try again.`;
-  }
-  // Reached only when the error carries NO status — `fetch` rejected and no
-  // response arrived — AND the one automatic network retry already failed.
-  // Deliberately no longer blames the caller's connection: the observed cause
-  // is our own container restarting, not their wifi.
-  return 'The server didn\u2019t respond \u2014 it may still be starting up. Try again in a moment.';
 }
 
 /** Kicks off a council run and drops the user straight into the theater. */

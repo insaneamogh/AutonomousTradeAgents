@@ -26,6 +26,7 @@ playbook for the design rationale.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import uuid
@@ -112,6 +113,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     require_production_readiness()
 
     reconciler = None
+    symbol_cache_warm_task: asyncio.Task[None] | None = None
     use_pg = env_flag("USE_POSTGRES")
     enable_reconciler = env_flag("RECONCILER_ENABLED", default=use_pg)
 
@@ -165,14 +167,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
         # Warm the ticker universe so the first typeahead keystroke isn't
         # a 6s wait. Best-effort: search degrades to empty, never 500s.
+        #
+        # Fire-and-forget rather than awaited. lifespan startup gates EVERY
+        # request -- health checks included -- until it returns, so this used
+        # to make a fresh container's first request wait on one full
+        # tradable-assets fetch (~6s per the comment above) before the app
+        # would answer anything, /health included. warm_symbol_cache's own
+        # contract is already best-effort (degrades to an empty cache, never
+        # raises), so finishing before the first request was never a
+        # correctness requirement -- only a nice-to-have for typeahead
+        # latency. Kept as a local variable so the task isn't garbage
+        # collected mid-run (asyncio only holds a weak reference otherwise).
         from app.services.broker.symbol_search import warm_symbol_cache
 
-        try:
-            n = await warm_symbol_cache()
-            if n:
-                logger.info("symbol search ready: %d tradable tickers", n)
-        except Exception:
-            logger.exception("symbol cache warm failed — search will lazy-load")
+        async def _warm_symbol_cache() -> None:
+            try:
+                n = await warm_symbol_cache()
+                if n:
+                    logger.info("symbol search ready: %d tradable tickers", n)
+            except Exception:
+                logger.exception("symbol cache warm failed — search will lazy-load")
+
+        symbol_cache_warm_task = asyncio.create_task(_warm_symbol_cache())
 
         # Per-user reconciliation against the REAL broker. The mock-poller
         # fallback only exists off-production so a local box with no broker
@@ -214,6 +230,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if reconciler is not None:
             logger.info("stopping reconciler…")
             await reconciler.stop()
+        if symbol_cache_warm_task is not None and not symbol_cache_warm_task.done():
+            symbol_cache_warm_task.cancel()
 
 
 app = FastAPI(

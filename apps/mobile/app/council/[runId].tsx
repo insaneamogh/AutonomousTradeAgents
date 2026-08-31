@@ -16,6 +16,7 @@ import { cn } from '@app/ui';
 
 import { BentoCTA, HeroHeadline, HeroSub, Tile } from '@/components/bento';
 import { useCouncilProgress } from '@/hooks/useCouncilRun';
+import { runErrorMessage } from '@/lib/api';
 
 const NODE_ORDER: CouncilNode[] = [
   'router',
@@ -62,7 +63,7 @@ function buildRows(events: CouncilProgressEvent[]): NodeRow[] {
 export default function CouncilTheaterScreen() {
   const { runId, symbol } = useLocalSearchParams<{ runId: string; symbol?: string }>();
   const router = useRouter();
-  const { data, isError } = useCouncilProgress(runId ?? null);
+  const { data, isError, error, refetch } = useCouncilProgress(runId ?? null);
 
   const rows = useMemo(() => buildRows(data?.events ?? []), [data?.events]);
   const running = data == null || data.status === 'running';
@@ -96,11 +97,27 @@ export default function CouncilTheaterScreen() {
         {isError || data?.status === 'failed' ? (
           <Tile className="gap-1.5">
             <Text className="text-[13px] font-medium text-rose dark:text-rose-dark">
-              {data?.error ?? "Couldn't reach the agent server."}
+              {
+                // A "failed" run completed server-side (e.g. the LLM call
+                // itself errored mid-pass) and carries its own real reason —
+                // show that verbatim rather than a generic transport
+                // message. `isError` (this progress poll never got a good
+                // response) is the transport case; `runErrorMessage` gives
+                // it the same honest, non-blaming copy every other call
+                // site now shares instead of a screen-specific string.
+                data?.status === 'failed'
+                  ? (data.error ?? 'The council run failed unexpectedly.')
+                  : runErrorMessage(error)
+              }
             </Text>
             <Text className="text-[11px] text-text-tertiary dark:text-text-tertiary-dark">
               The run may have expired - head back and run again.
             </Text>
+            <BentoCTA
+              label="Try again"
+              onPress={() => void refetch()}
+              accessibilityLabel="Retry loading this council run"
+            />
           </Tile>
         ) : (
           rows.map((row) => <NodeRowTile key={row.node} row={row} />)
