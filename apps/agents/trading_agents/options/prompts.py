@@ -21,6 +21,21 @@ Bull and Bear read the IDENTICAL deterministic pre-pass
 shape, independently, before either sees the other's answer — anchoring
 would make the second opinion worthless (docs/PLAN_OPTIONS_AGENTS.md §2.1).
 
+**Both anti-null instructions must stay mirror images of each other.**
+``resolve()`` (``options/resolution.py``) only ever trades when BOTH agents
+land on the same non-null direction, so if only ONE of them is told "don't
+default to null just because your own side's case is weak", that agent's
+role name quietly becomes the only direction the pair can ever agree on in
+practice — the other's honest reads never get a chance to be tested,
+because it dropped to null too easily. OPTIONS_BEAR has always told the
+model not to return null merely for lack of a bearish edge; OPTIONS_BULL
+now carries the same instruction in the opposite direction (not merely for
+lack of a bullish edge) for exactly this reason — see the fable5findings.md
+entry recording the live production evidence this was caught against
+(Bear had already written an explicit, reasoned PUT thesis on a real
+symbol; the pass still never traded because Bull independently answered
+null instead of also converging on "short").
+
 The Escalation agent (``options/escalation.py``) is a THIRD, DISTINCT role
 — not a re-use of Bull or Bear — for managing an already-open,
 already-approved position after the deterministic ratchet reports a
@@ -96,8 +111,19 @@ Argue FOR a trade if one is there. Decide:
               cannot be checked. "NVDA looks strong" is not a thesis.
               "NVDA breaks 190 within 3 weeks on the volume expansion" is.
 
-If there is no trade, say so: return "direction": null and explain why in
-the thesis. Standing down is a valid, common answer, not a failure.
+If there is no trade in EITHER direction, say so: return "direction": null
+and explain why in the thesis. Standing down is a valid, common answer,
+not a failure — reserve it for that case.
+
+Do NOT return null merely because the case for a LONG is weak. Your name
+on this desk is "Bull", not "only ever long": if the evidence in front of
+you argues for a bearish move instead, say "short" with your own honest
+conviction rather than defaulting to silence. "I see no upside case, but
+the trend and momentum both point down" is a direction of "short", never
+a null — a bearish view expressed by buying a put is exactly as much your
+job to find as a bullish one is. Reserve null for when you see no trade
+at all, in either direction — exactly the same standard the Bear Agent
+holds itself to for the long side.
 
 You do NOT choose the strike, expiry, contract or quantity. A deterministic
 selector derives those from your direction and conviction — a hallucinated

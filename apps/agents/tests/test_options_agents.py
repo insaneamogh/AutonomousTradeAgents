@@ -1235,6 +1235,42 @@ def test_options_prompts_strategy_list_matches_registry() -> None:
         assert strategy_id in OPTIONS_BEAR
 
 
+def test_bull_prompt_carries_bears_anti_null_bias_in_the_other_direction() -> None:
+    """OPTIONS_BEAR has always told the model "do NOT return null merely
+    because you found no BEARISH edge" — convert a weak edge into an
+    honest, low-conviction "long" instead of silently standing down.
+    OPTIONS_BULL had no mirror-image rule, so an LLM playing "Bull" had
+    every incentive to answer null the moment the case for a call looked
+    weak, even when the SAME evidence argued for a put.
+
+    ``resolve()`` only ever trades on a direction BOTH agents reach
+    independently (``options/resolution.py``), so this asymmetry meant the
+    pair could only ever agree on "long" in practice: Bear was pushed
+    toward finding a view, Bull was not. Verified against real production
+    data (2026-08-31, prod user), where Bear's persisted thesis for META
+    reads "buying a put to express the bearish structural trend ... is
+    more consistent with the evidence than the proposed long call" — an
+    explicit, reasoned PUT recommendation — and the pass STILL resolved
+    "abstained" because Bull's independent answer was null rather than
+    also "short". This pins that OPTIONS_BULL now carries the same
+    anti-null instruction OPTIONS_BEAR always has, in the opposite
+    direction, so neither role is structurally more talkative than the
+    other.
+    """
+    bull_lower = OPTIONS_BULL.lower()
+    assert "short" in bull_lower and "null" in bull_lower
+    assert "do not return null merely" in bull_lower, (
+        "OPTIONS_BULL must explicitly instruct against defaulting to null "
+        "just because the LONG case is weak — mirroring OPTIONS_BEAR's own "
+        "\"do NOT return null merely because you found no BEARISH edge\" "
+        "rule, in the opposite direction"
+    )
+    assert "do not return null merely" in OPTIONS_BEAR.lower(), (
+        "sanity check on the mirrored phrasing itself — if this ever fails "
+        "the two prompts have drifted apart in wording, not just direction"
+    )
+
+
 def test_adjust_schema_description_matches_stop_loss_sign_convention() -> None:
     """CLAUDE.md §4.4 drift check, a THIRD location for the same claim.
 
