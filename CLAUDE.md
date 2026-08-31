@@ -17,7 +17,7 @@ Read the whole plan before starting it:
 | 0c | [`docs/PLAN_JUDGE_SURFACE.md`](docs/PLAN_JUDGE_SURFACE.md) | Judges hit a login wall, cannot see WHY an options trade was picked, and nothing on screen proves we use Alpaca's CLI. |
 | 0e | [`docs/PLAN_CLI_SURFACE.md`](docs/PLAN_CLI_SURFACE.md) | **Deliverable 1/3.** The Alpaca CLI works and is invisible — one System Health row makes it judge-visible. ~1 hour. |
 | 0f | [`docs/PLAN_MCP_DEMO.md`](docs/PLAN_MCP_DEMO.md) | **Deliverable 2/3.** Alpaca's MCP server, read-only. The §0 verification gate is PASSED — spec fetched 2026-08-31. |
-| 0g | [`docs/PLAN_OPTIONS_AGENTS.md`](docs/PLAN_OPTIONS_AGENTS.md) | **Deliverable 3/3.** Dedicated options council: orchestrator → 3 parallel subagents → 4 Haiku judges → deterministic gate, guarded tools, SSE, charts. |
+| 0g | [`docs/PLAN_OPTIONS_AGENTS.md`](docs/PLAN_OPTIONS_AGENTS.md) | **Deliverable 3/3, ~2 days.** ONE autonomous options agent (1 LLM hop — faster than today's equity council), guarded read-only tools, deterministic validators instead of LLM judges, SSE, charts. |
 | 0d | [`docs/PLAN_MULTI_TENANT.md`](docs/PLAN_MULTI_TENANT.md) | **§1 is a live security issue.** Any judge who signs up is auto-attached to the operator's Alpaca account with write access. Fix before inviting anyone. |
 | 1 | [`docs/PLAN_AGGRESSIVE_PROFILE.md`](docs/PLAN_AGGRESSIVE_PROFILE.md) | Loosen the caps for the contest window via a reviewed profile. Changes outcomes; the delta band is frozen after Monday's open. |
 | 2 | [`docs/PLAN_EXIT_AGENT.md`](docs/PLAN_EXIT_AGENT.md) | Trailing ratchet (hold winners) + a monotone LLM exit agent with read-only tools. |

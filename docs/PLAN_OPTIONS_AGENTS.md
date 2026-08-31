@@ -1,384 +1,325 @@
-# Plan K — a dedicated options council: orchestrator, judges, guarded tools
+# Plan K — one autonomous options agent, guarded tools, minimum latency
 
 **Status:** plan, not built. Written 2026-08-31 by `ID:MODEL1REAL`.
-**Deliverable 3 of 3. Much the largest — read all of §0 before writing code.**
+**Deliverable 3 of 3.** Scope: **~2 focused days**, hour estimates in §7.
+
+> **This replaces an earlier revision of this file that proposed an orchestrator, 3
+> subagents and 4 Haiku judges. That design was wrong and is deleted.** §0 explains
+> why, because the reasoning is the most useful thing in this document.
 
 ---
 
-## 0. Four things to get straight before you start
+## 0. Why one agent, not eight
 
-### 0.1 🚨 "PreToolUse / PostToolUse" hooks do not exist in this runtime
+I proposed 8 LLM calls. Then I checked what the deterministic layer already decides:
 
-Those are **Claude Code** features — they gate tool calls made by *Claude Code itself*,
-configured in `.claude/settings.json`. This application is FastAPI + LangGraph calling
-the Anthropic SDK directly. **There is no hook system here and nothing to configure.**
-
-The *concept* is exactly right and is what §3 builds: a deterministic middleware that
-every tool call routes through, with a `before` that can refuse and an `after` that can
-reject the result. **You are building the equivalent, not enabling a feature.** An
-agent that goes looking for a hooks config will waste an hour and find nothing.
-
-### 0.2 Tool use is not implemented at all
-
-`apps/agents/trading_agents/llm.py` has **no `tools=` support**. Verified 2026-08-31:
-zero hits for `complete_tools|tool_use|tools=`. `LLM.complete` sends one user message
-and reads `msg.content[0].text`. A `tool_use` block would break that line.
-
-`PLAN_EXIT_AGENT.md` §6 already specifies the two commits needed (a block walk, then a
-sibling `complete_tools()`). **That work is a prerequisite for this plan.** Do it there,
-once, not twice.
-
-### 0.3 More agents means more latency, not less — parallelism is the only fix
-
-You asked for low latency *and* an orchestrator + 3 subagents + 4 judges. Those pull
-against each other: that is ~8 LLM calls where there are 5 today.
-
-The answer is **wall-clock hops, not call count**. Run the fan-outs with
-`asyncio.gather` and the shape is 4 sequential hops for 8 calls. Sequential, it is 8
-hops and roughly twice today's latency. §2.3 has the budget.
-
-**Check first, because it may be free money:** confirm whether the three equity
-analysts currently run in parallel or sequentially. `_run_linear` (the asyncio
-fallback) is sequential by construction; the LangGraph branch may not be. If they are
-sequential today, parallelising them is a latency win that costs nothing and helps
-equity too.
-
-### 0.4 The scope you asked for is bigger than 4 days — here is the honest map
-
-You asked for "buy sell long short call put, all use case scenarios". Here is every
-structure, what it actually costs to support, and what I recommend.
-
-| Structure | Legs | Max loss | Alpaca level | Work needed here | Verdict |
-|---|---|---|---|---|---|
-| **Long call** | buy call | premium | 2 | **none — works today** | ✅ ship on this |
-| **Long put** | buy put | premium | 2 | **none — works today** | ✅ ship on this |
-| **Bull call / bear put spread** (debit) | buy + sell | net debit | 3 | multi-leg everywhere — see below | ⚠️ Phase B |
-| **Bull put / bear call spread** (credit) | sell + buy | width − credit | 3 | same, plus margin accounting | ⚠️ Phase B |
-| **Cash-secured put** | sell put | strike − credit | 1 | cash-collateral lock, assignment | ❌ not in 4 days |
-| **Covered call** | own shares + sell call | shares called away | 1 | share-collateral lock, assignment | ❌ not in 4 days |
-| **Naked short call** | sell call | **UNBOUNDED** | 3+ | — | ❌ **never** |
-
-**What "Phase B spreads" actually costs**, so nobody underestimates it:
-`OptionLegDetails.action` is a two-value `Literal`; `naked_short_forbidden` rejects
-anything that is not `buy_to_open`/`sell_to_close`; sizing, `max_premium_pct`, the
-ghost evaluator, `position_manager._close_position` and the OCC wire symbol **all
-assume exactly one leg**. Alpaca does support `OrderClass.MLEG` for options, so the
-broker end is reachable — but this is a change across the entire options stack, and
-it lands on risk code, mid-contest, with the agent live.
-
-**Recommendation: build this plan's architecture on long calls/puts, which work
-today.** The orchestrator/judge/guard design is what you are actually buying, and it is
-completely independent of how many legs the proposal has. Add spreads behind
-`ALLOW_OPTION_SPREADS=0` *after* the architecture is proven, and only if there is time.
-
-> **Naked short calls stay forbidden regardless of time.** Unbounded loss, no
-> assignment handling in this codebase, on an account being scored. `naked_short_forbidden`
-> is defense-in-depth and must not be relaxed.
-
----
-
-## 1. Why options need their own council
-
-Today `router → technical/fundamental/macro → drafter` is shared; the options path only
-changes what the *drafter* does. That is wrong in both directions:
-
-- The equity analysts reason about **the underlying**. Nobody reasons about **IV rank,
-  skew, term structure, or whether the chain can actually be filled** — which is most of
-  what makes an options trade good or bad.
-- Options passes cost the same 5 calls as equity while asking questions those prompts
-  were never written for.
-
-So: a **separate graph**, separate prompts, separate model tiers, sharing only the
-deterministic layers (`engine.options.selection`, `engine.risk`) — which is exactly what
-should be shared.
-
----
-
-## 2. The architecture
-
-```
-                    options_fit          deterministic, ZERO LLM
-                        │                most symbols exit here
-                        ▼
-                  ORCHESTRATOR           Haiku · picks strategy family +
-                        │                which subagents are worth running
-        ┌───────────────┼───────────────┐
-        ▼               ▼               ▼          ← asyncio.gather, ONE hop
-   chain_analyst   vol_analyst    flow_analyst
-     (Sonnet)        (Haiku)        (Haiku)
-        └───────────────┼───────────────┘
-                        ▼
-                     DRAFTER             Sonnet · ONE concrete proposal
-                        │
-        ┌───────┬───────┼───────┬───────┐
-        ▼       ▼       ▼       ▼        ← asyncio.gather, ONE hop
-     thesis   risk  liquidity consistency    4 × Haiku judges
-        └───────┴───────┴───────┴───────┘
-                        ▼
-              DETERMINISTIC AGGREGATION   N-of-M, no LLM
-                        ▼
-                   engine.risk            13 named options rules — unchanged
-                        ▼
-                   TOOL GUARD             §3
-                        ▼
-                 packages/broker
-```
-
-### 2.1 The nodes
-
-| Node | Model | Reads | Emits |
-|---|---|---|---|
-| `options_fit` | **none** | features, chain summary | strategy family or HOLD |
-| `orchestrator` | Haiku | fit output, regime, funnel counts | which subagents to run, target structure |
-| `chain_analyst` | Sonnet | full funnel, greeks, expiries | structure + strike + expiry + why |
-| `vol_analyst` | Haiku | IV, realized vol, IV rank, skew | is vol cheap or rich, and versus what |
-| `flow_analyst` | Haiku | OI, volume, spread, quote age | will this actually fill |
-| `drafter` | Sonnet | all of the above | one concrete proposal |
-| `judge_*` ×4 | Haiku | the proposal + its inputs | `PASS` / `FAIL` + one named reason |
-
-### 2.2 🔑 The judges have MONOTONE authority — they can only refuse
-
-Same principle as the exit agent, and it is what makes adding four LLMs safe:
-
-> **A judge can veto. A judge can never approve.** Aggregation is
-> deterministic: the proposal proceeds only if **≥3 of 4 judges PASS**, and then still
-> has to clear all 13 risk rules. A judge saying PASS grants nothing that was not
-> already going to happen.
-
-Consequences that follow for free, and each needs a test:
-- A judge timing out, erroring, or returning garbage counts as **FAIL** (fail-closed —
-  this is the opposite of the exit agent's fail-safe, because here refusing costs
-  nothing and there is no protection to remove).
-- MOCK mode: judges are **skipped entirely**, not stubbed to PASS. A keyless run must
-  not silently behave like a 4-judge consensus.
-- No judge output ever widens a cap, changes a strike, or edits the proposal. They vote
-  on it as drafted; they do not redraft it.
-
-### 2.3 Latency budget — the number to hold yourself to
-
-| | Sequential hops | LLM calls |
+| Decision | Decided by | LLM involved? |
 |---|---|---|
-| Equity council today | 3 | 5 |
-| Options council, **parallel fan-out** | **4** | 8 |
-| Options council, sequential (wrong) | 8 | 8 |
+| call vs put | `select_contract` stage 1 | no |
+| expiry / DTE window | stage 2 | no |
+| strike / delta band | stage 3 | no |
+| liquidity (OI, volume, spread) | stage 4 + `illiquid_contract` | no |
+| IV present, IV vs realized vol | stages 5–6 | no |
+| **direction** | `strategy_fit` — and `drafter.py:179` **downgrades the LLM's verdict to HOLD if it disagrees** | overridden |
+| position size | `options_position_size` — floor division | no |
+| approve / veto | `engine.risk`, 13 named rules | no |
 
-Non-negotiables to hit the 4:
-1. `asyncio.gather` for the 3 subagents, and again for the 4 judges.
-2. Haiku everywhere except `chain_analyst` and `drafter`.
-3. `options_fit` first — a symbol with no setup costs **zero** LLM calls, and that is
-   what keeps the average down across 8 underlyings.
-4. `cache_system=True` (already supported) on every prompt — the system blocks are
-   long and static, which is exactly the cacheable case.
-5. One timeout per fan-out, not per call: `asyncio.wait_for` around the `gather`.
+The LLM currently supplies **three fields**: `verdict`, `confidence`, `rationale`. And
+`verdict` is already overruled by the deterministic fit.
 
-**Cost:** ~$0.06–0.08/pass against ~$0.04 today. Across 8 option symbols × a few passes
-a day this stays in single-digit dollars. Cost is not the constraint; **latency and
-correctness are.**
+So a `vol_analyst` would compute IV rank — **a number**. A `flow_analyst` would judge
+OI and spread — **already funnel stage 4**. A `chain_analyst` would pick strike and
+expiry — **already stages 2–3**. Four judges would validate a proposal whose contract
+was chosen deterministically and whose risk was checked by 13 deterministic rules.
+
+**That architecture re-implements deterministic checks in a slower, less reliable
+medium, and dilutes the one claim that makes this entry distinctive.** More LLM calls
+would have made the system worse on every axis: latency, cost, reliability, and the
+propose/dispose story.
+
+You were right. **One agent.**
 
 ---
 
-## 3. The tool guard — the deterministic gate you asked for
+## 1. What the agent is actually for
 
-Build `apps/agents/trading_agents/tools/guard.py`. **Every** tool call the options
-agents make routes through it. This is the PreToolUse/PostToolUse equivalent from §0.1.
+Exactly one thing deterministic code cannot do:
+
+> **Decide whether there is a directional thesis worth expressing right now, how
+> strongly, and say why — with a timeframe.**
+
+`conviction` is not cosmetic: it selects the delta band (≥0.7 → [0.35,0.75], else
+[0.25,0.65]). So the agent's real output is *which part of the chain we shop in*, plus
+a human-readable thesis, plus the option to stand down.
+
+**Options are a timing game, so the agent's answer must carry a clock.** "NVDA looks
+strong" is not a thesis. "NVDA breaks 190 within 3 weeks on the volume expansion" is —
+because theta is always against a long option, and a thesis without a deadline cannot
+be checked against one.
+
+### What it must never decide
+
+Strike · expiry · contract · quantity · whether risk approves · when to exit. All of
+those are deterministic today and stay that way. The agent proposes a *direction and a
+conviction*; the machine does the rest.
+
+---
+
+## 2. The architecture — 1 hop typical, 2 worst case
+
+```
+┌─ DETERMINISTIC PRE-PASS · ZERO LLM ────────────────────────────┐
+│  options_fit  →  chain fetch  →  funnel counts                 │
+│  iv_rank · realized vol · candlestick patterns · liquidity     │
+│  no setup → HOLD here, 0 tokens                                │
+└────────────────────────────────────────────────────────────────┘
+                              ▼
+              ┌─ THE OPTIONS AGENT · 1 call ──────┐
+              │  Sonnet. Full pre-pass context    │
+              │  already in the prompt.           │
+              │  Read-only tools available but    │
+              │  usually unnecessary.             │
+              │  → direction · conviction ·       │
+              │    thesis · timeframe             │
+              └───────────────────────────────────┘
+                              ▼  (only if it called a tool)
+                    [tool guard → tool → 2nd call]
+                              ▼
+┌─ DETERMINISTIC POST-PASS · ZERO LLM ───────────────────────────┐
+│  validators (§4) → select_contract → sizing → engine.risk      │
+│  → tool guard → packages/broker                                │
+└────────────────────────────────────────────────────────────────┘
+```
+
+**This is faster than the equity council that exists today** (3 hops). Options get the
+lowest latency in the system, which is the correct priority ordering.
+
+### Why tools are pre-empted, not removed
+
+Tool calls are round trips, and round trips are the thing we are minimising. So:
+**pre-load everything the agent normally needs into the prompt** — funnel counts, IV
+rank, greeks summary, patterns, recent bars. Tools exist for the exception (it wants
+deeper history, or a second expiry) and are **bounded at one round**. In the common
+case the agent answers in a single call and never touches a tool.
+
+That gives you "fully autonomous with tools" without paying tool latency on every pass.
+
+---
+
+## 3. The tool guard — your PreToolUse/PostToolUse, built here
+
+> 🚨 **`PreToolUse`/`PostToolUse` are Claude Code features.** They gate tool calls made
+> by Claude Code itself, via `.claude/settings.json`. This app is FastAPI + LangGraph
+> calling the Anthropic SDK directly — **there is no hook system here and nothing to
+> configure.** The concept is right; you are building the equivalent. An agent that
+> goes looking for a hooks config will find nothing and lose an hour.
+
+`apps/agents/trading_agents/tools/guard.py`:
 
 ```python
 @dataclass(frozen=True)
 class GuardVerdict:
     allow: bool
-    reason: str | None          # named, like a risk veto rule
-    redacted: dict | None       # `after` may narrow a result, never widen it
+    reason: str | None       # named, like a risk veto rule
+    payload: dict | None     # `after` may NARROW a result, never widen it
 
-class ToolGuard(Protocol):
+class ToolGuard:
     def before(self, tool: str, args: dict) -> GuardVerdict: ...
     def after(self, tool: str, args: dict, result: object) -> GuardVerdict: ...
 ```
 
-### `before` — deterministic, runs on every call, no exceptions
+**`before`** — allowlist by name (unknown → `deny("unknown_tool")`); validate arg shape
+and range (`SYMBOL_RE`, positive int qty, `OccSymbol.try_parse`); enforce a per-pass
+call ceiling (**4** — with a 1-round loop this is generous, and it stops a looping
+model from running up a bill).
 
-1. **Allowlist by name.** Unknown tool → `deny("unknown_tool")`, returned to the model
-   as a `tool_result` with `is_error: true`. **Never raise** — an exception aborts the
-   pass; a denial teaches the model.
-2. **Argument shape + range.** Symbol matches `SYMBOL_RE`, qty is a positive int, OCC
-   symbol parses via `OccSymbol.try_parse`, dates are real dates. A malformed arg is a
-   denial, not a 500.
-3. **No order-placing tool is in the allowlist at all** (§3.1).
-4. **Rate + budget.** Per-pass call ceiling (e.g. 12). Exceeding it denies with
-   `tool_budget_exhausted` — a model looping on a tool must terminate the pass, not run
-   up a bill.
+**`after`** — assert the result matches its declared schema; assert every row is scoped
+to this `user_id`; truncate large payloads before they reach the context window.
 
-### `after` — the part people skip
+**A denial is returned to the model as a `tool_result` with `is_error: true`. Never
+raise** — an exception aborts the pass; a denial teaches the model and the pass
+continues.
 
-1. **Shape validation.** The result matches the declared schema, or the call is treated
-   as failed.
-2. **Redaction.** A read tool must never return another user's data. Scope every query
-   by `user_id` *inside the tool*, and have `after` assert the invariant held.
-3. **Size cap.** Truncate huge payloads (a full chain is thousands of rows) before they
-   reach the context window.
+### Allowed tools (all read-only)
 
-### 3.1 🚨 What the agents may and may not call
-
-**Allowed (read-only):**
 ```
-get_contract_candidates   get_option_snapshot     get_underlying_bars
-get_funnel_counts         get_position_snapshot   get_entry_thesis
-get_iv_rank               get_account_summary (read-only, no secrets)
+get_funnel_counts      get_option_snapshot     get_underlying_bars
+get_iv_rank            get_entry_thesis        get_position_snapshot
 ```
 
-**Will never be built here** — copy this docstring, it mirrors
-`apps/mcp_server/mcp_server/tools.py:9-19`:
+### Will never be built here
+
+Copy this docstring; it mirrors `apps/mcp_server/mcp_server/tools.py:9-19`:
 
 > `place_order`, `place_option_order`, `approve_proposal`, `execute_trade`,
 > `cancel_order`, `close_position`, `exercise_option`, `size_position` — anything that
-> mutates broker or portfolio state, or that reaches `packages/engine/risk` →
-> `packages/broker`'s order surface. The agents' entire authority is a **proposal**,
-> consumed by deterministic code that decides independently whether to place anything.
+> mutates broker or portfolio state or reaches `packages/engine/risk` →
+> `packages/broker`'s order surface. The agent's entire authority is a direction and a
+> conviction, consumed by deterministic code that decides independently whether to
+> place anything.
 
-### 3.2 On "give them tools to auto place trades"
+### On "fully autonomous"
 
-You asked for the agents to be able to open trades. **They do — through the pipeline,
-not through a tool call.** The agent emits a proposal; `engine.risk` clears it;
-[`PLAN_AUTO_APPROVE.md`](PLAN_AUTO_APPROVE.md)'s sweeper executes it with no human tap.
-The trade is fully autonomous end to end.
+**It already is.** The agent proposes → `engine.risk` clears → the auto-approve sweeper
+([`PLAN_AUTO_APPROVE.md`](PLAN_AUTO_APPROVE.md)) executes with no human tap. End-to-end
+autonomous, today, without an order tool in the LLM's hands.
 
-The difference is *where the authority lives*. Putting `place_option_order` in an LLM's
-tool list would mean a hallucinated symbol or a mis-parsed qty reaches the broker with
-one deterministic layer fewer between it and the account — and it would break the one
-architectural claim that distinguishes this entry. **The autonomy you want is already
-available without it.**
+Putting `place_option_order` in the tool list would mean a hallucinated OCC symbol or a
+mis-parsed quantity reaches the broker with one deterministic layer fewer — and it would
+cost the only architectural claim that separates this entry from five competitors making
+the same one as prompt policy. **The autonomy is available without the exposure.**
 
 ---
 
-## 4. Options trading rules the agents must encode
+## 4. Validation without judges — deterministic, free, instant
 
-Standard practitioner heuristics. **Flagged honestly: these are widely-used rules of
-thumb, not results this repo has validated.** Anything that changes a *threshold* must
-be backtested (§5) before it is trusted; anything that is a *hard bound* goes in
-`engine.risk`, not in a prompt.
+Four LLM judges would cost 4 calls and re-check things already checked. Replace them
+with validators that run in microseconds. Each returns a **named** reason, like a risk
+rule:
 
-### Entry
+| Validator | Fails when | Named reason |
+|---|---|---|
+| **Direction agreement** | agent's direction ≠ `strategy_fit`'s | `direction_contradicts_fit` — **this already exists** at `drafter.py:179`; keep it |
+| **Thesis has a clock** | no timeframe parsed from the thesis | `thesis_without_timeframe` |
+| **Conviction is supported** | conviction ≥0.7 but `strategy_fit` score is marginal | `conviction_exceeds_evidence` |
+| **Thesis cites a number** | no figure from the feature dict appears | `thesis_without_evidence` |
+| **Funnel actually survived** | `select_contract` returned nothing | `no_contract` (already named) |
 
-| Rule | Why |
+Then all 13 risk rules, unchanged.
+
+### The one place a second LLM earns its call
+
+**Optional, risk-proportional, off by default.** A single Haiku sanity check that runs
+**only** when the trade is both high-conviction and large (say ≥1.5% of equity). Not on
+every pass — on the few that matter.
+
+Same monotone rule as the exit agent: **it can only refuse.** A `PASS` grants nothing;
+a timeout, an error or malformed output counts as **FAIL** (fail-closed — refusing an
+options entry costs nothing, so the safe default is the strict one). Ship it behind
+`OPTIONS_SANITY_JUDGE=0`.
+
+---
+
+## 5. Latency budget — the number to hold yourself to
+
+| Path | LLM hops | Wall clock |
+|---|---|---|
+| No setup (most symbols) | **0** | ~0 |
+| Normal options pass | **1** | one Sonnet call |
+| Agent used a tool | 2 | + one tool + one call |
+| Large high-conviction trade w/ sanity judge on | 2–3 | + one Haiku call |
+| *(equity council today, for comparison)* | *3* | — |
+
+Non-negotiables:
+1. `options_fit` **first** — a symbol with no setup costs zero tokens. This is what
+   keeps the average down across 8 underlyings, and it already exists.
+2. `cache_system=True` (already supported). The system prompt is long and static —
+   textbook cacheable.
+3. Pre-load the pre-pass context so the tool loop is the exception.
+4. `max_rounds=1` on the tool loop. Hard cap.
+5. **Check for free latency first:** confirm whether today's three equity analysts run
+   in parallel or sequentially. `_run_linear` is sequential by construction; the
+   LangGraph branch may not be. If they are sequential, `asyncio.gather` is a win that
+   costs nothing and helps equity too.
+
+**Cost:** ~$0.01–0.02 per options pass against ~$0.04 for an equity pass. Fewer calls
+than today, not more.
+
+---
+
+## 6. Options scope — what ships, what does not
+
+Single-leg **long calls and long puts** work today, end to end. Build on them.
+
+| Structure | Max loss | Work needed | Verdict |
+|---|---|---|---|
+| Long call / long put | premium | **none** | ✅ ship |
+| Vertical spreads (debit/credit) | defined | multi-leg across sizing, risk, ghost eval, close path — `OptionLegDetails.action` is a 2-value `Literal` and single-leg is load-bearing throughout | ⚠️ flag-gated, only after the agent is proven |
+| Cash-secured put / covered call | defined | collateral locking + assignment handling, neither exists | ❌ not now |
+| Naked short call | **unbounded** | — | ❌ **never** |
+
+`naked_short_forbidden` stays. Unbounded loss with no assignment handling, on a live
+scored account, is not a trade-off worth making for a contest.
+
+### Rules the agent must encode in its prompt
+
+- **Long premium wants low IV rank.** Buying into high IV is paying for a crush.
+  `iv_rank` (52-week IV percentile) **does not exist yet — build it**, ~1h, and it is
+  the single most valuable new feature here.
+- **Prefer the upper half of the 10–45 DTE window** for directional longs; theta
+  accelerates inside ~21 DTE. State it when going shorter.
+- **Every thesis carries a timeframe.** Enforced by a validator (§4), not by hope.
+- Exits are **not the agent's business** — the ratchet, stop, time stop and expiry sweep
+  own them and already shipped.
+
+Standard practitioner heuristics, stated honestly as such — not results this repo has
+validated. Anything that moves a *threshold* needs a backtest; anything that is a *hard
+bound* lives in `engine.risk`, never in a prompt.
+
+---
+
+## 7. Scope — ~2 focused days
+
+| Task | Est. |
 |---|---|
-| **Buy when IV rank is low, sell premium when it is high** | The single most-cited options rule. Long premium into high IV is paying for a crush. Needs an `iv_rank` feature — 52-week percentile of IV. **Does not exist yet; build it.** |
-| **IV vs realized vol** | Already implemented as the `iv_realized_vol_band` funnel stage (0.3×–3.0×). Keep. |
-| **Avoid earnings unless the trade IS the earnings bet** | `earnings_blackout` exists and is **permanently inert** — Alpaca publishes no earnings calendar. Do not claim it works. A third-party calendar would fix it; out of scope now. |
-| **30–45 DTE for directional longs** | Theta accelerates inside ~21 DTE. Our window is 10–45; the agents should *prefer* the upper half and say when they do not. |
-| **Delta by conviction** | Implemented (0.35–0.75 high / 0.25–0.65 low). |
-| **Liquidity: OI ≥ 100, spread ≤ 12% of mid** | Implemented. A wide spread is a guaranteed loss on the round trip. |
-| **Never more than N% of premium in one underlying** | `max_premium_pct` 2.5% / `max_total_premium_pct` 12%. Enforced deterministically. |
+| `llm.py`: block walk + `complete_tools()` (spec in [`PLAN_EXIT_AGENT.md`](PLAN_EXIT_AGENT.md) §6 — **build once, there**) | 2h |
+| `tools/guard.py` + 6 read-only tools + tests | 3h |
+| `iv_rank` feature | 1h |
+| Options agent node, prompt, mock branch, cost-ledger role | 3h |
+| Deterministic validators (§4) | 2h |
+| SSE stream + node lanes | 3h |
+| Charts: contract + funnel | 4h |
+| Optional sanity judge (flag off) | 1h |
+| **Total** | **~19h** |
 
-### Exit — already shipped, do not re-litigate in a prompt
+Cut order if it slips: charts → sanity judge → SSE → `iv_rank`. **Never cut** the guard
+or the validators.
 
-Trailing ratchet (arm +35%, give back 30% of peak), hard stop −40%, hard ceiling +150%,
-time stop, `DTE ≤ 2` expiry sweep. All deterministic, all in
-[`OPTIONS_PLAYBOOK.md`](OPTIONS_PLAYBOOK.md) §3.
-
-**The agents must not be given exit authority.** The ratchet already owns it.
-
-### The rule that matters most
-
-> **Theta is always against a long option.** Every long-premium trade needs a thesis
-> with a *timeframe*, and the agent must state it. "NVDA looks strong" is not a thesis;
-> "NVDA breaks 190 within 3 weeks on the pattern + volume" is. The `thesis_judge`
-> exists to fail proposals that cannot answer *by when*.
+Ship behind `USE_OPTIONS_AGENT=0`; the existing shared council keeps running until the
+new path is proven on one live pass. **Never deploy a new agent graph into a live
+session.**
 
 ---
 
-## 5. Backtesting the options strategies
+## 8. SSE and charts
 
-`packages/engine/engine/backtester/` exists with 5 **equity** strategies and — the
-valuable part — **shares live risk code**, so a backtest is not a parallel
-reimplementation that can drift.
+**SSE.** Today `useCouncilProgress` polls every 600 ms. `progress.py`'s `ProgressEvent`
+is already the right shape. Add `GET /api/v1/agent/run/{id}/stream` as a FastAPI
+`StreamingResponse` with `text/event-stream`; client uses `EventSource`. **Keep the poll
+as a fallback** — proxies and mobile networks drop long-lived connections, and a demo
+that stalls silently is worse than one that polls. `progress.NodeName` is a closed
+`Literal`; add the new nodes there **and** to `NODE_ORDER` or the theater renders an
+unnamed lane.
 
-Needed:
-1. An options fill model. Options fill worse than equities: assume the **ask** on entry
-   and the **bid** on exit, never mid. A backtest that fills at mid will look profitable
-   and will not be.
-2. Historical option bars via `/v1beta1/options/bars` — the same endpoint
-   `engine/prices/option_alpaca.py` already uses. **Remember the `end`-clamp:**
-   requesting inside the 15-minute delay window returns a 403 whose message
-   (`"OPRA agreement is not signed"`) is misleading.
-3. Report per strategy: win rate, average win/loss, max drawdown, **and the
-   distribution of holding periods** — a strategy that only wins by holding to expiry is
-   incompatible with the `DTE ≤ 2` sweep.
+**Charts.** TradingView **Lightweight Charts** (open source, ~45 KB, no account, no
+network). There is no usable TradingView *data* API for us — Alpaca is the data source,
+and Alpaca's TradingView integration is a human trading UI that yields nothing
+programmatic. ⚠️ Verify the library's licence on its repo and honour attribution.
 
-**Reality check:** with four sessions left, a backtest cannot validate a strategy to any
-statistical standard. Its value here is **catching a strategy that is obviously broken**
-— negative expectancy, fills that never happen, holding periods the exit rules forbid.
-Treat it as a smoke test, and say so in the write-up rather than implying more.
-
----
-
-## 6. SSE streaming — replace the 600 ms poll
-
-Today `useCouncilProgress` polls `GET /agent/run/{id}/progress` every 600 ms. The
-`ProgressEvent` machinery in `progress.py` is already the right shape — one event per
-node transition, summaries extracted deterministically, no LLM in the path.
-
-- FastAPI `StreamingResponse` with `text/event-stream` at
-  `GET /api/v1/agent/run/{id}/stream`.
-- Client: `EventSource`, falling back to the existing poll when SSE fails. **Keep the
-  poll.** Proxies and mobile networks drop long-lived connections, and a demo that
-  stalls silently is worse than one that polls.
-- `progress.NodeName` is a closed `Literal` — the new options nodes must be added there
-  **and** to `NODE_ORDER`, or the theater renders an unnamed lane.
-- Stream the fan-outs honestly: 3 subagents in flight means 3 lanes lit at once. That
-  visual — parallel agents actually running — is worth more than any diagram.
+Render, in priority order:
+1. **The contract itself** — entry premium, current mark, the ratchet line, the stop.
+   *"The contract we bought went $2.17 → $3.40 and the ratchet armed here."* Nobody
+   else will show this.
+2. **The funnel**, stepped: 4,128 → 2,064 → 1,843 → 130 → 3 → 1.
+3. Underlying candles with the detected pattern marked — that detector shipped and
+   nothing displays it.
 
 ---
 
-## 7. Charts — show the contract, not just the underlying
-
-Use **TradingView Lightweight Charts** (open source, ~45 KB, no account, no network).
-There is no usable TradingView *data* API for us — Alpaca is the data source, and
-Alpaca's TradingView integration is a human trading UI that yields nothing programmatic.
-⚠️ Verify the library's license on its repo before shipping and honour attribution.
-
-What to render on the decision detail page:
-1. **Underlying candles**, with the detected candlestick pattern marked on the bar that
-   produced it (that detector shipped and nothing displays it).
-2. **The contract itself** — entry premium, current mark, the trailing-ratchet line, the
-   stop. *This* is the picture a judge has not seen anywhere else: not "NVDA went up"
-   but "the contract we bought went from $2.17 to $3.40 and the ratchet armed here".
-3. **The funnel**, as a stepped bar: 4,128 → 2,064 → 1,843 → 130 → 3 → 1.
-
----
-
-## 8. Build order
-
-```
-0. llm.py block walk + complete_tools()      ← PLAN_EXIT_AGENT.md §6, prerequisite
-1. tools/guard.py + the read-only tool set   ← no agents yet; unit-testable alone
-2. options_fit + orchestrator + 3 subagents  ← parallel from the first commit
-3. drafter (options variant)
-4. 4 Haiku judges + deterministic N-of-M
-5. SSE stream + the new node lanes
-6. Charts + the funnel view
-7. iv_rank feature + backtest smoke          ← cut first if time runs out
-8. Spreads behind ALLOW_OPTION_SPREADS=0     ← cut second; needs §0.4's full stack change
-```
-
-**Ship 1–4 behind `USE_OPTIONS_COUNCIL=0`.** The existing shared council keeps running
-until the new one is proven on a live pass. Never deploy a new agent graph into a live
-session.
-
----
-
-## 9. Tests — the revert-check matrix
+## 9. Tests — revert-check matrix
 
 | Test | Break this to make it fail |
 |---|---|
-| **`test_no_order_tool_in_the_allowlist`** | Add `place_option_order`. **The security claim, as a unit test.** |
-| **`test_judge_failure_counts_as_fail_not_pass`** | Make the `except` return PASS — fail-closed is the whole design |
-| `test_three_of_four_judges_required` | Accept a 2-of-4 vote |
-| `test_judges_cannot_edit_the_proposal` | Let a judge's output mutate strike/qty |
-| `test_judges_skipped_entirely_in_mock_mode` | Stub them to PASS |
-| `test_unknown_tool_denies_and_does_not_raise` | Raise instead of returning `is_error` |
+| **`test_no_order_tool_in_the_allowlist`** | Add `place_option_order`. The security claim, as a unit test. |
+| **`test_unknown_tool_denies_and_does_not_raise`** | Raise instead of returning `is_error` |
 | `test_tool_budget_terminates_a_looping_agent` | Remove the per-pass ceiling |
 | `test_after_guard_rejects_a_cross_user_result` | Drop the `user_id` assertion |
-| `test_subagents_run_concurrently` | Replace `gather` with sequential awaits — assert wall-clock, not call count |
-| `test_options_fit_holds_without_spending_a_call` | Let a no-setup symbol reach the orchestrator |
+| `test_direction_contradicting_fit_is_downgraded` | Let the agent's direction win |
+| `test_thesis_without_a_timeframe_is_rejected` | Skip the validator |
+| `test_options_fit_holds_without_spending_a_call` | Let a no-setup symbol reach the agent |
+| `test_tool_loop_bounded_at_one_round` | Raise `max_rounds` |
+| `test_sanity_judge_failure_counts_as_fail` | Make the `except` return PASS |
+| `test_sanity_judge_only_runs_on_large_high_conviction` | Run it every pass |
 | `test_naked_short_still_forbidden` | Add `sell_to_open` to `_ALLOWED_ACTIONS` |
 
 **Baseline: 969 passed, 11 skipped** (Python) + 28 (jest). `git stash` and re-run before
@@ -388,24 +329,20 @@ blaming your change.
 
 ## 10. Where you will go wrong
 
-1. **Looking for a PreToolUse hook config.** It does not exist in this runtime. §0.1.
-2. **Building `complete_tools()` twice** — once here and once in `PLAN_EXIT_AGENT.md`.
-   Do it once, there.
-3. **Running the subagents sequentially.** Doubles latency and silently defeats the
-   whole design. Assert concurrency in a test.
-4. **Letting a judge approve.** They vote to refuse; they never grant. Monotone.
-5. **Judges failing open.** A timeout is a FAIL here.
-6. **Putting an order tool in the allowlist** because "the agent should place trades".
-   It already can — through the pipeline. §3.2.
-7. **Relaxing `naked_short_forbidden`** to reach "short options". Unbounded loss, no
-   assignment handling.
-8. **Shipping spreads without the full §0.4 stack change.** Single-leg assumptions are
-   load-bearing in sizing, risk, ghost eval and the close path.
+1. **Looking for a PreToolUse hook config.** Does not exist here. §3.
+2. **Adding analyst agents back** because more agents feels more capable. Re-read §0 —
+   they re-implement deterministic checks in a worse medium.
+3. **Building `complete_tools()` twice.** Once, in `PLAN_EXIT_AGENT.md` §6.
+4. **Putting an order tool in the allowlist** because the agent "should be autonomous".
+   It already is. §3.
+5. **Letting the sanity judge approve**, or fail open. It refuses only, and a timeout
+   is a FAIL.
+6. **Letting the agent pick strike or expiry.** `select_contract` owns that, and the
+   funnel is the demo.
+7. **Relaxing `naked_short_forbidden`.**
+8. **Making tool calls the normal path.** Pre-load context; tools are the exception.
 9. **Deleting the SSE fallback poll.**
-10. **Believing a 4-day backtest validates anything.** It catches broken; it does not
-    prove good.
-11. **Deploying the new graph into a live session.** Flag-gate, watch one pass, then
-    flip.
+10. **Deploying the new graph into a live session.**
 
 ---
 
