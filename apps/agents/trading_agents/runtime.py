@@ -158,7 +158,14 @@ async def run_council(
     proposal_dto = _to_proposal_dto(final) if final.get("risk_approved") else None
 
     decision_id: str | None = None
-    if decision_log is not None:
+    # The options council's trade tool persists its OWN agent_decisions row,
+    # keyed on the SAME council_run_id this function would use. Writing
+    # again here would land a summary on top of a real executed trade and
+    # erase the fill, the order id and the risk checks it recorded. So when
+    # that node says a row exists, take its id and do not write.
+    if final.get("decision_row_written"):
+        decision_id = str(final.get("decision_id") or council_run_id)
+    elif decision_log is not None:
         # Fire-and-forget write. We await it here (not via asyncio.create_task)
         # so callers can read decision_id from the result; the in-memory log
         # is sync-fast anyway, and a real Postgres impl will be wrapped in

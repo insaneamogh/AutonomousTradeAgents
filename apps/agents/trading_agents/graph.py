@@ -42,6 +42,7 @@ from trading_agents.nodes import (
     strategy_fit_node,
     technical_analyst_node,
 )
+from trading_agents.nodes.options_council import options_agent_enabled, options_council_node
 from trading_agents.progress import (
     NodeName,
     ProgressCallback,
@@ -103,6 +104,22 @@ async def _run_linear(
     if state.get("selected_strategy") is None:
         for skipped in ("router", "technical", "fundamental", "macro", "drafter", "risk_officer"):
             await _emit(skipped, "skipped")  # type: ignore[arg-type]
+        return state
+
+    # ── Options fork ──────────────────────────────────────────────────
+    # Two agents argue, then the winner calls a guarded trade tool. The
+    # guard runs the FULL risk stack inside that call, so a trade made
+    # here is already risk-cleared and must not be re-evaluated (or
+    # re-recorded) downstream — hence risk_officer is skipped and
+    # `decision_row_written` tells runtime to stand down.
+    if options_agent_enabled(state):
+        for skipped in ("router", "technical", "fundamental", "macro"):
+            await _emit(skipped, "skipped")  # type: ignore[arg-type]
+        await _emit("drafter", "started")
+        state = await options_council_node(state, llm, risk_caps)
+        await _pace()
+        await _emit("drafter", "completed", with_summary=True)
+        await _emit("risk_officer", "skipped")
         return state
 
     await _emit("router", "started")
@@ -167,6 +184,9 @@ def _build_langgraph(llm: LLM, risk_caps: RiskCaps) -> Callable[[CouncilState], 
     async def _drafter(state: CouncilState) -> CouncilState:
         return await drafter_node(state, llm)
 
+    async def _options_council(state: CouncilState) -> CouncilState:
+        return await options_council_node(state, llm, risk_caps)
+
     async def _risk(state: CouncilState) -> CouncilState:
         state = await risk_officer_node(state, risk_caps)
         if state.get("risk_approved"):
@@ -180,18 +200,28 @@ def _build_langgraph(llm: LLM, risk_caps: RiskCaps) -> Callable[[CouncilState], 
     g.add_node("macro", _macro)
     g.add_node("drafter", _drafter)
     g.add_node("risk_officer", _risk)
+    g.add_node("options_council", _options_council)
 
     g.set_entry_point("strategy_fit")
 
     # Deterministic HOLD short-circuit — nothing downstream has run yet, so
     # this is the branch that makes a non-setup symbol free.
     def _after_strategy_fit(state: CouncilState) -> str:
-        return "router" if state.get("selected_strategy") else END
+        if not state.get("selected_strategy"):
+            return END
+        # Options fork — see _run_linear's twin branch and
+        # nodes/options_council.py for why risk_officer is NOT downstream
+        # of this one (the guard already ran the full stack inline).
+        if options_agent_enabled(state):
+            return "options_council"
+        return "router"
 
     g.add_conditional_edges("strategy_fit", _after_strategy_fit, {
         "router": "router",
+        "options_council": "options_council",
         END: END,
     })
+    g.add_edge("options_council", END)
 
     # Conditional fan-in: route through technical → fundamental → macro →
     # drafter → risk_officer, skipping any analysts that aren't in the

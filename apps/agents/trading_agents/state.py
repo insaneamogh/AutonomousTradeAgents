@@ -94,6 +94,20 @@ class CouncilState(TypedDict, total=False):
     refusals actually happen — more than the risk engine — and it is the
     only record of them, since a HOLD writes no proposal."""
 
+    options_resolution: dict[str, Any] | None
+    """Bull/Bear directions, convictions and the deterministic verdict that
+    resolved them. Present only on an options-council pass."""
+
+    tool_denials: list[str]
+    """Named guard refusals this pass, e.g. ``open_option_trade:illiquid_contract``.
+    The propose/dispose story in one line — surfaced so the UI can render it
+    instead of it living only in the log."""
+
+    decision_row_written: bool
+    """True when a node already persisted the audit row (the options trade
+    tool does). ``runtime`` skips its own write rather than overwriting a
+    real executed trade with a pass summary."""
+
     # ── Risk officer (deterministic) ─────────────────────────────────
     risk_approved: bool
     risk_reason: str
