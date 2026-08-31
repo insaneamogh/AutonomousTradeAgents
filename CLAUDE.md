@@ -11,6 +11,13 @@ Read the whole plan before starting it:
 
 | # | Plan | What |
 |---|---|---|
+| — | **IMPLEMENTATION SPECS — build these, in this order** | |
+| I1 | [`docs/IMPL_LLM_TOOLS.md`](docs/IMPL_LLM_TOOLS.md) | `llm.py` tool support. **Foundation — I2 depends on it.** ~4h |
+| I2 | [`docs/IMPL_OPTIONS_AGENTS.md`](docs/IMPL_OPTIONS_AGENTS.md) | Bull/Bear agents + guarded `open_option_trade` / `adjust_option_position`. ~16h |
+| I3 | [`docs/IMPL_CONTRACT_FUNNEL_UI.md`](docs/IMPL_CONTRACT_FUNNEL_UI.md) | The funnel view. **Highest demo value per hour**, no dependencies. ~5h |
+| I4 | [`docs/IMPL_REFUSAL_LEDGER.md`](docs/IMPL_REFUSAL_LEDGER.md) | Make the ledger show real dollars. **Starts with a diagnose-before-you-fix step.** ~6h |
+| I5 | [`docs/IMPL_DEMO_SESSION.md`](docs/IMPL_DEMO_SESSION.md) | Read-only judge link. ~4h |
+| | | |
 | 0 | [`docs/PLAN_NEXT.md`](docs/PLAN_NEXT.md) | **START HERE.** What is left after the four below shipped, in order, plus the product gaps found reviewing the live app. |
 | 0a | [`docs/PLAN_AUTO_APPROVE.md`](docs/PLAN_AUTO_APPROVE.md) | **Do this first.** The agent cannot open a trade today — entries are human-gated. Nothing trades Mon–Thu without it. |
 | 0b | [`docs/PLAN_LEDGER_SURFACE.md`](docs/PLAN_LEDGER_SURFACE.md) | The Refusal Ledger renders $0 across the board. It is the entry's whole differentiator. |
