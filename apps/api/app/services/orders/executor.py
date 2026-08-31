@@ -746,11 +746,15 @@ async def load_risk_inputs(
     confidence = row.council_confidence if row is not None else None
     if confidence is None and row is not None:
         confidence = row.judge_confidence
-    if confidence is None:
-        logger.warning(
+    # The DTO carries it too; _re_run_risk falls back to that. Only warn
+    # when NEITHER source has it.
+    if confidence is None and proposal.council_confidence is None:
+        logger.info(
             "executor: no council confidence recorded for proposal=%s — "
-            "falling back to conviction_level/5. The confidence floor is "
-            "being checked against a different quantity than at drafting.",
+            "min_council_confidence self-gates out of the re-check. The "
+            "council already applied the floor to the real number at "
+            "draft time; re-deriving one here would score a different "
+            "quantity against it.",
             proposal.id,
         )
 
@@ -794,13 +798,29 @@ def _re_run_risk(
     regulatory rules gate on.
     """
     inputs = inputs or RiskInputs()
+    # None is passed through DELIBERATELY. Conviction (1-5, "how big a
+    # bet") is NOT the council's confidence ("how likely to work") — the
+    # Drafter emits them separately — and this used to substitute
+    # conviction_level/5 when the real value was missing, then score that
+    # against a floor calibrated for confidence. Because the approval DTO
+    # never persisted confidence, that fallback fired on EVERY approval:
+    # any pick with conviction<=2 scored 0.40 and was refused at click
+    # time under the 0.42 aggressive floor, having already been surfaced
+    # as approvable. AMZN 2026-08-31 was drafted at confidence 0.54.
+    #
+    # A None here makes min_council_confidence self-gate out (see
+    # engine.risk.types.RiskProposal.confidence). That is correct rather
+    # than lax: confidence is fixed at draft time, so the council pass is
+    # the authority on it and has already applied the floor. The rules
+    # that re-run here are the ones the world can change underneath —
+    # price, buying power, drawdown state, PDT.
+    # The DTO carries the council's confidence too (schemas/approvals.py),
+    # so a missing/foreign decision row or USE_POSTGRES=0 does not silently
+    # drop it. Both absent → None → the rule self-gates out.
     confidence = (
         inputs.council_confidence
         if inputs.council_confidence is not None
-        # Conviction (1-5, "how big a bet") is NOT the council's confidence
-        # ("how likely to work") — the drafter emits them separately. Legacy
-        # rows predate persisting the real value; load_risk_inputs logs it.
-        else proposal.conviction_level / 5.0
+        else proposal.council_confidence
     )
 
     if proposal.is_option:

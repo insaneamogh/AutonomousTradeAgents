@@ -31,6 +31,14 @@ from engine.risk import RiskCaps
 from trading_agents.llm import LLM, LLMResponse, Model, ToolCall, complete_json
 from trading_agents.llm_loop import run_tool_loop
 from trading_agents.nodes._guards import clamp_confidence
+from trading_agents.nodes._specialist import render_features
+from trading_agents.nodes.technical_analyst import (
+    FEATURES as TECHNICAL_FEATURES,
+)
+from trading_agents.nodes.technical_analyst import (
+    PATTERN_FEATURES,
+    QUANT_FEATURES,
+)
 from trading_agents.options.prompts import OPTIONS_BEAR, OPTIONS_BULL
 from trading_agents.options.resolution import AgentView, Resolution, resolve
 from trading_agents.options.tools.guard import GuardContext, ToolGuard, dispatch_tool_call
@@ -82,54 +90,166 @@ def _parse_strategy(value: Any) -> str | None:
     return None
 
 
+#: Underlying quote block (``context["liquidity"]``, engine.features).
+#: Spread and quote freshness are the two things that decide whether the
+#: option on top of this name can be traded at a sane price at all.
+_LIQUIDITY_FEATURES = (
+    "mid", "spread_bps", "quote_age_seconds", "quote_trusted", "wide_spread",
+)
+
+#: ``context["macro"]`` — VIX is the closest thing to a vol reference the
+#: pre-pass has while a real per-symbol IV rank does not exist (see
+#: ``_OPTIONS_FEED_FEATURES``).
+_MACRO_FEATURES = (
+    "vix_level", "ten_year_yield_pct", "dxy_index", "sector_relative_strength",
+)
+
+#: ``context["options_context"]`` — the options-specific feed block from
+#: ``engine.features.provider.MinimalOptionsContextProvider``. NOTE the key
+#: path: these live UNDER ``options_context``, not at the top level of
+#: ``context``. Reading ``context["iv_rank"]`` (as this function did until
+#: the fix in this commit) renders ``n/a`` forever, and both agents read a
+#: promised-but-absent field as a finding rather than as a feed limit —
+#: that was the whole abstain-on-everything bug.
+_OPTIONS_FEED_FEATURES = (
+    "iv_rank", "atm_iv", "term_structure_slope", "days_to_earnings",
+    "feed_type", "data_delay_minutes",
+)
+
+#: ``context["news"]`` / ``context["events"]`` — flags only. The headline
+#: TEXT is deliberately NOT rendered: it is third-party, and the prompts'
+#: injection rule is easier to hold when the untrusted strings are not in
+#: the message at all.
+_NEWS_FEATURES = ("headline_count_48h", "hours_since_latest", "coverage_burst")
+_EVENT_FEATURES = (
+    "earnings_date_known", "corporate_event_in_horizon", "ex_dividend_in_horizon",
+)
+
+#: Wide enough for the longest label above (``corporate_event_in_horizon``)
+#: so no row loses its separating space.
+_LABEL_WIDTH = 28
+
+
+def _no_nulls(block: Any) -> dict[str, Any]:
+    """``None`` values render as ``n/a``, same as an absent key.
+
+    The prompts define exactly one marker for "this feed does not carry
+    that" — ``n/a`` — and then tell the agents an ``n/a`` is not a finding.
+    A bare ``None`` sitting next to it (``options_context.iv_rank`` is
+    literally ``None``, not missing) is a SECOND marker for the same fact,
+    and the rule the prompt states would not visibly cover it. Done here
+    rather than in ``render_features`` on purpose: that renderer is shared
+    with the three equity analysts and this is an options-prompt decision,
+    not a change to how the whole council reads features.
+    """
+    if not isinstance(block, dict):
+        return {}
+    return {k: ("n/a" if v is None else v) for k, v in block.items()}
+
+
 def _render_pre_pass(state: CouncilState) -> str:
     """The evidence block both agents read — IDENTICAL for both, so
     neither sees anything the other doesn't (docs/IMPL_OPTIONS_AGENTS.md
-    §3.2: "a COMPLETE deterministic pre-pass"). Every field is read
-    defensively (``n/a`` on absence) — this pre-pass is assembled upstream
-    of this module's scope, and a missing block must degrade to "less
-    evidence", never to a crashed pass.
+    §3.2: "a COMPLETE deterministic pre-pass").
+
+    Every block is rendered UNCONDITIONALLY, with missing fields showing as
+    ``n/a`` (``nodes/_specialist.render_features`` — the same renderer the
+    equity analysts use, so the options agents and the Technical analyst
+    cannot drift apart on what a feature block looks like). Rendering the
+    label even when the value is absent is the point: the model can then
+    tell "this feed does not carry that" from "that was never in my brief",
+    and the prompts pair this with an explicit rule that an ``n/a`` is a
+    feed limitation and not a finding.
+
+    Measured, 2026-08-31, live Alpaca keys, 7 symbols that cleared
+    ``strategy_fit``: the pre-pass this replaced rendered ONLY strategy fit,
+    candlestick patterns and one realized-vol number, while the prompts
+    claimed it also carried IV rank, funnel counts and liquidity. 6 of 7
+    symbols HOLDed on ``abstained``, and 6 of 6 abstention theses named
+    "IV rank unavailable" as the reason to stand down. The context dict had
+    ``technicals``, ``quant``, ``liquidity``, ``macro``, ``news``,
+    ``events`` and ``options_context`` populated the whole time; none of
+    them reached the agents.
     """
     context: dict[str, Any] = state.get("context", {}) or {}
     lines = [
         f"Ticker: {state.get('symbol', '?')}",
         f"Horizon: {state.get('horizon', 'short')}",
+        f"Last price: {context.get('last_price', 'n/a')}",
         "",
     ]
 
     if state.get("strategy_fit"):
         lines.append("Strategy fit (deterministic pre-pass, not binding on you):")
         lines.append(f"  selected_strategy: {state.get('selected_strategy', 'n/a')}")
+        lines.append(f"  selected_direction: {state.get('selected_direction', 'n/a')}")
         lines.append(f"  selector_confidence: {state.get('selector_confidence', 'n/a')}")
         lines.append(f"  selector_rationale: {state.get('selector_rationale', 'n/a')}")
         lines.append("")
 
-    patterns = context.get("patterns")
-    if patterns:
-        lines.append("Candlestick patterns (already ATR-normalised, trend-context-gated):")
-        for key in (
-            "top_pattern", "top_pattern_score", "reversal_bull", "reversal_bear",
-            "continuation_bull", "continuation_bear", "indecision", "compression", "expansion",
-        ):
-            lines.append(f"  {key}: {patterns.get(key, 'n/a')}")
-        lines.append("")
+    lines.append("Trend and technicals:")
+    lines.append(render_features(
+        context.get("technicals") or {}, TECHNICAL_FEATURES, label_width=_LABEL_WIDTH,
+    ).rstrip("\n"))
+    lines.append("")
 
-    quant = context.get("quant") or {}
-    lines.append("Volatility:")
-    lines.append(f"  realized_vol_pct: {quant.get('realized_vol_pct', 'n/a')}")
-    # iv_rank is not yet a pre-pass FEATURE anywhere in this codebase as of
-    # this writing — only a live get_iv_rank TOOL exists (tools/readonly.py),
-    # and only the Bull agent's second (tool-calling) hop can reach it.
-    # docs/PLAN_OPTIONS_AGENTS.md §7/§9 lists building a real pre-pass
-    # iv_rank feature as a separate, not-yet-done ~1h item. Read
-    # defensively so this renders "n/a" today and picks the real feature up
-    # automatically the moment a future pass starts populating it, with no
-    # change needed here.
-    lines.append(f"  iv_rank: {context.get('iv_rank', 'n/a')}")
+    lines.append("Realized vol, momentum and tail risk (63-day window):")
+    lines.append(render_features(
+        context.get("quant") or {}, QUANT_FEATURES, label_width=_LABEL_WIDTH,
+    ).rstrip("\n"))
+    lines.append("")
+
+    lines.append("Candlestick patterns (already ATR-normalised, trend-context-gated):")
+    lines.append(render_features(
+        context.get("patterns") or {}, PATTERN_FEATURES, label_width=_LABEL_WIDTH,
+    ).rstrip("\n"))
+    lines.append("")
+
+    lines.append("Underlying liquidity (live quote):")
+    lines.append(render_features(
+        context.get("liquidity") or {}, _LIQUIDITY_FEATURES, label_width=_LABEL_WIDTH,
+    ).rstrip("\n"))
+    lines.append("")
+
+    lines.append("Macro:")
+    lines.append(render_features(
+        context.get("macro") or {}, _MACRO_FEATURES, label_width=_LABEL_WIDTH,
+    ).rstrip("\n"))
+    lines.append("")
+
+    lines.append("News flow (counts only — headline text is not part of your brief):")
+    lines.append(render_features(
+        context.get("news") or {}, _NEWS_FEATURES, label_width=_LABEL_WIDTH,
+    ).rstrip("\n"))
+    lines.append("")
+
+    lines.append("Corporate events in the horizon:")
+    lines.append(render_features(
+        context.get("events") or {}, _EVENT_FEATURES, label_width=_LABEL_WIDTH,
+    ).rstrip("\n"))
+    lines.append("")
+
+    # iv_rank / atm_iv are `None` on today's feed for essentially every
+    # symbol: MinimalOptionsContextProvider hardcodes them, and the live
+    # get_iv_rank TOOL (tools/readonly.py) builds its "history" from
+    # in-process samples, so it needs roughly a year of uptime before it
+    # returns a number. Rendering the block from the RIGHT key path means
+    # it starts carrying real values the moment a future pass populates
+    # them, with no change needed here — and until then the prompts tell
+    # the agents plainly that its absence is not a finding.
+    lines.append("Options feed (per-symbol vol context, when this feed carries it):")
+    lines.append(render_features(
+        context.get("options_context") or {}, _OPTIONS_FEED_FEATURES, label_width=_LABEL_WIDTH,
+    ).rstrip("\n"))
     lines.append("")
 
     funnel = state.get("contract_funnel")
     if funnel:
+        # Genuinely not part of hop 1's brief: contract_funnel is written by
+        # `nodes/drafter.py`, which the options fork skips entirely
+        # (`graph.py`), so on this path it is absent by construction rather
+        # than unavailable. Conditional for exactly that reason — an "n/a"
+        # here would say the wrong thing.
         lines.append("Option-chain funnel (most recent, this pass):")
         lines.append(f"  {funnel}")
         lines.append("")

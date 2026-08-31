@@ -315,15 +315,127 @@ def test_low_council_confidence_blocks_even_with_high_conviction() -> None:
     assert decision.veto_rule == "min_council_confidence"
 
 
-def test_conviction_fallback_only_when_confidence_is_absent() -> None:
-    """Legacy rows carry no council confidence — degrade, don't crash."""
+def test_absent_confidence_self_gates_instead_of_scoring_conviction() -> None:
+    """The AMZN 2026-08-31 bug, at the unit level.
+
+    An unrecorded council confidence must make ``min_council_confidence``
+    SELF-GATE OUT, not fall back to ``conviction_level / 5``. Conviction 2
+    scored 0.40 under that substitution and was refused at click time by a
+    floor (0.42 aggressive / 0.50 conservative) the council had already
+    cleared on the real number — live, AMZN was drafted at 0.54.
+
+    Revert check: restore the ``else proposal.conviction_level / 5.0``
+    fallback in ``_re_run_risk`` and this fails with
+    veto_rule='min_council_confidence'.
+    """
     decision = executor_mod._re_run_risk(
-        _proposal(conviction=4),
+        _proposal(conviction=2),
         _ctx(equity=100_000.0, day_trades=0),
         RiskCaps(),
         RiskInputs(council_confidence=None),
     )
-    assert decision.approved is True
+    assert decision.approved is True, decision.reason
+    assert decision.veto_rule is None
+    # A check that did not run must not be reported as one that passed.
+    assert "min_council_confidence" not in decision.checks_passed
+
+
+def test_recorded_confidence_still_runs_the_floor() -> None:
+    """Self-gating is for the ABSENT case only. A recorded below-floor
+    confidence must still veto here — the re-check stays a real gate."""
+    decision = executor_mod._re_run_risk(
+        _proposal(conviction=5),
+        _ctx(equity=100_000.0, day_trades=0),
+        RiskCaps(),
+        RiskInputs(council_confidence=0.31),
+    )
+    assert decision.approved is False
+    assert decision.veto_rule == "min_council_confidence"
+    assert "0.31" in decision.reason
+
+
+def test_dto_confidence_is_used_when_no_decision_row_exists() -> None:
+    """USE_POSTGRES=0, or a row that cannot be found, must not lose the
+    council's number: the DTO carries it too."""
+    proposal = _proposal(conviction=2)
+    proposal = proposal.model_copy(update={"council_confidence": 0.30})
+    decision = executor_mod._re_run_risk(
+        proposal,
+        _ctx(equity=100_000.0, day_trades=0),
+        RiskCaps(),
+        RiskInputs(council_confidence=None),
+    )
+    assert decision.approved is False
+    assert decision.veto_rule == "min_council_confidence"
+
+
+def test_council_and_executor_agree_on_the_same_proposal() -> None:
+    """The whole bug in one assertion: whatever the council decided about
+    the confidence floor, the approval-time re-check must decide the same.
+
+    Runs the REAL serialisation boundary the live bug hid behind —
+    ``runtime._to_proposal_dto`` → ``ApprovalProposalDto`` → ``_re_run_risk``
+    — with AMZN's live numbers (confidence 0.54, conviction 2, 18 shares).
+
+    Revert check: drop ``councilConfidence`` from ``_to_proposal_dto`` and
+    this fails — the executor refuses a trade the council approved.
+    """
+    from trading_agents.runtime import _to_proposal_dto
+
+    caps = RiskCaps(min_council_confidence=0.42)
+    state = {
+        "symbol": "AMZN",
+        "context": {"last_price": 266.39, "asset": {}},
+        "proposal": {
+            "side": "BUY",
+            "qty": 18,
+            "estimated_notional": 4795.02,
+            "confidence": 0.54,
+            "conviction_level": 2,
+            "risk_level": 3,
+            "stop_loss": 252.44,
+            "target_price": 301.26,
+            "rationale": "r",
+            "bull_case": "b",
+            "bear_case": "x",
+        },
+    }
+
+    # 1. The council gate, on the drafter's own dict.
+    from engine.risk import RiskProposal, evaluate
+    from engine.risk import Side as _S
+
+    council = evaluate(
+        RiskProposal(
+            symbol="AMZN", side=_S("BUY"), qty=18,
+            estimated_notional=4795.02, last_price=266.39,
+            confidence=0.54, stop_price=252.44,
+        ),
+        _ctx(equity=100_000.0, day_trades=0),
+        caps,
+    )
+    assert council.approved is True, council.reason
+    assert "min_council_confidence" in council.checks_passed
+
+    # 2. Serialise exactly as the council does when it writes the row, and
+    #    parse it back exactly as the approvals API does.
+    dto_dict = _to_proposal_dto(state)
+    assert dto_dict is not None
+    assert dto_dict["councilConfidence"] == pytest.approx(0.54), (
+        "the council's confidence must survive onto the persisted proposal — "
+        "without it the executor cannot re-check the same number"
+    )
+    dto = ApprovalProposalDto.model_validate(dto_dict)
+    assert dto.council_confidence == pytest.approx(0.54)
+
+    # 3. The approval-time gate must reach the SAME verdict.
+    replay = executor_mod._re_run_risk(
+        dto, _ctx(equity=100_000.0, day_trades=0), caps, RiskInputs(),
+    )
+    assert replay.approved is council.approved, (
+        f"council approved={council.approved} but executor "
+        f"approved={replay.approved} ({replay.veto_rule}: {replay.reason})"
+    )
 
 
 async def test_load_risk_inputs_degrades_without_a_decision_row() -> None:

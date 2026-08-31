@@ -160,10 +160,15 @@ def evaluate(
         passed.append("lot_size_block")
 
     # ── 6. Confidence floor ─────────────────────────────────────────
-    d = min_council_confidence(working, context, caps)
-    if d is not None and not d.approved:
-        return d
-    passed.append("min_council_confidence")
+    # Self-gates out when the council recorded no confidence. Listing it
+    # as passed would claim a check that never ran, and the alternative
+    # the executor used to take — scoring conviction_level/5 against a
+    # confidence floor — vetoed trades the council had cleared.
+    if working.confidence is not None:
+        d = min_council_confidence(working, context, caps)
+        if d is not None and not d.approved:
+            return d
+        passed.append("min_council_confidence")
 
     # ── 7. Specialist-average score floor ───────────────────────────
     d = min_specialist_avg_score(working, context, caps, specialists=specialists)

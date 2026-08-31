@@ -581,7 +581,23 @@ class RiskProposal:
     qty: int
     estimated_notional: float
     last_price: float
-    confidence: float
+
+    confidence: float | None
+    """The council's confidence (0-1) in this trade, as the Drafter emitted
+    it. ``None`` means NOT RECORDED — legacy rows written before the
+    approval DTO carried the field, or any path with no decision row.
+
+    ``None`` makes ``min_council_confidence`` self-gate out rather than
+    veto. That is deliberate: confidence is fixed at draft-time and the
+    council already applied the floor to the real number, so the only
+    thing a re-check without it can do is invent a stand-in. It used to
+    invent ``conviction_level / 5`` — a DIFFERENT quantity on a different
+    scale ("how big a bet", 1-5) — and score it against a floor calibrated
+    for confidence ("how likely to work", 0-1). Live: AMZN 2026-08-31
+    passed the council at confidence 0.54 and was then refused at approval
+    time as "0.40 below floor 0.42", 0.40 being conviction 2 / 5.
+
+    Never substitute a proxy here. Pass the real number or pass None."""
 
     # ── Options inputs ───────────────────────────────────────────────
     is_option: bool = False

@@ -97,6 +97,12 @@ def _proposal_dto(
         "bullCase": thesis if direction == "long" else "",
         "bearCase": thesis if direction == "short" else "",
         "convictionLevel": conviction,
+        # Same key the equity path writes (runtime._to_proposal_dto). For
+        # the options fork the resolved bull/bear conviction IS the 0-1
+        # confidence the guard already scored against the floor, so
+        # persisting it here makes the executor's re-check re-evaluate the
+        # SAME number rather than fall back to a conviction/5 stand-in.
+        "councilConfidence": conviction,
     }
 
 

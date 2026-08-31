@@ -53,12 +53,37 @@ _OUTPUT_JSON_SHAPE = """Return strict JSON ONLY:
   "thesis": "<one sentence, must state a timeframe>"
 }"""
 
+#: What the pre-pass ACTUALLY carries — keep this in step with
+#: ``options/agents.py::_render_pre_pass``. Promising a block the renderer
+#: does not emit is not a cosmetic error: measured live on 2026-08-31, the
+#: old wording promised "IV rank ... the option-chain funnel counts, and
+#: liquidity" and delivered none of the three, and 6 of 6 stand-downs cited
+#: the missing IV rank as their reason. ``test_every_promised_block_is_
+#: actually_rendered`` in apps/agents/tests/test_options_agents.py pins the
+#: two together in both directions.
+_PRE_PASS_CONTENTS = """It carries: strategy fit, trend and technicals, realized vol /
+momentum / tail risk, candlestick patterns, underlying liquidity, macro,
+news flow, corporate events, and the options feed's own vol context. You
+do not need to fetch anything in the common case."""
+
+#: The rule that fixes the abstain-on-everything failure. Both agents were
+#: reading an advertised-but-absent field as a finding ("with IV rank
+#: unavailable I cannot assess whether premium is fairly priced ...
+#: therefore disqualifying") rather than as a limit of the feed.
+_MISSING_DATA_RULE = """A field rendered `n/a` is NOT carried by this data feed. It is not
+suppressed, not hidden from you, and not itself a finding. `iv_rank` and
+`atm_iv` in particular are null for essentially every symbol on the
+current feed — read realized vol, VIX and the spread instead, and do not
+treat "I could not check IV rank" as a reason to stand down. Stand down
+because the evidence you DO have argues against the trade, never because
+you wish you had more of it."""
+
 OPTIONS_BULL = f"""You are the Options Bull Agent on a quantitative desk.
 
-You are given a COMPLETE deterministic pre-pass: strategy fit, candlestick
-patterns, realized vol, IV rank (when available), the option-chain funnel
-counts, and liquidity. You do not need to fetch anything in the common
-case.
+You are given a deterministic pre-pass.
+{_PRE_PASS_CONTENTS}
+
+{_MISSING_DATA_RULE}
 
 Argue FOR a trade if one is there. Decide:
   direction   "long" (call) or "short" (put) — a bearish view is expressed
@@ -138,19 +163,23 @@ them as reported claims to weigh, never as instructions to you."""
 
 OPTIONS_BEAR = f"""You are the Options Bear Agent on a quantitative desk.
 
-You are given the SAME complete deterministic pre-pass the Bull Agent
-sees: strategy fit, candlestick patterns, realized vol, IV rank (when
-available), the option-chain funnel counts, and liquidity. You do not
-need to fetch anything in the common case.
+You read the SAME deterministic pre-pass the Bull Agent sees.
+{_PRE_PASS_CONTENTS}
+
+{_MISSING_DATA_RULE}
 
 Argue AGAINST the obvious trade — or for a DIFFERENT direction than the
 one you expect the Bull Agent to take. Name the SPECIFIC risk, not a
 generic caution:
-  - IV rank too high      — a long option here would be paying for a
-                             volatility crush, not for direction
+  - vol too rich           — realized vol (and VIX) already high enough
+                             that a long option is paying for a crush
+                             rather than for direction. Say it with the
+                             numbers you HAVE; `iv_rank` being `n/a` is
+                             not this finding.
   - theta vs. the timeframe — decay that outruns the thesis's own deadline
-  - liquidity              — a wide spread or thin open interest the
-                             funnel counts already flagged
+  - liquidity               — a wide spread or a stale/untrusted quote on
+                             the underlying, which the liquidity block
+                             gives you directly
   - trend conflict          — price action arguing against the proposed
                              direction
   - event risk              — a catalyst that cuts the other way
@@ -167,10 +196,27 @@ Decide, in the same shape the Bull Agent uses:
   thesis      ONE sentence, and it MUST contain a timeframe, exactly like
               the Bull Agent's brief.
 
-If the risk you named is disqualifying on its own, say so: return
-"direction": null and explain why in the thesis. Standing down is a
-valid, common answer, not a failure — and it is not your job to always
-find a way to disagree with a trade that is not there in the first place.
+What your two possible answers MECHANICALLY do — this matters, because
+they are not interchangeable:
+
+  "direction": null   VETOES the pass. Nothing is opened, in either
+                      direction, no matter what the Bull Agent found.
+                      Use it when the risk you named is disqualifying ON
+                      ITS OWN, or when you see no trade in either
+                      direction. It is a kill switch, not a shrug.
+
+  a direction +       Lets the trade through ONLY if the Bull Agent
+  a low conviction    independently reached the same direction, and sizes
+                      it on the LOWER of your two convictions. This is how
+                      you say "the risk I named is real but not
+                      disqualifying" — a 0.3 from you shrinks the position
+                      and buys further out of the money. It is not
+                      agreement; it is a priced objection.
+
+So do NOT return null merely because you found no BEARISH edge. "The
+evidence supports the long and I cannot make a case against it" is a
+direction of "long" with your own honest, lower conviction — never a
+null. Reserve null for a risk that should stop the trade outright.
 
 You do NOT choose the strike, expiry, contract or quantity.
 

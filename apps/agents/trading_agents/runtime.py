@@ -216,6 +216,17 @@ async def run_council(
     }
 
 
+def _opt_float(v: object) -> float | None:
+    """None stays None — a missing confidence must not become 0.0, which
+    would veto at the floor instead of self-gating the rule out."""
+    if v is None:
+        return None
+    try:
+        return float(v)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
 def _to_proposal_dto(state: CouncilState) -> dict[str, Any] | None:
     p = state.get("proposal")
     if not p:
@@ -246,6 +257,15 @@ def _to_proposal_dto(state: CouncilState) -> dict[str, Any] | None:
         "bearCase": p.get("bear_case", ""),
         "riskLevel": int(p.get("risk_level", 3)),
         "convictionLevel": int(p.get("conviction_level", 3)),
+        # The council's confidence (0-1), carried explicitly. Conviction
+        # (1-5, "how big a bet") is NOT a substitute for it ("how likely to
+        # work") and the two are emitted separately by the Drafter. Until
+        # this key existed the executor's approval-time re-check could not
+        # find the real number and fell back to conviction_level/5, so a
+        # pick drafted at confidence 0.54 with conviction 2 surfaced as
+        # approvable and was then refused as "0.40 below floor 0.42".
+        # Live at the time of the fix: 0 of 30 approved rows carried it.
+        "councilConfidence": _opt_float(p.get("confidence")),
         "shortable": asset.get("shortable"),
         "easyToBorrow": asset.get("easy_to_borrow"),
         "proposedAt": now.isoformat(),

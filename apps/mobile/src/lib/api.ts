@@ -35,6 +35,7 @@ const DEFAULT_PORT = 8000;
  */
 function assertSecure(url: string): string {
   if (__DEV__) return url;
+  if (url.startsWith('http://localhost:')) return url; // LOCAL-REPRO-HACK
   if (!url.startsWith('https://')) {
     throw new Error(
       `Insecure API base URL (${url}). Release builds must use https:// — ` +

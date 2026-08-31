@@ -330,6 +330,135 @@ class ToolGuard:
     def _resolve_broker_factory(self) -> Callable[[], Any]:
         return self._broker_factory or _default_broker
 
+    # ── refusal ledger ───────────────────────────────────────────────
+
+    async def _ledger_refusal(
+        self,
+        reason: str,
+        *,
+        ctx: GuardContext,
+        underlying: str,
+        direction: str,
+        conviction: float,
+        thesis: str,
+        option: Any,
+        ask: float | None,
+        qty: int,
+        risk_reason: str | None = None,
+        checks_passed: list[str] | None = None,
+    ) -> GuardVerdict:
+        """Write the refusal to ``agent_decisions``, THEN deny.
+
+        Before this, a denial from ``before()`` was returned to the model as
+        ``{"is_error": True, "content": {"denied": reason}}`` and persisted
+        NOWHERE. ``ghost_service.build_veto_ledger`` selects on
+        ``risk_approved IS FALSE AND risk_veto_rule IS NOT NULL``, so the
+        entire options path — the one the contest requires, and the one
+        running every 5 minutes in production — was structurally invisible
+        to the Refusal Ledger. Only the equity council could ever put a row
+        in it, which is why one rule (``single_name_concentration``) had
+        fired six times and nothing else had ever appeared.
+
+        WHICH denials land here is a deliberate line, not "all of them":
+        only refusals of a CONCRETE, ALREADY-SELECTED contract — step 10's
+        ``select_contract`` onward. Everything earlier is either an
+        operator/environment gate (``market_closed``, ``live_mode_refused``,
+        ``auto_trade_disabled``, ``broker_credentials_unavailable``,
+        ``chain_fetch_failed``) or the guard correcting the MODEL rather
+        than the risk engine refusing a trade (``malformed_symbol``,
+        ``unknown_strategy``, ``thesis_without_timeframe``,
+        ``direction_contradicts_resolution``, ``one_open_per_pass``). None
+        of those refused a priced trade, and counting them would inflate the
+        headline with events that never reached a proposal — the same error
+        that once let every strategy-fit HOLD land in this ledger as
+        ``unnamed_rule``. ``select_contract``'s own funnel rejections are
+        excluded for the same reason plus one more: there is no single
+        contract to point at, and the funnel view already tells that story
+        per candidate.
+
+        Three invariants this must never break:
+
+        1. **It never changes the verdict.** The returned ``GuardVerdict``
+           is a denial whether or not the write succeeded. A ledger that
+           cannot be written must not become a trade that can.
+        2. **It never raises.** Same contract as ``dispatch_tool_call``'s
+           own "never raises into the caller".
+        3. **It never reuses ``ctx.council_run_id`` as the row id.** That id
+           is ``open_option_trade``'s PK for a SUCCESSFUL open, and
+           ``PostgresDecisionLog.record()`` does a plain INSERT — a denial
+           row keyed on it would collide the moment the model does exactly
+           what a denial is supposed to teach it to do and retries in the
+           same pass. The run id goes in ``reasoning`` instead, so the two
+           are still correlatable.
+        """
+        try:
+            # Imported lazily and by its private name ON PURPOSE. `trade.py`
+            # imports from THIS module at module scope, so a top-level
+            # `from ...trade import ...` here would be circular; and
+            # re-declaring the DTO shape locally is the trap CLAUDE.md §4.4
+            # names outright — the persisted `proposal` for a refused
+            # options trade has to be byte-shaped like the one a successful
+            # open writes, or `evaluate_ghosts` marks the wrong instrument
+            # and the ledger reads the wrong notional.
+            from trading_agents.memory.decision_log import DecisionEntry
+            from trading_agents.options.tools.trade import _proposal_dto
+
+            now = self._clock()
+            proposal = _proposal_dto(
+                underlying=underlying,
+                direction=direction,
+                option=option,
+                qty=qty,
+                # `ask` is the per-CONTRACT premium the contract was priced
+                # at, never the underlying's share price — the confusion
+                # that vetoed 100% of options proposals for weeks
+                # (OPTIONS_PLAYBOOK.md §5.2). 0.0 when the refusal WAS that
+                # there is no usable ask, which makes estimatedNotional 0.0
+                # and is the honest answer: nothing priceable was blocked.
+                limit_price=float(ask or 0.0),
+                conviction=conviction,
+                thesis=thesis,
+            )
+            entry = DecisionEntry(
+                id=str(uuid.uuid4()),
+                user_id=ctx.user_id,
+                symbol=underlying,
+                # Matches what `open_option_trade` writes, so `ghost_eval`
+                # gives a refused contract the same 5-trading-day horizon it
+                # would have given the trade had it been allowed.
+                horizon="short",
+                final_action="VETOED",
+                risk_approved=False,
+                risk_veto_rule=reason,
+                risk_reason=risk_reason or f"Refused by {reason}.",
+                bull_case=thesis if direction == "long" else None,
+                bear_case=thesis if direction == "short" else None,
+                proposal_dto=proposal,
+                completed_at=now,
+                reasoning={
+                    "council_run_id": ctx.council_run_id,
+                    "refused_by": "options_tool_guard",
+                    "risk_checks_passed": list(checks_passed or []),
+                },
+            )
+            await self._resolve_decision_log().record(entry)
+            logger.info(
+                "options refusal ledgered: %s %s %s qty=%d — %s",
+                underlying,
+                getattr(option, "occ_symbol", "?"),
+                reason,
+                qty,
+                risk_reason or "",
+            )
+        except Exception:
+            # Deny anyway. See invariant 1.
+            logger.exception(
+                "failed to ledger options refusal %r for %s — denying regardless",
+                reason,
+                underlying,
+            )
+        return GuardVerdict(False, reason)
+
     # ── before() ─────────────────────────────────────────────────────
 
     async def before(
@@ -434,12 +563,25 @@ class ToolGuard:
         if selection.selected is None:
             return GuardVerdict(False, selection.rejection_reason or "no_liquid_contract")
 
+        # From HERE DOWN a concrete contract exists, so every refusal below
+        # is a Refusal Ledger row (see `_ledger_refusal` for why the line is
+        # drawn exactly here and not earlier).
         option = selection.selected
         if option.action not in _ALLOWED_ACTIONS:
-            return GuardVerdict(False, "naked_short_forbidden")
+            return await self._ledger_refusal(
+                "naked_short_forbidden",
+                ctx=ctx, underlying=underlying, direction=direction,
+                conviction=conviction, thesis=thesis, option=option,
+                ask=option.ask, qty=0,
+            )
         ask = option.ask
         if ask is None or ask <= 0:
-            return GuardVerdict(False, "no_liquid_contract")
+            return await self._ledger_refusal(
+                "no_liquid_contract",
+                ctx=ctx, underlying=underlying, direction=direction,
+                conviction=conviction, thesis=thesis, option=option,
+                ask=None, qty=0,
+            )
 
         try:
             context = await self._resolve_context_provider().fetch(user_id=ctx.user_id)
@@ -453,7 +595,12 @@ class ToolGuard:
             OptionsSizingInputs(budget_usd=budget_usd, ask=ask, multiplier=option.multiplier)
         )
         if sizing.qty < 1:
-            return GuardVerdict(False, "size_rounds_to_zero")
+            return await self._ledger_refusal(
+                "size_rounds_to_zero",
+                ctx=ctx, underlying=underlying, direction=direction,
+                conviction=conviction, thesis=thesis, option=option,
+                ask=ask, qty=0,
+            )
 
         proposal = to_risk_proposal(
             symbol=underlying,
@@ -473,7 +620,20 @@ class ToolGuard:
         # reimplemented, not bypassed.
         decision = evaluate(proposal, context, caps)
         if not decision.approved:
-            return GuardVerdict(False, decision.veto_rule or "risk_vetoed")
+            # THE one that matters. `evaluate` is where all 11 options rules
+            # (max_premium_pct, earnings_blackout, illiquid_contract,
+            # expiry_day_entry, iv_unavailable, options_level_insufficient,
+            # min_dte/max_dte, …) and the shared equity rules actually fire,
+            # so ledgering this single site is what makes every one of them
+            # reachable by the per-rule scorecard.
+            return await self._ledger_refusal(
+                decision.veto_rule or "risk_vetoed",
+                ctx=ctx, underlying=underlying, direction=direction,
+                conviction=conviction, thesis=thesis, option=option,
+                ask=ask, qty=sizing.qty,
+                risk_reason=decision.reason,
+                checks_passed=list(decision.checks_passed),
+            )
 
         final_qty = decision.adjusted_qty if decision.adjusted_qty is not None else sizing.qty
 
@@ -1009,6 +1169,29 @@ async def dispatch_tool_call(
         return {"is_error": True, "content": {"denied": "guard_error"}}
 
     if not verdict.allow:
+        # A denial that reaches an EXISTING decision row gets appended to
+        # that row's audit `tool_log`. Only `adjust_option_position` carries
+        # a real `decision_id` in its args; an `open_option_trade` denial has
+        # no row to append to (its ledger row is written by
+        # `ToolGuard._ledger_refusal` instead), and `_persist_tool_log`'s
+        # fallback to `ctx.council_run_id` would silently UPDATE zero rows.
+        # Without this, every scale-in / tighten-stop the guard refused —
+        # `cannot_loosen_protection`, `max_adds_reached`, `risk_vetoed` —
+        # left no trace anywhere: the model was told, the database was not.
+        if call.input.get("decision_id"):
+            try:
+                await guard._persist_tool_log(
+                    tool=call.name,
+                    args=dict(call.input),
+                    allow=False,
+                    reason=verdict.reason,
+                    latency_ms=None,
+                    ctx=ctx,
+                )
+            except Exception:
+                logger.exception(
+                    "failed to log denial of %r — denying regardless", call.name
+                )
         return {"is_error": True, "content": {"denied": verdict.reason}}
 
     start = datetime.now(UTC)

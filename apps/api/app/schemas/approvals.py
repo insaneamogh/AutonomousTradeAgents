@@ -80,6 +80,12 @@ class ApprovalProposalDto(CamelCaseModel):
     bear_case: str
     risk_level: RiskLevel
     conviction_level: RiskLevel
+    # The council's confidence (0-1) in this trade. Optional because rows
+    # written before it was persisted have no value — None means "not
+    # recorded", which makes min_council_confidence self-gate out at the
+    # approval-time re-check instead of scoring a fabricated stand-in.
+    # NOT interchangeable with conviction_level: that is a 1-5 bet size.
+    council_confidence: float | None = None
     proposed_at: datetime
     expires_at: datetime | None = None
 

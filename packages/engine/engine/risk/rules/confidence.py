@@ -11,6 +11,10 @@ from engine.risk.types import RiskCaps, RiskContext, RiskDecision, RiskProposal
 def min_council_confidence(
     proposal: RiskProposal, context: RiskContext, caps: RiskCaps
 ) -> RiskDecision | None:
+    # Not recorded → the rule self-gates out (see RiskProposal.confidence).
+    # The caller must NOT record this as a pass: nothing was checked.
+    if proposal.confidence is None:
+        return None
     if proposal.confidence < caps.min_council_confidence:
         return RiskDecision(
             approved=False,

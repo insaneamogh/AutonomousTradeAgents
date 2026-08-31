@@ -153,10 +153,13 @@ def evaluate_option(
     _note_if_entry(working, passed, "earnings_blackout")
 
     # ── 10. Confidence floor (reused, unmodified) ────────────────────
-    d = min_council_confidence(working, context, caps)
-    if d is not None and not d.approved:
-        return d
-    passed.append("min_council_confidence")
+    # Self-gates out on an unrecorded confidence, exactly as the equity
+    # evaluator does — see engine.risk.engine step 6.
+    if working.confidence is not None:
+        d = min_council_confidence(working, context, caps)
+        if d is not None and not d.approved:
+            return d
+        passed.append("min_council_confidence")
 
     # ── 11. Specialist-average score floor (reused, unmodified) ──────
     d = min_specialist_avg_score(working, context, caps, specialists=specialists)
