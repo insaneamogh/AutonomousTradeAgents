@@ -69,21 +69,25 @@ role (see ``llm.py::complete_tools``'s own "MOCK is TEXT ONLY" docstring),
 so ``run_tool_loop`` returns with zero tool calls and this module never
 reaches ``dispatch_tool_call`` at all.
 
-A FLAGGED GAP IN ALREADY-SHIPPED CODE, DEFENDED HERE RATHER THAN FIXED
-UPSTREAM. ``tools/guard.py::_before_open_option_trade`` checks
-``AUTO_TRADE_ENABLED``, paper-only, and market-open as its first three
-steps. ``_before_adjust_option_position`` — already landed, already tested,
-out of this module's scope to rebuild — checks NONE of these before
-allowing EXIT_NOW/SCALE_IN to place a real broker order, which contradicts
-docs/PLAN_OPTIONS_AGENTS.md §4's own words ("Hard-coded, not configurable:
-paper only... checked in `before`, regardless of any flag"). This module is
-the FIRST thing that calls ``adjust_option_position`` from a live,
-unattended, scheduled path (the 30s fleet tick) rather than from a test or
-an LLM hop nothing in production invokes yet, so ``_rate_limit_reason`` and
-``run_escalation``'s own dispatch wrapper both re-assert that missing gate
-here, defensively, rather than silently relying on a check that is not
-actually there yet. See this session's build-log entry / final report for
-the flagged follow-up to close the gap in ``guard.py`` itself.
+A GAP THIS MODULE ORIGINALLY FOUND IN ``guard.py`` — NOW CLOSED THERE TOO,
+DEFENSE-IN-DEPTH KEPT HERE ANYWAY. When this module was first written,
+``tools/guard.py::_before_adjust_option_position`` checked NONE of
+``AUTO_TRADE_ENABLED``/paper-only/market-open before allowing EXIT_NOW/
+SCALE_IN to place a real broker order, unlike ``_before_open_option_trade``,
+which checks all three first — contradicting docs/PLAN_OPTIONS_AGENTS.md
+§4's own words ("Hard-coded, not configurable: paper only... checked in
+`before`, regardless of any flag"). That gap has since been fixed directly
+in ``guard.py`` itself (the actual root cause, not just this call site) —
+``_before_adjust_option_position`` now runs the identical three-step gate
+as ``_before_open_option_trade``, before it does anything else.
+``_rate_limit_reason``/``run_escalation``'s dispatch wrapper still
+re-assert the same gate here via ``_mutation_gate_reason`` — now
+deliberate, redundant defense-in-depth (matching this whole file's own
+"the ratchet invariant is enforced independently of how many models
+recommend otherwise" philosophy) rather than compensating for a still-open
+hole. If a future change to ``guard.py`` ever reopened that gap, this
+module's own copy would still catch it for the one path that calls
+``adjust_option_position`` from a live, unattended, scheduled loop.
 """
 
 from __future__ import annotations
@@ -316,12 +320,12 @@ def _detect_material_change(
 
 
 def _mutation_gate_reason(*, now: datetime) -> str | None:
-    """Re-derives ``tools/guard.py::_before_open_option_trade``'s steps
-    1-3 (``AUTO_TRADE_ENABLED``, paper-only, market-open) for the ONE
-    mutating tool this module's dispatch closure can reach. See this
-    module's own docstring ("A FLAGGED GAP...") for why this duplication
-    is deliberate rather than redundant: ``_before_adjust_option_position``
-    does not (yet) check any of these itself. Reuses ``tools/guard.py``'s
+    """Re-derives ``tools/guard.py``'s master-switch/paper-only/market-open
+    gate — as of this module's merge, ``_before_adjust_option_position``
+    ALSO runs this same gate itself (see this module's own docstring),
+    so this is now deliberate defense-in-depth for the one path that
+    calls ``adjust_option_position`` from a live, unattended, scheduled
+    loop, not a stopgap for a missing check. Reuses ``tools/guard.py``'s
     OWN ``_is_paper_and_safe`` rather than a third reimplementation of
     that exact check (CLAUDE.md §4.4 — the same threshold/check
     duplicated across files is a bug waiting to drift)."""
@@ -678,7 +682,8 @@ async def run_escalation(
     ``adjust_option_position`` at all — see ``GuardContext``'s own
     docstring), wrapping ``dispatch_tool_call`` rather than calling it
     directly so a defensive gate can run first for the one mutating tool
-    this hop can reach (see this module's docstring, "A FLAGGED GAP...").
+    this hop can reach — redundant with ``guard.py``'s own gate, kept
+    deliberately (see this module's docstring).
 
     FAIL-SAFE: any exception raised while running the tool loop — a
     network error, a timeout, a bug — is caught here and reported as
