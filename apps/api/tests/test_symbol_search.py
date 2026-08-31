@@ -281,6 +281,11 @@ def test_add_nonexistent_symbol_is_422_via_assert_tradable(
     """First router-level test of POST /watchlist: a shape-valid but
     non-existent ticker must be rejected by the live assert_tradable
     check, not just wave through on the SYMBOL_RE shape regex.
+
+    POST /watchlist requires require_real_auth (docs/IMPL_DEMO_SESSION.md
+    §3 — it changes what the agent trades, so the dev-bypass fixture user
+    is refused here too, not just a demo session), so this needs a real
+    logged-in Bearer token rather than the bypass.
     """
     monkeypatch.setenv("ALPACA_API_KEY", "k")
     monkeypatch.setenv("ALPACA_SECRET_KEY", "s")
@@ -290,6 +295,13 @@ def test_add_nonexistent_symbol_is_422_via_assert_tradable(
 
     monkeypatch.setattr(alpaca_module, "lookup_asset", fake_lookup)
 
-    r = client.post("/api/v1/watchlist", json={"symbol": "ZZZZZ"})
+    email = "symbol-search-watchlist@example.com"
+    challenge = client.post("/api/v1/auth/request-login", json={"email": email}).json()
+    verified = client.post(
+        "/api/v1/auth/verify", json={"email": email, "token": challenge["devToken"]}
+    ).json()
+    headers = {"Authorization": f"Bearer {verified['accessToken']}"}
+
+    r = client.post("/api/v1/watchlist", json={"symbol": "ZZZZZ"}, headers=headers)
     assert r.status_code == 422
     assert "ZZZZZ" in r.json()["detail"]

@@ -18,6 +18,13 @@ explicitly on. Set it in a local ``.env`` only; never on a deployed box.
 
 For routes that MUST never bypass (e.g. /auth/logout, /auth/me — they only
 make sense with a real session), use ``require_real_auth`` instead.
+
+A THIRD identity resolves through this same ``get_current_user``: a demo
+session (``docs/IMPL_DEMO_SESSION.md``, minted via ``POST /auth/demo``). It
+carries a real, signed ``Bearer`` access token — never the no-header
+DEV_AUTH_BYPASS path above — but ``get_current_user`` still returns it with
+``is_dev_bypass=True``, so it is refused by ``require_real_auth`` exactly
+like the dev bypass is. See ``app.services.auth.demo_session``.
 """
 
 from __future__ import annotations
@@ -36,6 +43,7 @@ from app.services.auth.auth_store import (
     UserRecord,
     get_auth_store,
 )
+from app.services.auth.demo_session import DEMO_USER_EMAIL, is_demo_claims
 from app.services.auth.jwt_service import TokenError, verify_access
 from engine.env import env_flag
 
@@ -123,6 +131,24 @@ async def get_current_user(
                 detail=f"invalid access token: {exc}",
                 headers={"WWW-Authenticate": "Bearer"},
             ) from exc
+
+        if is_demo_claims(claims):
+            # A demo session (docs/IMPL_DEMO_SESSION.md): resolves to the
+            # cron user's real id so every READ route shows real data, but
+            # is_dev_bypass=True is the entire enforcement — every route
+            # that already calls require_real_auth refuses it with zero
+            # new authorization code. Deliberately skips the store lookup
+            # + session-binding check below: a demo token carries no sid
+            # (nothing to revoke by id — it simply expires) and the demo
+            # identity's email/auth_method are fixed display values, never
+            # a lookup that could leak the real cron user's email.
+            return AuthedUser(
+                id=claims.sub,
+                email=DEMO_USER_EMAIL,
+                auth_method="demo",
+                is_dev_bypass=True,
+                session_id=claims.sid,
+            )
 
         user = await store.get_user_by_id(claims.sub)
         if user is None:

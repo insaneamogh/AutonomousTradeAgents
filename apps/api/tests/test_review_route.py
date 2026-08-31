@@ -9,9 +9,13 @@ Six failure modes + a happy path:
   5. Grade on still-open decision → 404.
   6. Agreement stat: good ↔ positive direction = agreement; skip
      excluded from the denominator.
-  7. /review/* gated by DEV_AUTH_BYPASS-or-real-bearer (uses
-     get_current_user, NOT require_real_auth — so the operator sees an
-     empty queue under bypass instead of a 401).
+  7. GET /review/* is gated by DEV_AUTH_BYPASS-or-real-bearer (uses
+     get_current_user — so the operator sees an empty queue under bypass
+     instead of a 401). POST /review/{id} (grading) is DIFFERENT: it uses
+     require_real_auth (docs/IMPL_DEMO_SESSION.md §3 — grading pollutes
+     reflection/calibration data, so a read-only demo session must not
+     reach it), so every test that grades a decision authenticates with a
+     real magic-link login instead of relying on the bypass fixture user.
 """
 
 from __future__ import annotations
@@ -55,6 +59,20 @@ def _reset_state() -> None:
 def client() -> Iterator[TestClient]:
     with TestClient(app) as c:
         yield c
+
+
+def _login(client: TestClient, email: str) -> tuple[str, str]:
+    """Register + verify a real user (magic-link). Returns (access_token,
+    user_id) — needed for POST /review/{id}, which requires real auth."""
+    challenge = client.post("/api/v1/auth/request-login", json={"email": email}).json()
+    verified = client.post(
+        "/api/v1/auth/verify", json={"email": email, "token": challenge["devToken"]}
+    ).json()
+    return verified["accessToken"], verified["userId"]
+
+
+def _bearer(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _seed_completed(
@@ -126,14 +144,16 @@ def test_queue_excludes_open_decisions(client: TestClient) -> None:
 
 
 def test_queue_excludes_already_graded(client: TestClient) -> None:
-    a = _seed_completed("NVDA", "momentum", 100.0)
-    b = _seed_completed("AAPL", "momentum", -50.0)
+    token, uid = _login(client, "queue-graded@example.com")
+    headers = _bearer(token)
+    a = _seed_completed("NVDA", "momentum", 100.0, user_id=uid)
+    b = _seed_completed("AAPL", "momentum", -50.0, user_id=uid)
 
     # Grade `a` → should drop from queue.
-    g = client.post(f"/api/v1/review/{a.id}", json={"grade": "good"})
+    g = client.post(f"/api/v1/review/{a.id}", json={"grade": "good"}, headers=headers)
     assert g.status_code == 200, g.text
 
-    r = client.get("/api/v1/review/queue?windowDays=30")
+    r = client.get("/api/v1/review/queue?windowDays=30", headers=headers)
     ids = [i["decisionId"] for i in r.json()["items"]]
     assert a.id not in ids
     assert b.id in ids
@@ -141,11 +161,13 @@ def test_queue_excludes_already_graded(client: TestClient) -> None:
 
 def test_queue_progress_counter(client: TestClient) -> None:
     """Header shows graded N of total M progress."""
-    a = _seed_completed("NVDA", "momentum", 100.0)
-    _seed_completed("AAPL", "momentum", -50.0)
-    client.post(f"/api/v1/review/{a.id}", json={"grade": "good"})
+    token, uid = _login(client, "queue-progress@example.com")
+    headers = _bearer(token)
+    a = _seed_completed("NVDA", "momentum", 100.0, user_id=uid)
+    _seed_completed("AAPL", "momentum", -50.0, user_id=uid)
+    client.post(f"/api/v1/review/{a.id}", json={"grade": "good"}, headers=headers)
 
-    body = client.get("/api/v1/review/queue").json()
+    body = client.get("/api/v1/review/queue", headers=headers).json()
     assert body["totalInWindow"] == 2
     assert body["gradedInWindow"] == 1
 
@@ -159,12 +181,16 @@ def test_grade_upsert_overwrites(client: TestClient) -> None:
     """Second POST for same (decision, operator) updates the grade +
     notes instead of 4xx-ing.
     """
-    a = _seed_completed("NVDA", "momentum", 100.0)
+    token, uid = _login(client, "grade-upsert@example.com")
+    headers = _bearer(token)
+    a = _seed_completed("NVDA", "momentum", 100.0, user_id=uid)
     first = client.post(
-        f"/api/v1/review/{a.id}", json={"grade": "good", "notes": "trend held"}
+        f"/api/v1/review/{a.id}", json={"grade": "good", "notes": "trend held"}, headers=headers
     ).json()
     second = client.post(
-        f"/api/v1/review/{a.id}", json={"grade": "bad", "notes": "actually weak entry"}
+        f"/api/v1/review/{a.id}",
+        json={"grade": "bad", "notes": "actually weak entry"},
+        headers=headers,
     ).json()
 
     assert first["id"] == second["id"]
@@ -173,21 +199,28 @@ def test_grade_upsert_overwrites(client: TestClient) -> None:
 
 
 def test_grade_unknown_decision_is_404(client: TestClient) -> None:
-    r = client.post("/api/v1/review/dec-does-not-exist", json={"grade": "good"})
+    token, _uid = _login(client, "grade-unknown@example.com")
+    r = client.post(
+        "/api/v1/review/dec-does-not-exist", json={"grade": "good"}, headers=_bearer(token)
+    )
     assert r.status_code == 404
 
 
 def test_grade_open_decision_is_404(client: TestClient) -> None:
     """Can't grade a trade that hasn't closed yet."""
-    open_d = _seed_open("META")
-    r = client.post(f"/api/v1/review/{open_d.id}", json={"grade": "good"})
+    token, uid = _login(client, "grade-open@example.com")
+    open_d = _seed_open("META", user_id=uid)
+    r = client.post(
+        f"/api/v1/review/{open_d.id}", json={"grade": "good"}, headers=_bearer(token)
+    )
     assert r.status_code == 404
     assert "realized_pnl" in r.json()["detail"]
 
 
 def test_grade_validates_enum(client: TestClient) -> None:
-    a = _seed_completed("NVDA", "momentum", 50.0)
-    r = client.post(f"/api/v1/review/{a.id}", json={"grade": "maybe"})
+    token, uid = _login(client, "grade-enum@example.com")
+    a = _seed_completed("NVDA", "momentum", 50.0, user_id=uid)
+    r = client.post(f"/api/v1/review/{a.id}", json={"grade": "maybe"}, headers=_bearer(token))
     assert r.status_code == 422  # Pydantic Literal validation
 
 
@@ -202,15 +235,17 @@ def test_agreement_stat_counts_only_non_skip(client: TestClient) -> None:
     confidence_store = get_confidence_store()
     asyncio.run(confidence_store.apply_delta("momentum", confidence_delta=0.10))
 
-    good_match = _seed_completed("NVDA", "momentum", 100.0)
-    bad_disagree = _seed_completed("AAPL", "momentum", -100.0)
-    skipped = _seed_completed("TSLA", "momentum", -10.0)
+    token, uid = _login(client, "agreement-skip@example.com")
+    headers = _bearer(token)
+    good_match = _seed_completed("NVDA", "momentum", 100.0, user_id=uid)
+    bad_disagree = _seed_completed("AAPL", "momentum", -100.0, user_id=uid)
+    skipped = _seed_completed("TSLA", "momentum", -10.0, user_id=uid)
 
-    client.post(f"/api/v1/review/{good_match.id}", json={"grade": "good"})
-    client.post(f"/api/v1/review/{bad_disagree.id}", json={"grade": "bad"})
-    client.post(f"/api/v1/review/{skipped.id}", json={"grade": "skip"})
+    client.post(f"/api/v1/review/{good_match.id}", json={"grade": "good"}, headers=headers)
+    client.post(f"/api/v1/review/{bad_disagree.id}", json={"grade": "bad"}, headers=headers)
+    client.post(f"/api/v1/review/{skipped.id}", json={"grade": "skip"}, headers=headers)
 
-    body = client.get("/api/v1/review/agreement?windowDays=30").json()
+    body = client.get("/api/v1/review/agreement?windowDays=30", headers=headers).json()
     # Reviewed 3, but skip is excluded from agreement.
     # good+positive (agreement: 1) ; bad+positive (disagreement: 0)
     # → 1 / 2 = 50%.

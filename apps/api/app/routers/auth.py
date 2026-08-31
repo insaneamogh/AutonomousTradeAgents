@@ -43,6 +43,16 @@ Phase 3 auth foundation. Flow:
        mobile app never does), then runs the SAME verify+issue path as
        #6. Not needed for a public/native (iOS/Android) client type, which
        exchanges directly against Google with no secret at all.
+
+    8. POST /auth/demo          { token }
+       → 200 { userId, email, accessToken, refreshToken: null, ... }
+       Exchanges a long-lived, signed demo-link token (embedded in a
+       judge/reviewer link as ``?demo=<token>``, minted OFFLINE by
+       ``scripts/mint_demo_link.py``) for a short-lived access token
+       resolving to the cron user's REAL data. No auth required to call —
+       that is the point — but rate-limited. No refresh token: the session
+       just expires and the caller re-exchanges the same demo link. See
+       ``app.services.auth.demo_session`` and ``docs/IMPL_DEMO_SESSION.md``.
 """
 
 from __future__ import annotations
@@ -55,6 +65,7 @@ from fastapi.responses import JSONResponse
 from app.core.config import Settings, get_settings
 from app.middleware.auth import AuthedUser, require_real_auth
 from app.schemas.auth import (
+    DemoExchangeRequest,
     GoogleExchangeRequest,
     GoogleLoginRequest,
     IssuedTokensResponse,
@@ -281,6 +292,63 @@ async def refresh(
         ) from exc
 
     return _to_issued_response(issued)
+
+
+@router.post(
+    "/demo",
+    response_model=IssuedTokensResponse,
+    response_model_by_alias=True,
+    status_code=status.HTTP_200_OK,
+)
+async def demo(
+    body: DemoExchangeRequest,
+    request: Request,
+) -> IssuedTokensResponse:
+    """Exchange a signed demo-link token for a short-lived, demo-marked
+    access token. See ``app.services.auth.demo_session`` for the design.
+
+    No auth required to call (that is the point of a judge/reviewer link)
+    but rate-limited like every other unauthenticated auth endpoint.
+    Real login (magic-link/Google) and logout are completely untouched by
+    this route.
+    """
+    from app.services.auth.demo_session import (
+        DEMO_USER_EMAIL,
+        DemoSessionDisabled,
+        DemoTokenInvalid,
+        exchange_demo_token,
+    )
+    from app.services.auth.rate_limit import check_demo_rate
+
+    settings = get_settings()
+
+    client_ip = request.client.host if request.client else None
+    if not check_demo_rate(client_ip):
+        logger.warning("auth: rate limit hit for demo exchange (ip window)")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many demo-session exchanges — wait a bit and try again.",
+        )
+
+    try:
+        access = exchange_demo_token(token=body.token, secret=settings.jwt_secret)
+    except DemoSessionDisabled as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc),
+        ) from exc
+    except DemoTokenInvalid as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc),
+        ) from exc
+
+    return IssuedTokensResponse(
+        user_id=access.user_id,
+        email=DEMO_USER_EMAIL,
+        access_token=access.access_token,
+        refresh_token=None,
+        access_expires_in_seconds=access.access_expires_in_seconds,
+        refresh_expires_in_seconds=0,
+    )
 
 
 @router.post(

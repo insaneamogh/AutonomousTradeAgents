@@ -46,7 +46,7 @@ import logging
 import os
 import secrets
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 logger = logging.getLogger("api.jwt")
@@ -225,14 +225,33 @@ def verify(*, secret: str, token: str, expected_typ: str) -> Claims:
 
 ACCESS_TOKEN_TTL: timedelta = timedelta(minutes=15)
 REFRESH_TOKEN_TTL: timedelta = timedelta(days=30)
+DEMO_TOKEN_TYP = "demo"
+"""``typ`` for a demo-session link token — deliberately NOT "access": the
+generic ``typ != expected_typ`` check in ``verify()`` already refuses this
+token wherever ``verify_access`` (``expected_typ="access"``) is used, and
+refuses a real access token wherever ``verify_demo`` is used. No extra
+guard needed beyond that existing mechanism."""
 
 
-def mint_access(*, secret: str, user_id: str, session_id: str | None = None) -> str:
+def mint_access(
+    *,
+    secret: str,
+    user_id: str,
+    session_id: str | None = None,
+    extra: dict[str, Any] | None = None,
+) -> str:
     """Short-lived access token. Sent on every authenticated request.
 
     Carries the ``sid`` so the auth middleware can check the session hasn't
     been revoked — otherwise a logged-out (or admin-revoked) access token
     would stay valid for its full TTL, including on trade-execution routes.
+
+    ``extra`` is normally omitted. The one caller that passes it is a demo
+    session (``app.services.auth.demo_session``): it mints a real
+    ``typ="access"`` token — so every ordinary Bearer-checking route accepts
+    it — but stamps ``extra={"demo": True}`` so ``get_current_user`` can
+    resolve it to the read-only demo identity instead of a normal user
+    lookup.
     """
     return mint(
         secret=secret,
@@ -240,7 +259,32 @@ def mint_access(*, secret: str, user_id: str, session_id: str | None = None) -> 
         typ="access",
         lifetime=ACCESS_TOKEN_TTL,
         session_id=session_id,
+        extra=extra,
     )
+
+
+def mint_demo(*, secret: str, user_id: str, expires_at: datetime) -> str:
+    """A demo-session link token — signed the same way as an access token,
+    but typed ``"demo"`` so it can never be accepted where an access token
+    is expected, or vice versa (see ``DEMO_TOKEN_TYP``).
+
+    Takes ``expires_at`` directly rather than a fixed TTL constant: the
+    right lifetime (long enough to outlast the submission window) is a
+    deployment choice (``DEMO_TOKEN_TTL_DAYS``), not a code constant.
+    Carries no ``sid`` — a demo link has no session row to bind to and
+    nothing to revoke by id; it simply expires.
+    """
+    now = datetime.now(UTC)
+    return mint(
+        secret=secret,
+        user_id=user_id,
+        typ=DEMO_TOKEN_TYP,
+        lifetime=expires_at - now,
+    )
+
+
+def verify_demo(*, secret: str, token: str) -> Claims:
+    return verify(secret=secret, token=token, expected_typ=DEMO_TOKEN_TYP)
 
 
 def mint_refresh(*, secret: str, user_id: str, session_id: str) -> str:

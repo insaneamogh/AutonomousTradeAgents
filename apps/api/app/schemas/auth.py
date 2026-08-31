@@ -60,7 +60,11 @@ class IssuedTokensResponse(_Base):
     user_id: str
     email: str
     access_token: str
-    refresh_token: str
+    refresh_token: str | None = None
+    """None only for a demo session (``POST /auth/demo``) — by design it
+    issues no refresh token (see ``app.services.auth.demo_session``), so
+    the client's normal "store the pair" code must tolerate an absent one.
+    Every other issuer (verify/refresh/google) always sets a real value."""
     access_expires_in_seconds: int
     refresh_expires_in_seconds: int
 
@@ -95,6 +99,19 @@ class GoogleExchangeRequest(_Base):
 
 class RefreshRequest(_Base):
     refresh_token: str
+
+
+# ─────────────────────────────────────────────────────────────────────
+# demo session (IMPL_DEMO_SESSION.md)
+# ─────────────────────────────────────────────────────────────────────
+
+
+class DemoExchangeRequest(_Base):
+    """Body for ``POST /auth/demo`` — the long-lived, signed token embedded
+    in the judge's link (minted offline by ``scripts/mint_demo_link.py``),
+    exchanged here for a short-lived, demo-marked access token."""
+
+    token: str = Field(min_length=1)
 
 
 # ─────────────────────────────────────────────────────────────────────

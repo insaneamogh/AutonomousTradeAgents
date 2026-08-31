@@ -34,6 +34,14 @@ GOOGLE_IP_LIMIT = 30
 VERIFY_EMAIL_LIMIT = 10
 VERIFY_IP_LIMIT = 40
 
+# Demo-session exchange (POST /auth/demo): no auth required to call it, and
+# like Google sign-in there's no caller-supplied email to key on — IP-only.
+# A demo access token is short-lived (15min, same as any other access token),
+# so a legitimate judge re-exchanges a handful of times a day at most;
+# 30/hour/IP mirrors GOOGLE_IP_LIMIT's reasoning for the same shape of
+# unauthenticated endpoint.
+DEMO_IP_LIMIT = 30
+
 
 class SlidingWindowLimiter:
     def __init__(self) -> None:
@@ -104,6 +112,15 @@ def check_google_rate(ip: str | None) -> bool:
     try:
         return _limiter.allow(f"google-ip:{ip or 'unknown'}", limit=GOOGLE_IP_LIMIT)
     except Exception:  # noqa: BLE001 — never lock users out on a limiter bug
+        return True
+
+
+def check_demo_rate(ip: str | None) -> bool:
+    """True if this demo-session exchange is allowed (per-IP flood cap)."""
+    try:
+        return _limiter.allow(f"demo-ip:{ip or 'unknown'}", limit=DEMO_IP_LIMIT)
+    except Exception:
+        # Never lock users out on a limiter bug.
         return True
 
 

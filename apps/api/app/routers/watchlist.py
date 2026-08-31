@@ -16,7 +16,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.middleware.auth import AuthedUser, get_current_user
+from app.middleware.auth import AuthedUser, get_current_user, require_real_auth
 from app.schemas.watchlist import AddWatchlistRequest, WatchlistItemDto
 from app.services.broker.symbol_search import assert_tradable
 from app.services.watchlist.watchlist_store import SYMBOL_RE, get_watchlist_store
@@ -54,8 +54,11 @@ async def list_watchlist(
 )
 async def add_symbol(
     body: AddWatchlistRequest,
-    user: AuthedUser = Depends(get_current_user),
+    user: AuthedUser = Depends(require_real_auth),
 ) -> WatchlistItemDto:
+    """``require_real_auth``, not the plain ``get_current_user`` the GET
+    above uses: this changes what the agent trades, so a read-only demo
+    session (docs/IMPL_DEMO_SESSION.md) must never reach it."""
     symbol = body.symbol.strip().upper()
     if not SYMBOL_RE.match(symbol):
         raise HTTPException(
@@ -92,8 +95,9 @@ async def add_symbol(
 @router.delete("/{symbol}", status_code=status.HTTP_204_NO_CONTENT)
 async def remove_symbol(
     symbol: str,
-    user: AuthedUser = Depends(get_current_user),
+    user: AuthedUser = Depends(require_real_auth),
 ) -> None:
+    """Same ``require_real_auth`` reasoning as ``add_symbol`` above."""
     removed = await get_watchlist_store().remove(user.id, symbol.strip().upper())
     if not removed:
         raise HTTPException(
