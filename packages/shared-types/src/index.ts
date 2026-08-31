@@ -479,3 +479,54 @@ export interface DecisionListResponse {
   limit: number;
   offset: number;
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// /api/v1/insights/funnel — the options contract selection funnel
+//
+// Stage order is fixed and defined by `_STAGE_REJECTION_REASONS` in
+// packages/engine/engine/options/selection.py: total, contract_type,
+// dte_window, delta_band, liquidity, iv_present, iv_realized_vol_band.
+// Consumers must render `stages` in the order the array arrives in —
+// never re-sort it client-side.
+// ─────────────────────────────────────────────────────────────────────
+
+export interface FunnelStageDto {
+  key: string;
+  label: string;
+  survivors: number;
+  /** previous stage's survivors minus this stage's — never negative. */
+  dropped: number;
+}
+
+export interface FunnelRejectionCountDto {
+  reason: string;
+  count: number;
+}
+
+export interface FunnelRunDto {
+  decisionId: string;
+  symbol: string;
+  /** ISO 8601 string. */
+  triggeredAt: string;
+  stages: FunnelStageDto[];
+  rejectionReason: string | null;
+  /** The stage key whose survivor count hit zero; null when a contract
+   * was selected. */
+  rejectionStage: string | null;
+  selectedOcc: string | null;
+  outcome: 'bought' | 'held';
+}
+
+export interface FunnelAggregateDto {
+  /** Summed across every run in the window — the headline number. */
+  stages: FunnelStageDto[];
+  runs: number;
+  bought: number;
+  topRejectionReasons: FunnelRejectionCountDto[];
+}
+
+export interface FunnelResponse {
+  windowDays: number;
+  aggregate: FunnelAggregateDto;
+  recent: FunnelRunDto[];
+}

@@ -12,7 +12,9 @@ import { useState } from 'react';
 
 import { useDecisions } from '@/hooks/useDecisions';
 import type { DecisionsFilter } from '@/hooks/useDecisions';
+import { useFunnel } from '@/hooks/useFunnel';
 
+import { ContractFunnel } from '../components/ContractFunnel';
 import { ago } from '../format';
 import {
   Card,
@@ -26,6 +28,31 @@ import {
   Stack,
 } from '../primitives';
 import { TimelineCard } from '../TradeBiography';
+
+/**
+ * The single-run funnel for one decision, sourced from the SAME window
+ * aggregate `useFunnel` already fetches (its `recent` list carries each
+ * run's own stages) rather than a dedicated per-decision endpoint — there
+ * isn't one; `docs/IMPL_CONTRACT_FUNNEL_UI.md` §1 only specifies the
+ * window/aggregate shape. `recent` is bounded (most-recent N in the
+ * window), so an older decision — or any equity one — legitimately has no
+ * match here; that's normal, not an error, so this renders nothing rather
+ * than an empty-state card.
+ */
+function DecisionFunnelCard({ decisionId }: { decisionId: string }) {
+  const funnel = useFunnel(30);
+  const run = funnel.data?.recent.find((r) => r.decisionId === decisionId);
+  if (!run) return null;
+  return (
+    <ContractFunnel
+      stages={run.stages}
+      rejectionReason={run.rejectionReason}
+      rejectionStage={run.rejectionStage}
+      symbol={run.symbol}
+      selectedOcc={run.selectedOcc}
+    />
+  );
+}
 
 const ACTIONS: Array<{ id: DecisionsFilter['action'] | 'all'; label: string }> = [
   { id: 'all', label: 'All' },
@@ -224,7 +251,10 @@ export function DecisionsScreen() {
 
         {selected ? (
           <Cell span={4}>
-            <TimelineCard decisionId={selected} onClose={() => setSelected(null)} />
+            <Stack gap={20}>
+              <TimelineCard decisionId={selected} onClose={() => setSelected(null)} />
+              <DecisionFunnelCard decisionId={selected} />
+            </Stack>
           </Cell>
         ) : null}
       </div>
