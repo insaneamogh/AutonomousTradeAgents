@@ -253,6 +253,42 @@ def test_agreement_stat_counts_only_non_skip(client: TestClient) -> None:
     assert body["agreementPct"] == pytest.approx(50.0, abs=0.01)
 
 
+def test_agreement_reads_zero_when_priors_never_left_neutral(client: TestClient) -> None:
+    """Pins the (surprising but correct) real-world state found live in
+    production 2026-09-01: with Reflection never having applied a delta,
+    every strategy's confidence sits at the seeded 0.5 -> direction is
+    always 'neutral' -> agreement is 0% NO MATTER WHAT the operator
+    grades, even "good" on every single decision. This is not a formula
+    bug (build_agreement correctly implements "sign of confidence - 0.5");
+    the actual bug was upstream, in PostgresDecisionLog.
+    list_pending_reflection filtering on triggered_at instead of
+    closed_at, which meant Reflection could never fire on a position that
+    took more than `since` to close and so never moved a single prior off
+    0.5 — see apps/agents/trading_agents/memory/postgres.py and
+    apps/agents/tests/test_postgres_decision_log.py.
+    """
+    # Deliberately do NOT touch confidence_store — momentum stays at the
+    # migration-seeded 0.5, i.e. 'neutral', exactly like every strategy did
+    # in the live DB when this was diagnosed.
+    token, uid = _login(client, "agreement-neutral@example.com")
+    headers = _bearer(token)
+    all_good = [
+        _seed_completed(sym, "momentum", pnl, user_id=uid)
+        for sym, pnl in [("NVDA", 100.0), ("AAPL", 50.0), ("MSFT", 25.0)]
+    ]
+    for d in all_good:
+        client.post(f"/api/v1/review/{d.id}", json={"grade": "good"}, headers=headers)
+
+    body = client.get("/api/v1/review/agreement?windowDays=30", headers=headers).json()
+    assert body["totalReviewed"] == 3
+    # Every review graded "good", zero graded "bad" -- yet agreement is 0%,
+    # because 'neutral' can never satisfy (good, positive) or (bad,
+    # negative). Confirms the 0% is a real, reproducible consequence of
+    # untouched priors, not evidence the operator disagreed with anything.
+    assert body["agreementPct"] == pytest.approx(0.0, abs=0.01)
+    assert all(b["reflectionDirection"] == "neutral" for b in body["buckets"])
+
+
 def test_agreement_empty_when_no_reviews(client: TestClient) -> None:
     body = client.get("/api/v1/review/agreement?windowDays=30").json()
     assert body["totalReviewed"] == 0
