@@ -455,6 +455,14 @@ export interface GhostBucketDto {
   count: number;
   ghostPnl: number;
   pendingCount: number;
+  /** ISO 8601 string, or null when `pendingCount` is 0. `triggeredAt` of
+   * the OLDEST still-marking row in this bucket — the next one expected
+   * to finalize. */
+  oldestPendingTriggeredAt?: string | null;
+  /** Trading days (not calendar days) until that same row finalizes,
+   * clamped to >=0. Lets the UI say WHEN "pending" resolves instead of
+   * just that it is pending — see `pendingAwareUsd` in desktop/format.ts. */
+  oldestPendingRemainingTradingDays?: number | null;
 }
 
 export interface GhostSummaryResponse {

@@ -84,12 +84,87 @@ export function riskProfileCaption(profile: string | null | undefined): string {
   return RISK_PROFILE_CAPTIONS[profile] ?? `under the "${profile}" risk profile`;
 }
 
+/** "finalizes in 3 trading days" / "finalizes any day now" / "" when the
+ * remaining count isn't known. A pending count on its own reads as
+ * "broken or unbuilt" to a user with no context — this names WHEN it
+ * resolves, using the same trading-day count `ghost_eval` itself uses to
+ * decide when a mark actually finalizes (`GhostBucketDto
+ * .oldestPendingRemainingTradingDays`), so it can never promise a date the
+ * backend doesn't also believe.
+ *
+ * Deliberately never inlined into `pendingAwareUsd`'s VALUE string: `.pg-num`
+ * (the big Numeral the value renders into) has no `white-space`/truncation
+ * rule, unlike a caption's `.pg-truncate` — verified live in a static render
+ * of the actual theme.ts CSS at the real 3-column Dashboard tile width, the
+ * full clause wraps the value across three lines and blows out the tile's
+ * height next to its siblings. A caption degrades gracefully (ellipsis);
+ * the value line does not. So this phrase belongs only in captions —
+ * `pendingAwareCaption` and `stillMarkingCaption` below. */
+function finalizesPhrase(remainingTradingDays: number | null | undefined): string {
+  if (remainingTradingDays == null) return '';
+  if (remainingTradingDays <= 0) return 'finalizes any day now';
+  return `finalizes in ${remainingTradingDays} trading day${remainingTradingDays === 1 ? '' : 's'}`;
+}
+
+/** True exactly when `pendingAwareUsd` would render "$— · N pending"
+ * instead of a real number: pending rows exist AND no finalized ones have
+ * contributed a nonzero figure yet. Shared with `pendingAwareCaption` so
+ * the value and its caption can never disagree about whether this bucket
+ * is showing a real number or a placeholder — e.g. a bucket with 8
+ * finalized rows and 2 still marking already has a real (if incomplete)
+ * dollar figure, and the caption must not claim the whole tile is
+ * unresolved next to a value that plainly isn't `$—`. */
+function isShowingPending(amount: number | null | undefined, pendingCount: number): boolean {
+  return pendingCount > 0 && (amount == null || amount === 0);
+}
+
 /** `usd()`, except a legitimate `$0` next to at least one still-marking
  * ghost renders as "$— · N marks pending" instead — a completed $0 and an
- * unmeasured one must never look the same. */
+ * unmeasured one must never look the same. Deliberately stays this short:
+ * see `finalizesPhrase`'s docstring for why the finalize countdown lives in
+ * the caption (`pendingAwareCaption`) instead of here. */
 export function pendingAwareUsd(amount: number | null | undefined, pendingCount: number): string {
-  if (pendingCount > 0 && (amount == null || amount === 0)) {
+  if (isShowingPending(amount, pendingCount)) {
     return `$— · ${pendingCount} mark${pendingCount === 1 ? '' : 's'} pending`;
   }
   return usd(amount);
+}
+
+/** A StatTile's caption, swapped for a concrete finalize countdown
+ * ("Finalizes in 3 trading days") exactly when `pendingAwareUsd` (given
+ * the SAME `amount`/`pendingCount`) is showing a pending placeholder
+ * rather than a real number — see `isShowingPending`. `fallback` — the
+ * tile's normal, static caption — comes back unchanged otherwise: nothing
+ * pending, a real number already showing despite some rows still
+ * marking, or the countdown not being known (e.g. an older API
+ * response). */
+export function pendingAwareCaption(
+  fallback: string,
+  amount: number | null | undefined,
+  pendingCount: number,
+  oldestPendingRemainingTradingDays?: number | null,
+): string {
+  if (!isShowingPending(amount, pendingCount)) return fallback;
+  const phrase = finalizesPhrase(oldestPendingRemainingTradingDays);
+  return phrase ? phrase.charAt(0).toUpperCase() + phrase.slice(1) : fallback;
+}
+
+/** "{count} finalised" / "{count} finalised · {pendingCount} still
+ * marking — finalizes in N trading days" — the ghost-bucket caption used
+ * by both Dashboard's Ghost P&L card and Insights' Ghost P&L tab. Pulled
+ * out to one function so the two screens say the same thing about the
+ * same number: Dashboard previously said "still open" here while Insights
+ * said "still marking" for the identical `pendingCount`. Unlike
+ * `pendingAwareCaption`, this renders as `pg-body-sm`/`pg-caption` text
+ * with no `.pg-truncate` — verified live it wraps onto a second line
+ * cleanly inside the Ghost P&L card's wider inset row, so the fuller
+ * clause is safe here. */
+export function stillMarkingCaption(
+  count: number,
+  pendingCount: number,
+  oldestPendingRemainingTradingDays?: number | null,
+): string {
+  if (pendingCount <= 0) return `${count} finalised`;
+  const phrase = finalizesPhrase(oldestPendingRemainingTradingDays);
+  return `${count} finalised · ${pendingCount} still marking${phrase ? ` — ${phrase}` : ''}`;
 }

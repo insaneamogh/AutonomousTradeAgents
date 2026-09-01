@@ -43,6 +43,12 @@ class GhostBucketDto(CamelCaseModel):
     count: int
     ghost_pnl: float
     pending_count: int
+    # None when pendingCount is 0 (nothing left to explain) or when this
+    # response predates the field. Both describe the OLDEST still-marking
+    # row — the next one expected to finalize — so the frontend can say
+    # WHEN "pending" resolves instead of just that it is pending.
+    oldest_pending_triggered_at: str | None = None
+    oldest_pending_remaining_trading_days: int | None = None
 
 
 class GhostSummaryResponse(CamelCaseModel):
@@ -111,12 +117,26 @@ async def ghost_summary(
         window_days=s.window_days,
         as_of=s.as_of.isoformat(),
         vetoed=GhostBucketDto(
-            count=s.vetoed.count, ghost_pnl=s.vetoed.ghost_pnl, pending_count=s.vetoed.pending_count
+            count=s.vetoed.count,
+            ghost_pnl=s.vetoed.ghost_pnl,
+            pending_count=s.vetoed.pending_count,
+            oldest_pending_triggered_at=(
+                s.vetoed.oldest_pending_triggered_at.isoformat()
+                if s.vetoed.oldest_pending_triggered_at
+                else None
+            ),
+            oldest_pending_remaining_trading_days=s.vetoed.oldest_pending_remaining_trading_days,
         ),
         declined=GhostBucketDto(
             count=s.declined.count,
             ghost_pnl=s.declined.ghost_pnl,
             pending_count=s.declined.pending_count,
+            oldest_pending_triggered_at=(
+                s.declined.oldest_pending_triggered_at.isoformat()
+                if s.declined.oldest_pending_triggered_at
+                else None
+            ),
+            oldest_pending_remaining_trading_days=s.declined.oldest_pending_remaining_trading_days,
         ),
         saved_usd=s.saved_usd,
         missed_usd=s.missed_usd,

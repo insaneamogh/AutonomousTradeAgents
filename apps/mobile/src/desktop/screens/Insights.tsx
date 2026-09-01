@@ -12,7 +12,17 @@ import { useGhostSummary, useVetoLedger } from '@/hooks/useInsights';
 
 import { ContractFunnel } from '../components/ContractFunnel';
 import { ExemplarCard } from '../ExemplarCard';
-import { ago, pendingAwareUsd, riskProfileCaption, ruleLabel, signedUsd, tone, usd } from '../format';
+import {
+  ago,
+  pendingAwareCaption,
+  pendingAwareUsd,
+  riskProfileCaption,
+  ruleLabel,
+  signedUsd,
+  stillMarkingCaption,
+  tone,
+  usd,
+} from '../format';
 import {
   Card,
   CardHead,
@@ -268,7 +278,16 @@ export function InsightsScreen() {
                 value={
                   ghost.data ? pendingAwareUsd(ghost.data.savedUsd, ghost.data.vetoed.pendingCount) : '—'
                 }
-                caption="What vetoed picks would have lost"
+                caption={
+                  ghost.data
+                    ? pendingAwareCaption(
+                        'What vetoed picks would have lost',
+                        ghost.data.savedUsd,
+                        ghost.data.vetoed.pendingCount,
+                        ghost.data.vetoed.oldestPendingRemainingTradingDays,
+                      )
+                    : 'What vetoed picks would have lost'
+                }
                 tone="bull"
                 loading={ghost.isLoading}
               />
@@ -279,7 +298,16 @@ export function InsightsScreen() {
                 value={
                   ghost.data ? pendingAwareUsd(ghost.data.missedUsd, ghost.data.declined.pendingCount) : '—'
                 }
-                caption="What declined picks would have made"
+                caption={
+                  ghost.data
+                    ? pendingAwareCaption(
+                        'What declined picks would have made',
+                        ghost.data.missedUsd,
+                        ghost.data.declined.pendingCount,
+                        ghost.data.declined.oldestPendingRemainingTradingDays,
+                      )
+                    : 'What declined picks would have made'
+                }
                 tone="bear"
                 loading={ghost.isLoading}
               />
@@ -295,7 +323,11 @@ export function InsightsScreen() {
                       {signedUsd(ghost.data.vetoed.ghostPnl)}
                     </Numeral>
                     <span className="pg-body-sm">
-                      {ghost.data.vetoed.count} finalised · {ghost.data.vetoed.pendingCount} still marking
+                      {stillMarkingCaption(
+                        ghost.data.vetoed.count,
+                        ghost.data.vetoed.pendingCount,
+                        ghost.data.vetoed.oldestPendingRemainingTradingDays,
+                      )}
                     </span>
                   </Stack>
                 )}
@@ -312,7 +344,11 @@ export function InsightsScreen() {
                       {signedUsd(ghost.data.declined.ghostPnl)}
                     </Numeral>
                     <span className="pg-body-sm">
-                      {ghost.data.declined.count} finalised · {ghost.data.declined.pendingCount} still marking
+                      {stillMarkingCaption(
+                        ghost.data.declined.count,
+                        ghost.data.declined.pendingCount,
+                        ghost.data.declined.oldestPendingRemainingTradingDays,
+                      )}
                     </span>
                   </Stack>
                 )}

@@ -22,6 +22,7 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from engine.db import async_session_factory
 from engine.db.models import AgentDecision, GhostOutcome
+from trading_agents.jobs.ghost_eval import trading_day_offset
 from trading_agents.memory.decision_log import ALL_USERS
 
 
@@ -48,6 +49,13 @@ class GhostBucket:
     count: int
     ghost_pnl: float
     pending_count: int
+    # The next two exist so the frontend can explain "N pending" instead of
+    # leaving it looking identical to a feature that was never built (a
+    # real user complaint — see the Dashboard/Insights "pending" tiles).
+    # Both describe the OLDEST still-marking row in this bucket, i.e. the
+    # next one expected to finalize.
+    oldest_pending_triggered_at: datetime | None = None
+    oldest_pending_remaining_trading_days: int | None = None
 
 
 @dataclass
@@ -108,9 +116,58 @@ def _empty_summary(window_days: int) -> GhostSummary:
     )
 
 
+def _bucket_from_rows(
+    rows: Sequence[tuple[GhostOutcome, datetime]],
+    reasons: tuple[str, ...],
+    *,
+    now: datetime,
+) -> GhostBucket:
+    """Pure aggregation, no DB — split out so it's testable in isolation,
+    same reason ``count_trim_rules`` is split from its query below.
+
+    ``oldest_pending_*`` walks the still-marking rows (status != "final",
+    or "final" with no ``ghost_pnl`` yet — the same "not in finals" set
+    ``pending_count`` already counted) for the one with the EARLIEST
+    ``triggered_at``. That row is the next one expected to finalize, so its
+    remaining trading-day count is the single most useful thing to tell a
+    user staring at a `$—` tile: not just "N pending" but "here is when
+    the next one resolves."
+
+    Uses ``trading_day_offset`` — the exact function
+    ``ghost_eval.evaluate_ghosts`` uses to decide when a ghost actually
+    flips to ``final`` — rather than a second hand-rolled day count, so
+    this can never disagree with the real finalization date (CLAUDE.md
+    §4.4).
+    """
+    subset = [(g, t) for g, t in rows if g.reason in reasons]
+    finals = [g for g, _ in subset if g.status == "final" and g.ghost_pnl is not None]
+    final_ids = {id(g) for g in finals}
+    pending_pairs = [(g, t) for g, t in subset if id(g) not in final_ids]
+
+    oldest_pending_triggered_at: datetime | None = None
+    oldest_pending_remaining_trading_days: int | None = None
+    for g, triggered_at in pending_pairs:
+        if triggered_at is None:
+            continue
+        if oldest_pending_triggered_at is not None and triggered_at >= oldest_pending_triggered_at:
+            continue
+        oldest_pending_triggered_at = triggered_at
+        elapsed = trading_day_offset(triggered_at.date(), now.date())
+        oldest_pending_remaining_trading_days = max(0, g.horizon_days - elapsed)
+
+    return GhostBucket(
+        count=len(subset),
+        ghost_pnl=round(sum(float(g.ghost_pnl) for g in finals), 2),
+        pending_count=len(subset) - len(finals),
+        oldest_pending_triggered_at=oldest_pending_triggered_at,
+        oldest_pending_remaining_trading_days=oldest_pending_remaining_trading_days,
+    )
+
+
 async def build_ghost_summary(window_days: int = 30, *, user_id: str) -> GhostSummary:
     """Vetoed/declined ghost P&L for ``user_id`` over the window."""
-    cutoff = datetime.now(UTC) - timedelta(days=window_days)
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(days=window_days)
     try:
         tenant = _tenant_filters(user_id)
     except _NoSuchTenant:
@@ -128,20 +185,11 @@ async def build_ghost_summary(window_days: int = 30, *, user_id: str) -> GhostSu
             .all()
         )
 
-    def bucket(reasons: tuple[str, ...]) -> GhostBucket:
-        subset = [g for g, _ in rows if g.reason in reasons]
-        finals = [g for g in subset if g.status == "final" and g.ghost_pnl is not None]
-        return GhostBucket(
-            count=len(subset),
-            ghost_pnl=round(sum(float(g.ghost_pnl) for g in finals), 2),
-            pending_count=len(subset) - len(finals),
-        )
-
-    vetoed = bucket(("vetoed",))
-    declined = bucket(("declined", "expired"))
+    vetoed = _bucket_from_rows(rows, ("vetoed",), now=now)
+    declined = _bucket_from_rows(rows, ("declined", "expired"), now=now)
     return GhostSummary(
         window_days=window_days,
-        as_of=datetime.now(UTC),
+        as_of=now,
         vetoed=vetoed,
         declined=declined,
         # Vetoed picks that WOULD have lost money = savings.

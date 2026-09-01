@@ -160,8 +160,17 @@ def _ghost_pnl(side: str, qty: int, entry: float, mark: float, multiplier: int =
     return round(direction * qty * (mark - entry) * multiplier, 2)
 
 
-def _trading_day_offset(start: date, day: date) -> int:
-    """Count trading days (Mon-Fri) strictly after ``start`` up to ``day``."""
+def trading_day_offset(start: date, day: date) -> int:
+    """Count trading days (Mon-Fri) strictly after ``start`` up to ``day``.
+
+    Public (not underscore-prefixed) because ``ghost_service.py`` reuses
+    this exact function to tell the frontend when a still-marking ghost is
+    expected to finalize. It must be the SAME function the evaluator uses
+    to flip ``status`` to ``final`` below — a second, hand-rolled trading-
+    day counter in the API layer could disagree with this one by a day
+    around a long weekend, which is precisely the "same number computed
+    two ways" trap CLAUDE.md §4.4 warns about.
+    """
     if day <= start:
         return 0
     offset = 0
@@ -273,7 +282,7 @@ async def evaluate_ghosts(*, today: date | None = None) -> dict[str, int | dict[
 
             marks: dict[str, float] = dict(ghost.marks or {})
             for c in closes:
-                off = _trading_day_offset(start_day, c.day)
+                off = trading_day_offset(start_day, c.day)
                 if 1 <= off <= horizon:
                     marks[str(off)] = c.close
 
@@ -296,7 +305,7 @@ async def evaluate_ghosts(*, today: date | None = None) -> dict[str, int | dict[
             # bar — rare for a liquid stock, routine for an option, where a
             # thin strike may print on 3 days out of 10 (verified live
             # 2026-08-30). A ledger that never finalizes reports nothing.
-            elapsed = _trading_day_offset(start_day, today)
+            elapsed = trading_day_offset(start_day, today)
             new_status = "final" if elapsed >= horizon else "partial"
             if new_status == "final":
                 finalized += 1
