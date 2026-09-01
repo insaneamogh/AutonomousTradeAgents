@@ -48,7 +48,7 @@ from typing import Any, Literal
 
 Direction = Literal["long", "short"]
 
-MIN_FIT_TO_TRADE = 0.42
+MIN_FIT_TO_TRADE = 0.45
 """Floor on the final (prior-adjusted) score. Below it the council HOLDs
 without spending a single LLM call.
 
@@ -59,18 +59,28 @@ every check — a clean uptrend breakout scores ~0.75, and demanding 0.5+ on
 every name would trade only the extremes. 0.45 is the level at which at
 least half the preconditions are materially satisfied.
 
-Lowered to 0.42 for the contest window (docs/PLAN_AGGRESSIVE_PROFILE.md
-§2): opens the 0.42-0.45 band of marginal setups the council would
-otherwise never see, on the same "maximize P&L on a paper account with a
-fixed halt" reasoning behind ``RiskCaps.aggressive_paper()``.
+Was lowered to 0.42 for the contest window (docs/PLAN_AGGRESSIVE_PROFILE.md
+§2, 2026-08-30) to open the 0.42-0.45 band of marginal setups. **Reverted
+to 0.45 on 2026-09-01**: this is the gate that decides whether a symbol
+even reaches the LLM at all, and at 0.42, against a watchlist that had
+grown to 123+ symbols the same day, a single scheduled baseline sweep let
+enough symbols clear it to make 638 real Anthropic calls in ~90 minutes —
+draining the account's entire $10 credit balance in one sweep (confirmed
+live in Railway logs, timestamps 16:47-18:16 UTC). This floor is a real,
+separate lever from the new hard per-sweep budget/count caps in
+``trading_agents.jobs.daily_cron`` (``MAX_DAILY_LLM_SPEND_USD``,
+``MAX_LLM_SYMBOLS_PER_SWEEP``) — those bound WORST-CASE spend regardless
+of this value, but a looser floor still means more of a limited per-sweep
+budget goes to marginal setups instead of clean ones. Revert this specific
+change (not the caps) if you decide the aggressive-profile band was worth
+more than the cost discipline; do not silently re-loosen it.
 
 **Hard floor: 0.41.** ``blind_weight_fraction("vol_regime_switch")`` is
 exactly 0.400 — see ``test_blind_weight_stays_below_the_trade_floor``. At
 or below 0.40 that strategy would clear the trade gate on direction-blind
 checks alone (vol regime + ATR-not-stretched + idiosyncratic-vs-SPY — none
 of which can tell long from short), which is exactly the failure that
-measure exists to catch. 0.42 leaves margin above that floor; do not go
-lower without re-deriving it.
+measure exists to catch. Do not go lower than 0.42 without re-deriving it.
 
 It is a policy number, so it lives here in one reviewable place rather
 than inline, and the cost/coverage trade-off it controls is measurable:

@@ -164,6 +164,131 @@ def _options_rescan_cooldown_minutes() -> int:
     return max(0, value)
 
 
+_DEFAULT_MAX_DAILY_LLM_SPEND_USD = 3.0
+"""Hard ceiling (rolling 24h, real dollars off ``trading_agents.cost_ledger``)
+on Anthropic spend across every sweep this process runs. Once crossed,
+every remaining LLM-eligible candidate HOLDs uncosted until the window
+rolls off — checked LIVE right before each one actually runs (not just
+once at the top of a sweep), so it can trip PARTWAY through a sweep that
+started under budget.
+
+$3.00 is derived from the account's own numbers, not guessed: a $10
+top-up meant to last the ~3 remaining contest days (docs/HACKATHON.md)
+divides to ~$3.33/day, rounded down for margin.
+
+Known gap: ``InMemoryCostLedger`` (the fallback when Postgres is
+unreachable) resets on every process restart, and a redeploy IS a process
+restart — so this can only bound spend within one continuously-running
+process's rolling 24h window, not truly cross-restart. Say so plainly
+rather than overclaiming "cannot exceed $3/day" — that is what
+``MAX_LLM_SYMBOLS_PER_SWEEP`` below is for: it does not depend on the
+ledger at all, so it still bounds a single sweep's worst case even right
+after the ledger's memory has been reset.
+"""
+
+_DEFAULT_MAX_LLM_SYMBOLS_PER_SWEEP = 15
+"""Ledger-independent hard cap: at most this many symbols may clear
+``strategy_fit`` and reach a real LLM call in ONE call to ``main()`` —
+regardless of how many the watchlist holds or how many clear
+``MIN_FIT_TO_TRADE``.
+
+Before this existed, a baseline sweep had NO ceiling of its own (unlike
+the trigger loop's ``SCANNER_MAX_COUNCIL_RUNS``): ``strategy_fit`` blocked
+symbols with no real setup, but on a trending day most of the rest
+cleared the floor and EVERY one of them got a full paid council pass.
+That is what spent the entire $10 Anthropic balance in one ~90-minute
+sweep on 2026-09-01 (638 real LLM calls, confirmed live in Railway logs)
+once the watchlist had grown to 123+ symbols.
+
+Ranked, not first-N-in-watchlist-order: ``_score_candidates_for_sweep``
+runs strategy_fit's own scoring (zero LLM cost) for every symbol first,
+so the admitted set is the BEST-scoring setups this sweep found, not
+whichever symbols happen to sort alphabetically first.
+"""
+
+
+def _max_daily_llm_spend_usd() -> float:
+    raw = os.environ.get("MAX_DAILY_LLM_SPEND_USD", "").strip()
+    if not raw:
+        return _DEFAULT_MAX_DAILY_LLM_SPEND_USD
+    try:
+        value = float(raw)
+    except ValueError:
+        log.warning(
+            "ignoring malformed MAX_DAILY_LLM_SPEND_USD=%r — keeping $%.2f",
+            raw, _DEFAULT_MAX_DAILY_LLM_SPEND_USD,
+        )
+        return _DEFAULT_MAX_DAILY_LLM_SPEND_USD
+    return value if value > 0 else _DEFAULT_MAX_DAILY_LLM_SPEND_USD
+
+
+def _max_llm_symbols_per_sweep() -> int:
+    raw = os.environ.get("MAX_LLM_SYMBOLS_PER_SWEEP", "").strip()
+    if not raw:
+        return _DEFAULT_MAX_LLM_SYMBOLS_PER_SWEEP
+    try:
+        value = int(raw)
+    except ValueError:
+        log.warning(
+            "ignoring malformed MAX_LLM_SYMBOLS_PER_SWEEP=%r — keeping %d",
+            raw, _DEFAULT_MAX_LLM_SYMBOLS_PER_SWEEP,
+        )
+        return _DEFAULT_MAX_LLM_SYMBOLS_PER_SWEEP
+    return value if value >= 1 else _DEFAULT_MAX_LLM_SYMBOLS_PER_SWEEP
+
+
+async def _score_candidates_for_sweep(
+    watchlist: list[str],
+    instrument_by_symbol: Mapping[str, str],
+    feature_provider: Any,
+    priors: Mapping[str, float],
+) -> dict[str, float | None]:
+    """Score every symbol's deterministic strategy fit, spending ZERO LLM
+    calls, so the real (paid) pass in ``main`` can ration a limited
+    per-sweep budget to the best setups first.
+
+    Returns ``{symbol: score}`` — ``None`` for a symbol that will
+    legitimately HOLD before any LLM call regardless of budget (mirrors
+    ``strategy_fit_node``'s own None-winner outcome exactly, via the same
+    ``best_strategy`` call this repo already uses for the real gate), a
+    float for one that WOULD reach a real LLM call.
+
+    A per-symbol feature-fetch or scoring failure scores as ``None``
+    (treated as free) rather than aborting the whole sweep — the real run
+    below hits the identical failure and is already handled there (see
+    ``main``'s per-symbol try/except), so nothing is silently swallowed,
+    just deferred to the path that already logs it.
+
+    Costs one extra feature fetch (Alpaca/FRED, not Anthropic) per
+    watchlist symbol versus today — a deliberate trade of deterministic
+    API load for LLM budget control, not free, but the resource this
+    exists to protect is dollars spent on Claude, not fetch count.
+    """
+    from trading_agents.strategies import best_strategy
+
+    allow_shorts_env = env_flag("ALLOW_SHORTS")
+    options_flag = env_flag("ALLOW_OPTIONS")
+    out: dict[str, float | None] = {}
+    for symbol in watchlist:
+        instrument = (instrument_by_symbol or {}).get(symbol, "equity")
+        options_eligible = options_flag and instrument == "option"
+        try:
+            features = feature_provider(symbol.upper(), "short")
+            if inspect.isawaitable(features):
+                features = await features
+            winner, _ranked = best_strategy(
+                features, priors=priors, allow_shorts=allow_shorts_env or options_eligible
+            )
+        except Exception:
+            log.warning(
+                "pre-pass scoring failed for %s — treating as free (real run will "
+                "hit and log the same failure if it recurs)", symbol, exc_info=True,
+            )
+            winner = None
+        out[symbol] = winner.score if winner is not None else None
+    return out
+
+
 async def _should_skip(user_id: str, symbol: str, instrument: str) -> bool:
     """Dedup gate. Equities: once per UTC day. Options: a cooldown."""
     if instrument != "option":
@@ -302,6 +427,20 @@ async def main(
     exactly like ``scan_context`` above — every existing caller that passes
     a plain ``list[str]`` keeps working untouched.
 
+    **Deterministic pre-pass, then a budget-gated paid pass.** Before any
+    LLM is spent, every symbol is scored via the same zero-cost
+    ``best_strategy`` call ``strategy_fit_node`` itself uses (see
+    ``_score_candidates_for_sweep``). A symbol that would legitimately
+    HOLD always runs (costs nothing). Among the rest, only the top
+    ``MAX_LLM_SYMBOLS_PER_SWEEP`` by score are admitted to the real
+    (paid) path, and even an admitted symbol HOLDs uncosted once
+    ``MAX_DAILY_LLM_SPEND_USD`` (rolling 24h, real dollars) is reached —
+    checked live, so it can trip mid-sweep. Neither gate is bypassed by
+    ``force``: that flag overrides ONLY the dedup check below, on
+    purpose — see the 2026-09-01 credit-exhaustion post-mortem
+    (fable5findings.md) for why a budget escape hatch must not ride
+    along with the operator's rerun flag.
+
     ``force`` and ``skip_calendar_gate`` are deliberately independent
     knobs, not two spellings of the same thing:
 
@@ -354,12 +493,75 @@ async def main(
     if scan_context:
         feature_provider = _with_scan_context(feature_provider, scan_context)
 
+    # Deterministic pre-pass — see the docstring above and
+    # _score_candidates_for_sweep. Priors fetched once, matching what
+    # run_council itself will do per-admitted-symbol below (same store,
+    # same shape) so pre-pass scores agree with the real ones that follow.
+    priors: dict[str, float] = {}
+    try:
+        priors = {
+            row.strategy_id: row.confidence for row in await get_confidence_store().all()
+        }
+    except Exception:
+        log.warning("could not load strategy priors for pre-pass scoring", exc_info=True)
+
+    scores = await _score_candidates_for_sweep(
+        watchlist, instrument_by_symbol or {}, feature_provider, priors
+    )
+    candidates = sorted(
+        (sym for sym, score in scores.items() if score is not None),
+        key=lambda sym: (-scores[sym], sym),  # best score first, symbol tie-break
+    )
+    max_symbols = _max_llm_symbols_per_sweep()
+    admitted = set(candidates[:max_symbols])
+    if len(candidates) > max_symbols:
+        log.warning(
+            "%d symbols cleared strategy_fit this sweep — admitting only the "
+            "top %d by score (MAX_LLM_SYMBOLS_PER_SWEEP=%d); %d HOLD uncosted "
+            "this sweep: %s",
+            len(candidates), max_symbols, max_symbols,
+            len(candidates) - max_symbols,
+            ",".join(candidates[max_symbols:]),
+        )
+
+    max_spend = _max_daily_llm_spend_usd()
+    from trading_agents.cost_ledger import get_cost_ledger
+
+    ledger = get_cost_ledger()
+    budget_tripped = False
+
     push_tasks: list = []
     rolled_up: list[dict] = []
     # Sequential — Anthropic prompt-caching benefits from steady cadence
     # within ~30s windows. Parallel would burn separate cache entries.
     for symbol in watchlist:
         try:
+            score = scores.get(symbol)
+            if score is not None and symbol not in admitted:
+                rolled_up.append({
+                    "symbol": symbol, "skipped": True,
+                    "skip_reason": "llm_symbol_cap_reached",
+                })
+                continue
+            if score is not None:
+                # Only an admitted, LLM-eligible symbol needs a live budget
+                # check — a free HOLD never reaches this branch at all.
+                if not budget_tripped:
+                    spent, _ = await ledger.sum_cost_since(timedelta(hours=24))
+                    if spent >= max_spend:
+                        budget_tripped = True
+                        log.warning(
+                            "MAX_DAILY_LLM_SPEND_USD=$%.2f reached ($%.2f spent, "
+                            "rolling 24h) at %s — every remaining admitted "
+                            "candidate this sweep HOLDs uncosted",
+                            max_spend, spent, symbol,
+                        )
+                if budget_tripped:
+                    rolled_up.append({
+                        "symbol": symbol, "skipped": True,
+                        "skip_reason": "llm_daily_budget_exhausted",
+                    })
+                    continue
             rolled_up.append(
                 await _run_one(
                     user_id, symbol, llm,
@@ -383,9 +585,16 @@ async def main(
     processed = sum(1 for r in rolled_up if not r.get("skipped") and "error" not in r)
     skipped = sum(1 for r in rolled_up if r.get("skipped"))
     failed = sum(1 for r in rolled_up if "error" in r)
+    budget_capped = sum(
+        1 for r in rolled_up if r.get("skip_reason") == "llm_daily_budget_exhausted"
+    )
+    symbol_capped = sum(
+        1 for r in rolled_up if r.get("skip_reason") == "llm_symbol_cap_reached"
+    )
     log.info(
-        "daily cron done — processed=%d skipped=%d failed=%d",
-        processed, skipped, failed,
+        "daily cron done — processed=%d skipped=%d failed=%d "
+        "(budget_capped=%d symbol_capped=%d)",
+        processed, skipped, failed, budget_capped, symbol_capped,
     )
 
     # Ghost P&L pass — marks vetoed/declined picks against daily closes.

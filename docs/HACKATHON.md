@@ -263,7 +263,16 @@ by Tuesday close is the emergency signal** — loosen the funnel, never the risk
 - **Do not overclaim the data feed.** Free tier is a 15-minute-delayed *indicative*
   feed, not consolidated OPRA. Fine for daily-bar decisions; not a basis for claiming
   execution quality.
-- **Do not spend time optimising LLM cost.** ~$0.04/pass, ~$10 total. Not a constraint.
+- ~~**Do not spend time optimising LLM cost.** ~$0.04/pass, ~$10 total. Not a constraint.~~
+  **Corrected 2026-09-01: this was wrong, and it cost the whole $10.** ~$0.04/pass is real, but
+  the account's watchlist grew to 123+ symbols the same day (the universe screener) and the
+  baseline sweep had NO ceiling on how many cleared-`strategy_fit` symbols could reach a paid
+  pass — 638 real Anthropic calls in one ~90-minute sweep, confirmed live in Railway logs,
+  drained the balance to zero. Fixed with two hard caps in `trading_agents.jobs.daily_cron.main`
+  (`MAX_LLM_SYMBOLS_PER_SWEEP`, default 15; `MAX_DAILY_LLM_SPEND_USD`, default $3.00 real
+  dollars off the cost ledger, checked live) plus a `MIN_FIT_TO_TRADE` reversal (0.42→0.45) —
+  see `docs/PLAN_AGGRESSIVE_PROFILE.md`'s 2026-09-01 update and `strategies/fit.py`'s own
+  docstring. LLM cost **is** a constraint on a $10-scale paper account; say so plainly.
 
 ---
 

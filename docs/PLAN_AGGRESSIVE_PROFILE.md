@@ -88,11 +88,40 @@ contract buy 2. This is a bug fix wearing a risk-appetite costume.
 | `options_max_total_premium_pct` | 5.0 | **12.0** | Whole options book to zero = 12% of equity. **This is the recommended hard ceiling. Do not exceed it.** |
 | `min_council_confidence` | 0.50 | **0.42** | Opens the 0.42–0.50 band of marginal setups. ⚠️ verify it actually binds first. |
 | `min_specialist_avg_score` | 45.0 | **40.0** | Don't go below 40, or a genuinely bearish analyst set stops mattering at all. |
-| `MIN_FIT_TO_TRADE` | 0.45 | **0.42** | ~7% loosening. **Hard floor 0.41** — see §0. |
+| `MIN_FIT_TO_TRADE` | 0.45 | ~~0.42~~ **reverted to 0.45, 2026-09-01** | ~7% loosening — but see the note below. **Hard floor 0.41** — see §0. |
 | delta band | [0.40,0.70] / [0.25,0.55] | **[0.35,0.75] / [0.25,0.65]** | More delta per premium dollar; upper strikes are also the more liquid near-ATM ones. ⚠️ **`HACKATHON.md` §8 freezes `selection.py` after Monday's open — this lands pre-open or not at all.** |
 | `options_stop_loss_pct` | 50.0 | **40.0** | "Cut losers early." ~4% adverse move in a 0.5-delta underlying. **Do not go below ~35:** at a permitted 12% relative spread on a delayed mark, a 30% stop is only 2.5× the spread and stops out on quote noise. |
 | take-profit | fixed 60.0 | **ratchet: arm +35, giveback 30% of peak, hard ceiling +150** | The fixed +60 *is* the "cuts winners short" behaviour being overridden. See [`PLAN_EXIT_AGENT.md`](PLAN_EXIT_AGENT.md) §3. |
 | `max_correlation_cluster` | 3 | **4** | Will start binding once more capital is deployed. |
+
+### Update, 2026-09-01 — `MIN_FIT_TO_TRADE` reverted to 0.45, and it is no longer the only gate
+
+`MIN_FIT_TO_TRADE` is the gate that decides whether a symbol reaches the LLM **at all**. At
+0.42, against a watchlist that had grown to 123+ symbols the same day (the universe-screener
+feature, shipped hours earlier), a single scheduled baseline sweep let enough symbols clear it
+to make **638 real Anthropic calls in ~90 minutes** — draining the account's entire $10 credit
+balance in one sweep (confirmed live in Railway logs, 16:47-18:16 UTC). The baseline sweep had
+no ceiling of its own on how many cleared symbols could reach a paid pass — unlike the trigger
+loop's `SCANNER_MAX_COUNCIL_RUNS`.
+
+Two independent fixes landed together, and it matters which is which:
+
+1. **`MIN_FIT_TO_TRADE` reverted to 0.45** (this table's original value, before this plan
+   loosened it). A real, deliberate reversal of this plan's own recommendation — record it as
+   that, not as a bug fix. Re-loosening it back to 0.42 (or lower) is a live option again once
+   the cost picture is under control, not something this note forecloses.
+2. **New, independent hard caps in `trading_agents.jobs.daily_cron.main`** —
+   `MAX_LLM_SYMBOLS_PER_SWEEP` (default 15, ledger-independent, ranks candidates by
+   strategy-fit score and admits only the best) and `MAX_DAILY_LLM_SPEND_USD` (default $3.00,
+   real dollars off the existing cost ledger, checked live so it can trip mid-sweep). These are
+   the ones that make a repeat of 2026-09-01 structurally impossible **regardless of
+   `MIN_FIT_TO_TRADE`'s value** — see that constant's own docstring in `strategies/fit.py` and
+   `daily_cron.main`'s docstring for the full mechanism.
+
+Do not read "we ran out of credits" as evidence the 0.42 loosening itself was wrong in
+principle — the real gap was the missing per-sweep ceiling (item 2). The floor reversal (item
+1) is a genuinely separate, smaller lever on top of that: fewer marginal setups compete for a
+now-bounded budget, nothing more.
 
 ### Deliberately unchanged: `max_position_pct = 5.0` (equity)
 
