@@ -301,6 +301,27 @@ class AlpacaBroker(BrokerInterface):
         level = getattr(acct, "options_trading_level", None)
         return int(level) if level is not None else None
 
+    async def get_account_number(self) -> str | None:
+        """The broker's own identifier for the account these keys open.
+
+        Exists so a KEY SWAP is detectable. Everything the reconciler
+        derives — the drawdown halt, which positions are "ours", which
+        ``orders`` rows have a live ``broker_order_id`` — is keyed on our
+        ``user_id``, not on the account, so pointing the same user at a
+        different Alpaca account silently inherits all of it: a halt
+        raised by the old account's drawdown, open decisions for positions
+        the new account does not hold, and order ids that now 404.
+
+        Same structural-resolution contract as
+        ``get_prior_close_equity``: NOT on the ``BrokerInterface``
+        Protocol (it is ``runtime_checkable``, so a new required method
+        would un-satisfy every existing stub), reached by callers through
+        ``getattr``. Returns None rather than raising when absent.
+        """
+        acct = await self._get_account()
+        value = getattr(acct, "account_number", None)
+        return str(value) if value else None
+
     async def get_prior_close_equity(self) -> float | None:
         """Equity as of the PREVIOUS trading session's close.
 

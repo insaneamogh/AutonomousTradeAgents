@@ -46,6 +46,25 @@ CLUSTER_BY_SYMBOL: dict[str, str] = {
     "WFC": "money_center_banks", "C": "money_center_banks",
     # Oil majors
     "XOM": "oil_majors", "CVX": "oil_majors", "COP": "oil_majors",
+    # Broad-market index ETFs.
+    #
+    # These were in SECTOR_BY_SYMBOL ("etf_broad") but in NO cluster, so
+    # `max_correlation_cluster` could not see index exposure at all. On
+    # 2026-08-31 the desk opened six long calls inside ten minutes —
+    # NVDA x3 (ai_capex), SPY x2 (no cluster), QQQ x1 (no cluster) — which
+    # the cap read as ONE clustered name against a limit of four. It was
+    # one levered long-beta bet wearing six position rows, and it gapped
+    # down together the next morning for -3.67% of equity before a single
+    # stop could fire.
+    #
+    # One cluster for all of them, not one per index: SPY/QQQ/DIA/IWM
+    # differ in composition but not in what actually hurts a long-only
+    # book — they are the same beta. Splitting them would let a third
+    # index long through on a technicality, which is exactly the failure
+    # being fixed.
+    "SPY": "broad_market", "QQQ": "broad_market",
+    "DIA": "broad_market", "IWM": "broad_market",
+    "VOO": "broad_market", "VTI": "broad_market",
 }
 
 

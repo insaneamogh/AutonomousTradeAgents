@@ -316,34 +316,49 @@ class RiskCaps:
         docstring).
 
         Widens exactly six numbers:
-          - ``options_max_premium_pct`` 1.0 -> 2.5 and
-            ``options_max_total_premium_pct`` 5.0 -> 18.0 — the plan's own
-            §1 finding is that 1.0% was not really "small risk", it was a
-            silent sizing-floor bug: at $100k equity, ANY contract priced
-            above $10.00 floored to zero contracts and the pass became an
+          - ``options_max_premium_pct`` 1.0 -> 2.5 — the plan's §1 finding
+            is that 1.0% was not really "small risk", it was a silent
+            sizing-floor bug: at $100k equity, ANY contract priced above
+            $10.00 floored to zero contracts and the pass became an
             un-ledgered HOLD.
 
-            The aggregate cap was 12.0 and is raised to 18.0 here, with
-            the halt-coupling argument below re-derived rather than
-            waved through, because 12.0 was measured binding in
-            production: on 2026-08-31 six long calls totalling $11,481 of
-            premium put the book at 11.45% of a $100,297 account, and the
-            next four options proposals (META/NVDA/SPY/TSLA) were all
-            vetoed ``max_total_premium_pct`` at 13.3-13.8%. The cap had
-            become a one-way ratchet — a book that fills once and can
-            never rotate — which is a worse failure than a wide cap,
-            because it stops the agent trading at all while looking like
-            risk discipline.
+          - ``options_max_total_premium_pct`` 5.0 -> 7.5, which is
+            ``|daily_drawdown_halt_pct| / (options_stop_loss_pct/100)``
+            and NOT a number chosen for appetite. See
+            ``max_options_book_drawdown_pct`` for the invariant and
+            ``test_every_reviewed_profile_respects_the_halt_coupling``
+            for its enforcement.
 
-            Re-derived coupling: the argument for 12.0 was that "the
-            whole options book to zero costs 12% of equity" is tolerable
-            only as a MULTI-DAY worst case, bounded per-day by the -3%
-            halt. That argument does not depend on the number 12: the
-            halt bounds the SINGLE-DAY loss at -3% whatever the book's
-            size, so raising the aggregate premium widens only the
-            multi-day tail, from 12% to 18% of equity. What must NOT move
-            is ``daily_drawdown_halt_pct`` — and it does not (see the
-            unchanged list below). 18.0 is the new reviewed ceiling.
+            This number was 12.0, was briefly raised to 18.0 on
+            2026-09-01, and is now 7.5. The reasoning used to justify 18.0
+            was WRONG, and it is written out here because the same
+            argument will otherwise be made again:
+
+              *"the halt bounds the SINGLE-DAY loss at -3% whatever the
+              book's size, so raising the aggregate premium widens only
+              the multi-day tail."*
+
+            ``drawdown_halt`` blocks new ENTRIES. It does not close a
+            single open position — ``position_manager`` explicitly allows
+            closes to continue under a halt precisely because the halt
+            itself de-risks nothing. So the halt does not bound the day's
+            loss at all; it bounds the day's new RISK-TAKING. An open
+            options book keeps falling straight through it.
+
+            Measured the same morning the number was raised: six long
+            calls opened 2026-08-31 inside ten minutes, $11,481 of premium
+            = 11.45% of a $100,297 account. They gapped down overnight.
+            The breaker tripped at 13:30:18 UTC — eighteen seconds after
+            the bell — at -3.56%, and the account settled -3.67% with
+            **not one stop fired**: the positions were between -20% and
+            -33% against a -40% stop. Every rule behaved exactly as
+            written and the account still lost more than its own halt
+            threshold, because 11.45% x 40% = -4.58% of equity was always
+            reachable before the first stop could trigger.
+
+            The real coupling is therefore between the BOOK SIZE and the
+            STOP, with the halt as the ceiling those two must multiply
+            under — not between the book size and the halt directly.
           - ``min_council_confidence`` 0.50 -> 0.42 and
             ``min_specialist_avg_score`` 45.0 -> 40.0 — opens marginal
             setups the conservative floors would refuse outright.
@@ -375,7 +390,7 @@ class RiskCaps:
         # keyword argument.
         values: dict[str, object] = {
             "options_max_premium_pct": 2.5,
-            "options_max_total_premium_pct": 18.0,
+            "options_max_total_premium_pct": 7.5,
             "min_council_confidence": 0.42,
             "min_specialist_avg_score": 40.0,
             "options_stop_loss_pct": 40.0,
@@ -471,6 +486,38 @@ class RiskCaps:
             ),
             **overrides,  # type: ignore[arg-type]
         )
+
+    @property
+    def max_options_book_drawdown_pct(self) -> float:
+        """Worst-case equity loss, in percent, from the options book alone
+        BEFORE a single ``options_stop_loss_pct`` stop can fire.
+
+        A full book is ``options_max_total_premium_pct`` of equity, and
+        every contract in it can fall to the stop without triggering it.
+        So the reachable loss is the product, and it is reachable in ONE
+        session — an overnight gap moves the whole book at once, and a
+        stop is an intraday mechanism that cannot act on a gap.
+
+        This must stay at or below ``abs(daily_drawdown_halt_pct)``.
+        ``drawdown_halt`` does not enforce that for you: it blocks new
+        ENTRIES and closes nothing (``position_manager`` deliberately
+        keeps closes legal under a halt, because the halt de-risks
+        nothing). An account can therefore lose well past its own halt
+        threshold with every rule behaving exactly as written — which is
+        what happened on 2026-09-01: -3.67% against a -3.00% halt, zero
+        stops fired, book at 11.45% x 40% = -4.58% reachable.
+
+        Pinned by ``test_every_reviewed_profile_respects_the_halt_coupling``
+        for both reviewed profiles, so a future widening of either factor
+        has to move the other or fail the suite.
+        """
+        return self.options_max_total_premium_pct * self.options_stop_loss_pct / 100.0
+
+    @property
+    def respects_halt_coupling(self) -> bool:
+        """Whether this profile's options book can lose more in one session
+        than its own daily halt allows. False is a misconfiguration."""
+        return self.max_options_book_drawdown_pct <= abs(self.daily_drawdown_halt_pct)
 
     @property
     def shorts_enabled(self) -> bool:

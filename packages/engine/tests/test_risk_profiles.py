@@ -24,7 +24,7 @@ from engine.risk import RiskCaps
 def test_aggressive_profile_widens_the_options_premium_caps() -> None:
     caps = RiskCaps.aggressive_paper()
     assert caps.options_max_premium_pct == pytest.approx(2.5)
-    assert caps.options_max_total_premium_pct == pytest.approx(18.0)
+    assert caps.options_max_total_premium_pct == pytest.approx(7.5)
 
 
 def test_aggressive_profile_widens_the_confidence_floors() -> None:
@@ -81,7 +81,7 @@ def test_risk_profile_env_selects_the_profile(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv("RISK_PROFILE", "aggressive_paper")
     caps = RiskCaps.from_env()
     assert caps.options_max_premium_pct == pytest.approx(2.5)
-    assert caps.options_max_total_premium_pct == pytest.approx(18.0)
+    assert caps.options_max_total_premium_pct == pytest.approx(7.5)
     assert caps.min_council_confidence == pytest.approx(0.42)
     # The coupled invariant must hold via from_env() too, not just the
     # bare classmethod.
@@ -129,3 +129,55 @@ def test_aggressive_profile_env_data_quality_floors_still_apply_on_top(
     assert caps.options_stop_loss_pct == pytest.approx(33.0)
     # Untouched fields still come from the aggressive profile.
     assert caps.options_max_premium_pct == pytest.approx(2.5)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# The halt coupling
+# ─────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "name,caps",
+    [("conservative", RiskCaps()), ("aggressive_paper", RiskCaps.aggressive_paper())],
+)
+def test_every_reviewed_profile_respects_the_halt_coupling(name: str, caps: RiskCaps) -> None:
+    """A full options book falling to its stop must not be able to lose
+    more in one session than the daily halt allows.
+
+    This exists because the argument for widening the premium cap was made
+    twice and was wrong both times: "the -3% halt bounds the single-day
+    loss whatever the book's size". It does not. `drawdown_halt` blocks
+    new ENTRIES and closes nothing — `position_manager` keeps closes legal
+    under a halt precisely because the halt de-risks nothing.
+
+    Live, 2026-09-01: six long calls at 11.45% of equity against a -40%
+    stop. They gapped overnight, the breaker tripped 18 seconds after the
+    bell at -3.56%, the account settled -3.67%, and NOT ONE stop fired —
+    every position sat between -20% and -33%. 11.45% x 40% = -4.58% was
+    always reachable before the first stop could trigger.
+
+    An intraday stop cannot act on an overnight gap. The only thing that
+    bounds a gap is how big the book was allowed to get.
+    """
+    assert caps.max_options_book_drawdown_pct <= abs(caps.daily_drawdown_halt_pct), (
+        f"{name}: options book can lose "
+        f"{caps.max_options_book_drawdown_pct:.2f}% of equity before any stop fires, "
+        f"past a {caps.daily_drawdown_halt_pct:.2f}% halt. Lower "
+        f"options_max_total_premium_pct or options_stop_loss_pct — never the halt."
+    )
+    assert caps.respects_halt_coupling
+
+
+def test_the_widened_profile_is_sized_off_the_invariant_not_off_appetite() -> None:
+    """7.5% is |halt| / stop, exactly — not a number someone liked."""
+    caps = RiskCaps.aggressive_paper()
+    implied = abs(caps.daily_drawdown_halt_pct) / (caps.options_stop_loss_pct / 100.0)
+    assert caps.options_max_total_premium_pct == pytest.approx(implied)
+
+
+def test_the_invariant_actually_rejects_the_configuration_that_failed() -> None:
+    """The two values that shipped before this test existed. If the
+    property cannot fail, it is not an invariant."""
+    for bad_total in (12.0, 18.0):
+        bad = RiskCaps.aggressive_paper(options_max_total_premium_pct=bad_total)
+        assert not bad.respects_halt_coupling

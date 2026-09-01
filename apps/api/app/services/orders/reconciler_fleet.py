@@ -228,6 +228,36 @@ class ReconcilerFleet:
                 logger.exception("fleet: order/position sync failed for user=%s", uid)
 
             try:
+                from app.services.orders.account_switch import reconcile_account_identity
+
+                # FIRST, before anything reads or writes position state:
+                # everything derived is keyed on user_id, not on the broker
+                # account, so a key swap silently inherits the old
+                # account's halt, open decisions and order ids. See
+                # account_switch.py.
+                async with (
+                    with_broker_client(uid, broker="alpaca") as (_b, _conn),
+                    self.session_factory() as _s,
+                ):
+                    _get_num = getattr(_b, "get_account_number", None)
+                    if _get_num is not None:
+                        switched = await reconcile_account_identity(
+                            _s,
+                            user_id=uuid.UUID(uid),
+                            connection_id=_conn.id,
+                            observed_account_number=await _get_num(),
+                        )
+                        await _s.commit()
+                        if switched:
+                            logger.warning(
+                                "fleet: broker account changed for %s — old state retired, "
+                                "skipping the rest of this tick", uid,
+                            )
+                            continue
+            except Exception:
+                logger.exception("fleet: account identity check failed for user=%s", uid)
+
+            try:
                 from app.services.orders.stale_entries import sweep_stale_entry_orders_for_user
 
                 # Before the exit ladder runs, drop working ENTRY orders
