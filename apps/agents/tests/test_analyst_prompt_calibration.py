@@ -110,6 +110,28 @@ def test_every_analyst_prompt_has_an_explicit_score_up_instruction() -> None:
         )
 
 
+def test_technical_analyst_flags_risk_to_a_short_as_explicitly_as_a_long() -> None:
+    """2026-09-01 fix, narrower than the asymmetry this file otherwise
+    covers: `docs/PLAN_SHORTS.md` found the prompt gave the bearish case
+    only a 6-word parenthetical (no numeric mirror of the long side's
+    45-70 RSI band) and the entire risk-flagging paragraph was 100%
+    long-framed (overbought / extended-below-200DMA) with no equivalent
+    language for a short being squeezed or exposed to an oversold bounce.
+    Pins both fixes so they can't silently regress."""
+    lowered = TECHNICAL_ANALYST.lower()
+    assert "30-55" in TECHNICAL_ANALYST, (
+        "missing the short-side numeric RSI band mirroring the long side's 45-70"
+    )
+    assert "oversold" in lowered and "short" in lowered, (
+        "missing an explicit oversold-bounce-risk flag for a short position, "
+        "mirroring the long side's overbought flag"
+    )
+    assert "squeeze" in lowered, (
+        "missing an explicit squeeze/reversal risk flag for a short position, "
+        "mirroring the long side's mean-reversion-risk flag"
+    )
+
+
 def test_confidence_and_score_are_explicitly_decoupled() -> None:
     """The old wording conflated "thin evidence -> low confidence" with
     "thin evidence -> low SCORE" (both fundamental and technical said

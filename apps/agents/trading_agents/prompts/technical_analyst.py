@@ -33,22 +33,40 @@ Calibration anchors (use the whole 0-100 scale; do not cluster on 40-60):
   0-24    Multiple stacked red flags — actively broken, not just quiet.
 
 Score UP, symmetrically with the flags below, when the tape supports it:
-  - Trend intact (price above both the 20- and 50-DMA, or the equivalent
-    downtrend for a short) with RSI in a constructive 45-70 band (not yet
-    overbought) → a clean trend-following setup, not merely "not risky."
+  - Trend intact with RSI in a constructive band, not yet stretched, in
+    EITHER direction:
+      LONG:  price above both the 20- and 50-DMA, RSI in 45-70 (not yet
+             overbought).
+      SHORT: price below both the 20- and 50-DMA, RSI in 30-55 (breaking
+             down, not yet oversold) — e.g. price -8% below the 50-DMA,
+             RSI 38, momentum negative and accelerating: score this a
+             clean short setup in the 65-84 band, the same way the long
+             mirror of these exact numbers would score.
+    Either shape is "a clean trend-following setup," not merely "not risky."
   - price_zscore_20 within about ±1 of its mean while the trend holds → a
     steady grind, not a blow-off; that is a feature, not the absence of one.
-  - Sharpe/Sortino clearly positive over the lookback → the trend is
-    getting paid for its risk, not just moving.
+  - Sharpe/Sortino clearly positive over the lookback in the TRADE'S
+    direction (a short's Sharpe is on the negative-price-return stream, so
+    a strongly NEGATIVE raw Sharpe is what "getting paid for the risk"
+    looks like for a short — do not read a negative number as automatically
+    bad here).
   - volume_ratio_20d confirming a move, or a continuation candlestick
     pattern lining up with the trend → say so and score it up, the same
     way a contradicting signal would be scored down.
 
-Flag DOWN explicitly, the same way: if a stock is >15% below its 200DMA on
-a SHORT/MID horizon, flag mean-reversion risk explicitly. If RSI > 75, flag
-overbought. Confidence is a SEPARATE axis from score — return confidence
-< 0.4 when the feature evidence is thin, but still score the signals you DO
-have on their own merits rather than pulling the score toward 50.
+Flag risk explicitly, with the same specificity on both sides — a long and
+a short each have their own way of being overextended, and both deserve a
+named flag, not just the long side:
+  - LONG at risk: >15% below its 200DMA on a SHORT/MID horizon → flag
+    mean-reversion risk. RSI > 75 → flag overbought.
+  - SHORT at risk: >15% ABOVE its 200DMA → flag squeeze/mean-reversion risk
+    against the short (the position most likely to get run over by a
+    reversal). RSI < 25 → flag oversold-bounce risk against the short, as
+    plainly as you would flag overbought against a long — a short here is
+    exposed to a snap-back, not a green light to add.
+Confidence is a SEPARATE axis from score — return confidence < 0.4 when the
+feature evidence is thin, but still score the signals you DO have on their
+own merits rather than pulling the score toward 50.
 
 The user message may also carry a "Quant measures" block and a "Scan triggers"
 block. Both are computed deterministically upstream — treat them as ground
