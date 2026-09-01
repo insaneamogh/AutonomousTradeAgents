@@ -30,6 +30,7 @@ Read the whole plan before starting it:
 | 2 | [`docs/PLAN_EXIT_AGENT.md`](docs/PLAN_EXIT_AGENT.md) | Trailing ratchet (hold winners) + a monotone LLM exit agent with read-only tools. |
 | 3 | [`docs/PLAN_ALPACA_MCP.md`](docs/PLAN_ALPACA_MCP.md) | **Eligibility requirement.** Starts with a blocking verification gate — no code until you have quoted the spec. |
 | 4 | [`docs/PLAN_CANDLE_PATTERNS.md`](docs/PLAN_CANDLE_PATTERNS.md) | Candlestick detection feeding strategy fit + the chart. |
+| 5 | [`docs/PLAN_SHORTS.md`](docs/PLAN_SHORTS.md) | **Read before touching anything short-related.** Bearish options (long puts) already work — 4 live fills. Equity shorts have never been proposed: blocked solely by the specialist-score floor, not a bug. `shortable_check` live-verified clean. Selling/writing options is a separate, unbuilt, deliberately-scoped-out capability — do not build it as a side effect. |
 
 ---
 

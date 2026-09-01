@@ -330,6 +330,45 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 # Build log
 
+### 2026-09-01 — docs/PLAN_SHORTS.md — why no equity shorts, investigated live
+
+User: "why are no shorts being placed... document it... give it to next model."
+
+**Live-verified, not assumed, before writing anything:**
+
+- Bearish options (long puts) already work end-to-end: 4 real fills today
+  (META/AMD/CDNS/CME) — thesis resolves short -> bull/bear council agrees ->
+  guard clears -> fills. If the ask was "make bearish option trades happen,"
+  it's already done.
+- Equity shorts (real SELL-to-open) have **zero live attempts**. Not vetoed —
+  never even drafted. Every equity short-direction decision today died at the
+  Drafter's `min_specialist_avg_score` floor (40): PG 38, MCD 28, ADBE 38.
+- `shortable_check` — the prime suspect for a silent-block bug, since its
+  upstream `asset` feature block is marked OPTIONAL and unknown flags veto by
+  design — **tested live** against the real Alpaca account for every
+  short-candidate symbol plus BAC/JPM. All clean: `shortable=True
+  easy_to_borrow=True` across the board. Ruled out as today's blocker.
+- `forbid_short_phase_0` self-gates out (`ALLOW_SHORTS=1`). `short_requires_stop`'s
+  sizer input (`atr.py`'s `_sign`) read correct — inverted stop placement for a
+  short, matches the long case's structure.
+- Small-sample score gap (n=3 short avg 34.7 vs n=4 long avg 58.5) flagged as
+  OPEN, not concluded — could be a genuinely bullish tape (correct floor
+  behavior) or LLM calibration asymmetry despite an explicitly symmetric
+  prompt. Needs a real multi-day sample, not a threshold change.
+- Confirmed "selling/writing options" (naked short calls/puts, credit spreads)
+  is NOT built, deliberately, per `RiskCaps.options_disabled`'s own Phase A
+  docstring. Flagged as a separate, much larger, unbuilt capability
+  (unbounded loss, no assignment handling, no `SELL_TO_OPEN` branch anywhere
+  in `trade.py`) — explicitly told the next model not to build it as a side
+  effect of "fixing shorts."
+
+**Wrote `docs/PLAN_SHORTS.md`** — full findings, a revert-check matrix, and a
+"where you will go wrong" section per the repo's own IMPL/PLAN doc standard.
+Linked from CLAUDE.md's plan table (row 5). No code changed — this was a
+diagnose-and-document task; the floor stays where the user set it earlier
+this session.
+
+
 ### 2026-09-01 — ccae611f — my own fix corrupted production data, same session
 
 The operator added new Alpaca paper keys (`PA31OTNBGE9I`, replacing
