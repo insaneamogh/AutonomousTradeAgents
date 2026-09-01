@@ -403,3 +403,119 @@ async def test_external_close_detector_does_not_false_positive_on_option_still_h
 
     assert session.execute.await_count == 1
     assert decision.fill_qty == 1  # untouched — never reached the UPDATE
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 0. Orphan adoption
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _adoption_session(orphans: list[Any], claimed: list[Any]) -> MagicMock:
+    """Two sequential ``execute`` calls: the orphan scan, then the
+    already-claimed scan. Returned in that order, matching the function."""
+    session = MagicMock()
+    results = []
+    for batch in (orphans, claimed):
+        scalars = MagicMock()
+        scalars.all = MagicMock(return_value=batch)
+        res = MagicMock()
+        res.scalars = MagicMock(return_value=scalars)
+        results.append(res)
+    session.execute = AsyncMock(side_effect=results)
+    return session
+
+
+def _broker_holding(*positions: Any) -> MagicMock:
+    broker = MagicMock()
+    broker.list_positions = AsyncMock(return_value=list(positions))
+    return broker
+
+
+def _pos(symbol: str, qty: int, avg: float) -> SimpleNamespace:
+    return SimpleNamespace(symbol=symbol, qty=qty, avg_entry_price=avg)
+
+
+async def test_orphaned_option_fill_is_adopted_from_the_broker_position() -> None:
+    """The bug this exists for: six real, filled option positions whose
+    decisions had NULL fill_qty, so the ratchet, the stop ladder and the
+    DTE<=2 sweep all skipped them — a live position with no exits."""
+    orphan = _decision(
+        symbol="NVDA",
+        proposal={"isOption": True, "occSymbol": "NVDA260918C00215000", "side": "BUY", "qty": 2},
+    )
+    session = _adoption_session([orphan], [])
+    broker = _broker_holding(_pos("NVDA260918C00215000", 2, 8.70))
+
+    await order_sync_mod._adopt_orphaned_fills(session, uuid.uuid4(), broker)
+
+    assert orphan.fill_qty == 2
+    assert orphan.fill_avg_price == Decimal("8.7")
+
+
+async def test_adoption_matches_options_on_occ_not_the_underlying() -> None:
+    """``agent_decisions.symbol`` is the UNDERLYING; the broker reports the
+    OCC string. Matching on the underlying finds nothing."""
+    orphan = _decision(
+        symbol="NVDA",
+        proposal={"isOption": True, "occSymbol": "NVDA260918C00215000", "side": "BUY", "qty": 2},
+    )
+    session = _adoption_session([orphan], [])
+    broker = _broker_holding(_pos("NVDA", 100, 180.0))
+
+    await order_sync_mod._adopt_orphaned_fills(session, uuid.uuid4(), broker)
+
+    assert orphan.fill_qty is None
+
+
+async def test_adoption_refuses_to_heal_a_short_decision_from_a_held_long() -> None:
+    """Adopting across sides would invent a fill that never happened and
+    hand the exit ladder an inverted P&L."""
+    orphan = _decision(symbol="TSLA", proposal={"side": "SELL", "qty": 10})
+    session = _adoption_session([orphan], [])
+    broker = _broker_holding(_pos("TSLA", 10, 400.0))
+
+    await order_sync_mod._adopt_orphaned_fills(session, uuid.uuid4(), broker)
+
+    assert orphan.fill_qty is None
+
+
+async def test_adoption_clamps_to_the_quantity_the_proposal_asked_for() -> None:
+    """One broker lot can back at most what we asked for; the surplus is
+    someone else's decision or the user's own manual trade."""
+    orphan = _decision(symbol="AAPL", proposal={"side": "BUY", "qty": 15})
+    session = _adoption_session([orphan], [])
+    broker = _broker_holding(_pos("AAPL", 40, 230.0))
+
+    await order_sync_mod._adopt_orphaned_fills(session, uuid.uuid4(), broker)
+
+    assert orphan.fill_qty == 15
+
+
+async def test_adoption_skips_a_key_a_filled_decision_already_claims() -> None:
+    """Two orphans on one contract must not both adopt the same lot."""
+    orphan = _decision(
+        symbol="SPY",
+        proposal={"isOption": True, "occSymbol": "SPY260918C00765000", "side": "BUY", "qty": 2},
+    )
+    already = _decision(
+        symbol="SPY",
+        fill_qty=2,
+        proposal={"isOption": True, "occSymbol": "SPY260918C00765000", "side": "BUY", "qty": 2},
+    )
+    session = _adoption_session([orphan], [already])
+    broker = _broker_holding(_pos("SPY260918C00765000", 2, 9.35))
+
+    await order_sync_mod._adopt_orphaned_fills(session, uuid.uuid4(), broker)
+
+    assert orphan.fill_qty is None
+
+
+async def test_adoption_survives_a_broker_that_raises() -> None:
+    orphan = _decision(symbol="AAPL", proposal={"side": "BUY", "qty": 15})
+    session = _adoption_session([orphan], [])
+    broker = MagicMock()
+    broker.list_positions = AsyncMock(side_effect=RuntimeError("alpaca down"))
+
+    await order_sync_mod._adopt_orphaned_fills(session, uuid.uuid4(), broker)
+
+    assert orphan.fill_qty is None

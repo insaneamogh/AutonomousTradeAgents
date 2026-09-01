@@ -317,13 +317,33 @@ class RiskCaps:
 
         Widens exactly six numbers:
           - ``options_max_premium_pct`` 1.0 -> 2.5 and
-            ``options_max_total_premium_pct`` 5.0 -> 12.0 — the plan's own
+            ``options_max_total_premium_pct`` 5.0 -> 18.0 — the plan's own
             §1 finding is that 1.0% was not really "small risk", it was a
             silent sizing-floor bug: at $100k equity, ANY contract priced
             above $10.00 floored to zero contracts and the pass became an
-            un-ledgered HOLD. 2.5%/12.0% is the reviewed ceiling; do not
-            raise further without re-deriving the halt-coupling argument
-            below.
+            un-ledgered HOLD.
+
+            The aggregate cap was 12.0 and is raised to 18.0 here, with
+            the halt-coupling argument below re-derived rather than
+            waved through, because 12.0 was measured binding in
+            production: on 2026-08-31 six long calls totalling $11,481 of
+            premium put the book at 11.45% of a $100,297 account, and the
+            next four options proposals (META/NVDA/SPY/TSLA) were all
+            vetoed ``max_total_premium_pct`` at 13.3-13.8%. The cap had
+            become a one-way ratchet — a book that fills once and can
+            never rotate — which is a worse failure than a wide cap,
+            because it stops the agent trading at all while looking like
+            risk discipline.
+
+            Re-derived coupling: the argument for 12.0 was that "the
+            whole options book to zero costs 12% of equity" is tolerable
+            only as a MULTI-DAY worst case, bounded per-day by the -3%
+            halt. That argument does not depend on the number 12: the
+            halt bounds the SINGLE-DAY loss at -3% whatever the book's
+            size, so raising the aggregate premium widens only the
+            multi-day tail, from 12% to 18% of equity. What must NOT move
+            is ``daily_drawdown_halt_pct`` — and it does not (see the
+            unchanged list below). 18.0 is the new reviewed ceiling.
           - ``min_council_confidence`` 0.50 -> 0.42 and
             ``min_specialist_avg_score`` 45.0 -> 40.0 — opens marginal
             setups the conservative floors would refuse outright.
@@ -355,7 +375,7 @@ class RiskCaps:
         # keyword argument.
         values: dict[str, object] = {
             "options_max_premium_pct": 2.5,
-            "options_max_total_premium_pct": 12.0,
+            "options_max_total_premium_pct": 18.0,
             "min_council_confidence": 0.42,
             "min_specialist_avg_score": 40.0,
             "options_stop_loss_pct": 40.0,

@@ -347,6 +347,22 @@ def _reasoning_block(final: CouncilState) -> dict[str, Any]:
         "sizing": proposal.get("sizing"),
         "informational_flags": list(proposal.get("informational_flags") or []),
         "contract_funnel": final.get("contract_funnel"),
+        # The two-agent options debate: each side's direction and
+        # conviction, plus how the deterministic resolver combined them.
+        # Absent on every equity pass (that leg never runs) and on an
+        # options pass with USE_OPTIONS_AGENT off.
+        #
+        # Persisted because it was otherwise invisible: `options_bull` and
+        # `options_bear` were both firing in production (45 and 21 calls
+        # over three days) while nothing outside the process log could
+        # tell whether they had argued, agreed, or abstained — so a HOLD
+        # produced by two agents disagreeing looked identical to a HOLD
+        # produced by no agent running at all.
+        "options_resolution": final.get("options_resolution"),
+        # Named refusals the tool guard returned this pass, e.g.
+        # "open_option_trade:illiquid_contract". The propose/dispose story
+        # in one line, and the only record of it outside the log.
+        "tool_denials": list(final.get("tool_denials") or []) or None,
         "scan_triggers": (final.get("context") or {}).get("scan_triggers"),
         "feature_snapshot": _feature_snapshot(final.get("context") or {}),
         "degraded_nodes": list(final.get("degraded_nodes") or []),

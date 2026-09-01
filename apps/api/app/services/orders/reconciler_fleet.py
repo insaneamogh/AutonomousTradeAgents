@@ -77,6 +77,20 @@ class UserBrokerPoller:
             # fallback does not set it either. Verified live 2026-08-30:
             # the account reported 3, every snapshot row said None.
             options_trading_level = await broker.get_options_trading_level()
+            # Optional, resolved structurally: `BrokerInterface` is a
+            # runtime_checkable Protocol, so this cannot be a required
+            # method without un-satisfying every stub that predates it.
+            prior_close_equity: float | None = None
+            _prior = getattr(broker, "get_prior_close_equity", None)
+            if _prior is not None:
+                try:
+                    prior_close_equity = await _prior()
+                except Exception:
+                    logger.exception(
+                        "fleet: get_prior_close_equity failed for %s — "
+                        "daily P&L falls back to the first snapshot of the session",
+                        self.user_id,
+                    )
             broker_positions = await broker.list_positions()
             positions = tuple(
                 PortfolioPosition(
@@ -102,6 +116,7 @@ class UserBrokerPoller:
                 buying_power=buying_power,
                 open_positions=positions,
                 options_trading_level=options_trading_level,
+                prior_close_equity=prior_close_equity,
                 raw={
                     "source": "alpaca",
                     "is_paper": conn.is_paper,

@@ -56,6 +56,24 @@ class GhostBucket:
     # next one expected to finalize.
     oldest_pending_triggered_at: datetime | None = None
     oldest_pending_remaining_trading_days: int | None = None
+    marked_pnl: float = 0.0
+    """``ghost_pnl`` PLUS the running mark on every still-``partial`` row.
+
+    ``ghost_pnl`` is the strict number and stays final-only: it is what
+    the product claims. But a ghost finalizes only after
+    ``horizon_days`` TRADING days, so on any window shorter than a week
+    the strict number is 0.00 and the tile renders "$—" while the
+    database is already holding real, marked-to-market counterfactuals.
+    That is the Refusal Ledger — the entry's whole differentiator —
+    showing nothing on precisely the days someone is looking at it.
+
+    So this is reported ALONGSIDE, never instead: label it "so far"
+    wherever it renders, never "saved". ``marked_count`` says how much of
+    it is still provisional."""
+    marked_count: int = 0
+    """How many rows contribute to ``marked_pnl`` (finals + marked
+    partials). Strictly ``>= count - pending_count``; the difference is
+    the partials."""
 
 
 @dataclass
@@ -66,6 +84,13 @@ class GhostSummary:
     declined: GhostBucket
     saved_usd: float
     missed_usd: float
+    saved_so_far_usd: float = 0.0
+    """``saved_usd`` computed over marks-so-far instead of finals only.
+    PROVISIONAL — a partial can still move. Render it as "so far", never
+    as the headline claim; ``saved_usd`` remains the number the product
+    stands behind. See ``GhostBucket.marked_pnl``."""
+    missed_so_far_usd: float = 0.0
+    """The ``missed_usd`` counterpart. Same provisional contract."""
 
 
 @dataclass
@@ -155,12 +180,20 @@ def _bucket_from_rows(
         elapsed = trading_day_offset(triggered_at.date(), now.date())
         oldest_pending_remaining_trading_days = max(0, g.horizon_days - elapsed)
 
+    # Every row carrying a mark, final or not. `evaluate_ghosts` writes
+    # `ghost_pnl` on each pass, so a `partial` row's value is a real
+    # mark-to-market against a real price — just not the one at the
+    # horizon yet.
+    marked = [g for g, _ in subset if g.ghost_pnl is not None]
+
     return GhostBucket(
         count=len(subset),
         ghost_pnl=round(sum(float(g.ghost_pnl) for g in finals), 2),
         pending_count=len(subset) - len(finals),
         oldest_pending_triggered_at=oldest_pending_triggered_at,
         oldest_pending_remaining_trading_days=oldest_pending_remaining_trading_days,
+        marked_pnl=round(sum(float(g.ghost_pnl) for g in marked), 2),
+        marked_count=len(marked),
     )
 
 
@@ -196,6 +229,12 @@ async def build_ghost_summary(window_days: int = 30, *, user_id: str) -> GhostSu
         saved_usd=round(max(0.0, -vetoed.ghost_pnl), 2),
         # Declined picks that WOULD have made money = missed upside.
         missed_usd=round(max(0.0, declined.ghost_pnl), 2),
+        # Same two quantities computed over marks-so-far rather than
+        # finals only. Provisional by construction — the UI must label
+        # them as such — but they are what the ledger actually has to
+        # show on any day before the first horizon lands.
+        saved_so_far_usd=round(max(0.0, -vetoed.marked_pnl), 2),
+        missed_so_far_usd=round(max(0.0, declined.marked_pnl), 2),
     )
 
 

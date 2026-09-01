@@ -24,7 +24,7 @@ from engine.risk import RiskCaps
 def test_aggressive_profile_widens_the_options_premium_caps() -> None:
     caps = RiskCaps.aggressive_paper()
     assert caps.options_max_premium_pct == pytest.approx(2.5)
-    assert caps.options_max_total_premium_pct == pytest.approx(12.0)
+    assert caps.options_max_total_premium_pct == pytest.approx(18.0)
 
 
 def test_aggressive_profile_widens_the_confidence_floors() -> None:
@@ -81,7 +81,7 @@ def test_risk_profile_env_selects_the_profile(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv("RISK_PROFILE", "aggressive_paper")
     caps = RiskCaps.from_env()
     assert caps.options_max_premium_pct == pytest.approx(2.5)
-    assert caps.options_max_total_premium_pct == pytest.approx(12.0)
+    assert caps.options_max_total_premium_pct == pytest.approx(18.0)
     assert caps.min_council_confidence == pytest.approx(0.42)
     # The coupled invariant must hold via from_env() too, not just the
     # bare classmethod.

@@ -31,6 +31,11 @@ class RawAccountState:
     buying_power: float
     open_positions: tuple[PortfolioPosition, ...] = ()
     options_trading_level: int | None = None
+    prior_close_equity: float | None = None
+    """Equity at the PREVIOUS trading session's close, when the broker
+    reports it (Alpaca's ``last_equity``). ``snapshot._daily_pnl`` prefers
+    this over any locally-derived baseline — see that function for why a
+    UTC-day baseline silently drops the overnight move."""
     raw: dict[str, object] = field(default_factory=dict)
 
 

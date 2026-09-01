@@ -1,6 +1,15 @@
 """Per-user order + position sync against the broker. Runs every fleet tick.
 
-Three responsibilities, in order:
+Four responsibilities, in order:
+
+  0. ORPHAN ADOPTION — an approved decision the broker holds a position
+     for, but whose ``fill_qty`` is still NULL, is healed from the
+     broker's own position (qty + avg_entry_price). Everything below
+     converges fills through the ``orders`` table; this covers what
+     reached the broker without ever getting an ``orders`` row. Load-
+     bearing because the ratchet, the stop ladder and the DTE<=2 expiry
+     sweep ALL filter on ``fill_qty IS NOT NULL`` — see
+     ``_adopt_orphaned_fills``.
 
   1. ORDER STATUS — every open ``orders`` row (submitted / accepted /
      partially_filled, with a broker_order_id) is re-read from the broker.
@@ -74,6 +83,11 @@ async def sync_user_orders_and_positions(
         with_broker_client(user_id, broker="alpaca") as (broker, _conn),
         session_factory() as session,
     ):
+        # Adoption runs FIRST: it is what makes a broker-real position
+        # visible to everything keyed on ``fill_qty IS NOT NULL``, and
+        # ``_detect_external_closes`` below is one of those readers — an
+        # unadopted orphan is invisible to it too.
+        await _adopt_orphaned_fills(session, uid, broker)
         await _sync_open_orders(session, uid, broker)
         await _detect_external_closes(session, uid, broker, user_id=user_id)
         await session.commit()
@@ -451,3 +465,138 @@ def _notify_external_close(*, user_id: str, symbol: str, qty: int) -> None:
         )
     except Exception:
         logger.exception("order_sync: external-close notification failed")
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 0. Orphan adoption — a decision the broker filled but we never recorded
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _decision_broker_key(decision: object) -> str:
+    """The symbol ``broker.list_positions()`` reports for this decision.
+
+    ``agent_decisions.symbol`` is ALWAYS the underlying (docs/
+    OPTIONS_PLAYBOOK.md §5.1), so an option has to be matched on its OCC
+    string instead — the identical convention
+    ``positions_service._broker_key_for_decision`` documents at length.
+    Duplicated rather than imported to keep this module's dependency
+    surface at ``engine.db`` + ``broker``, as the rest of the file is.
+    """
+    proposal = getattr(decision, "proposal", None) or {}
+    if bool(proposal.get("isOption", proposal.get("is_option", False))):
+        occ = proposal.get("occSymbol") or proposal.get("occ_symbol")
+        if occ:
+            return str(occ).upper()
+    return str(getattr(decision, "symbol", "")).upper()
+
+
+async def _adopt_orphaned_fills(
+    session: AsyncSession, uid: uuid.UUID, broker: BrokerInterface
+) -> None:
+    """Heal decisions the broker has a position for but whose entry
+    columns are still NULL.
+
+    Steps 1+2 above converge fills through the ``orders`` table, which is
+    the right path and covers everything ``executor.py`` places. It cannot
+    cover anything that reached the broker WITHOUT an ``orders`` row —
+    which is exactly what the three ``packages/broker.place_order`` call
+    sites in ``options/tools/{trade,guard}.py`` did before
+    ``persist_placed_order`` existed (see its docstring), and what any
+    future crash between "broker accepted" and "audit row written" will do
+    again.
+
+    The consequence is not cosmetic, and is why this runs every tick
+    rather than as a one-off migration: BOTH ``manage_positions_for_user``
+    (the ratchet, the stop, the time stop) AND
+    ``sweep_expiring_options_for_user`` (the DTE<=2 sweep) filter on
+    ``AgentDecision.fill_qty IS NOT NULL``. A position with a NULL
+    ``fill_qty`` is a REAL position at the broker with none of
+    docs/OPTIONS_PLAYBOOK.md §3's five exits attached to it — no stop, no
+    trail, no expiry sweep — and nothing anywhere logged that fact. It
+    also renders in the UI as "AWAITING FILL / not filled yet" forever,
+    which is how this was found: six filled option positions at Alpaca,
+    six ``agent_decisions`` rows with NULL ``fill_qty``, zero ``orders``
+    rows, and an unmanaged options book.
+
+    Deliberately narrow, and every one of these is load-bearing:
+      * Only ``risk_approved`` + ``user_response='approved'`` + not closed
+        rows are considered — the same triple ``positions_service`` uses
+        for "ours and open". A rejected or still-pending proposal must
+        never adopt a position just because the symbol matches.
+      * Only when the broker's position is the SAME SIDE the decision
+        proposed. A held long cannot heal a decision that proposed a
+        short; adopting across sides would invent a fill that never
+        happened and hand the exit ladder an inverted P&L.
+      * ``qty`` is the broker's, clamped to the proposal's — one broker
+        position can back at most the quantity we asked for; the surplus
+        belongs to some other decision (or to the user's own manual
+        trade) and must stay unclaimed rather than inflate this row.
+      * A broker key already claimed by a filled decision is skipped, so
+        two orphans on one contract cannot both adopt the same lot.
+
+    Never raises: failing to heal an audit row must not take down the rest
+    of the fleet tick for this user.
+    """
+    from engine.db.models import AgentDecision
+
+    stmt = (
+        select(AgentDecision)
+        .where(AgentDecision.user_id == uid)
+        .where(AgentDecision.risk_approved.is_(True))
+        .where(AgentDecision.user_response == "approved")
+        .where(AgentDecision.closed_at.is_(None))
+        .where(AgentDecision.fill_qty.is_(None))
+    )
+    orphans = (await session.execute(stmt)).scalars().all()
+    if not orphans:
+        return
+
+    claimed_stmt = (
+        select(AgentDecision)
+        .where(AgentDecision.user_id == uid)
+        .where(AgentDecision.closed_at.is_(None))
+        .where(AgentDecision.fill_qty.is_not(None))
+    )
+    claimed = {
+        _decision_broker_key(d)
+        for d in (await session.execute(claimed_stmt)).scalars().all()
+    }
+
+    try:
+        positions = await broker.list_positions()
+    except Exception:
+        logger.exception("order_sync: list_positions failed — orphan adoption skipped")
+        return
+
+    held = {p.symbol.upper(): p for p in positions}
+
+    for decision in orphans:
+        key = _decision_broker_key(decision)
+        if not key or key in claimed:
+            continue
+        pos = held.get(key)
+        if pos is None or pos.qty == 0:
+            continue
+
+        proposal = decision.proposal or {}
+        # A short's entry is a SELL and Alpaca reports its qty negative; a
+        # long's entry is a BUY and its qty positive. Comparing the two
+        # signs is what keeps a held long from healing a short decision.
+        entry_is_buy = str(proposal.get("side", "BUY")).upper() != "SELL"
+        if entry_is_buy != (pos.qty > 0):
+            continue
+
+        wanted = int(proposal.get("qty") or 0) or abs(pos.qty)
+        adopted = min(abs(pos.qty), wanted)
+        if adopted <= 0:
+            continue
+
+        decision.fill_qty = adopted
+        decision.fill_avg_price = Decimal(str(round(float(pos.avg_entry_price), 4)))
+        claimed.add(key)
+        logger.warning(
+            "order_sync: ADOPTED orphaned fill for decision %s (%s) — %d @ %s. "
+            "The broker held this position with no local fill record, so every "
+            "fill_qty-gated exit (ratchet/stop/expiry sweep) was skipping it.",
+            decision.id, key, adopted, decision.fill_avg_price,
+        )

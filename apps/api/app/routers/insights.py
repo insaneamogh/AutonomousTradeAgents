@@ -49,6 +49,13 @@ class GhostBucketDto(CamelCaseModel):
     # WHEN "pending" resolves instead of just that it is pending.
     oldest_pending_triggered_at: str | None = None
     oldest_pending_remaining_trading_days: int | None = None
+    # Marks-so-far, including rows still `partial`. PROVISIONAL: a partial
+    # can still move before its horizon. Exists because a ghost finalizes
+    # only after `horizonDays` TRADING days, so `ghostPnl` is 0.00 for the
+    # first week of any account's life while real marked counterfactuals
+    # already sit in the table. Render as "so far", never as the claim.
+    marked_pnl: float = 0.0
+    marked_count: int = 0
 
 
 class GhostSummaryResponse(CamelCaseModel):
@@ -58,6 +65,9 @@ class GhostSummaryResponse(CamelCaseModel):
     declined: GhostBucketDto
     saved_usd: float
     missed_usd: float
+    # Provisional counterparts — see GhostBucketDto.markedPnl.
+    saved_so_far_usd: float = 0.0
+    missed_so_far_usd: float = 0.0
 
 
 class VetoRuleDto(CamelCaseModel):
@@ -126,6 +136,8 @@ async def ghost_summary(
                 else None
             ),
             oldest_pending_remaining_trading_days=s.vetoed.oldest_pending_remaining_trading_days,
+            marked_pnl=s.vetoed.marked_pnl,
+            marked_count=s.vetoed.marked_count,
         ),
         declined=GhostBucketDto(
             count=s.declined.count,
@@ -137,9 +149,13 @@ async def ghost_summary(
                 else None
             ),
             oldest_pending_remaining_trading_days=s.declined.oldest_pending_remaining_trading_days,
+            marked_pnl=s.declined.marked_pnl,
+            marked_count=s.declined.marked_count,
         ),
         saved_usd=s.saved_usd,
         missed_usd=s.missed_usd,
+        saved_so_far_usd=s.saved_so_far_usd,
+        missed_so_far_usd=s.missed_so_far_usd,
     )
 
 

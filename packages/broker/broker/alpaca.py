@@ -301,6 +301,38 @@ class AlpacaBroker(BrokerInterface):
         level = getattr(acct, "options_trading_level", None)
         return int(level) if level is not None else None
 
+    async def get_prior_close_equity(self) -> float | None:
+        """Equity as of the PREVIOUS trading session's close.
+
+        Alpaca computes this itself (``account.last_equity``) against the
+        real market calendar. That matters because the obvious substitute
+        — "the earliest equity snapshot we hold with today's UTC date" —
+        is wrong by construction: the US session runs 13:30-20:00 UTC, so
+        every snapshot written between 00:00 and 13:30 UTC carries
+        YESTERDAY's closing equity while already having today's UTC date.
+        Baselining off one of those makes the whole overnight move
+        disappear from the day's P&L.
+
+        Not on ``BrokerInterface``: that Protocol is ``runtime_checkable``
+        and structural, so adding a method to it would silently
+        un-satisfy every stub and mock that does not implement it. Callers
+        reach this through ``getattr(broker, "get_prior_close_equity",
+        None)`` and fall back when it is absent.
+
+        Returns None rather than raising when the broker omits the field
+        (a brand-new account has no prior session) — the caller's own
+        fallback is the correct behaviour there, not a zero.
+        """
+        acct = await self._get_account()
+        value = getattr(acct, "last_equity", None)
+        if value is None:
+            return None
+        try:
+            equity = float(value)
+        except (TypeError, ValueError):
+            return None
+        return equity if equity > 0 else None
+
     # ── Mappers ──────────────────────────────────────────────────────
 
     def _build_alpaca_request(self, request: OrderRequest) -> _AlpacaOrderRequest:
