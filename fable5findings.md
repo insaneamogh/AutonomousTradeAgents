@@ -435,6 +435,47 @@ calls and permanently stamps `reviewed_at`, so it wasn't run here. Whether
 to enable `COUNCIL_SCHEDULER_ENABLED` or run `daily_cron.py` by hand once
 is the user's call, same as both agents already flagged independently.
 
+### 2026-09-01 — `96555e5c`/`78dea6e9` fix(desktop): two cosmetic layout bugs — Settings table overflow + Stream panel scrollbar
+
+Two independent, pure-CSS/layout bugs, no business logic touched.
+
+- **`96555e5c`** — Settings' Broker connections table (7-span card) had no
+  horizontal scroll region. At laptop widths (~1300-1450px) the table's real
+  min-content width exceeds the card's width, and the last column (Revoke
+  button + its helper caption) painted over the Appearance card next to it.
+  Fix: wrapped the table in `overflowX:'auto'`, same as the two tables in
+  `Positions.tsx` (identical failure mode, identical fix already precedented
+  there).
+- **`78dea6e9`** — the council-run Stream panel's event log used a bare
+  `overflowY:'auto'` div, so it fell back to the browser's default
+  scrollbar instead of this design system's thin/rounded one (already
+  applied to `.pg-main`/`.pg-sidebar`). Fix: added a `.pg-scroll` class
+  carrying the same `::-webkit-scrollbar` rules, applied to the Stream log
+  div.
+
+**What I verified, and how:** no live backend in this environment (no
+Postgres/Alpaca/auth configured in the worktree), so I couldn't drive the
+real running screens. Instead built an isolated HTML repro using theme.ts's
+*actual* `PLATINUM_CSS` text (copy-pasted, not reinvented) and each
+component's *actual* JSX structure translated to plain markup, served over
+a local `http.server` (file:// URLs render as inert static snapshots in
+this session's browser tool — a real `http://localhost` origin is required
+for live resize/scroll/JS). Confirmed bug 1 via `getBoundingClientRect`
+(table 615px vs card 578px at 1366px viewport → 58px overflow) and
+screenshots at 1300/1366px (broken) and 1920px (fine, both before and
+after — the fix adds no scrollbar when there's already room). Confirmed
+bug 2 by screenshot: native square scrollbar before, the app's thin rounded
+one after. `pnpm -s exec tsc --noEmit -p apps/mobile/tsconfig.json` and
+`pnpm --filter mobile exec jest --silent` (11 suites / 83 tests) both clean
+before and after; neither screen has existing test coverage to begin with.
+
+**Left open:** the worktree was behind `main` by several commits
+(`e0a21c16` → `7f81a1f1`, including the very "Connected" column this fix
+had to account for) — fast-forwarded via `git merge main --ff-only` before
+editing, per this session's brief. `.pg-typeahead`'s dropdown list
+(`theme.ts`) has the same bare-`overflow-y:auto`-with-no-scrollbar-styling
+pattern as bug 2 did; out of scope for what was asked, not fixed here.
+
 ### 2026-09-01 — `452bb044`/`7dabbd4a` fix(mobile): "opened 5d ago" positions — diagnosed the shared-account confusion, not a bug in the connect flow
 
 **The report:** user saw closed positions labeled "opened 5d ago" and was alarmed —

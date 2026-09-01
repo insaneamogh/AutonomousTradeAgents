@@ -548,10 +548,15 @@ export const PLATINUM_CSS = `
 .pg-input::placeholder { color: var(--pg-outline); }
 
 /* ── Scrollbars ───────────────────────────────────────────────────── */
-.pg-main::-webkit-scrollbar, .pg-sidebar::-webkit-scrollbar { width: 10px; }
-.pg-main::-webkit-scrollbar-thumb, .pg-sidebar::-webkit-scrollbar-thumb {
+/* '.pg-scroll' is the same thin/rounded treatment, opted into by any
+   OTHER internally-scrolling panel (e.g. the council Stream log) that
+   isn't '.pg-main'/'.pg-sidebar' — without it such a panel falls back to
+   the browser's default scrollbar, which reads as off-system next to
+   this glass design. */
+.pg-main::-webkit-scrollbar, .pg-sidebar::-webkit-scrollbar, .pg-scroll::-webkit-scrollbar { width: 10px; }
+.pg-main::-webkit-scrollbar-thumb, .pg-sidebar::-webkit-scrollbar-thumb, .pg-scroll::-webkit-scrollbar-thumb {
   background-color: var(--pg-outline-variant); border-radius: 9999px;
   border: 3px solid transparent; background-clip: content-box;
 }
-.pg-main::-webkit-scrollbar-track, .pg-sidebar::-webkit-scrollbar-track { background: transparent; }
+.pg-main::-webkit-scrollbar-track, .pg-sidebar::-webkit-scrollbar-track, .pg-scroll::-webkit-scrollbar-track { background: transparent; }
 `;

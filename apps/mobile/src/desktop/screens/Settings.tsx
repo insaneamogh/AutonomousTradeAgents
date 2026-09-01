@@ -153,6 +153,12 @@ export function SettingsScreen() {
                 </p>
               </div>
             ) : (
+              // Without its own scroll region, the Revoke button + its helper
+              // caption (last column) can demand more width than this 7-span
+              // card has at laptop widths, and the excess painted straight
+              // over the next grid cell instead of ever scrolling sideways —
+              // same fix, same reason, as the two tables in Positions.tsx.
+              <div style={{ overflowX: 'auto' }}>
               <table className="pg-table">
                 <thead>
                   <tr>
@@ -222,6 +228,7 @@ export function SettingsScreen() {
                   ))}
                 </tbody>
               </table>
+              </div>
             )}
           </Card>
         </Cell>
