@@ -3,7 +3,10 @@
 Deep close mechanics (risk gate, bracket cancel, broker SELL) are covered
 by the position_manager tests + the executor path. Here we pin the route
 surface: auth, the empty-in-mock-mode list, and the close endpoint's
-error mapping when there's no Postgres-backed position.
+error mapping when there's no Postgres-backed position. Same for
+GET /positions/history — the closed-position DTO math itself is pinned in
+test_positions_service.py; this file only covers the mock-mode empty page
+and query-param validation.
 """
 
 from __future__ import annotations
@@ -46,6 +49,26 @@ def test_open_positions_empty_in_mock_mode(client: TestClient) -> None:
     r = client.get("/api/v1/positions")
     assert r.status_code == 200
     assert r.json() == []
+
+
+def test_closed_positions_empty_in_mock_mode(client: TestClient) -> None:
+    r = client.get("/api/v1/positions/history")
+    assert r.status_code == 200
+    assert r.json() == {"positions": [], "total": 0, "limit": 50, "offset": 0}
+
+
+def test_closed_positions_echoes_limit_and_offset(client: TestClient) -> None:
+    r = client.get("/api/v1/positions/history?limit=10&offset=5")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["limit"] == 10
+    assert body["offset"] == 5
+    assert body["positions"] == []
+
+
+def test_closed_positions_rejects_out_of_range_limit(client: TestClient) -> None:
+    assert client.get("/api/v1/positions/history?limit=0").status_code == 422
+    assert client.get("/api/v1/positions/history?limit=201").status_code == 422
 
 
 def test_close_unknown_position_404(client: TestClient) -> None:

@@ -1,6 +1,7 @@
-"""/api/v1/positions — open agent positions + user-initiated close.
+"""/api/v1/positions — open agent positions + user-initiated close + history.
 
 GET  /api/v1/positions                        open agent-managed positions
+GET  /api/v1/positions/history                 closed positions, newest first
 POST /api/v1/positions/{decision_id}/close     close one now (manual override)
 POST /api/v1/positions/unmanaged/{symbol}/close  close a position with NO
                                                   decision behind it at all
@@ -11,9 +12,9 @@ deterministic risk gate + bracket-cancel + audit persist as the agent's
 own closes — only the recorded ``close_reason`` differs ('user_manual').
 Entries are never auto-placed; this is purely an exit control.
 
-The second route exists because the first can't reach every row the GET
-above lists: an "unmanaged" position (``managed=False``, no
-``decision_id``) was opened outside this app, or predates this
+The second POST route exists because the first can't reach every row the
+open-positions GET above lists: an "unmanaged" position (``managed=False``,
+no ``decision_id``) was opened outside this app, or predates this
 deployment's decision history, so there is no ``AgentDecision`` row to
 look up by id. It is keyed by ``symbol`` instead — the broker's own
 position key (OCC for an option, ticker for equity) — and ownership is
@@ -21,17 +22,28 @@ enforced structurally: it only ever acts inside the CALLING user's own
 broker connection, so there is no cross-user id to guess in the first
 place. See ``position_manager.close_unmanaged_position_now`` for the full
 reasoning.
+
+GET /history answers "what was opened and closed, and what did it realize"
+— the question the open-positions list and the account-level P&L tile
+cannot: an open position only shows unrealized P&L, and the equity number
+never breaks down which trades actually contributed to it. See
+``positions_service.list_closed_positions`` for the one gap (a position
+this app never saw open at all has nothing here to join against either).
 """
 
 from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.middleware.auth import AuthedUser, get_current_user, require_real_auth
-from app.schemas.positions import ClosePositionResponse, OpenPositionDto
-from app.services.orders.positions_service import list_open_positions
+from app.schemas.positions import (
+    ClosedPositionListResponse,
+    ClosePositionResponse,
+    OpenPositionDto,
+)
+from app.services.orders.positions_service import list_closed_positions, list_open_positions
 
 logger = logging.getLogger("api.router.positions")
 
@@ -57,6 +69,34 @@ async def open_positions(
 ) -> list[OpenPositionDto]:
     """Open agent-managed positions for the caller, with live marks + exit plan."""
     return await list_open_positions(user.id)
+
+
+@router.get(
+    "/history",
+    response_model=ClosedPositionListResponse,
+    response_model_by_alias=True,
+)
+async def closed_positions(
+    user: AuthedUser = Depends(get_current_user),
+    symbol: str | None = Query(default=None, max_length=20),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> ClosedPositionListResponse:
+    """Closed positions for the caller, newest-close-first: what was
+    opened, when, at what price, when and why it closed, and the realized
+    P&L — see ``positions_service.list_closed_positions`` for exactly
+    which closes this can (and cannot) see. Same read-only auth as the
+    open-positions list above, so a read-only demo/judge session sees this
+    too. Mock-store dev mode has no position ledger and returns an honest
+    empty page rather than 404ing, matching GET /decisions.
+    """
+    rows, total = await list_closed_positions(
+        user.id,
+        symbol=symbol.upper() if symbol else None,
+        limit=limit,
+        offset=offset,
+    )
+    return ClosedPositionListResponse(positions=rows, total=total, limit=limit, offset=offset)
 
 
 @router.post(

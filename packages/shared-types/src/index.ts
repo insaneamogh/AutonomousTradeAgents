@@ -289,6 +289,61 @@ export interface ClosePositionResponse {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// /api/v1/positions/history — closed positions (what was opened AND
+// later closed, and what it realized). Source is
+// `agent_decisions.closed_at IS NOT NULL`, so a position this app never
+// saw open at all (opened before this deployment's history, or opened
+// AND closed entirely outside the app) has nothing here — see the
+// backend's positions_service.list_closed_positions docstring for the
+// exact gap and why it's currently unobserved rather than proven absent.
+// ─────────────────────────────────────────────────────────────────────
+
+export interface ClosedPositionDto {
+  decisionId: string;
+  symbol: string;
+  side: Side;
+  direction: 'long' | 'short';
+  qty: number;
+  avgEntryPrice: number | null;
+  /** The broker's own fill price when a matching close Order exists (an
+   * agent close or an in-app user close both create one) — see
+   * `exitPriceSource`. */
+  exitPrice: number | null;
+  /** 'order_fill': the real closing order's own fill price.
+   * 'estimated_from_pnl': back-solved from realizedPnl — the only option
+   * for an `external_broker` close, where the user exited directly at
+   * Alpaca and this app never placed (or saw) a closing order at all.
+   * null when neither is available. */
+  exitPriceSource: 'order_fill' | 'estimated_from_pnl' | null;
+  realizedPnl: number | null;
+  /** ISO 8601 string. */
+  openedAt: string;
+  /** ISO 8601 string. */
+  closedAt: string;
+  /** agent_time / agent_signal / agent_expiry / option_take_profit /
+   * option_stop_loss / option_trail_stop (the position manager's own
+   * closes) / user_manual (a tap in this app) / external_broker (the
+   * user closed directly at Alpaca; order_sync noticed after the fact). */
+  closeReason: string | null;
+  exitMode: ExitMode;
+  approvalMode: string;
+  isOption?: boolean;
+  contractType?: 'call' | 'put' | null;
+  strike?: number | null;
+  /** ISO 8601 date string. */
+  expiryDate?: string | null;
+  occSymbol?: string | null;
+  multiplier?: number;
+}
+
+export interface ClosedPositionListResponse {
+  positions: ClosedPositionDto[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // /api/v1/circuit-breaker — drawdown halt banner
 // ─────────────────────────────────────────────────────────────────────
 

@@ -1,4 +1,4 @@
-"""Open positions — the read path behind /api/v1/positions.
+"""Open + closed positions — the read path behind /api/v1/positions.
 
 An agent-managed "position" IS an open agent decision: approved + filled
 + not yet closed. We list those (per authed user, indexed query) and
@@ -15,6 +15,10 @@ empty list, which reads as a broken screen. They carry no exit plan and
 no ``decision_id``, because there is no decision lifecycle to close them
 through; the client offers no close button for them.
 
+``list_closed_positions`` is the other half: every decision this app saw
+BOTH open and later close, newest-close-first, for GET /positions/history
+— see its own docstring for the one gap (unmanaged-position closes).
+
 Postgres-only — positions require a real DB + broker. MockStore dev mode
 returns [] (there is no position ledger).
 """
@@ -22,11 +26,12 @@ returns [] (there is no position ledger).
 from __future__ import annotations
 
 import logging
+import uuid as _uuid
 from datetime import date as _date
 from typing import Any
 
 from app.core.ids import to_uuid as _to_uuid
-from app.schemas.positions import OpenPositionDto
+from app.schemas.positions import ClosedPositionDto, OpenPositionDto
 from broker.types import OccSymbol
 from engine.env import env_flag
 
@@ -367,3 +372,201 @@ def _unmanaged(
             )
         )
     return out
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Closed positions — GET /api/v1/positions/history
+# ─────────────────────────────────────────────────────────────────────
+
+
+async def list_closed_positions(
+    user_id: str,
+    *,
+    symbol: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[ClosedPositionDto], int]:
+    """Newest-close-first page of the caller's closed positions, plus the
+    total count for that filter — mirrors ``decisions_list.list_decisions``'
+    pagination shape.
+
+    Source is ``agent_decisions.closed_at IS NOT NULL``: every position
+    this app ever tracked opening AND later saw close, however the close
+    happened — the position manager's own time/signal/expiry/premium exit
+    (``exit_mode='agent'``), a user tap on "Close" in this app
+    (``close_reason='user_manual'``), or ``order_sync`` detecting after the
+    fact that the user closed it directly at the broker
+    (``close_reason='external_broker'``).
+
+    **The gap**: a position with NO ``AgentDecision`` row at all — opened
+    before this deployment's decision history, or opened directly at the
+    broker — has nothing here to join against, even after
+    ``close_unmanaged_position_now`` closes it (that path persists an
+    unlinked ``orders`` row with ``agent_decision_id=NULL``; see its own
+    docstring for why there is no decision row left to stamp). Verified
+    live against production 2026-09-01: 196 agent_decisions, 6 closed, ALL
+    ``external_broker``; zero ``orders`` rows with ``agent_decision_id IS
+    NULL`` — so this gap is currently unobserved (nothing is silently
+    missing today), not proven absent going forward.
+    """
+    if not env_flag("USE_POSTGRES"):
+        return [], 0
+    uid = _to_uuid(user_id)
+    if uid is None:
+        return [], 0
+
+    from sqlalchemy import desc, func, select
+
+    from engine.db.models import AgentDecision, Order
+    from engine.db.session import async_session_factory
+
+    filters = [
+        AgentDecision.user_id == uid,
+        AgentDecision.closed_at.is_not(None),
+    ]
+    if symbol:
+        filters.append(AgentDecision.symbol == symbol.upper())
+
+    factory = async_session_factory()
+    async with factory() as session:
+        total = (
+            await session.execute(
+                select(func.count()).select_from(AgentDecision).where(*filters)
+            )
+        ).scalar_one()
+
+        rows = (
+            await session.execute(
+                select(AgentDecision)
+                .where(*filters)
+                .order_by(desc(AgentDecision.closed_at))
+                .limit(limit)
+                .offset(offset)
+            )
+        ).scalars().all()
+
+        # The exact closing fill, when this app placed the close order
+        # itself (an agent close or an in-app user close both create a
+        # decision-linked Order row on the opposite side of the entry) — an
+        # `external_broker` close has none (order_sync updates
+        # AgentDecision directly; see its own docstring), so those decisions
+        # fall back to `_closed_from_decision`'s realized_pnl back-solve.
+        # One batched query for the whole page rather than N+1.
+        close_orders: dict[_uuid.UUID, object] = {}
+        if rows:
+            entry_side_by_id = {d.id: str((d.proposal or {}).get("side", "BUY")) for d in rows}
+            order_rows = (
+                await session.execute(
+                    select(Order)
+                    .where(Order.agent_decision_id.in_(list(entry_side_by_id.keys())))
+                    .where(Order.status == "filled")
+                    .order_by(Order.filled_at.asc())
+                )
+            ).scalars().all()
+            for o in order_rows:
+                if o.side != entry_side_by_id.get(o.agent_decision_id):
+                    # Ascending filled_at order → the last write here is
+                    # the MOST RECENT closing fill for this decision, which
+                    # is what we want (v1 is one entry / one exit per
+                    # decision, but this stays correct even if that ever
+                    # loosens).
+                    close_orders[o.agent_decision_id] = o
+
+    return (
+        [_closed_from_decision(d, close_orders.get(d.id)) for d in rows],
+        int(total),
+    )
+
+
+def _estimate_exit_price(
+    *, entry: float, realized_pnl: float, qty: int, multiplier: int, entry_side: str,
+) -> float | None:
+    """Back-solve the exit price from realized P&L — the ONLY option for a
+    close with no Order row of its own (``external_broker``, where the user
+    exited directly at Alpaca and order_sync never placed anything).
+
+    Exactly inverts ``order_sync._apply_decision_lifecycle`` /
+    ``_detect_external_closes``'s own forward formula
+    (``realized = signed_move * qty * multiplier``, ``signed_move =
+    (entry - exit)`` for a short's entry side, ``(exit - entry)`` for a
+    long's) — same sign convention, solved for ``exit`` instead of
+    ``realized``. Deliberately the SAME arithmetic both close paths already
+    use to compute realized_pnl in the first place, not a fresh formula
+    that could disagree with it.
+    """
+    denom = qty * multiplier
+    if not denom:
+        return None
+    delta = realized_pnl / denom
+    exit_price = (entry - delta) if entry_side == "SELL" else (entry + delta)
+    return round(exit_price, 4)
+
+
+def _closed_from_decision(d: object, close_order: object | None = None) -> ClosedPositionDto:
+    """Builds one ``ClosedPositionDto`` from a closed ``AgentDecision`` (+
+    the matching close ``Order`` row, when one exists — see
+    ``list_closed_positions``). Pure, so it is unit-testable without a
+    database, mirroring ``_from_decision``'s split for the open-position
+    path.
+    """
+    proposal = d.proposal or {}  # type: ignore[attr-defined]
+    raw_direction = proposal.get("direction")
+    side = str(proposal.get("side", "BUY"))
+    direction = raw_direction if raw_direction in ("long", "short") else (
+        "short" if side == "SELL" else "long"
+    )
+    multiplier = int(proposal.get("multiplier", 1) or 1)
+    entry = float(d.fill_avg_price) if d.fill_avg_price is not None else None  # type: ignore[attr-defined]
+    qty = int(d.fill_qty) if d.fill_qty is not None else 0  # type: ignore[attr-defined]
+    realized = float(d.realized_pnl) if d.realized_pnl is not None else None  # type: ignore[attr-defined]
+
+    exit_price: float | None = None
+    exit_price_source: str | None = None
+    close_order_price = getattr(close_order, "avg_fill_price", None)
+    if close_order_price is not None:
+        exit_price = float(close_order_price)
+        exit_price_source = "order_fill"
+    elif entry is not None and realized is not None and qty:
+        estimated = _estimate_exit_price(
+            entry=entry, realized_pnl=realized, qty=qty, multiplier=multiplier, entry_side=side,
+        )
+        if estimated is not None:
+            exit_price = estimated
+            exit_price_source = "estimated_from_pnl"
+
+    is_option = bool(proposal.get("isOption", proposal.get("is_option", False)))
+    occ_symbol = (
+        (proposal.get("occSymbol") or proposal.get("occ_symbol")) if is_option else None
+    )
+    contract_type = (
+        (proposal.get("contractType") or proposal.get("contract_type")) if is_option else None
+    )
+    strike = proposal.get("strike") if is_option else None
+    expiry_date = (
+        _coerce_expiry_date(proposal.get("expiryDate", proposal.get("expiry_date")))
+        if is_option
+        else None
+    )
+
+    return ClosedPositionDto(
+        decision_id=str(d.id),  # type: ignore[attr-defined]
+        symbol=d.symbol,  # type: ignore[attr-defined]
+        side=side,  # type: ignore[arg-type]
+        direction=direction,  # type: ignore[arg-type]
+        qty=qty,
+        avg_entry_price=entry,
+        exit_price=exit_price,
+        exit_price_source=exit_price_source,  # type: ignore[arg-type]
+        realized_pnl=realized,
+        opened_at=d.user_responded_at or d.triggered_at,  # type: ignore[attr-defined]
+        closed_at=d.closed_at,  # type: ignore[attr-defined]
+        close_reason=d.close_reason,  # type: ignore[attr-defined]
+        exit_mode=d.exit_mode if d.exit_mode in ("agent", "manual") else "agent",  # type: ignore[attr-defined]
+        approval_mode=d.approval_mode,  # type: ignore[attr-defined]
+        is_option=is_option,
+        contract_type=contract_type,  # type: ignore[arg-type]
+        strike=float(strike) if strike is not None else None,
+        expiry_date=expiry_date,
+        occ_symbol=str(occ_symbol) if occ_symbol else None,
+        multiplier=multiplier,
+    )
