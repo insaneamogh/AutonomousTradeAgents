@@ -205,6 +205,35 @@ async def test_budget_trips_partway_through_a_sweep(
     assert calls == ["FIRST", "SECOND"]
 
 
+# ── Calendar-day window, not rolling 24h ─────────────────────────────
+
+
+def test_seconds_since_midnight_utc_is_a_calendar_day_not_a_rolling_lookback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins the specific fix: a rolling 24h window would keep counting a
+    historical spend spike against the budget for a full day after it
+    happened, even once the operator has topped up credits — see
+    _DEFAULT_MAX_DAILY_LLM_SPEND_USD's docstring. Fixed "now" at 19:30 UTC
+    must report 19h30m elapsed since midnight, not a constant 24h."""
+    import datetime as real_datetime
+
+    from trading_agents.jobs import daily_cron as cron
+
+    fixed_now = real_datetime.datetime(2026, 9, 1, 19, 30, 0, tzinfo=real_datetime.UTC)
+
+    class _FixedDatetime(real_datetime.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now
+
+    monkeypatch.setattr(cron, "datetime", _FixedDatetime)
+
+    assert cron._seconds_since_midnight_utc() == real_datetime.timedelta(
+        hours=19, minutes=30
+    )
+
+
 # ── Env var readers — malformed input keeps the default ─────────────
 
 

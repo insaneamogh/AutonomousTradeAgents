@@ -42,7 +42,7 @@ import os
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from typing import Any
 
 from engine.env import env_flag
@@ -165,12 +165,21 @@ def _options_rescan_cooldown_minutes() -> int:
 
 
 _DEFAULT_MAX_DAILY_LLM_SPEND_USD = 3.0
-"""Hard ceiling (rolling 24h, real dollars off ``trading_agents.cost_ledger``)
-on Anthropic spend across every sweep this process runs. Once crossed,
-every remaining LLM-eligible candidate HOLDs uncosted until the window
-rolls off — checked LIVE right before each one actually runs (not just
-once at the top of a sweep), so it can trip PARTWAY through a sweep that
-started under budget.
+"""Hard ceiling, real dollars off ``trading_agents.cost_ledger``, on
+Anthropic spend SINCE MIDNIGHT UTC TODAY — a calendar day, not a rolling
+24h window. Once crossed, every remaining LLM-eligible candidate HOLDs
+uncosted until UTC midnight rolls the window over — checked LIVE right
+before each one actually runs (not just once at the top of a sweep), so
+it can trip PARTWAY through a sweep that started under budget.
+
+Deliberately calendar-day, not rolling-24h: a rolling window would keep
+counting a historical spike (e.g. today's 638-call, ~$10 drain) against
+the ceiling for a full 24 hours after it happened — so an operator who
+tops up credits at 19:00 UTC expecting to resume soon would find every
+candidate still HOLDing uncosted until ~19:00 UTC the NEXT day, long
+after the real Anthropic balance was healthy again. Midnight UTC is also
+comfortably before the 13:30 UTC US market open, so "today's budget"
+still means the whole trading day.
 
 $3.00 is derived from the account's own numbers, not guessed: a $10
 top-up meant to last the ~3 remaining contest days (docs/HACKATHON.md)
@@ -179,12 +188,20 @@ divides to ~$3.33/day, rounded down for margin.
 Known gap: ``InMemoryCostLedger`` (the fallback when Postgres is
 unreachable) resets on every process restart, and a redeploy IS a process
 restart — so this can only bound spend within one continuously-running
-process's rolling 24h window, not truly cross-restart. Say so plainly
-rather than overclaiming "cannot exceed $3/day" — that is what
+process's view of "since midnight," not truly cross-restart. Say so
+plainly rather than overclaiming "cannot exceed $3/day" — that is what
 ``MAX_LLM_SYMBOLS_PER_SWEEP`` below is for: it does not depend on the
 ledger at all, so it still bounds a single sweep's worst case even right
 after the ledger's memory has been reset.
 """
+
+
+def _seconds_since_midnight_utc() -> timedelta:
+    """How far into today (UTC) we are, for a calendar-day spend window —
+    see ``_DEFAULT_MAX_DAILY_LLM_SPEND_USD`` for why this is midnight-UTC
+    rather than a rolling 24h lookback."""
+    now = datetime.now(UTC)
+    return now - datetime.combine(now.date(), time.min, tzinfo=UTC)
 
 _DEFAULT_MAX_LLM_SYMBOLS_PER_SWEEP = 15
 """Ledger-independent hard cap: at most this many symbols may clear
@@ -434,10 +451,10 @@ async def main(
     HOLD always runs (costs nothing). Among the rest, only the top
     ``MAX_LLM_SYMBOLS_PER_SWEEP`` by score are admitted to the real
     (paid) path, and even an admitted symbol HOLDs uncosted once
-    ``MAX_DAILY_LLM_SPEND_USD`` (rolling 24h, real dollars) is reached —
-    checked live, so it can trip mid-sweep. Neither gate is bypassed by
-    ``force``: that flag overrides ONLY the dedup check below, on
-    purpose — see the 2026-09-01 credit-exhaustion post-mortem
+    ``MAX_DAILY_LLM_SPEND_USD`` (real dollars, since midnight UTC) is
+    reached — checked live, so it can trip mid-sweep. Neither gate is
+    bypassed by ``force``: that flag overrides ONLY the dedup check
+    below, on purpose — see the 2026-09-01 credit-exhaustion post-mortem
     (fable5findings.md) for why a budget escape hatch must not ride
     along with the operator's rerun flag.
 
@@ -547,12 +564,12 @@ async def main(
                 # Only an admitted, LLM-eligible symbol needs a live budget
                 # check — a free HOLD never reaches this branch at all.
                 if not budget_tripped:
-                    spent, _ = await ledger.sum_cost_since(timedelta(hours=24))
+                    spent, _ = await ledger.sum_cost_since(_seconds_since_midnight_utc())
                     if spent >= max_spend:
                         budget_tripped = True
                         log.warning(
-                            "MAX_DAILY_LLM_SPEND_USD=$%.2f reached ($%.2f spent, "
-                            "rolling 24h) at %s — every remaining admitted "
+                            "MAX_DAILY_LLM_SPEND_USD=$%.2f reached ($%.2f spent "
+                            "since midnight UTC) at %s — every remaining admitted "
                             "candidate this sweep HOLDs uncosted",
                             max_spend, spent, symbol,
                         )
