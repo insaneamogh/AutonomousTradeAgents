@@ -1281,6 +1281,58 @@ and WHEN it resolves, without touching the underlying computation.
   logic and of one live render path, not of Dashboard.tsx's own JSX
   wiring specifically.
 
+### 2026-09-01 — `430efe13` fix(auth): MockAuthStore.get_session aliasing let concurrent refresh CAS match a moving target
+
+`ID:MODEL2OFF`. User handed me a fully-diagnosed bug report (root cause,
+a live-reproduction claim, suggested fix, suggested test) for
+`MockAuthStore`'s refresh-replay CAS. Verified every claim against the
+code before touching anything, per §4.3 — did not take the report at
+face value.
+
+Root cause: `get_session()` (`apps/api/app/services/auth/auth_store.py`)
+returned the literal, shared `SessionRecord` object — no defensive copy.
+`auth.refresh()` holds that reference across `await
+asyncio.to_thread(verify_token_hash, ...)`, which is the ONLY real
+suspend point in the whole flow: every other `MockAuthStore` method is a
+synchronous dict operation, and awaiting a coroutine that never itself
+suspends does not yield control back to the event loop. Traced the
+interleaving by hand: whichever of two concurrent `refresh()` calls
+resumes first from that suspend runs the rest of the function —
+including `rotate_session`'s mutation — to completion in one
+uninterrupted step, since nothing downstream yields again. The second
+caller's `expected_current_hash=session.refresh_token_hash` is evaluated
+AFTER that mutation lands on the shared object, so it silently reads the
+winner's new hash and the CAS matches NEW-against-NEW instead of
+catching the replay. `PostgresAuthStore.get_session` was never affected
+— it already builds a fresh `SessionRecord` from the DB row every call.
+
+Fix: `get_session()` now returns `dataclasses.replace(s)`.
+
+Verified:
+- Added `test_concurrent_refresh_with_same_token_ends_with_one_winner`
+  in `test_auth_hardening.py`, racing two `auth_svc.refresh()` calls
+  presenting the same token via `asyncio.gather` (same shape as
+  `test_executor_correctness.py::test_concurrent_approvals_place_exactly_one_order`).
+- Per §4.1: ran it against the UNFIXED code first — failed
+  deterministically, `assert 2 == 1` (both calls returned valid
+  `IssuedTokens`, neither was rejected). Applied the fix, re-ran: passes.
+- `test_auth_hardening.py`: 13/13. All `test_auth*.py`: 55/55. Full
+  workspace (`apps/agents apps/api apps/mcp_server packages/`): 1320
+  passed, 11 skipped — no regressions.
+- `ruff check` + `mypy` on `auth_store.py`: clean. The test file's 7
+  pre-existing ruff findings (unused `noqa: E402`, `datetime.UTC` alias)
+  were confirmed via `git show HEAD` to predate this change; my new test
+  adds one more instance of the same already-tolerated
+  `datetime.now(timezone.utc)` pattern rather than a new one.
+
+Left open: this was strictly a `MockAuthStore` (local dev / most test
+runs, `USE_POSTGRES=0`) gap — real deployments run `USE_POSTGRES=1` and
+were never exposed. Didn't touch `rotate_session`'s or `create_session`'s
+return values even though they also hand back live objects — traced
+both call sites and neither currently holds the reference across an
+await to re-read a mutable field, so there's no live bug there today.
+Worth another look if a future caller changes that.
+
 ### 2026-09-01 — `56da03fb` fix(options): guard.py computed the contract funnel and threw it away
 
 `ID:MODEL2OFF`. User's ask: "loosen the funnel a bit i dont see any options
