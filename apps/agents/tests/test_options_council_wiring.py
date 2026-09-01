@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from trading_agents.nodes.options_council import (
+    _contract_funnel,
     _denials,
     _traded,
     options_agent_enabled,
@@ -83,6 +84,43 @@ def test_denials_are_named() -> None:
     assert _denials(t) == ["open_option_trade:max_premium_pct"]
 
 
+def test_contract_funnel_reads_a_denied_opens_content() -> None:
+    """guard.py now folds `contract_funnel` into a denial's `content`
+    (`dispatch_tool_call`) whenever `select_contract` actually ran — this
+    is the reader on the other end."""
+    t = ({"tool": "open_option_trade",
+          "output": {"is_error": True,
+                     "content": {"denied": "no_delta_in_band",
+                                 "contract_funnel": {"counts": {"total": 1, "delta_band": 0},
+                                                      "rejection_reason": "no_delta_in_band",
+                                                      "selected_occ": None}}}},)
+    funnel = _contract_funnel(t)
+    assert funnel is not None
+    assert funnel["rejection_reason"] == "no_delta_in_band"
+
+
+def test_contract_funnel_is_none_when_the_tool_was_never_called() -> None:
+    """No `open_option_trade` entry at all (agents disagreed, or neither
+    resolved a direction) must not fabricate a funnel — matches
+    `nodes/drafter.py`'s own "claiming a funnel would be fabricating a
+    stage that never ran" rule for the equity-council options path."""
+    t = ({"tool": "get_iv_rank", "output": {"is_error": False, "content": {}}},)
+    assert _contract_funnel(t) is None
+    assert _contract_funnel(()) is None
+
+
+def test_contract_funnel_reads_a_successful_opens_content() -> None:
+    t = ({"tool": "open_option_trade",
+          "output": {"is_error": False,
+                     "content": {"decision_id": "d9",
+                                 "contract_funnel": {"counts": {"total": 1},
+                                                      "rejection_reason": None,
+                                                      "selected_occ": "NVDA…C"}}}},)
+    funnel = _contract_funnel(t)
+    assert funnel is not None
+    assert funnel["selected_occ"] == "NVDA…C"
+
+
 # ── the node ──────────────────────────────────────────────────────────
 
 
@@ -137,6 +175,46 @@ async def test_a_denied_trade_holds_and_names_the_rule(
     assert out["final_action"] == "HOLD"
     assert not out.get("decision_row_written")
     assert "illiquid_contract" in out["drafter_rationale"]
+
+
+async def test_a_denied_trade_threads_the_contract_funnel_onto_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The gap this closes: `runtime._reasoning_block` persists whatever
+    `state["contract_funnel"]` is under `reasoning.contract_funnel` — this
+    node used to never set that key at all, so every options HOLD through
+    the live Bull/Bear/guard path persisted a bare `null` there regardless
+    of whether `select_contract` ran and named a real rejection.
+
+    Revert-checked: removing this node's `"contract_funnel": _contract_
+    funnel(result.tool_transcript)` line (reverting to the pre-fix state,
+    where the key is simply absent from `out`) makes this fail with a
+    KeyError on `out["contract_funnel"]`. Confirmed, then restored.
+    """
+    t = ({"tool": "open_option_trade",
+          "output": {"is_error": True,
+                     "content": {"denied": "no_liquid_contract",
+                                 "contract_funnel": {"counts": {"total": 4, "liquidity": 0},
+                                                      "rejection_reason": "no_liquid_contract",
+                                                      "selected_occ": None}}}},)
+    _patch(monkeypatch, _Result(proceed=True, transcript=t))
+    out = await options_council_node(_state(), llm=object())
+    assert out["final_action"] == "HOLD"
+    funnel = out["contract_funnel"]
+    assert funnel["rejection_reason"] == "no_liquid_contract"
+    assert funnel["counts"]["total"] == 4
+
+
+async def test_agents_disagreeing_never_fabricates_a_contract_funnel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No tool call happened at all — `select_contract` never ran, so
+    there is no funnel to report. Matches nodes/drafter.py's own rule for
+    an equity pass: claiming a funnel here would fabricate a stage that
+    never ran."""
+    _patch(monkeypatch, _Result(proceed=False, reason="agents_disagree"))
+    out = await options_council_node(_state(), llm=object())
+    assert out["contract_funnel"] is None
 
 
 async def test_disagreement_holds_with_the_named_reason(

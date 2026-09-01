@@ -9,6 +9,7 @@ Public surface:
     fetch_option_candidates(underlying_symbol, *, api_key, secret_key, now) ->
         tuple[ContractQuote, ...]
     select_contract(inputs: ContractSelectionInputs) -> ContractSelectionResult
+    funnel_block(selection: ContractSelectionResult) -> dict  # for persistence
     options_position_size(inputs: OptionsSizingInputs) -> OptionsSizingDecision
 
 Architecture rule (CLAUDE.md): agents propose, deterministic code
@@ -43,6 +44,7 @@ from engine.options.selection import (
     ContractQuote,
     ContractSelectionInputs,
     ContractSelectionResult,
+    funnel_block,
     select_contract,
 )
 from engine.options.sizing import (
@@ -62,6 +64,7 @@ __all__ = [
     "dte",
     "evaluate_option",
     "fetch_option_candidates",
+    "funnel_block",
     "is_expiry_day",
     "options_position_size",
     "select_contract",

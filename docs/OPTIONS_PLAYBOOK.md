@@ -58,6 +58,62 @@ a simplification for the contest; it is what bounds the loss.
 > still sizes on whichever is less confident. See `fable5findings.md`'s
 > 2026-09-01 entry for the full evidence trail and every test.
 
+> ⚠️ **A second real gap fixed 2026-09-01: the contract funnel below (§1.3)
+> had never actually reached the database, for anyone, ever.** The ask that
+> found this was "loosen the funnel, I don't see any options passes in the
+> veto view" — CLAUDE.md §4.3's own liquidity-gate precedent, so the
+> instinct was right to distrust it and measure first. Live query against
+> the production DB: **0 of 196** `agent_decisions` rows, across every
+> tenant and all history, had a real (non-null) `reasoning.contract_funnel`
+> object. Not a recent regression — this had never worked.
+>
+> It was not the funnel itself. `select_contract` ran normally and at a
+> healthy rate: the 8 option-watchlist symbols got 68 decision rows in the
+> prior 7 days (13 BUY, 8 VETOED, 47 HOLD), and the two upstream bugs that
+> WOULD have explained a thin funnel — the scan-priority fix in `a7b3a379`
+> and the strategy_fit direction bug fixed earlier this same session — were
+> both already in place and measurably working (option symbols were
+> getting looked at every 0-93 minutes, not starved for scans). The break
+> was structural: `ToolGuard._before_open_option_trade`
+> (`options/tools/guard.py`) runs `select_contract` on every attempted
+> open, exactly like `nodes/drafter.py` always has — but where `drafter.py`
+> attaches the result to `state["contract_funnel"]` for `runtime` to
+> persist, `guard.py`'s copy computed `selection.funnel_counts` and threw
+> it away, keeping only the bare `rejection_reason` string (folded into
+> free-text `drafter_rationale`). Since `USE_OPTIONS_AGENT=1` in
+> production routes every live options pass through `guard.py`, not
+> `drafter.py` (§0.5), the legacy path's funnel-persisting code — and its
+> passing tests, `test_options_pass_persists_the_contract_funnel` /
+> `test_contract_funnel_explains_an_options_hold` in `test_council_mock.py`
+> — had been exercising a path production stopped taking. Exactly
+> CLAUDE.md §4.1's shape (a green test on a path nothing live runs anymore)
+> and §4.6's (patch the symptom vs. find the cause): the Insights screen
+> read `agent_decisions.reasoning->'contract_funnel'` correctly the whole
+> time; there was simply never anything real to read.
+>
+> Fixed by threading the funnel through the three places `guard.py` and
+> `trade.py` had been dropping it, none of which touch a risk rule or a
+> selection threshold: `engine.options.selection.funnel_block()` (new,
+> the one shared shape — `drafter.py` already had its own equivalent
+> private copy, now duplicated in intent only, not in logic, since
+> `guard.py` cannot import a leading-underscore name from another
+> package's node module) is now called from (1) `guard.py`'s own "no
+> contract survived" denial, carried through `dispatch_tool_call`'s
+> `content` (which used to hard-drop a denial's `verdict.payload`
+> entirely — fixed too), (2) `ToolGuard._ledger_refusal` (the Refusal
+> Ledger's own row, for the "contract selected, then risk-vetoed" case),
+> and (3) `trade.py`'s `open_option_trade` (the successful-open row).
+> `nodes/options_council.py` lifts whichever of these the tool transcript
+> carried back onto `state["contract_funnel"]` so a HOLD persists it
+> exactly like `drafter.py`'s path always has. 8 new tests, each
+> revert-checked per CLAUDE.md §4.1 (the fix removed, the specific new
+> test fails, the fix restored). See `fable5findings.md`'s 2026-09-01
+> entry for the full query output and test list.
+>
+> **Selection.py itself was not touched** — no threshold moved, and the
+> six stages, their order, and their frozen constants (§4) are exactly as
+> they were. The funnel was never too tight; it was invisible.
+
 ---
 
 ## 0. The one-line version
@@ -157,7 +213,12 @@ this was caught against.
 
 Six stages, in fixed order. Each records its survivor count; the **first stage
 whose count hits zero names the rejection reason**, and the whole funnel is
-persisted to the decision row's `reasoning.contract_funnel`.
+persisted to the decision row's `reasoning.contract_funnel` — on EVERY path
+that calls `select_contract` (the legacy equity-council options drafter,
+*and*, since 2026-09-01, the live Bull/Bear `ToolGuard` path — see the
+callout near the top of this file; before that fix the live path computed
+this and dropped it, so the field existed in name only for anyone actually
+running `USE_OPTIONS_AGENT=1`).
 
 | # | Stage | Rule | Rejection reason |
 |---|---|---|---|
@@ -479,6 +540,24 @@ stay comparable across days.
    names, check what boolean actually reaches the scoring call — a shared
    env-var READ is not the same thing as a shared RISK, and only one of
    the two should gate the other.
+8. **A second caller of a function is not a second implementation of what
+   it produces — until someone forgets to carry the output anywhere.**
+   `nodes/drafter.py` and `options/tools/guard.py` BOTH call
+   `select_contract` directly (§1.3's "on EVERY path" note is the fix,
+   not the original state) and both had a real, non-null
+   `ContractSelectionResult` in hand at the moment of a HOLD, a veto, or a
+   BUY. Only `drafter.py` ever turned that into `state["contract_funnel"]`.
+   `guard.py`'s copy was computed and dropped for as long as the live
+   Bull/Bear path has existed — 0 of 196 real `agent_decisions` rows, any
+   tenant, ever, had usable funnel data, discovered only by querying the
+   production DB directly (CLAUDE.md §4.3) rather than trusting that a
+   passing `test_options_pass_persists_the_contract_funnel` meant the live
+   path worked too (it tests `drafter.py`'s path specifically, via
+   `monkeypatch.setattr(drafter_mod, "_fetch_option_candidates", ...)` —
+   `USE_OPTIONS_AGENT` is off in that test, so it has never exercised
+   `guard.py` at all). When two code paths both call the same
+   selection/pricing/sizing function, grep for what EACH one does with the
+   result, not just whether both call it.
 
 ---
 

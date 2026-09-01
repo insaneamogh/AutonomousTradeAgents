@@ -185,6 +185,14 @@ async def open_option_trade(
                 "adds_this_position": 0,
             },
             "risk_checks_passed": list(decision.checks_passed),
+            # `ToolGuard._before_open_option_trade` already ran
+            # select_contract and shaped this via `engine.options.
+            # funnel_block` — carried straight through rather than
+            # re-derived, so "we looked at N contracts and bought this
+            # one" is on the row a successful open writes too, not just
+            # a HOLD's. Absent only if guard_payload somehow lacks it
+            # (defensive default; every real caller sets it).
+            "contract_funnel": guard_payload.get("contract_funnel"),
         },
     )
     saved = await decision_log.record(entry)

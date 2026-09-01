@@ -392,7 +392,90 @@ async def test_risk_veto_returns_is_error_not_an_exception() -> None:
             guard=guard,
             registry={"open_option_trade": open_option_trade},
         )
-    assert out == {"is_error": True, "content": {"denied": "max_premium_pct"}}
+    # `content` now also carries `contract_funnel` (a concrete contract WAS
+    # selected before the risk veto fired — see the dedicated funnel tests
+    # below) so it is a subset check, not the old exact-dict equality.
+    assert out["is_error"] is True
+    assert out["content"]["denied"] == "max_premium_pct"
+
+
+async def test_a_denied_open_carries_the_contract_funnel_to_the_transcript() -> None:
+    """The gap this whole change closes: `select_contract` runs on every
+    attempted open (guard.py step 10), but until 2026-09-01 only the bare
+    `rejection_reason` string ever escaped — the six-stage counts were
+    computed and discarded. Covers BOTH shapes of denial: no contract
+    survived at all, and a contract survived but was later risk-vetoed
+    (`_ledger_refusal`).
+
+    Revert-checked: reverting guard.py's `if selection.selected is None:`
+    branch to `return GuardVerdict(False, selection.rejection_reason or
+    "no_liquid_contract")` (no payload) makes this fail on the KeyError
+    from indexing `out["content"]["contract_funnel"]`. Confirmed, then
+    restored.
+    """
+
+    async def _bad_delta(*a: Any, **k: Any) -> tuple[ContractQuote, ...]:
+        return (_quote(delta=0.05),)
+
+    guard = _guard()
+    ctx = _ctx()
+    with patch("trading_agents.options.tools.guard.fetch_option_candidates", _bad_delta):
+        out = await dispatch_tool_call(
+            _call("open_option_trade", OPEN_ARGS),
+            ctx,
+            guard=guard,
+            registry={"open_option_trade": open_option_trade},
+        )
+    assert out["is_error"] is True
+    assert out["content"]["denied"] == "no_delta_in_band"
+    funnel = out["content"]["contract_funnel"]
+    assert funnel["rejection_reason"] == "no_delta_in_band"
+    assert funnel["selected_occ"] is None
+    # Real per-stage counts, not an empty dict — narrowing to zero IS the story.
+    assert funnel["counts"]["total"] == 1
+    assert funnel["counts"]["delta_band"] == 0
+    assert all(isinstance(v, int) for v in funnel["counts"].values())
+
+
+async def test_a_risk_vetoed_open_ledgers_the_contract_funnel(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The OTHER shape: a contract survived all six stages and was then
+    risk-vetoed (`_ledger_refusal`). Before this fix, `ToolGuard._ledger_
+    refusal`'s own `agent_decisions` row (the Refusal Ledger's whole
+    source of truth) carried `council_run_id`/`refused_by`/
+    `risk_checks_passed` and NOTHING about which contracts were even
+    looked at — measured live: 8/8 real VETOED options rows in the 7 days
+    before this fix had no funnel data at all.
+
+    Revert-checked: reverting `_ledger_refusal`'s `reasoning={...}` to drop
+    the `contract_funnel` key makes the final assertion fail (KeyError).
+    Confirmed, then restored.
+    """
+
+    def _veto_evaluate(proposal: Any, context: Any, caps: Any, **kwargs: Any) -> RiskDecision:
+        return RiskDecision(approved=False, reason="too rich", veto_rule="max_premium_pct")
+
+    decision_log = InMemoryDecisionLog()
+    guard = _guard(decision_log=decision_log)
+    ctx = _ctx()
+    with patch("trading_agents.options.tools.guard.fetch_option_candidates", _fetch_ok), patch(
+        "trading_agents.options.tools.guard.evaluate", _veto_evaluate
+    ):
+        out = await dispatch_tool_call(
+            _call("open_option_trade", OPEN_ARGS),
+            ctx,
+            guard=guard,
+            registry={"open_option_trade": open_option_trade},
+        )
+    assert out["content"]["contract_funnel"]["selected_occ"] == "NVDA260918C00225000"
+
+    assert len(decision_log._rows) == 1
+    row = decision_log._rows[0]
+    assert row.final_action == "VETOED"
+    assert row.risk_veto_rule == "max_premium_pct"
+    funnel = row.reasoning["contract_funnel"]
+    assert funnel["selected_occ"] == "NVDA260918C00225000"
+    assert funnel["rejection_reason"] is None
+    assert funnel["counts"]["liquidity"] == 1
 
 
 async def test_dispatch_never_raises_when_the_handler_raises() -> None:
@@ -1099,6 +1182,41 @@ async def test_dispatch_tool_call_end_to_end_open_and_audit() -> None:
     assert len(broker.orders) == 1
     assert broker.orders[0].side == BrokerSide.BUY_TO_OPEN
     assert len(session_factory.sessions) >= 1
+
+
+async def test_a_successful_open_persists_the_contract_funnel_too() -> None:
+    """`nodes/drafter.py`'s legacy options path has always persisted "we
+    looked at N contracts and bought this one" on the SUCCESS path, not
+    just a HOLD's — `open_option_trade`'s own row (the one this tool
+    actually writes; `runtime` skips its write via `decision_row_written`)
+    needs the same thing, and until 2026-09-01 did not have it at all.
+
+    Revert-checked: reverting trade.py's `entry.reasoning` to drop
+    `"contract_funnel": guard_payload.get("contract_funnel")` makes the
+    final assertion fail (KeyError). Confirmed, then restored.
+    """
+    decision_log = InMemoryDecisionLog()
+    broker = FakeBroker(filled_qty=4, avg_fill_price=2.20)
+    guard = _guard(decision_log=decision_log, broker_factory=lambda: broker)
+    ctx = _ctx()
+
+    with patch("trading_agents.options.tools.guard.fetch_option_candidates", _fetch_ok):
+        out = await dispatch_tool_call(
+            _call("open_option_trade", OPEN_ARGS),
+            ctx,
+            guard=guard,
+            registry={"open_option_trade": open_option_trade},
+        )
+    assert out["is_error"] is False
+
+    assert len(decision_log._rows) == 1
+    row = decision_log._rows[0]
+    assert row.final_action == "BUY"
+    funnel = row.reasoning["contract_funnel"]
+    assert funnel["selected_occ"] == "NVDA260918C00225000"
+    assert funnel["rejection_reason"] is None
+    assert funnel["counts"]
+    assert all(isinstance(v, int) for v in funnel["counts"].values())
 
 
 # ─────────────────────────────────────────────────────────────────────

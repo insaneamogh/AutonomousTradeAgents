@@ -77,8 +77,10 @@ from engine.env import env_flag
 from engine.features.market_calendar import is_us_market_open
 from engine.options import (
     ContractSelectionInputs,
+    ContractSelectionResult,
     OptionsSizingInputs,
     fetch_option_candidates,
+    funnel_block,
     options_position_size,
     select_contract,
     to_risk_proposal,
@@ -345,6 +347,7 @@ class ToolGuard:
         option: Any,
         ask: float | None,
         qty: int,
+        selection: ContractSelectionResult,
         risk_reason: str | None = None,
         checks_passed: list[str] | None = None,
     ) -> GuardVerdict:
@@ -439,6 +442,13 @@ class ToolGuard:
                 reasoning={
                     "council_run_id": ctx.council_run_id,
                     "refused_by": "options_tool_guard",
+                    # A concrete contract already existed by the time ANY
+                    # caller reaches this method (this is the whole line
+                    # this docstring draws) — so the funnel that produced
+                    # it is real, known, and was being silently discarded
+                    # before 2026-09-01. Measured live: 8/8 VETOED options
+                    # rows in the prior 7 days had NO funnel data at all.
+                    "contract_funnel": funnel_block(selection),
                     "risk_checks_passed": list(checks_passed or []),
                 },
             )
@@ -458,7 +468,14 @@ class ToolGuard:
                 reason,
                 underlying,
             )
-        return GuardVerdict(False, reason)
+        # Payload set regardless of whether the ledger write above
+        # succeeded (invariant 1: the write's success never changes the
+        # verdict) — `funnel_block` is a pure read of an already-computed
+        # `selection`, so it cannot itself raise or need the write to have
+        # landed. `dispatch_tool_call` folds this into the denial's
+        # `content` so the model (and the transcript `options_council_node`
+        # reads) sees which contract, not just the rule name.
+        return GuardVerdict(False, reason, payload={"contract_funnel": funnel_block(selection)})
 
     # ── before() ─────────────────────────────────────────────────────
 
@@ -562,7 +579,22 @@ class ToolGuard:
             )
         )
         if selection.selected is None:
-            return GuardVerdict(False, selection.rejection_reason or "no_liquid_contract")
+            # Not a Refusal Ledger row (no CONCRETE contract to point at —
+            # see `_ledger_refusal`'s own docstring for that line), but the
+            # six-stage funnel that produced this HOLD is real and, until
+            # 2026-09-01, was computed here and thrown away: only the bare
+            # `rejection_reason` string survived, folded into free-text
+            # `drafter_rationale` by `options_council_node`. The payload
+            # rides through `dispatch_tool_call`'s denial branch into the
+            # tool transcript, and `options_council_node` lifts it back onto
+            # `state["contract_funnel"]` so `runtime`'s normal HOLD-row
+            # write persists it — the same `reasoning.contract_funnel` shape
+            # the legacy drafter.py path has always written.
+            return GuardVerdict(
+                False,
+                selection.rejection_reason or "no_liquid_contract",
+                payload={"contract_funnel": funnel_block(selection)},
+            )
 
         # From HERE DOWN a concrete contract exists, so every refusal below
         # is a Refusal Ledger row (see `_ledger_refusal` for why the line is
@@ -573,7 +605,7 @@ class ToolGuard:
                 "naked_short_forbidden",
                 ctx=ctx, underlying=underlying, direction=direction,
                 conviction=conviction, thesis=thesis, option=option,
-                ask=option.ask, qty=0,
+                ask=option.ask, qty=0, selection=selection,
             )
         ask = option.ask
         if ask is None or ask <= 0:
@@ -581,7 +613,7 @@ class ToolGuard:
                 "no_liquid_contract",
                 ctx=ctx, underlying=underlying, direction=direction,
                 conviction=conviction, thesis=thesis, option=option,
-                ask=None, qty=0,
+                ask=None, qty=0, selection=selection,
             )
 
         try:
@@ -600,7 +632,7 @@ class ToolGuard:
                 "size_rounds_to_zero",
                 ctx=ctx, underlying=underlying, direction=direction,
                 conviction=conviction, thesis=thesis, option=option,
-                ask=ask, qty=0,
+                ask=ask, qty=0, selection=selection,
             )
 
         proposal = to_risk_proposal(
@@ -631,7 +663,7 @@ class ToolGuard:
                 decision.veto_rule or "risk_vetoed",
                 ctx=ctx, underlying=underlying, direction=direction,
                 conviction=conviction, thesis=thesis, option=option,
-                ask=ask, qty=sizing.qty,
+                ask=ask, qty=sizing.qty, selection=selection,
                 risk_reason=decision.reason,
                 checks_passed=list(decision.checks_passed),
             )
@@ -649,6 +681,11 @@ class ToolGuard:
             "option": option,
             "qty": final_qty,
             "limit_price": ask,
+            # Persisted on the SUCCESS path too — mirrors nodes/drafter.py's
+            # own "we looked at 4,128 contracts and bought this one" note.
+            # `trade.py`'s open_option_trade handler folds this into the
+            # `agent_decisions` row it writes directly.
+            "contract_funnel": funnel_block(selection),
             "risk_decision": decision,
             "context_used": context,
             "council_run_id": ctx.council_run_id,
@@ -1364,7 +1401,16 @@ async def dispatch_tool_call(
                 logger.exception(
                     "failed to log denial of %r — denying regardless", call.name
                 )
-        return {"is_error": True, "content": {"denied": verdict.reason}}
+        # A denial's payload is empty for almost every gate (auto_trade_
+        # disabled, market_closed, unknown_strategy, ...) — only
+        # `_before_open_option_trade`'s post-select_contract denials ever
+        # set one, carrying `contract_funnel` so the six-stage counts
+        # reach the tool transcript instead of being dropped along with
+        # the rest of the verdict. Merged in, never replacing `denied`.
+        content: dict[str, Any] = {"denied": verdict.reason}
+        if verdict.payload:
+            content.update(verdict.payload)
+        return {"is_error": True, "content": content}
 
     start = datetime.now(UTC)
     try:

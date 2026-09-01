@@ -101,6 +101,35 @@ def _denials(transcript: tuple[dict[str, Any], ...]) -> list[str]:
     return out
 
 
+def _contract_funnel(transcript: tuple[dict[str, Any], ...]) -> dict[str, Any] | None:
+    """The ``contract_funnel`` block off the last ``open_option_trade`` call
+    this pass, whether it was denied or succeeded — or ``None`` when the
+    model never called the tool at all (no direction resolution, agents
+    disagreed, etc.), matching ``nodes/drafter.py``'s own "claiming a
+    funnel would be fabricating a stage that never ran" rule.
+
+    Fixes the gap this whole module used to have: ``ToolGuard.
+    _before_open_option_trade`` runs ``select_contract`` on EVERY attempted
+    open (guard.py), but until 2026-09-01 nothing carried its funnel_counts
+    past the tool call — only the bare rejection-reason string survived,
+    inside ``drafter_rationale``'s free text. ``dispatch_tool_call`` now
+    folds ``verdict.payload`` into a denial's ``content`` (see guard.py),
+    and ``trade.py``'s successful-open row already carries its own copy —
+    this just lifts either one back onto state so `runtime`'s normal HOLD
+    write persists it via `reasoning.contract_funnel`, exactly like the
+    legacy drafter.py options path already does. A successful trade's copy
+    here is redundant with `trade.py`'s own row (that row is what actually
+    gets persisted, per `decision_row_written`) but costs nothing to set.
+    """
+    for entry in transcript:
+        if entry.get("tool") != "open_option_trade":
+            continue
+        content = (entry.get("output") or {}).get("content")
+        if isinstance(content, dict) and isinstance(content.get("contract_funnel"), dict):
+            return content["contract_funnel"]
+    return None
+
+
 async def options_council_node(
     state: CouncilState,
     llm: LLM,
@@ -138,6 +167,7 @@ async def options_council_node(
         **state,
         "bull_case": bull.thesis or "",
         "bear_case": bear.thesis or "",
+        "contract_funnel": _contract_funnel(result.tool_transcript),
         "selector_confidence": resolution.conviction,
         "options_resolution": {
             "proceed": resolution.proceed,

@@ -244,6 +244,38 @@ class ContractSelectionResult:
     "dte_window": 12, "delta_band": 5, "liquidity": 2, "iv_present": 2}``."""
 
 
+def funnel_block(selection: ContractSelectionResult) -> dict[str, object]:
+    """``selection``, shaped for persistence in a decision's ``reasoning``
+    JSONB (``{"counts": ..., "rejection_reason": ..., "selected_occ": ...}``).
+
+    The shared shape for the LIVE Bull/Bear tool-guard path
+    (``options/tools/guard.py``'s three call sites: the denial when no
+    contract survives, ``ToolGuard._ledger_refusal``, and the successful-
+    open payload ``options/tools/trade.py`` persists). ``nodes/drafter.py``
+    (the legacy equity-council options path, still real — it's what
+    ``USE_OPTIONS_AGENT=0`` rolls back to) has its own private
+    ``_funnel_block`` that independently produces this same shape; left
+    alone here rather than migrated, since it already works and is already
+    tested. Two copies of the SHAPE, never two copies of what gets done
+    with the result — see the next paragraph for why that distinction is
+    the one that actually matters.
+
+    Measured live 2026-09-01: every one of 68 option-council passes over
+    the prior 7 days that reached ``select_contract`` inside ``guard.py``
+    (13 BUY, 8 VETOED, plus however many HOLDs got that far) persisted `NO`
+    funnel data at all, because ``guard.py`` computed
+    ``selection.funnel_counts`` and then discarded it — only the bare
+    ``rejection_reason`` string survived, folded into free-text
+    ``drafter_rationale``. This function plus its three call sites close
+    that gap without touching a single risk rule or selection threshold.
+    """
+    return {
+        "counts": dict(selection.funnel_counts or {}),
+        "rejection_reason": selection.rejection_reason,
+        "selected_occ": selection.selected.occ_symbol if selection.selected else None,
+    }
+
+
 def _dte(expiry: date, now: datetime) -> int:
     return (expiry - now.date()).days
 

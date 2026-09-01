@@ -245,11 +245,18 @@ def _render_pre_pass(state: CouncilState) -> str:
 
     funnel = state.get("contract_funnel")
     if funnel:
-        # Genuinely not part of hop 1's brief: contract_funnel is written by
-        # `nodes/drafter.py`, which the options fork skips entirely
-        # (`graph.py`), so on this path it is absent by construction rather
-        # than unavailable. Conditional for exactly that reason — an "n/a"
-        # here would say the wrong thing.
+        # Genuinely not part of hop 1's brief, and always empty in
+        # practice: this pre-pass render runs BEFORE either agent has
+        # called (or could call) `open_option_trade` THIS pass, and that
+        # tool call is the only thing that produces a funnel
+        # (`options_council.py`'s `_contract_funnel` lifts it from the
+        # tool transcript onto state only after `run_options_agents`
+        # returns — see that module, not this render, for where it now
+        # actually ends up persisted). `state["contract_funnel"]` here can
+        # only ever be non-None from something upstream of this fork
+        # entirely (there isn't one today), never from this pass's own
+        # attempt. Conditional for exactly that reason — an "n/a" here
+        # would say the wrong thing.
         lines.append("Option-chain funnel (most recent, this pass):")
         lines.append(f"  {funnel}")
         lines.append("")
