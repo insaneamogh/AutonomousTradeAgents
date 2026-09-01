@@ -385,6 +385,43 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-09-01 — `7eb99410` docs: fix numeric drift and overstated claims from the README rewrite
+
+`ID:MODEL2OFF`. Self-review pass on `53f8cf1d` (below) before calling that task
+done — re-grepped my own new text for the same class of error CLAUDE.md §4.2 warns
+about in *other* docs, and found five real issues in my own draft:
+
+1. Root README said the escalation agent is capped at one consult per "20-second
+   fleet tick" — every source I'd actually verified while writing it
+   (`auto_approver.py`'s own gate 6 comment, `reconciler_fleet.py`'s docstring) says
+   **~30 seconds**. A plain transcription slip; fixed the one place it drifted.
+2. Both new READMEs' opening summaries implied the options council's live-fire
+   path is gated behind "explicit consent" the same way the equity sweeper is. It
+   isn't — its second gate is the two agents independently agreeing, not a human
+   consent toggle. The detailed sections further down already drew this
+   distinction correctly (I'd gotten it right once, then contradicted myself in
+   the summary written first); reworded the two summary paragraphs and one line in
+   `apps/mcp_server/README.md`'s new scope note to stop implying a consent step
+   that does not exist on that path.
+3. `docs/README.md` said "5 deterministic exits **+** trailing ratchet," which
+   double-counts the ratchet — it is one of the 5 exits, not an addition on top of
+   them (`docs/OPTIONS_PLAYBOOK.md` §3's own list confirms this). Fixed in the
+   architecture diagram and the repo-layout section.
+4. `docs/README.md` cited `docs/OPTIONS_PLAYBOOK.md` "§5.6" — checked, and that
+   document's §5 is a plain numbered list (1-8), not sub-headed §5.1/§5.2/etc.
+   (confirmed by grepping its actual headings). Changed to "§5, trap 6" so the
+   citation doesn't invent a numbering convention the target document doesn't use.
+5. Two mermaid-syntax risks: an unquoted `&` inside a flowchart node label
+   (`&` is the multi-node-link operator in mermaid flowchart syntax, and behaves
+   unpredictably unquoted inside label text) and parentheses inside a
+   sequence-diagram participant alias. Quoted/escaped the first, removed the
+   parenthetical from the second. Neither changes the content, only its chance of
+   rendering correctly on GitHub.
+
+No new factual claims in this commit — every fix corrects *wording* against facts
+already verified while researching `53f8cf1d`; nothing here required re-reading
+any source. Not merged to `main`.
+
 ### 2026-09-01 — `53f8cf1d` docs: rewrite READMEs for the auto-approve + live options era
 
 `ID:MODEL2OFF`. User's ask (their words, verbatim): "OUR PROJECT HAS CHANGED ALOT
