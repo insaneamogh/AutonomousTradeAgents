@@ -13,7 +13,7 @@ raw token. Rotation generates a fresh token, hashes it, swaps the row's
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
@@ -205,7 +205,13 @@ class MockAuthStore:
         return s
 
     async def get_session(self, session_id: str) -> SessionRecord | None:
-        return self._sessions.get(session_id)
+        # Defensive copy: callers (auth.refresh()) hold this across an
+        # `await` and read a mutable field off it twice. Handing back the
+        # live, shared object let a concurrent rotation's write show up on
+        # a stale reference's second read — see
+        # test_concurrent_refresh_with_same_token_ends_with_one_winner.
+        s = self._sessions.get(session_id)
+        return replace(s) if s is not None else None
 
     async def rotate_session(
         self,

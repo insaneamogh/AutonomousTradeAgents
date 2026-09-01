@@ -12,6 +12,7 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import os
 
 import pytest
@@ -185,6 +186,57 @@ async def test_rotate_session_is_compare_and_swap() -> None:
     # Bootstrap form (no expected) is unconditional.
     boot = await store.rotate_session(sess.id, new_refresh_token_hash="H3")
     assert boot is not None and boot.refresh_token_hash == "H3"
+
+
+async def test_concurrent_refresh_with_same_token_ends_with_one_winner() -> None:
+    """H1, service-level: two callers racing the SAME refresh token through
+    the full ``auth_svc.refresh()`` — not just the store's CAS in isolation
+    (see ``test_rotate_session_is_compare_and_swap`` above).
+
+    ``MockAuthStore.get_session`` used to hand back the live, shared
+    ``SessionRecord`` instance. ``auth.refresh()`` holds that reference in a
+    local var and reads ``.refresh_token_hash`` twice — once to validate the
+    presented token, once (after a real suspend: ``asyncio.to_thread``'s
+    scrypt verify) as the CAS's ``expected_current_hash``. A concurrent
+    winner's rotation lands on that SAME object in between, so the loser's
+    second read silently picked up the NEW hash and the CAS spuriously
+    matched a moving target — both callers walked away with a valid token
+    pair instead of exactly one.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from app.services.auth import auth as auth_svc
+    from app.services.auth.auth_store import MockAuthStore
+    from app.services.auth.jwt_service import hash_token, mint_refresh
+
+    store = MockAuthStore()
+    secret = "test-secret-that-is-long-enough-32bytes"
+    user = await store.upsert_user("racing-refresh@example.com")
+    session = await store.create_session(
+        user_id=user.id,
+        refresh_token_hash="placeholder",
+        expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+    )
+    raw_refresh = mint_refresh(secret=secret, user_id=user.id, session_id=session.id)
+    await store.rotate_session(session.id, new_refresh_token_hash=hash_token(raw_refresh))
+
+    first, second = await asyncio.gather(
+        auth_svc.refresh(refresh_token=raw_refresh, store=store, secret=secret),
+        auth_svc.refresh(refresh_token=raw_refresh, store=store, secret=secret),
+        return_exceptions=True,
+    )
+
+    winners = [r for r in (first, second) if not isinstance(r, Exception)]
+    losers = [r for r in (first, second) if isinstance(r, Exception)]
+
+    assert len(winners) == 1, (first, second)
+    assert len(losers) == 1, (first, second)
+    assert isinstance(losers[0], auth_svc.RefreshError)
+    assert losers[0].code == "superseded"
+
+    # Whichever won, a detected race revokes the session outright.
+    final = await store.get_session(session.id)
+    assert final is not None and final.revoked_at is not None
 
 
 async def test_mark_magic_link_used_claims_once() -> None:
