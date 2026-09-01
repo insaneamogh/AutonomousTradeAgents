@@ -15,7 +15,9 @@ This system started as a self-approval product: the agent proposed, and a human
 always tapped the button before anything reached the broker. **That is no longer
 the whole story.** Unattended entries are live in production now, through two
 separate mechanisms described in full below — both off by default, both hard-coded
-to paper trading, both gated behind explicit consent. If you have read an older
+to paper trading, and both bounded by a second, independent gate beyond the
+operator's own switch (an explicit owner consent toggle for one, two agents having
+to independently agree for the other). If you have read an older
 version of this file, or anything in this repo that describes every trade as
 human-approved with no further qualification, that description is now wrong. This
 section, and the one right after it, are the correction.
@@ -106,7 +108,8 @@ take-profit backstop, trailing stop, time stop, expiry sweep) with no LLM in the
 loop at all, and — only as a secondary, later check, on top of a ratchet that keeps
 running regardless — a single monotone LLM may tighten a stop, raise a take-profit,
 close early, or scale in through the same guard, capped at one such consult per
-20-second fleet tick, never able to loosen anything. See
+~30-second fleet tick, across the whole fleet rather than per position, and can
+never loosen anything. See
 [`docs/OPTIONS_PLAYBOOK.md`](docs/OPTIONS_PLAYBOOK.md) §3 for the exit order and the
 exact trigger conditions.
 
@@ -169,7 +172,9 @@ Full architecture, module map, environment variables, and setup:
 
 ## What's actually on screen
 
-- **Picks / Review** — proposals waiting on a human, exactly as before.
+- **Picks / Review** — proposals waiting on a human. A row can now disappear from
+  here because the auto-approve sweeper took it first, not only because someone
+  tapped it — check the `AUTO` pill on Decisions to tell which one happened.
 - **Decisions** — every council decision, approved, held, or vetoed, with an `AUTO`
   pill on any row a sweeper or an agent executed with nobody watching.
 - **Positions — Open and Closed.** Open positions show live unrealized P&L. Closed

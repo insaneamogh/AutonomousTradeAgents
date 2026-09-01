@@ -21,9 +21,12 @@ Two separate, unattended-execution paths now exist elsewhere in this codebase �
 equity auto-approve sweeper (`apps/api/app/services/orders/auto_approver.py`) and a
 live options Bull/Bear council whose winning agent can call a real, guarded trade
 tool (`apps/agents/trading_agents/options/tools/guard.py`) — both off by default,
-both hard-coded to paper trading, both gated behind an explicit consent step, and
-both described in full in the root [`README.md`](../../README.md)'s "How autonomous
-is 'autonomous'" section. Neither is reachable from this MCP server, through any
+both hard-coded to paper trading, and both described in full in the root
+[`README.md`](../../README.md)'s "How autonomous is 'autonomous'" section (the
+equity sweeper needs the account owner's own in-app consent on top of the operator
+switch; the options council's second gate is the two agents independently agreeing,
+not a human consent step — they are not the same mechanism). Neither is reachable
+from this MCP server, through any
 tool below, under any config — the architecture rule quoted above still holds
 end-to-end, it just no longer implies "and therefore a human always approves it,"
 which used to be true of the whole app and now isn't.

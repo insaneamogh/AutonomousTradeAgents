@@ -3,8 +3,8 @@
 US-equities-and-options swing-trading system. An LLM **agent council** proposes
 trades, a **deterministic risk engine** decides/sizes/vetoes them, and — as of the
 last 24 hours — some of those trades can now execute with **no human in the loop**,
-behind an explicit consent gate described in full below. A mobile + desktop app
-surfaces every pick plus a full audit trail.
+through two separate gated mechanisms described in full below. A mobile + desktop
+app surfaces every pick plus a full audit trail.
 
 > **The one architectural rule: agents propose, deterministic code disposes.**
 > LLM output is never the kill-switch, on any path, attended or not. Every order
@@ -27,7 +27,7 @@ on by default; neither is a variant of the other. Full detail, gate-by-gate: roo
 | Second key | `auto_approve_consent` — per-connection, set by the account owner in-app | none needed — the two agents must independently agree, which is its own second check |
 | Where it lives | `apps/api/app/services/orders/auto_approver.py`, called from `ReconcilerFleet.tick()` | `apps/agents/trading_agents/options/tools/guard.py`'s `ToolGuard`, called from the council graph directly |
 | What it re-checks | The full risk engine, via the same `execute_proposal()` a human tap calls | The full risk engine, as the last of a 12-step gate, inside the tool call itself |
-| Paper-only | Hard-coded boolean, not a flag | Hard-coded boolean, not a flag (same check, duplicated on purpose — see `docs/OPTIONS_PLAYBOOK.md` §5.6) |
+| Paper-only | Hard-coded boolean, not a flag | Hard-coded boolean, not a flag (same check, duplicated on purpose across both mutating tools — see `docs/OPTIONS_PLAYBOOK.md` §5, trap 6) |
 | Rate limit | 1 per ~30s reconciler tick, ≤5/day (both env-tunable) | 1 `open_option_trade` per council pass |
 
 Once a position is open, exits are unattended by construction for options (Alpaca
@@ -52,7 +52,7 @@ flowchart TB
         REVIEW[Review queue]
         DECISIONS[Decisions<br/>AUTO pill = unattended]
         POSITIONS[Positions<br/>Open + Closed history]
-        AUDIT[Insights — Veto ledger<br/>Ghost P&L · Contract funnel]
+        AUDIT["Insights — Veto ledger<br/>Ghost P&amp;L · Contract funnel"]
     end
 
     subgraph api["⚙️ API — single FastAPI instance on Railway"]
@@ -79,7 +79,7 @@ flowchart TB
         ERULES[engine.risk.evaluate<br/>17 named equity rules]
         ORULES[engine.options.risk.evaluate_option<br/>13 named options rules]
         SELECT[engine.options.selection<br/>6-stage contract funnel]
-        RATCHET[position_manager.py<br/>5 deterministic exits + trailing ratchet]
+        RATCHET["position_manager.py<br/>5 exits (one is the ratchet) + escalation"]
     end
 
     subgraph ext["External"]
@@ -150,7 +150,7 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-    participant F as ReconcilerFleet (tick, ~30s)
+    participant F as ReconcilerFleet tick
     participant AP as auto_approver
     participant B as options Bull/Bear
     participant G as ToolGuard
@@ -224,9 +224,10 @@ apps/
                    Run), store.py, decisions_list.py, funnel_service.py,
                    ghost_service.py, scanner_status.py
       orders/      executor.py, auto_approver.py (the equity sweeper),
-                   position_manager.py (5 deterministic exits + ratchet +
-                   the escalation hook), reconciler_fleet.py (per-user
-                   broker reconciliation, ~30s tick), order_sync.py
+                   position_manager.py (the 5 deterministic exits, one of
+                   which IS the trailing ratchet, plus the escalation
+                   hook), reconciler_fleet.py (per-user broker
+                   reconciliation, ~30s tick), order_sync.py
       broker/ auth/ notifications/ platform/
   mcp_server/ Our OWN read/propose-only MCP server — separate from, and
               does not satisfy, the hackathon's "Alpaca's own MCP/CLI"
