@@ -232,18 +232,23 @@ by Tuesday close is the emergency signal** — loosen the funnel, never the risk
   SHIPPED the same day.** `RiskCaps.aggressive_paper()` is a reviewed profile — dispatched
   via `RISK_PROFILE=aggressive_paper` (unset/unknown value stays `conservative` and logs a
   warning), never via an env var that supplies a number directly. It raises
-  `options_max_premium_pct` 1.0 → 2.5 and `options_max_total_premium_pct` 5.0 → 12.0, plus
-  `min_council_confidence` 0.50 → 0.42, `min_specialist_avg_score` 45.0 → 40.0,
-  `options_stop_loss_pct` 50.0 → 40.0 ("cut losers early"), `max_correlation_cluster` 3 → 4.
-  The bounded-loss argument survives with a wider bound: max loss is still the premium, and
-  `daily_drawdown_halt_pct = -3.0` **does not move, in either profile**, which is what keeps
-  a 12% book-to-zero a multi-day worst case rather than a single-day one. Widening the cap
+  `options_max_premium_pct` 1.0 → 2.5 and `options_max_total_premium_pct` 5.0 → 7.5 (briefly,
+  wrongly, 12.0 for one day — see the 2026-09-01 post-mortem in `fable5findings.md`'s
+  `ebfc8718` entry for why 12.0 violated the halt-coupling invariant below and was
+  corrected), plus `min_council_confidence` 0.50 → 0.42, `min_specialist_avg_score` 45.0 →
+  40.0, `options_stop_loss_pct` 50.0 → 40.0 ("cut losers early"), `max_correlation_cluster`
+  3 → 4. The bounded-loss argument survives with a wider bound: max loss is still the
+  premium, and `daily_drawdown_halt_pct = -3.0` **does not move, in either profile**, which
+  is what keeps a 7.5% book-to-zero a multi-day worst case rather than a single-day one
+  (the invariant is `options_max_total_premium_pct × options_stop_loss_pct/100 ≤
+  |daily_drawdown_halt_pct|` — 12.0 violated it, 7.5 satisfies it exactly). Widening the cap
   and freezing the halt are one coupled decision. `MIN_FIT_TO_TRADE` (a separate,
   non-`RiskCaps` gate) also moved 0.45 → 0.42, alongside a new evidence gate in
   `best_strategy` that refuses to call an empty/near-empty feature dict "tradable" — see
   [`PLAN_AGGRESSIVE_PROFILE.md`](PLAN_AGGRESSIVE_PROFILE.md) §4. Full reasoning and the
   numbers: that plan, and [`docs/OPTIONS_PLAYBOOK.md`](OPTIONS_PLAYBOOK.md) §2–§4.
-- **Do not raise the caps beyond 2.5% / 12%.** That is the reviewed ceiling.
+- **Do not raise the caps beyond 2.5% / 7.5%.** That is the reviewed ceiling — 7.5%, not
+  12%, per the halt-coupling invariant above.
 - **Do not change `selection.py` constants after Monday's open.** One reviewed change
   landed 2026-08-30 alongside the profile above (the delta bands widened to
   `[0.35,0.75]`/`[0.25,0.65]` — see `OPTIONS_PLAYBOOK.md` §1.3), then frozen, so funnel

@@ -235,7 +235,9 @@ adjust_option_position(
 3. `select_contract(...)` → no survivor ⇒ deny with the **named funnel rejection**
    (`no_delta_in_band`, `no_liquid_contract`, …).
 4. `options_position_size(...)` → qty < 1 ⇒ deny `size_rounds_to_zero`.
-5. **`engine.risk.evaluate(...)` — all 13 options rules.** Veto ⇒ deny with the rule name.
+5. **`engine.risk.evaluate(...)` — all 13 options rules**, except `min_specialist_avg_score`,
+   which self-gates every time on this path (`specialists=()`, no specialist score exists
+   here — disclosed in `docs/OPTIONS_PLAYBOOK.md`'s rule table). Veto ⇒ deny with the rule name.
 6. Per-pass ceiling: **one `open_option_trade` per symbol per pass.**
 7. `AUTO_TRADE_ENABLED` **and** paper mode **and** market open, else deny.
 

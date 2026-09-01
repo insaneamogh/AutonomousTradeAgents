@@ -171,10 +171,15 @@ def evaluate(
         passed.append("min_council_confidence")
 
     # ── 7. Specialist-average score floor ───────────────────────────
+    # Self-gates out (returns None) when `specialists` is empty — e.g. an
+    # options-council pass, where technical/fundamental/macro never run.
+    # Mirrors #6's contract: a self-gated rule didn't run, so it isn't
+    # listed as passed either.
     d = min_specialist_avg_score(working, context, caps, specialists=specialists)
-    if d is not None and not d.approved:
-        return d
-    passed.append("min_specialist_avg_score")
+    if d is not None:
+        if not d.approved:
+            return d
+        passed.append("min_specialist_avg_score")
 
     # ── 8. [US] PDT (regulatory) ────────────────────────────────────
     d = pdt_block(working, context, caps)

@@ -111,6 +111,11 @@ ENABLED = RiskCaps(options_disabled=False)
 
 
 def test_happy_entry_clears_every_rule() -> None:
+    # min_specialist_avg_score is deliberately NOT in this list: no options
+    # entry point ever passes `specialists=` (technical/fundamental/macro
+    # never run ahead of the Bull/Bear council), so the rule always
+    # self-gates here — see test_specialist_avg_score_self_gates_on_every_
+    # options_entry below for the dedicated coverage of that fact.
     d = evaluate(_entry(), _ctx(), ENABLED)
     assert d.approved
     assert d.veto_rule is None
@@ -125,13 +130,37 @@ def test_happy_entry_clears_every_rule() -> None:
         "iv_unavailable",
         "earnings_blackout",
         "min_council_confidence",
-        "min_specialist_avg_score",
         "pdt_block",
         "max_open_positions",
         "max_premium_pct",
         "max_total_premium_pct",
     ):
         assert name in d.checks_passed, f"{name} missing from {d.checks_passed}"
+
+
+def test_specialist_avg_score_self_gates_on_every_options_entry() -> None:
+    # No caller on the options path ever supplies `specialists=` (default
+    # `()`) — this asserts the self-gate is honored correctly: the rule
+    # neither vetoes nor claims to have run. Confirms the fix for the bug
+    # where both call sites unconditionally recorded this rule as passed
+    # even when it never ran at all.
+    d = evaluate(_entry(), _ctx(), ENABLED)
+    assert d.approved
+    assert "min_specialist_avg_score" not in d.checks_passed
+
+    # And still correctly enforces the floor on the rare/future path where
+    # real specialists ARE supplied (e.g. via executor.py's _re_run_risk),
+    # proving the self-gate fix didn't quietly break the rule itself.
+    from engine.risk import SpecialistScore
+
+    blocked = evaluate(
+        _entry(),
+        _ctx(),
+        ENABLED,
+        specialists=(SpecialistScore("technical", 20.0, 0.4),),
+    )
+    assert not blocked.approved
+    assert blocked.veto_rule == "min_specialist_avg_score"
 
 
 def test_happy_close_clears_every_rule() -> None:

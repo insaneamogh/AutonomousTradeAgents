@@ -14,18 +14,27 @@ Runs its OWN sequence:
     illiquid_contract
     iv_unavailable
     earnings_blackout
-    min_council_confidence        ← reused, unmodified
-    min_specialist_avg_score      ← reused, unmodified
+    min_council_confidence        ← reused, unmodified — the options path's real quality gate
+    min_specialist_avg_score      ← reused, unmodified, but WIRED AND PERMANENTLY INERT here
+                                     (same disclosed category as earnings_blackout above) —
+                                     technical/fundamental/macro never run ahead of the
+                                     Bull/Bear council on this path, so `specialists` is
+                                     always empty and the rule always self-gates. See
+                                     docs/OPTIONS_PLAYBOOK.md's rule table.
     pdt_block                     ← reused, unmodified
     max_open_positions            ← reused, unmodified
     max_premium_pct               ← may TRIM
     max_total_premium_pct         ← post-trim
     wash_sale                     ← reused, unmodified, INFORMATIONAL only
 
-The five reused rules need zero modification: each already self-gates
-correctly on ``proposal.side``/``market_of(proposal.symbol)`` — none of
-them branch on anything equity-specific — so they behave identically here
-as they do for a plain equity BUY/SELL.
+The reused rules need zero modification to be CORRECT here: each already
+self-gates safely on absent input (``proposal.side``/``market_of(...)``/
+empty ``specialists``) rather than branching on anything equity-specific.
+That does not mean every one of them actually fires — `min_specialist_avg_score`
+self-gates on every single options pass, unconditionally, because this path
+never populates `specialists` at all (see above). `min_council_confidence`
+is the rule doing real quality-gating work here, fed by Bull/Bear's
+resolved conviction.
 
 Same return contract as ``engine.risk.engine.evaluate``: first veto wins;
 otherwise ``RiskDecision(approved=True, ...)`` with the accumulated
@@ -162,10 +171,19 @@ def evaluate_option(
         passed.append("min_council_confidence")
 
     # ── 11. Specialist-average score floor (reused, unmodified) ──────
+    # Self-gates out (returns None) whenever `specialists` is empty — which
+    # is EVERY options pass today: technical/fundamental/macro never run
+    # ahead of the Bull/Bear council (graph.py routes strategy_fit straight
+    # to options_council). This rule is consequently a structural no-op for
+    # options, same category as earnings_blackout above — see
+    # docs/OPTIONS_PLAYBOOK.md's rule table for the disclosure. The options
+    # path's real quality gate is #10 (min_council_confidence), fed by
+    # Bull/Bear's resolved conviction.
     d = min_specialist_avg_score(working, context, caps, specialists=specialists)
-    if d is not None and not d.approved:
-        return d
-    passed.append("min_specialist_avg_score")
+    if d is not None:
+        if not d.approved:
+            return d
+        passed.append("min_specialist_avg_score")
 
     # ── 12. PDT (reused, unmodified) ─────────────────────────────────
     d = pdt_block(working, context, caps)

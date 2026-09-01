@@ -650,15 +650,24 @@ class ToolGuard:
         )
         # 12. The full risk engine — the SAME evaluate() the executor and
         # risk_officer_node already call for every proposal. Not
-        # reimplemented, not bypassed.
-        decision = evaluate(proposal, context, caps)
+        # reimplemented, not bypassed. `specialists=()` explicit: this path
+        # never runs technical/fundamental/macro ahead of the Bull/Bear
+        # council (graph.py routes strategy_fit straight to
+        # options_council), so there is never a real specialist score to
+        # supply. min_specialist_avg_score self-gates on that and is
+        # consequently a structural no-op here — same disclosed category as
+        # earnings_blackout (see docs/OPTIONS_PLAYBOOK.md's rule table).
+        # min_council_confidence, fed by Bull/Bear's resolved conviction, is
+        # this path's real quality gate.
+        decision = evaluate(proposal, context, caps, specialists=())
         if not decision.approved:
-            # THE one that matters. `evaluate` is where all 11 options rules
+            # THE one that matters. `evaluate` is where all 13 options rules
             # (max_premium_pct, earnings_blackout, illiquid_contract,
             # expiry_day_entry, iv_unavailable, options_level_insufficient,
-            # min_dte/max_dte, …) and the shared equity rules actually fire,
-            # so ledgering this single site is what makes every one of them
-            # reachable by the per-rule scorecard.
+            # min_dte/max_dte, …) and the shared equity rules actually fire —
+            # min_specialist_avg_score is the one documented exception, see
+            # above — so ledgering this single site is what makes every
+            # reachable one of them show up on the per-rule scorecard.
             return await self._ledger_refusal(
                 decision.veto_rule or "risk_vetoed",
                 ctx=ctx, underlying=underlying, direction=direction,
@@ -875,7 +884,9 @@ class ToolGuard:
         # Full risk re-check — max_total_premium_pct naturally sees this
         # add ON TOP of the existing position because `context` reflects
         # current broker state. No separate aggregate-tracking needed here.
-        decision = evaluate(proposal, context, ctx.caps)
+        # `specialists=()` explicit — same reasoning as the open-trade call
+        # site above: no specialist score exists to supply on this path.
+        decision = evaluate(proposal, context, ctx.caps, specialists=())
         if not decision.approved:
             return GuardVerdict(False, decision.veto_rule or "risk_vetoed")
 

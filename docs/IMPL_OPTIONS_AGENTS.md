@@ -134,7 +134,12 @@ Only after all twelve does the handler call `packages/broker`.
 
 > **The order still routes `engine.risk` → `packages/broker`.** The call site moved
 > inside a guard; the invariant did not move. Step 12 is the same `evaluate()` the
-> executor runs — **do not reimplement any risk logic here** (CLAUDE.md §4.4).
+> executor runs — **do not reimplement any risk logic here** (CLAUDE.md §4.4). One
+> named exception, found and disclosed 2026-09-01: `evaluate()` is called with
+> `specialists=()` here (never populated on this path — technical/fundamental/macro
+> don't run ahead of the Bull/Bear council), so `min_specialist_avg_score` self-gates
+> every time. Everything else genuinely does fire identically to the equity path. See
+> `docs/OPTIONS_PLAYBOOK.md`'s rule table for the full disclosure.
 
 ### 2.2 🔒 `before("adjust_option_position", …)` — the ratchet invariant
 

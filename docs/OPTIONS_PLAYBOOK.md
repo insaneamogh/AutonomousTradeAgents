@@ -300,11 +300,12 @@ No LLM output participates in any of them.
 | `illiquid_contract` | OI / volume / spread floors, re-checked at approval |
 | `earnings_blackout` | **permanently inert — see the warning below** |
 | `max_premium_pct` | one position's premium > **1% of equity** (**2.5%** under `aggressive_paper`) — *trims first* |
-| `max_total_premium_pct` | all open premium > **5% of equity** (**12%** under `aggressive_paper`) — blocks, never trims |
+| `max_total_premium_pct` | all open premium > **5% of equity** (**7.5%** under `aggressive_paper`) — blocks, never trims |
 
 Plus the shared equity rules that apply to any order: `pdt_block`,
 `daily_drawdown_halt`, `max_open_positions`, `min_council_confidence`,
-`min_specialist_avg_score`, `correlation_cap`, `wash_sale` (informational).
+`min_specialist_avg_score` (**wired but permanently inert here — see the
+second warning below**), `correlation_cap`, `wash_sale` (informational).
 
 **Trim vs. block.** `max_premium_pct` shrinks the order to fit rather than
 refusing it, and the rule that did so is now recorded by name
@@ -317,6 +318,18 @@ it becomes a block.
 > so `days_to_earnings` is always `None` and the rule never fires. It is named
 > and disclosed rather than quietly deleted — and rather than fed a fabricated
 > date. Do not describe it as an active control anywhere.
+
+> ⚠️ **`min_specialist_avg_score` is wired and permanently inert for
+> options**, found and disclosed 2026-09-01. Technical/fundamental/macro
+> never run ahead of the Bull/Bear council on this path (`graph.py` routes
+> `strategy_fit → options_council` directly), so `guard.py` calls
+> `evaluate(..., specialists=())` explicitly — there is no specialist score
+> to average, so the 40-point floor self-gates every single time. This was
+> previously undisclosed (every doc claimed full parity with the equity
+> path); a separate `checks_passed` bookkeeping bug that unconditionally
+> recorded it as "passed" even while self-gated was fixed the same day. The
+> options path's real quality gate is `min_council_confidence`, fed by
+> Bull/Bear's resolved (`min()`, not averaged) conviction.
 
 ### Why the caps are 2.5% and 12% (was 1%/5%), and what still bounds them
 

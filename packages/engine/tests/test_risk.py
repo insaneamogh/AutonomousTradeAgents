@@ -330,6 +330,17 @@ def test_specialist_avg_below_floor_blocks() -> None:
     assert d.veto_rule == "min_specialist_avg_score"
 
 
+def test_specialist_avg_score_absent_from_checks_passed_when_self_gated() -> None:
+    # `specialists=()` (the default) means the rule never ran — RiskDecision
+    # .checks_passed's own contract says a self-gated rule is not listed as
+    # passed. This is the same options-council situation that let
+    # min_specialist_avg_score silently pass unconditionally for every
+    # options trade — see test_options_risk.py's twin of this test.
+    d = evaluate(_buy(), _ctx())
+    assert d.approved
+    assert "min_specialist_avg_score" not in d.checks_passed
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Wash-sale (INFORMATIONAL — never vetoes)
 # ─────────────────────────────────────────────────────────────────────
