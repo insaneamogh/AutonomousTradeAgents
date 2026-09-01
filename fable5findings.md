@@ -385,6 +385,83 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-09-01 — `452bb044`/`7dabbd4a` fix(mobile): "opened 5d ago" positions — diagnosed the shared-account confusion, not a bug in the connect flow
+
+**The report:** user saw closed positions labeled "opened 5d ago" and was alarmed —
+they believed they'd created a fresh, personal paper account the day before
+("new paper acc was created yesterday itself").
+
+**What I verified, directly against production Postgres** (read-only queries via
+`asyncpg`, using the `DATABASE_URL` in the main checkout's `apps/api/.env` — this
+worktree has no `.env` of its own):
+
+- `users`: 3 rows. The demo fixture (`00000000-…-001`), the operator's real login
+  `amoghpatil2001@gmail.com` (created 2026-08-26T17:11:18Z), and a second personal
+  email `amoghpatil01@gmail.com` (created 2026-08-30T17:33:00Z).
+- `broker_connections`: the operator's row (`cda6b8ce…`) has been `status='active'`
+  continuously since **2026-08-26** — `created_at` never moved. `account_number` is
+  NULL and its ciphertext is exactly the length Fernet produces for a 10-byte
+  plaintext — matching the `"env:alpaca"` sentinel's length precisely, and matching
+  the demo fixture's own row byte-for-byte. Could not decrypt the ciphertext itself
+  (prod uses a real `BROKER_TOKEN_ENCRYPTION_KEY`; the local dev-fallback key does
+  not round-trip it, checked directly), but a real completed OAuth callback always
+  writes a real `account_number` from Alpaca's response — NULL here, on every active
+  row, is conclusive on its own. **This has been the operator's shared env-linked
+  paper account the entire time, not something created "yesterday."**
+- The row's `updated_at` (2026-08-31T15:13:53.044005Z — "yesterday" from the user's
+  report) is explained exactly, to the microsecond, by `auto_approve_consent`
+  flipping to `true` on that same row — not a reconnect, not a new row. Confirmed by
+  reading every code path that writes `broker_connections`: `upsert_connection` (env
+  bootstrap or a completed OAuth callback), `revoke_connection`, `set_live_consent`,
+  `set_auto_approve_consent`. Clicking "Connect Alpaca paper" while already connected
+  doesn't even reach the DB (`/connect/alpaca/start` only stages an in-memory PKCE
+  state; the button also isn't rendered once a connection exists). 37 minutes after
+  the flip, the auto-approve sweeper opened VZ; BAC and CVX followed that evening —
+  all three `approval_mode='auto'` in `agent_decisions`. **The user's Dashboard
+  AUTO/ASK pill (`AutoApprovePill.tsx`), not the Connect button, is almost certainly
+  what they actually pressed.**
+- The "opened 5d ago" CLOSED positions (CVX, JNJ, KO, SPY, UNP, XOM) are real:
+  `agent_decisions` shows all six opened 2026-08-27 with `approval_mode='ask'` (a
+  human tapped Approve on each) and closed as one batch at 2026-08-30T06:18Z. 8/27 to
+  9/1 is genuinely 5 days. Nothing fabricated, nothing duplicated onto this account.
+- Separately, and this IS a real (now-fixed) finding: the third user
+  (`amoghpatil01@gmail.com`) got this same env-sentinel connection auto-attached on
+  signup, 2026-08-30T17:33:00Z — 39 minutes *before* commit `2709d236` (the
+  multi-tenant allowlist fix from `docs/PLAN_MULTI_TENANT.md` §1) landed at 18:12Z
+  the same day. That leaked connection was revoked afterward and has zero orders/
+  decisions against it — real exposure, but briefly, and no trading harm. No such
+  leak exists for any signup since. `docs/PLAN_MULTI_TENANT.md`'s header still said
+  "plan, not built" for this — corrected in `7dabbd4a` (CLAUDE.md §4.2: code wins,
+  then fix the doc).
+
+**What I fixed (`452bb044`):** the connection's real `createdAt` was already
+returned by `/broker/connections` and already typed on the frontend
+(`BrokerConnection.createdAt`) but never rendered anywhere — neither Settings
+screen showed the account's age at all. Added a "Connected" column (desktop
+Settings, reusing the existing `ago()` formatter) and a "Connected since <date>"
+line (mobile Settings). Also added one sentence to `AutoApprovePill`'s confirm
+dialog clarifying that arming it acts on the account already connected in
+Settings — history and all — not a fresh one. Pure copy/display change; skipped
+the §4.1 revert-check as the rule itself permits for copy-only changes.
+
+**Verified:** `pnpm -s exec tsc --noEmit -p apps/mobile/tsconfig.json` clean;
+`pnpm --filter mobile exec jest --silent` — 82/82 passed, 10/10 suites; existing
+Python broker/env-bootstrap tests (`test_env_bootstrap.py`, `test_broker.py`) —
+43 passed, 1 skipped, untouched by this change. Did **not** visually render the
+new column/line in a live browser this session — only type-checked + unit-tested.
+
+**Left open / needs a human decision:** true per-user isolated paper accounts
+(so a second signup gets a genuinely empty account instead of the operator's
+shared one) is a materially larger feature — new Alpaca account provisioning or
+a much deeper OAuth-only posture — and was explicitly out of scope for this
+session. Recommend **against** building it in the remaining 3 days given the
+hackathon deadline; flagging per the task brief rather than building it. Also
+not investigated: whether `last_used_at` on `broker_connections` is written
+anywhere at all — every row in production currently shows it as NULL, which
+would make the existing "Last used" column on desktop Settings permanently
+show "—" regardless of real usage. Noticed in passing; did not chase it down,
+out of scope for this task.
+
 ### 2026-09-01 — `56da03fb` fix(options): guard.py computed the contract funnel and threw it away
 
 `ID:MODEL2OFF`. User's ask: "loosen the funnel a bit i dont see any options
