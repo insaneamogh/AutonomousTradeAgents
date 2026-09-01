@@ -305,7 +305,7 @@ export function SettingsScreen() {
                   maxLength={40}
                 />
                 {open && hits.length > 0 ? (
-                  <ul id="watchlist-symbol-suggestions" role="listbox" className="pg-typeahead">
+                  <ul id="watchlist-symbol-suggestions" role="listbox" className="pg-typeahead pg-scroll">
                     {hits.map((h, i) => (
                       <li key={h.symbol} role="option" aria-selected={i === activeIndex}>
                         <button

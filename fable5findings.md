@@ -385,6 +385,30 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-09-01 — fix(desktop): `.pg-typeahead` dropdown had the same missing-scrollbar-styling gap as the Stream panel
+
+`ID:MODEL2OFF`. Follow-up flagged by the earlier CSS-fix pass
+(`96555e5c`/`78dea6e9`) rather than fixed there: the ticker-search
+combobox's suggestion list (`.pg-typeahead` in `theme.ts`, `max-height:
+268px; overflow-y: auto;`, no scrollbar styling) had the identical
+fallback-to-browser-default scrollbar the Stream panel did. Added
+`pg-scroll` (the reusable class that fix already introduced) alongside
+the existing `pg-typeahead` className at both real render sites —
+`Picks.tsx:251` and `Settings.tsx:308` (the earlier grep only checked
+one file; there are two).
+
+**Verified live**, not just by CSS reasoning: served a static
+reproduction (real `PLATINUM_CSS` extracted verbatim from `theme.ts`,
+real markup) over a local `http.server` and rendered it in the Browser
+pane. With `pg-scroll`: thin, rounded, transparent-track thumb. Removed
+the class on the same live DOM node for contrast: browser-native thick
+scrollbar with up/down arrow buttons. Confirmed `scrollHeight (408) >
+clientHeight (261)` first, so the fixture genuinely overflows and isn't
+just showing an inert non-scrolling list.
+
+`tsc --noEmit` clean, `jest` 11 suites / 83 passed, before and after —
+pure CSS, no behavior to regress.
+
 ### 2026-09-01 — `f5ca51ae` fix(reflection): reconcile two independent fixes to the same pending-reflection gap
 
 `ID:MODEL2OFF`. Two subagents were dispatched in parallel to investigate two
