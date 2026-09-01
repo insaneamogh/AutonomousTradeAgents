@@ -8,6 +8,14 @@ multiplier fix: an option's ``market_value`` is ALREADY multiplier-scaled
 against ``avg_entry_price``/``fill_avg_price`` (never multiplied) without
 correcting for that puts two numbers on different units into the same
 subtraction.
+
+Also pins ``_estimate_exit_price``/``_closed_from_decision`` — the
+closed-position-history DTO builder behind GET /positions/history. Neither
+touches a database, matching this file's own convention (and this
+package's: there is no live-DB test harness at all, so
+``list_closed_positions``'s actual query path is exercised via mock-mode
+route tests + a one-off live-Postgres verification script, not a fake
+session here).
 """
 
 from __future__ import annotations
@@ -16,8 +24,12 @@ import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+import pytest
+
 from app.services.orders.positions_service import (
     _broker_key_for_decision,
+    _closed_from_decision,
+    _estimate_exit_price,
     _from_decision,
     _unmanaged,
 )
@@ -308,3 +320,165 @@ def test_broker_key_for_decision_is_occ_symbol_for_option() -> None:
         proposal={"side": "BUY", "isOption": True, "occSymbol": "nvda261002c00225000"},
     )
     assert _broker_key_for_decision(decision) == "NVDA261002C00225000"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# _estimate_exit_price — back-solving the exit price from realized_pnl,
+# the only option for an `external_broker` close (order_sync never places
+# an order for one, so there is no fill price to read directly).
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_estimate_exit_price_long_equity() -> None:
+    # Entered 100, gained $50 on 10 shares → must have exited at 105.
+    assert _estimate_exit_price(
+        entry=100.0, realized_pnl=50.0, qty=10, multiplier=1, entry_side="BUY",
+    ) == 105.0
+
+
+def test_estimate_exit_price_short_equity_gains_when_price_falls() -> None:
+    # Entered 100 short, gained $50 on 10 shares → must have covered at 95
+    # (a short's own mirror-image formula, not the long formula run backwards).
+    assert _estimate_exit_price(
+        entry=100.0, realized_pnl=50.0, qty=10, multiplier=1, entry_side="SELL",
+    ) == 95.0
+
+
+def test_estimate_exit_price_option_uses_multiplier() -> None:
+    # Same numbers as test_option_unrealized_pnl_scaled_by_multiplier above
+    # (entry 2.50, mark 3.00, 1 contract, x100 multiplier -> $50 P&L) — the
+    # back-solve must recover the SAME 3.00 exit this file already pins as
+    # the forward answer, or the two would be answering different questions
+    # about the identical trade.
+    assert _estimate_exit_price(
+        entry=2.50, realized_pnl=50.0, qty=1, multiplier=100, entry_side="BUY",
+    ) == 3.00
+
+
+def test_estimate_exit_price_zero_qty_or_multiplier_returns_none() -> None:
+    assert _estimate_exit_price(
+        entry=100.0, realized_pnl=50.0, qty=0, multiplier=1, entry_side="BUY",
+    ) is None
+    assert _estimate_exit_price(
+        entry=100.0, realized_pnl=50.0, qty=10, multiplier=0, entry_side="BUY",
+    ) is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# _closed_from_decision — the closed-position history DTO builder
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _closed_decision(**overrides: object) -> SimpleNamespace:
+    base: dict[str, object] = dict(
+        id=uuid.uuid4(),
+        symbol="KO",
+        proposal={"side": "BUY"},
+        fill_qty=55,
+        fill_avg_price=89.19,
+        realized_pnl=25.65,
+        exit_mode="agent",
+        approval_mode="ask",
+        close_reason="external_broker",
+        closed_at=datetime(2026, 8, 30, 6, 18, 43, tzinfo=UTC),
+        user_responded_at=datetime(2026, 8, 27, 9, 27, 18, tzinfo=UTC),
+        triggered_at=datetime(2026, 8, 27, 9, 21, 1, tzinfo=UTC),
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def test_closed_from_decision_prefers_the_real_close_order_fill_price() -> None:
+    """A close Order row's own avg_fill_price is the broker's REAL fill —
+    it must win even though the pnl-based estimate would (in a correctly
+    computed row) land on the same number, because it is the more direct
+    source and does not depend on this function's own back-solve agreeing
+    with order_sync's forward math."""
+    decision = _closed_decision(fill_avg_price=100.0, realized_pnl=50.0, fill_qty=10)
+    close_order = SimpleNamespace(avg_fill_price=105.0)
+    dto = _closed_from_decision(decision, close_order)
+    assert dto.exit_price == 105.0
+    assert dto.exit_price_source == "order_fill"
+
+
+def test_closed_from_decision_falls_back_to_pnl_estimate_with_no_close_order() -> None:
+    """The real shape of every closed row in production today: an
+    `external_broker` close has NO Order row at all (order_sync updates
+    AgentDecision directly), so this is the only path that can ever run
+    for one."""
+    decision = _closed_decision(fill_avg_price=100.0, realized_pnl=50.0, fill_qty=10)
+    dto = _closed_from_decision(decision, None)
+    assert dto.exit_price == 105.0
+    assert dto.exit_price_source == "estimated_from_pnl"
+
+
+def test_closed_from_decision_no_realized_pnl_leaves_exit_price_unset() -> None:
+    """Defensive: a closed row with no realized_pnl and no close order
+    (should not happen given order_sync always sets both together, but
+    this must not crash or fabricate a number if it ever does)."""
+    decision = _closed_decision(realized_pnl=None)
+    dto = _closed_from_decision(decision, None)
+    assert dto.exit_price is None
+    assert dto.exit_price_source is None
+
+
+def test_closed_from_decision_carries_lifecycle_fields() -> None:
+    decision = _closed_decision(
+        close_reason="external_broker", exit_mode="agent", approval_mode="ask",
+    )
+    dto = _closed_from_decision(decision, None)
+    assert dto.symbol == "KO"
+    assert dto.side == "BUY"
+    assert dto.direction == "long"
+    assert dto.qty == 55
+    assert dto.avg_entry_price == 89.19
+    assert dto.realized_pnl == 25.65
+    assert dto.close_reason == "external_broker"
+    assert dto.exit_mode == "agent"
+    assert dto.approval_mode == "ask"
+    assert dto.closed_at == decision.closed_at
+    assert dto.opened_at == decision.user_responded_at
+
+
+def test_closed_from_decision_short_direction() -> None:
+    decision = _closed_decision(
+        symbol="XOM",
+        proposal={"side": "SELL", "direction": "short"},
+        fill_avg_price=157.84,
+        realized_pnl=-35.03,
+        fill_qty=31,
+    )
+    dto = _closed_from_decision(decision, None)
+    assert dto.side == "SELL"
+    assert dto.direction == "short"
+    # Short: exit = entry - delta. delta = -35.03 / 31 = -1.13 (rounded).
+    # exit = 157.84 - (-1.13) = 158.97.
+    assert dto.exit_price == pytest.approx(158.97, abs=0.01)
+
+
+def test_closed_from_decision_option_facts() -> None:
+    decision = _closed_decision(
+        symbol="NVDA",
+        proposal={
+            "side": "BUY",
+            "isOption": True,
+            "occSymbol": "NVDA260918C00215000",
+            "contractType": "call",
+            "strike": 215.0,
+            "expiryDate": "2026-09-18",
+            "multiplier": 100,
+        },
+        fill_qty=2,
+        fill_avg_price=8.70,
+        realized_pnl=130.0,
+    )
+    dto = _closed_from_decision(decision, None)
+    assert dto.symbol == "NVDA"
+    assert dto.is_option is True
+    assert dto.occ_symbol == "NVDA260918C00215000"
+    assert dto.contract_type == "call"
+    assert dto.strike == 215.0
+    assert dto.expiry_date is not None and dto.expiry_date.isoformat() == "2026-09-18"
+    assert dto.multiplier == 100
+    # delta = 130.0 / (2 * 100) = 0.65 -> exit = 8.70 + 0.65 = 9.35
+    assert dto.exit_price == pytest.approx(9.35, abs=0.01)

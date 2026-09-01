@@ -551,6 +551,181 @@ docstring names, restored the fix, confirmed green again):
   data (upstream funnel/cadence is healthy; the gap was purely in
   persistence).
 
+### 2026-09-01 — `2310c3dc` feat(positions): closed-position history — where the P&L actually came from
+
+`ID:MODEL2OFF`. User complaint (their words): "nowhere can i see my past
+trades this ghost pnl and ledger dont seem to be wired. also i see a
+profit of 241$ but where did i exactly made that profit?? ... nowhere are
+my past positions tracked as to what was opened and closed." Two bundled
+complaints; investigated both before writing any code, per the task
+brief and CLAUDE.md §4.3 — don't reason about it, measure it.
+
+**Investigation first — confirmed which half was a real bug.**
+
+1. Read `order_sync.py` and `position_manager.py` end to end. Migration
+   0009 already gives `agent_decisions` `closed_at`/`realized_pnl`/
+   `close_reason`/`exit_mode` columns, and `order_sync._apply_decision_
+   lifecycle` / `_detect_external_closes` already write them on every
+   close path — agent time/signal/expiry/premium-exit, an in-app user
+   close (`close_position_now`), or the user closing directly at Alpaca
+   (`external_broker`, detected after the fact). Confirmed by reading
+   the code that exit PRICE is never stored directly — only entry price
+   (`fill_avg_price`) and `realized_pnl`. There are two ways to recover
+   it: the actual closing `Order` row's own `avg_fill_price` (exists for
+   an agent/user-manual close, which places a real order), or — for
+   `external_broker`, which places no order at all — back-solving from
+   `realized_pnl`, entry, qty and multiplier using the exact same sign
+   convention `order_sync` itself already uses to compute that
+   `realized_pnl` in the first place.
+2. **Verified live against the real production Postgres** (per the task
+   brief's instructions: `DATABASE_URL` from `apps/api/.env`, read-only
+   queries only — the DNS-blocked warning in that file's comment turned
+   out to be stale, the host resolved and connected fine from this
+   machine):
+   ```
+   agent_decisions total rows: 196
+   agent_decisions with closed_at IS NOT NULL: 6
+   close_reason breakdown: [('external_broker', 6)]
+   sum(realized_pnl) across closed decisions: 46.93
+   orders with agent_decision_id IS NULL (unlinked): 0
+   ghost_outcomes status breakdown: [('partial', 7), ('pending', 1)]
+   ```
+   So: the closed-position data was 100% real and already correct — a
+   surfacing problem, not a data problem, confirming the task brief's
+   hypothesis. All 6 real closes so far are `external_broker` (the user
+   closing positions directly at Alpaca, not through this app), summing
+   to +$46.93 (KO +25.65, CVX +55.79, SPY +11.34, JNJ +20.97 winners;
+   XOM -35.03, UNP -31.79 losers).
+3. **The "$241" is a different number than realized P&L, and that's the
+   other half of the user's confusion, not a bug.** A second query:
+   `first snapshot ever: equity=$100,000.00` (2026-08-26) vs. `latest
+   snapshot: equity=$100,240.82` → total account gain ≈ $240.82, i.e.
+   the "+$241" on the dashboard. That is NOT the $46.93 realized — it's
+   realized + unrealized combined, matching Alpaca's own live equity
+   number. A third query broke down the latest snapshot's 9 held broker
+   positions and summed their approximate unrealized P&L: **$241.20** —
+   matching the dashboard number almost exactly. Only 3 of those 9
+   broker positions have an open `agent_decisions` row at all; the other
+   6 are "unmanaged" (no decision behind them, per `positions_service.
+   _unmanaged`). So: most of the user's gain is CURRENTLY UNREALIZED,
+   sitting in a mix of agent-tracked and unmanaged open positions (the
+   existing open-positions screen's per-row `unrealizedPnl` already
+   covers this), and only ~$47 of it has actually been banked so far —
+   across exactly 6 trades, which is what this change makes visible for
+   the first time, itemized.
+4. **Ghost P&L / veto ledger re-verified, not touched.** `ghost_outcomes`
+   status breakdown above: 0 `final`, 7 `partial`, 1 `pending`, matching
+   last night's finding that finalization needs `elapsed >= horizon`
+   trading days (`ghost_eval.py`, default horizon 5) since the decision
+   was created — only 1-2 trading days have elapsed since most of these.
+   Confirmed the UI already renders this honestly rather than a bare
+   misleading $0: `format.ts`'s `pendingAwareUsd` renders `"$— · N marks
+   pending"` when `amount===0 && pendingCount>0`, and `Insights.tsx`
+   renders the literal word "pending" for a null `ghostPnl`, never `$0`.
+   This part of the complaint is a real, disclosed, time-bound
+   constraint (5 trading days), not a regression — left untouched.
+
+**Built** (the surfacing fix):
+- `GET /api/v1/positions/history` (`apps/api/app/routers/positions.py`)
+  — `symbol`/`limit`/`offset` query params, same pagination shape as
+  `GET /decisions`. Uses `get_current_user` (not `require_real_auth`) —
+  same read-only auth as the existing open-positions GET, so a
+  read-only demo/judge session sees this too.
+- `positions_service.list_closed_positions` — sourced from
+  `agent_decisions.closed_at IS NOT NULL`, newest-`closed_at`-first, plus
+  a single batched query (not N+1) against `orders` for the whole page
+  to find each decision's own closing fill when one exists.
+- `_estimate_exit_price` — back-solves the exit price from
+  `realized_pnl` for a close with no Order row (`external_broker`).
+  Exactly inverts `order_sync`'s own forward formula; does not invent a
+  new one. `_closed_from_decision` — the pure DTO builder, prefers the
+  real closing Order's `avg_fill_price` when one exists, else the
+  estimate; sets `exit_price_source` ('order_fill' | 'estimated_from_pnl')
+  so the client can label an estimate honestly rather than presenting
+  it as a broker fact.
+- `ClosedPositionDto` / `ClosedPositionListResponse`
+  (`apps/api/app/schemas/positions.py`) + the TS mirror in
+  `packages/shared-types/src/index.ts`.
+- An "Open / Closed" toggle on the EXISTING Positions screen, both
+  `apps/mobile/app/positions.tsx` (mobile) and `apps/mobile/src/desktop/
+  screens/Positions.tsx` (desktop) — no new route/nav wiring needed on
+  either platform. New `useClosedPositions` hook in `usePositions.ts`.
+  Client-side `close_reason` → plain-English label maps duplicated per
+  screen, matching this codebase's existing convention for
+  `CLOSE_ERROR_COPY` (server sends codes, client renders copy).
+
+**Known gap, disclosed rather than silently dropped**: a position with
+NO `agent_decisions` row at all (opened before this deployment's history,
+or opened directly at the broker) has nothing for this endpoint to join
+against, even after today's earlier `close_unmanaged_position_now`
+closes it — that path persists an unlinked `orders` row
+(`agent_decision_id=NULL`) with no decision to stamp. Confirmed live
+this is currently a theoretical gap, not an observed one: `orders` has
+zero rows with `agent_decision_id IS NULL` in production right now.
+
+**Verified:**
+- Full suite: **1300 passed, 11 skipped** (was 1264 passed, 11 skipped
+  immediately before this change — net +36, no other deltas).
+- **Revert-check (CLAUDE.md §4.1)**: flipped the SELL-side sign in
+  `_estimate_exit_price` (`entry - delta` → `entry + delta`), reran
+  `test_positions_service.py`, confirmed
+  `test_estimate_exit_price_short_equity_gains_when_price_falls` (95.0
+  expected, got 105.0) and `test_closed_from_decision_short_direction`
+  (158.97 expected, got 156.71) both failed with the wrong number,
+  restored the fix, confirmed 38/38 green again.
+- **`list_closed_positions()` called directly against the real
+  production DB** (read-only, via a one-off script, not just against
+  fixtures): returned the exact 6 real rows with correct entry/exit/
+  realized numbers, a `symbol="ko"` filter correctly narrowing to 1 row,
+  `limit=2&offset=1` correctly paginating (skipping KO, showing XOM then
+  CVX in `closed_at DESC` order), and an unknown user id returning
+  `(0, [])`.
+- `tsc --noEmit -p apps/mobile/tsconfig.json` clean both before and
+  after the desktop-screen edit. `jest --silent`: 73/73 passed,
+  unchanged (no pre-existing render-test precedent for either Positions
+  screen to extend — matches the convention noted in the prior
+  "close an unmanaged position" entry below).
+- `ruff check` on the touched files: 1 new `B008` (`Depends()` in a
+  route default) on the new endpoint — confirmed via `git stash` that
+  the SAME warning already exists 72 times across `routers/` on `main`
+  with zero changes, so this is the endemic, already-accepted
+  FastAPI-`Depends()` pattern, not a new class of issue.
+- **Live in a real browser** — Expo web (`--web`) + this worktree's own
+  API (`uvicorn`, MockStore mode, `DEV_AUTH_BYPASS=1`), both started
+  directly from this worktree's own checkout on non-default ports, NOT
+  the prebuilt `apps/mobile/dist` export and NOT the `.claude/
+  launch.json`-driven preview (which resolves to the MAIN checkout, not
+  this worktree — confirmed by its logs printing the main checkout's
+  path; a real environment quirk for a worktree-isolated agent, not
+  specific to this task). Logged in via the dev-token flow. Desktop
+  screen: toggled Open ↔ Closed live, both render correctly including
+  the empty state; patched `window.fetch` for `/positions/history` to
+  return three rows shaped exactly like the real production data (two
+  `external_broker` equity closes plus one `order_fill` option close)
+  and confirmed the table renders the ticker/direction, the "closed by"
+  pill plus plain-English close reason, entry→exit with the "(est.)"
+  qualifier appearing ONLY on the two estimated rows (never on the
+  `order_fill` one), correctly color-coded realized P&L, and relative
+  "closed X ago" timestamps — screenshot taken, matches the design
+  exactly. Mobile screen: confirmed the Open/Closed toggle itself works
+  live (correct sub-copy and empty-state text for both tabs) but did
+  NOT get a populated-data screenshot — the mobile route has no direct
+  link from the Home tab bar in this build (reached it via a
+  `history.pushState` trick instead), and the query had already cached
+  an empty result before the fetch-patch landed; forcing a refetch
+  needed more environment wrangling (no exposed queryClient handle on
+  `window`) than the remaining time justified. Not a code-correctness
+  gap: the mobile screen renders via the identical `useClosedPositions`
+  hook and `ClosedPositionDto` shape already confirmed live on desktop,
+  plus a clean `tsc` pass — believed correct, not independently watched
+  render with data.
+
+**Left open**: no new "total realized since inception" dashboard tile —
+out of scope per the task brief (the historical list was the core ask,
+not a dashboard redesign); the existing open-positions screen's per-row
+`unrealizedPnl` already covers the other half of "where did my gain come
+from" for currently-open positions. The unmanaged-close gap above.
+
 ### 2026-09-01 — `36930944`/`abdbce7c` fix(agents): why every position was long/calls-only — one deliberate gate, two real bugs
 
 `ID:MODEL2OFF`. User looked at their real position list and asked: every

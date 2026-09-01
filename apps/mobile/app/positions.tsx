@@ -6,6 +6,7 @@
 // the server's risk-gated close — the in-app counterpart to letting the
 // agent handle the exit. Entries are never auto-placed; this is exit-only.
 
+import { useState } from 'react';
 import { Alert, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -13,17 +14,52 @@ import * as Haptics from 'expo-haptics';
 
 import { ApiError } from '@/lib/api';
 import { EmptyState, ErrorState, Skeleton, cn } from '@app/ui';
-import type { ClosePositionResponse } from '@app/shared-types';
+import type { ClosedPositionDto, ClosePositionResponse } from '@app/shared-types';
 
 import { DirectionPill, HeroHeadline, HeroSub, Tile, TileLabel } from '@/components/bento';
 import { ClosePositionButton } from '@/components/ClosePositionButton';
-import { useCloseUnmanagedPosition, useClosePosition, useOpenPositions } from '@/hooks/usePositions';
+import {
+  useCloseUnmanagedPosition,
+  useClosedPositions,
+  useClosePosition,
+  useOpenPositions,
+} from '@/hooks/usePositions';
 import { DEMO_DISABLED_REASON, useIsDemoSession } from '@/lib/demoSession';
 
 function money(n: number | null): string {
   if (n == null) return '—';
   const sign = n < 0 ? '-' : '';
   return `${sign}$${Math.abs(n).toFixed(2)}`;
+}
+
+/** What actually closed the position, in plain English — mirrors the
+ * backend's own `_CLOSE_REASON_LABEL` (position_manager.py) plus the two
+ * reasons stamped elsewhere (`user_manual` by close_position_now,
+ * `external_broker` by order_sync). Duplicated client-side rather than
+ * sent as display text from the API — same convention this screen
+ * already uses for CLOSE_ERROR_COPY below. */
+const CLOSE_REASON_COPY: Record<string, string> = {
+  agent_time: 'time stop reached',
+  agent_signal: 'council flipped to SELL',
+  agent_expiry: 'closed ahead of expiry',
+  option_take_profit: 'premium take-profit hit',
+  option_stop_loss: 'premium stop-loss hit',
+  option_trail_stop: 'trailing stop hit',
+  user_manual: 'closed in the app',
+  external_broker: 'closed directly at Alpaca',
+};
+
+function closeReasonLabel(reason: string | null): string {
+  if (!reason) return 'reason unknown';
+  return CLOSE_REASON_COPY[reason] ?? reason.replace(/_/g, ' ');
+}
+
+function formatDateTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  const date = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const time = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  return `${date} · ${time}`;
 }
 
 /** 409 error codes from /positions/{id}/close, in plain English. A close
@@ -51,11 +87,14 @@ function closeErrorDetail(err: unknown): string {
 
 export default function PositionsScreen() {
   const router = useRouter();
+  const [tab, setTab] = useState<'open' | 'closed'>('open');
   const { data, isLoading, isError, refetch } = useOpenPositions();
+  const closedQuery = useClosedPositions({ limit: 100 });
   const close = useClosePosition();
   const closeUnmanaged = useCloseUnmanagedPosition();
   const isDemo = useIsDemoSession();
   const list = data ?? [];
+  const closedList = closedQuery.data?.positions ?? [];
 
   // Two close mutations, one confirm flow. `target` picks which one fires:
   // a decisionId-keyed row uses the decision route (also doubles as
@@ -128,15 +167,48 @@ export default function PositionsScreen() {
         <View>
           <HeroHeadline>Positions</HeroHeadline>
           <HeroSub>
-            {isDemo
-              ? `${DEMO_DISABLED_REASON} — closing and cancelling are turned off.`
-              : list.length > 0
-                ? `${list.length} open position${list.length === 1 ? '' : 's'} the agent is managing.`
-                : 'No open agent positions right now.'}
+            {tab === 'closed'
+              ? closedList.length > 0
+                ? `${closedQuery.data?.total ?? closedList.length} closed position${(closedQuery.data?.total ?? closedList.length) === 1 ? '' : 's'} — what was opened, closed, and what it realized.`
+                : 'Nothing has closed yet.'
+              : isDemo
+                ? `${DEMO_DISABLED_REASON} — closing and cancelling are turned off.`
+                : list.length > 0
+                  ? `${list.length} open position${list.length === 1 ? '' : 's'} the agent is managing.`
+                  : 'No open agent positions right now.'}
           </HeroSub>
         </View>
 
-        {isLoading ? (
+        <View className="flex-row gap-2">
+          {(['open', 'closed'] as const).map((key) => (
+            <Pressable
+              key={key}
+              onPress={() => setTab(key)}
+              accessibilityRole="button"
+              accessibilityState={{ selected: tab === key }}
+              className={cn(
+                'min-h-[36px] flex-1 items-center justify-center rounded-lg',
+                tab === key
+                  ? 'bg-bg-tile-inset dark:bg-bg-tile-inset-dark'
+                  : 'bg-transparent',
+              )}
+            >
+              <Text
+                className={cn(
+                  'text-[13px] font-semibold uppercase tracking-[0.5px]',
+                  tab === key
+                    ? 'text-text-primary dark:text-text-primary-dark'
+                    : 'text-text-tertiary dark:text-text-tertiary-dark',
+                )}
+              >
+                {key === 'open' ? 'Open' : 'Closed'}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+
+        {tab === 'open' ? (
+          isLoading ? (
           <Tile className="gap-3">
             <Skeleton className="h-5 w-full" />
             <Skeleton className="h-5 w-2/3" />
@@ -275,6 +347,89 @@ export default function PositionsScreen() {
                     }
                   />
                 )}
+              </Tile>
+            );
+          })
+          )
+        ) : closedQuery.isLoading ? (
+          <Tile className="gap-3">
+            <Skeleton className="h-5 w-full" />
+            <Skeleton className="h-5 w-2/3" />
+          </Tile>
+        ) : closedQuery.isError ? (
+          <Tile>
+            <ErrorState
+              title="Couldn't load closed positions"
+              description="The agent server isn't reachable. Try again in a moment."
+              onRetry={() => closedQuery.refetch()}
+            />
+          </Tile>
+        ) : closedList.length === 0 ? (
+          <Tile>
+            <EmptyState
+              title="Nothing closed yet"
+              description="Once a position closes — by the agent, by you, or directly at Alpaca — it shows here with what it realized."
+            />
+          </Tile>
+        ) : (
+          closedList.map((p: ClosedPositionDto) => {
+            const pnl = p.realizedPnl;
+            const pnlClass =
+              pnl == null
+                ? 'text-text-tertiary dark:text-text-tertiary-dark'
+                : pnl >= 0
+                  ? 'text-gain dark:text-gain-dark'
+                  : 'text-rose dark:text-rose-dark';
+            const isOption = p.isOption === true;
+            return (
+              <Tile key={p.decisionId} className="gap-2">
+                <View className="flex-row items-center justify-between">
+                  <Text
+                    className="text-[16px] font-semibold text-text-primary dark:text-text-primary-dark"
+                    style={{ fontVariant: ['tabular-nums'] }}
+                  >
+                    {isOption
+                      ? `${p.symbol} $${p.strike?.toFixed(2) ?? '—'} ${(p.contractType ?? '').toUpperCase()} x${p.qty}`
+                      : `${p.side} ${p.qty} ${p.symbol}`}
+                  </Text>
+                  <DirectionPill
+                    label={p.direction.toUpperCase()}
+                    tone={p.direction === 'short' ? 'rose' : 'mint'}
+                  />
+                </View>
+
+                <View className="flex-row justify-between">
+                  <TileLabel>Entry → exit</TileLabel>
+                  <Text
+                    className="text-[13px] text-text-secondary dark:text-text-secondary-dark"
+                    style={{ fontVariant: ['tabular-nums'] }}
+                  >
+                    {money(p.avgEntryPrice)} → {money(p.exitPrice)}
+                    {p.exitPriceSource === 'estimated_from_pnl' ? ' (est.)' : ''}
+                  </Text>
+                </View>
+
+                <View className="flex-row justify-between">
+                  <TileLabel>Realized</TileLabel>
+                  <Text className={cn('text-[13px] font-medium', pnlClass)} style={{ fontVariant: ['tabular-nums'] }}>
+                    {money(pnl)}
+                  </Text>
+                </View>
+
+                <View className="flex-row items-center justify-between">
+                  <Text className="text-[10px] text-text-tertiary dark:text-text-tertiary-dark">
+                    Opened {formatDateTime(p.openedAt)} · closed {formatDateTime(p.closedAt)}
+                  </Text>
+                  <View className="rounded-full border border-hairline px-2 py-0.5 dark:border-hairline-dark">
+                    <Text className="text-[10px] uppercase tracking-[1px] text-text-secondary dark:text-text-secondary-dark">
+                      {p.exitMode === 'agent' ? 'Agent exit' : 'Manual exit'}
+                    </Text>
+                  </View>
+                </View>
+
+                <Text className="text-[10px] text-text-tertiary dark:text-text-tertiary-dark">
+                  {closeReasonLabel(p.closeReason)}
+                </Text>
               </Tile>
             );
           })
