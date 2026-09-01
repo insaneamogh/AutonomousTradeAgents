@@ -121,7 +121,25 @@ export function BiometricGate({ children, enabled }: Props) {
   }, [enabled, unlocked, attempts, prompt]);
 
   // Background → foreground → re-lock + re-prompt.
+  //
+  // NOT ON WEB. react-native-web's `AppState` is a thin polyfill over the
+  // Page Visibility API (`document.visibilitychange`), so switching browser
+  // tabs OR switching to a completely different application window both
+  // fire it — there is no OS-level "backgrounded" concept to react to here,
+  // only "not currently the focused tab". Locking on that would unmount
+  // `children` (see the `unlocked` branch below), and `children` is
+  // everything below the gate including the desktop tree's `NavProvider`
+  // (`src/desktop/nav.tsx`) — its route stack is a plain `useState` with no
+  // persistence, so unmounting it resets navigation to the hardcoded
+  // dashboard default. That reproduced exactly the reported bug: leave the
+  // Insights tab for another window, come back, land back on Dashboard,
+  // on EVERY screen, every time. `prompt()` above already treats web as
+  // "not applicable" (no biometric API exists in a browser — the real
+  // control there is the OS/browser session); this effect has to make the
+  // same call for the exact same reason, or that pass-through is undone
+  // the moment the tab loses focus.
   useEffect(() => {
+    if (Platform.OS === 'web') return;
     function handle(next: AppStateStatus) {
       const prev = appState.current;
       appState.current = next;

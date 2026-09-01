@@ -254,3 +254,60 @@ describe('authStore.refresh()', () => {
     expect(global.fetch).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('authStore.restore() joins the same de-dupe as refresh()', () => {
+  // On a cold reload, `restore()` fires from the root layout at the same
+  // moment several screens' queries mount with no access token yet (it's
+  // memory-only and a reload wipes it) — each one 401s and the API
+  // interceptor independently calls `refresh()` to recover. `restore()`
+  // USED TO post its own separate /auth/refresh with the same stored
+  // (single-use, rotating) token instead of joining `inFlightRefresh` —
+  // see the file-level comment on that variable for why two holders of one
+  // token is exactly the "superseded" replay scenario the backend revokes.
+  // These pin that `restore()` shares the SAME in-flight call as a
+  // concurrent `refresh()`, so there is only ever one network call no
+  // matter which of the two callers fires first.
+  it('makes exactly one network call when restore() races a concurrent refresh()', async () => {
+    mockLoadRefreshToken.mockResolvedValue('stored-refresh-token');
+    mockLoadPersistedUser.mockResolvedValue(null);
+    mockFetchResponse(200, ISSUED);
+
+    await Promise.all([
+      useAuthStore.getState().restore(),
+      useAuthStore.getState().refresh(),
+    ]);
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(useAuthStore.getState().status).toBe('authenticated');
+    expect(useAuthStore.getState().accessToken).toBe(ISSUED.accessToken);
+    expect(mockClearAll).not.toHaveBeenCalled();
+  });
+
+  it('makes exactly one network call when a concurrent refresh() races restore()', async () => {
+    // Same race, opposite call order — the de-dupe must not depend on
+    // which of the two happens to reach the network first.
+    mockLoadRefreshToken.mockResolvedValue('stored-refresh-token');
+    mockLoadPersistedUser.mockResolvedValue(null);
+    mockFetchResponse(200, ISSUED);
+
+    await Promise.all([
+      useAuthStore.getState().refresh(),
+      useAuthStore.getState().restore(),
+    ]);
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(useAuthStore.getState().status).toBe('authenticated');
+  });
+
+  it('still restores correctly when nothing else is racing it', async () => {
+    mockLoadRefreshToken.mockResolvedValue('stored-refresh-token');
+    mockLoadPersistedUser.mockResolvedValue(null);
+    mockFetchResponse(200, ISSUED);
+
+    await useAuthStore.getState().restore();
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(useAuthStore.getState().status).toBe('authenticated');
+    expect(useAuthStore.getState().accessToken).toBe(ISSUED.accessToken);
+  });
+});

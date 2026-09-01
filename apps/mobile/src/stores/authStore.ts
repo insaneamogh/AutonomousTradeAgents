@@ -140,26 +140,26 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({ user: persistedUser });
     }
 
-    try {
-      const issued = await request<IssuedTokensResponse>('/api/v1/auth/refresh', {
-        method: 'POST',
-        body: { refreshToken: refresh },
-        // The interceptor would loop forever if it tried to refresh during
-        // a refresh. Bypass it for this call.
-        skipAuth: true,
-      });
-      await get().signIn(issued);
-    } catch (err) {
-      // Only wipe storage when the backend says THIS credential is dead
-      // (revoked / invalid / superseded). A bare "session not found" (or
-      // any other failure) just means we can't restore right now — keep
-      // the refresh token so a later successful restore doesn't force a
-      // brand-new login.
-      if (isCredentialDead(err)) {
-        await clearAll();
-      }
-      set({ status: 'unauthenticated', user: null, accessToken: null });
-    }
+    // Route the actual network call through the SAME de-duped `refresh()`
+    // the API interceptor uses — do NOT post to /auth/refresh directly
+    // here. On every cold boot, several screens' queries mount and fire
+    // immediately with no access token yet (it's memory-only and a reload
+    // wipes it); each one 401s and the interceptor independently calls
+    // `refresh()` to recover. If THIS function also posted its own
+    // separate request with the same stored (single-use, rotating)
+    // refresh token, the backend would see two holders of one token: it
+    // accepts whichever arrives first and treats the second as a replay —
+    // `refresh-token superseded — session revoked`
+    // (`apps/api/app/services/auth/auth.py::refresh`), which is exactly a
+    // `CREDENTIAL_DEAD_CODES` entry. That loser's failure handler then
+    // wipes the just-issued valid credential and signs the user out, even
+    // though the winner had just successfully re-authenticated them —
+    // reproducing "logged out on every reload" although nothing was
+    // actually wrong with the stored session. `inFlightRefresh` exists
+    // precisely to collapse concurrent callers into one network call (see
+    // its docstring above); this path used to bypass it entirely by
+    // calling `request()` directly instead of `get().refresh()`.
+    await get().refresh();
   },
 
   signIn: async (issued: IssuedTokensResponse) => {
