@@ -462,6 +462,107 @@ would make the existing "Last used" column on desktop Settings permanently
 show "—" regardless of real usage. Noticed in passing; did not chase it down,
 out of scope for this task.
 
+### 2026-09-01 — `3f32f5d0` fix(mobile): positions screen didn't refresh after approving a proposal
+
+`ID:MODEL2OFF`. User's ask: "i went to picks i selected apple ran council
+picked up the stock and approved it but unable to see it in actual open
+positions fix this as well." The orchestrating session had already hit
+the API directly and confirmed the backend was correct — the real
+decision (`a1ae9934-b227-4e38-9280-07836e0e6abe`, AAPL, 15 shares, BUY,
+approved) existed, and `GET /api/v1/positions` returned it
+(`status: pending_fill`, `managed: true`) right after approval — so this
+task was scoped to find the gap between "user clicks approve" and "the
+Positions screen shows the row," not to re-litigate the backend.
+
+**Root cause, found by reading `apps/mobile/src/hooks/useApprovals.ts`
+and `usePositions.ts` side by side:** `useDecideApproval`'s `onSettled`
+invalidated `QK.pendingApprovals`, `QK.account`, and `['activity']` —
+never `['positions']`. `useOpenPositions` (`usePositions.ts`) has a 15s
+`staleTime` and a 30s `refetchInterval`. A user who approves and checks
+Positions inside that 15s window — the obvious thing to do right after
+tapping Approve — gets served the pre-approval cached list, because
+nothing told the cache a decision had settled. This was a missing
+invalidation, not a backend lag; the brief's hypothesis was correct.
+
+**Confirmed before touching code, not assumed:**
+- Exactly one `QueryClientProvider` (`app/_layout.tsx:112`, the
+  `queryClient` singleton from `lib/queryClient.ts`) wraps the whole
+  app. `DesktopShell` replaces the router `<Slot/>` in place *inside*
+  that same provider (`_layout.tsx:159-161`) — so
+  `apps/mobile/app/positions.tsx` (native/narrow-web) and
+  `apps/mobile/src/desktop/screens/Positions.tsx` (wide-web) read the
+  exact same `['positions']` cache entry. One fix in `useApprovals.ts`
+  covers both surfaces; there is no separate desktop query client to
+  patch too.
+- `useDecideApproval` is the *only* decision-mutation implementation —
+  grepped for `/decision` and `useDecideApproval` across
+  `apps/mobile/`: four hits total, and the two call sites
+  (`apps/mobile/app/pick/[id].tsx` and
+  `src/desktop/screens/PickDetail.tsx`) both call this same hook. The
+  `(tabs)/approvals.tsx` feed only reads `usePendingApprovals` and
+  links into `/pick/[id]` for the actual decision — no bypass path.
+
+**Fix:** one line in `onSettled` —
+`qc.invalidateQueries({ queryKey: ['positions'] })` — plus an updated
+doc comment. Deliberately a raw literal rather than importing
+`usePositions.ts`'s (unexported) `POSITIONS_KEY` const: the codebase
+already has this exact idiom (`['activity']` in the same function,
+matching `useActivity.ts`'s `QK.activity(limit)` by prefix;
+`['approvals']` in `_layout.tsx`'s `PushTapHandler`), so this follows
+existing convention instead of introducing a new one.
+
+**New test, revert-checked per CLAUDE.md §4.1**
+(`apps/mobile/src/hooks/useApprovals.test.tsx`): a real `QueryClient` +
+`QueryClientProvider` (no TanStack Query mocking), only `@/lib/api`'s
+`request` mocked, a tiny harness component capturing
+`useDecideApproval().mutateAsync`, `jest.spyOn(qc, 'invalidateQueries')`.
+Asserts `'positions'` is among the invalidated keys once
+`await mutateAsync(...)` resolves (which only happens after
+`onSettled` has run — this is a documented TanStack Query v5
+guarantee, not an assumption). Removed the new
+`invalidateQueries(['positions'])` line and reran: test failed with
+`Received array: [["approvals","pending"],["account"],["activity"]]`
+(no `positions`) — exactly the pre-fix behavior. Restored the line,
+reran: passes.
+
+**Verified, commands + output:**
+- `pnpm --filter mobile exec jest useApprovals.test --silent` — 1
+  passed, both before writing the revert-check and after restoring.
+- `pnpm --filter mobile exec jest --silent` (full suite) — **83 passed,
+  11 suites** (was 82 per the prior entry below). One generic
+  "A worker process has failed to exit gracefully" note from Jest,
+  unrelated to this change (my test's own `QueryClient` is disposed via
+  `qc.unmount()` in `afterEach`, and this line didn't appear at all
+  when running just this one test file — it surfaced only in the
+  full-suite run, so it traces to some other pre-existing test's
+  teardown, not this one).
+- `pnpm -s exec tsc --noEmit -p apps/mobile/tsconfig.json` — clean, no
+  errors.
+
+**What I deliberately did NOT do, and why:** did not drive a live
+browser session to actually click Approve on a real pending proposal
+and watch the Positions screen update. CLAUDE.md §8 is explicit —
+"You may not execute trades, even on paper. Placing/approving orders is
+the user's action" — and approving a proposal is exactly the action
+gated there, paper or not. The fix is a pure cache-invalidation change
+verified by a test that exercises the real mutation lifecycle directly
+(a more precise check of the actual mechanism than a UI click-through
+would give anyway), plus the full regression suite. The backend fact
+this whole task rests on — that the position exists immediately after
+approval — was independently verified live by the orchestrating session
+before this task started; I did not re-verify it myself.
+
+**Left open:** nothing from this specific bug report. Out of scope but
+noticed in passing, not touched: `usePositions.ts`'s `POSITIONS_KEY`
+const isn't exported and isn't in `lib/queryClient.ts`'s `QK` object,
+unlike `pendingApprovals`/`account`/`activity` — the codebase already
+mixes both conventions (`QK.*` centralization vs. raw-literal-prefix
+invalidation) rather than picking one, which is exactly the kind of
+"same key in two places" shape CLAUDE.md §4.4 warns about for numeric
+thresholds. Not a bug today (both idioms happen to agree on the
+literal string), but worth a deliberate pick one day if a third
+cross-file consumer of the positions key shows up.
+
 ### 2026-09-01 — `56da03fb` fix(options): guard.py computed the contract funnel and threw it away
 
 `ID:MODEL2OFF`. User's ask: "loosen the funnel a bit i dont see any options
