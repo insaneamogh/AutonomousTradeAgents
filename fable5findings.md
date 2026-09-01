@@ -641,6 +641,97 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-09-01 — docs/PLAN_SHORTS.md §5.2/§5.3 tooling: score-gap measurement + a real equity-short end-to-end verification
+
+`ID:MODEL2OFF`. User: "implement plan_shorts... its only causing losses fix it."
+
+**Checked the premise against the live DB before writing anything.** The
+account was switched to a fresh $100k paper account (`PA31OTNBGE9I`)
+earlier today (see the `ccae611f`/`ebfc8718` entries above). Zero closed
+decisions exist on it — `SELECT ... WHERE closed_at IS NOT NULL` returns
+0 rows. "Only causing losses" cannot be evaluated from realized P&L; there
+is no realized history yet. What IS real: the account opened today at
+~$100,044 (post-switch) and the latest snapshot reads $99,094.73 (-0.95%),
+entirely unrealized, across 6 positions opened in the last ~90 minutes
+(4 long puts, 1 long call, 1 long equity — `approval_mode='auto'` on all
+six, confirming auto-approve is live and firing). 5 of 6 are individually
+red right now; this is ordinary day-one variance on a handful of long-
+premium option positions, not evidence the system "only causes losses."
+Said this plainly rather than silently building toward a premise that
+didn't hold up.
+
+**`docs/PLAN_SHORTS.md` itself is explicit that most of "implement
+shorts" is either already done (bearish options — 4 of the 6 open
+positions above are exactly that) or explicitly NOT to be done by
+loosening `min_specialist_avg_score` or building option-selling without
+asking first. Respected both boundaries — did not touch either. What the
+plan DOES sanction as safe, concrete next steps (§5.2, §5.3) is what got
+built:
+
+**1. `scripts/verify_equity_short_e2e.py`** — drives the real
+`run_council()` pipeline with a hand-built, strongly bearish synthetic
+equity feature set (mock LLM, `ALLOW_SHORTS=1`, `RiskCaps.aggressive_paper
+(forbid_short_phase_0=False)`). Safe by construction: `run_council` stops
+at a `proposal` dict, never touches a broker.
+
+**Real finding along the way, not just a green run:** the first attempt
+used an aggressively oversold RSI (28) + a 20-day z-score of -1.8. That
+did NOT produce a short winner — `rsi_mean_reversion_long` won instead
+(confidence 1.0), because deep-oversold-on-a-downtrend is SIMULTANEOUSLY
+a strong "due for a bounce" mean-reversion setup, and its fit score beat
+every short-direction trend-following candidate. This is a real,
+previously-unobserved property of how the 5-strategy competition behaves,
+not a bug — worth knowing: a textbook capitulation-looking bearish setup
+can lose the internal strategy vote to a LONG counter-trend pick before
+the specialist floor (PLAN_SHORTS.md §2) ever gets a chance to matter.
+Moderated the synthetic case (RSI 42, z-score -1.0 — a clean sustained
+downtrend, not a capitulation spike) and re-ran.
+
+**Also found: `ALLOW_SHORTS` is read in two independent places that do
+NOT share a source of truth.** `strategy_fit_node`
+(`nodes/strategy_fit.py:77`) reads `env_flag("ALLOW_SHORTS")` directly to
+decide whether to SCORE the short direction at all; `RiskCaps.
+forbid_short_phase_0` (set via the SAME env var in `RiskCaps.from_env()`,
+but overridable independently by any caller who constructs a `RiskCaps`
+directly) only gates the later risk-veto check. Passing
+`risk_caps=RiskCaps.aggressive_paper(forbid_short_phase_0=False)` alone
+did nothing — `strategy_fit` still came back `allow_shorts: false` and
+never considered a short. In production both reads see the same env var
+so this never diverges — flagging it here rather than "fixing" it, since
+threading `risk_caps` into `strategy_fit_node` is a real refactor with
+its own blast radius, not something this task asked for. The script
+works around it by setting the env var directly (documented inline).
+
+**Result, second attempt: PASS.** `selected_direction='short'`,
+`final_action='SELL'`, `proposal.side='SELL'`, `proposal.opensShort=true`,
+`risk_approved=true`, `risk_veto_rule=null`. Sizing/ATR stop-target ran
+correctly for a short (stop above entry, target below, sign-flipped
+correctly) and the risk-trim step visibly reduced qty 40→16 for the
+premium cap. This is the exact thing PLAN_SHORTS.md §5.3 named as "the
+single highest-value verification available" and flagged as never having
+been exercised — now it has, safely, with a full proposal recorded in
+this log for the next model to read instead of re-deriving.
+
+**2. `scripts/score_gap_by_direction.py`** — the reusable measurement
+tool §5.2 asked for. Groups `technical_score` by the winning
+`strategy_fit` direction over a real window, equity-only (options
+`direction=short` means "bought a put," a different question — see
+PLAN_SHORTS.md §0). Run against production at `--days 30`: reproduces
+PLAN_SHORTS.md's own numbers exactly (long n=4 avg 58.5, short n=3 avg
+34.7) — confirms the query is right — and correctly refuses to draw a
+conclusion from n=7, printing the same "too small to conclude anything"
+caveat the plan itself insists on. Re-run this periodically as real
+history accumulates; do not act on today's number.
+
+**Left open, deliberately, per the plan's own explicit instruction:**
+`min_specialist_avg_score` untouched. No `SELL_TO_OPEN`/option-selling
+code written. The `ALLOW_SHORTS` dual-read noted above, not refactored.
+
+**Verified:** `ruff check` clean (1 import-order fix applied), `mypy`
+clean, both scripts re-run after the ruff fix with the same PASS output.
+No existing test, code, or DB row touched — additive only.
+
+
 ### 2026-09-01 — merge: two finished worktrees (MockAuthStore CAS fix; runErrorMessage wiring) reconciled against 2f974934
 
 `ID:MODEL2OFF`. User asked me to audit what was sitting in the repo's
