@@ -11,6 +11,7 @@
 import {
   ApiError,
   TradingLockedError,
+  authErrorMessage,
   isTradingUnlocked,
   registerAuthSnapshot,
   request,
@@ -323,6 +324,33 @@ describe('runErrorMessage', () => {
     // this exact spot used to read "check your connection and try again".
     expect(runErrorMessage(new TypeError('Failed to fetch'))).toBe(
       "The server didn't respond - it may still be starting up. Try again in a moment.",
+    );
+  });
+});
+
+/**
+ * `authErrorMessage` — the same "one shared implementation" reasoning as
+ * `runErrorMessage`, for the auth screens (login.tsx, verify.tsx,
+ * DesktopAuth.tsx), which each used to hand-roll this exact extraction.
+ * Deliberately does not reuse `runErrorMessage` itself: that one's 429
+ * and generic-status wording ("Daily council budget reached", "The
+ * server refused the request") is council-run-specific and would be
+ * actively misleading on a login screen.
+ */
+describe('authErrorMessage', () => {
+  it("prefers the server's own string detail", () => {
+    const err = new ApiError(400, { detail: 'That token has expired.' });
+    expect(authErrorMessage(err, 'fallback')).toBe('That token has expired.');
+  });
+
+  it("falls back to the ApiError's message when body carries no detail", () => {
+    const err = new ApiError(500, null, 'HTTP 500');
+    expect(authErrorMessage(err, 'fallback')).toBe('HTTP 500');
+  });
+
+  it('uses the caller-supplied fallback for a non-ApiError failure', () => {
+    expect(authErrorMessage(new TypeError('Failed to fetch'), "Couldn't reach the agent server.")).toBe(
+      "Couldn't reach the agent server.",
     );
   });
 });

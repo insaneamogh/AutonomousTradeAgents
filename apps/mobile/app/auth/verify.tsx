@@ -25,7 +25,7 @@ import { useLocalSearchParams, router } from 'expo-router';
 
 import { Button, Card, cn } from '@app/ui';
 
-import { ApiError, request } from '@/lib/api';
+import { authErrorMessage, request } from '@/lib/api';
 import { useAuthStore } from '@/stores/authStore';
 
 interface IssuedTokensResponse {
@@ -89,15 +89,7 @@ export default function VerifyScreen() {
       router.replace('/');
     } catch (err) {
       setStatus('manual'); // fall back to the form so the user can retry
-      if (err instanceof ApiError) {
-        const detail =
-          typeof err.body === 'object' && err.body && 'detail' in err.body
-            ? String(err.body.detail)
-            : err.message;
-        setError(detail);
-      } else {
-        setError("Couldn't reach the agent server. Check the API URL + try again.");
-      }
+      setError(authErrorMessage(err, "Couldn't reach the agent server. Check the API URL + try again."));
     } finally {
       setSubmitting(false);
     }

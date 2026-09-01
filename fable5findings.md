@@ -385,6 +385,91 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-09-01 — fix(desktop): the pre-auth screen was the mobile login flow in a narrow column, on every desktop load
+
+`ID:MODEL2OFF`. User report: "the login screen its wired to look like
+mobile login and at every login i see a split second of mobile screen
+ui."
+
+**Root cause**: `DesktopShell.tsx` (the switch point between the phone
+UI and the Platinum Glass desktop tree) only ever replaced the
+expo-router `<Slot />` with the desktop tree once a session existed.
+Its own `!isAuthed` branch, on wide web, rendered `children` — the
+mobile `login.tsx`/`verify.tsx` screens — inside a 460px column instead.
+So the entire login flow, on every desktop visit, was the phone-styled
+screen, not just a transitional flash: `DesktopApp`'s docstring already
+promised "no mobile screen is ever mounted... on this path" but that
+guarantee silently never covered the pre-auth state.
+
+**Fix**: new `apps/mobile/src/desktop/DesktopAuth.tsx` — a Platinum
+Glass pre-auth screen, lazily required by `DesktopShell.tsx` (same
+guarded-`require` treatment as `DesktopApp`) whenever wide-web has no
+session. One combined email + access-token form (styled like a normal
+username/password sign-in) rather than the mobile flow's two separate
+screens — per the user's own pick among three options I asked about,
+since "username password instead of magic link always" was ambiguous
+enough to guess wrong on: no new auth mechanism, no password ever
+stored — "Get a token" just calls the existing `/api/v1/auth/request-login`
+and auto-fills the field from the same `devToken` the mobile screen
+already surfaces in non-production; a real magic-link URL
+(`?email=&token=`) still auto-verifies on mount. `useIsDesktopSurface()`
+(read by `_layout.tsx`'s `AuthRouteGuard`) had its `isAuthed` gate
+dropped too — its own contract is "is `<Slot/>` NOT mounted," and that's
+now true for wide-web regardless of auth state, not just once
+authenticated.
+
+Also pulled the auth screens' hand-rolled `ApiError`-detail extraction
+(duplicated identically in `login.tsx` and `verify.tsx`, and about to
+become a third copy in `DesktopAuth.tsx`) into one `authErrorMessage()`
+in `api.ts`, next to the existing `runErrorMessage()` — same "don't let
+per-screen copies drift" reasoning that function's own docstring
+already documents, deliberately a separate function rather than reusing
+`runErrorMessage` itself (its 429/"daily council budget" wording is
+council-run-specific and wrong on a login screen).
+
+**Verified**: `tsc --noEmit` clean. Full mobile suite 12 suites / 99
+tests passed (96 existing + 3 new for `authErrorMessage`, added
+alongside `runErrorMessage`'s own test block). Revert-checked per
+CLAUDE.md §4.1: broke `authErrorMessage` to skip the `ApiError` branch
+unconditionally, confirmed the 2 new tests that exercise it fail exactly
+as expected, restored, confirmed all pass again.
+
+**Not verified live**: could not get a click-through in the browser.
+`expo start --web` in this sandbox bundled successfully (confirmed via
+direct `curl` — HTTP 200 after ~75s cold-crawl each time) but the
+process then vanished from the tool's own tracked list within seconds
+of responding, on three separate attempts, so every `navigate` into the
+resulting tab failed. This reads as an environment/tooling flakiness
+issue in this sandbox specifically (the server bundles and serves once,
+then disappears), not something in the changed code — flagging per
+CLAUDE.md §4.5 rather than claiming a look I didn't get. The next
+session (or the user, against the real deployment) should click through
+the actual login flow at least once before trusting the visual layout
+blind.
+
+**Also investigated, not fixed**: "some uis are different for dark and
+light mode like auto approve toggle etc." Read every color in the
+desktop tree (`theme.ts`'s full light/dark token block, `icons.tsx`,
+every screen) — nothing hardcoded outside the tokens, no `colorScheme`-conditional
+color logic anywhere in `src/desktop/**` except three plain
+`isDark` derivations (Shell.tsx, Settings.tsx, DesktopAuth.tsx now),
+none of which pick a raw color. Built a byte-accurate static
+reproduction (real extracted `PLATINUM_CSS`, real markup for the
+`AutoApproveControl` pill in both armed/unarmed states) and computed
+real alpha-compositing + WCAG contrast numbers for the armed ("AUTO")
+pill in both themes: text-vs-pill contrast is 4.38 in light and *7.54*
+in dark (better, not worse), pill-vs-card luminance contrast is
+~identical (1.15 vs 1.20). Visually the dark pill reads as more muted
+than light's (a real perceptual effect — a translucent warm wash
+desaturates much more over a near-black card than over white, at equal
+alpha), but by the numbers it isn't a contrast/legibility bug, and nothing
+in the code is un-themed. Left open: could be the *design itself*
+should have a stronger dark-mode wash for a state this safety-relevant
+("autonomous trading is armed"), or the user may mean a different
+element entirely under "etc" — need a screenshot of the specific
+element(s) before changing anything, rather than guessing at tokens
+that measure out fine.
+
 ### 2026-09-01 — fix(desktop): ExemplarCard read a field the real API response never had — always showed "No finalized refusal yet"
 
 `ID:MODEL2OFF`. Confirmed bug flagged by an earlier task (the ghost-copy

@@ -135,6 +135,25 @@ export function runErrorMessage(err: unknown): string {
   return "The server didn't respond - it may still be starting up. Try again in a moment.";
 }
 
+/**
+ * Same "don't let per-screen copies drift" reasoning as `runErrorMessage`
+ * above, for the auth screens specifically — login.tsx, verify.tsx and
+ * DesktopAuth.tsx each used to hand-roll this exact extraction. Auth
+ * errors get a plainer treatment than `runErrorMessage`'s (no 429/council
+ * budget wording, which makes no sense outside a council run): just the
+ * server's own `detail` string when there is one, else the caller's
+ * domain-specific fallback (e.g. "enter a valid email" contexts differ
+ * between requesting a link and verifying a token).
+ */
+export function authErrorMessage(err: unknown, fallback: string): string {
+  if (err instanceof ApiError) {
+    return typeof err.body === 'object' && err.body && 'detail' in err.body
+      ? String((err.body as { detail: unknown }).detail)
+      : err.message;
+  }
+  return fallback;
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Trading lock
 //

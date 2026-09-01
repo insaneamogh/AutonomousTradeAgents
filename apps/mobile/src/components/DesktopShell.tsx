@@ -1,10 +1,17 @@
 /**
  * DesktopShell — the single switch point between the two design systems.
  *
- *   native, OR web below 1024px, OR no session
- *     → renders `children` untouched (the expo-router `<Slot />`).
- *       The phone UI is byte-identical on this path: no extra View, no
- *       extra style, no desktop module ever evaluated.
+ *   native, OR web below 1024px
+ *     → renders `children` untouched (the expo-router `<Slot />`),
+ *       regardless of session — this covers the mobile login/verify
+ *       screens too. The phone UI is byte-identical on this path: no
+ *       extra View, no extra style, no desktop module ever evaluated.
+ *
+ *   web at ≥ 1024px, no session yet
+ *     → renders `DesktopAuth`, the Platinum Glass pre-auth screen (a
+ *       single combined email + access-token form). Also replaces the
+ *       router subtree — the mobile login/verify screens never mount on
+ *       this surface either, not even before sign-in.
  *
  *   web at ≥ 1024px with a session
  *     → renders `DesktopApp`, the Platinum Glass desktop tree under
@@ -38,7 +45,7 @@ import { useAuthStore } from '@/stores/authStore';
 /** Below this width the phone layout is still the better layout. */
 const DESKTOP_BREAKPOINT = 1024;
 
-/** Phone-ish column for the pre-session (auth) screens on a wide browser. */
+/** Defensive-fallback-only column width — see the `!isAuthed` branch below. */
 const AUTH_COLUMN_WIDTH = 460;
 
 type DesktopAppComponent = () => React.ReactElement;
@@ -55,6 +62,22 @@ function loadDesktopApp(): DesktopAppComponent | null {
       .default;
   }
   return cachedDesktopApp;
+}
+
+type DesktopAuthComponent = () => React.ReactElement;
+
+let cachedDesktopAuth: DesktopAuthComponent | null = null;
+
+/** Same guarded-require treatment as `loadDesktopApp`, and for the same
+ * reason — the pre-auth Platinum Glass screen is just as web-only. */
+function loadDesktopAuth(): DesktopAuthComponent | null {
+  if (Platform.OS !== 'web') return null;
+  if (cachedDesktopAuth == null) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    cachedDesktopAuth = (require('@/desktop/DesktopAuth') as { default: DesktopAuthComponent })
+      .default;
+  }
+  return cachedDesktopAuth;
 }
 
 /**
@@ -82,14 +105,14 @@ function useWebViewportWidth(): number {
 
 /**
  * True when the Platinum Glass tree is what's on screen — i.e. the
- * expo-router `<Slot />` is NOT mounted. The root layout's auth-route
- * guard reads this so it doesn't try to `router.replace()` into a
- * navigator that doesn't exist on this surface.
+ * expo-router `<Slot />` is NOT mounted, whether that's `DesktopAuth`
+ * (pre-auth) or `DesktopApp` (authenticated). The root layout's
+ * auth-route guard reads this so it doesn't try to `router.replace()`
+ * into a navigator that doesn't exist on this surface.
  */
 export function useIsDesktopSurface(): boolean {
   const width = useWebViewportWidth();
-  const isAuthed = useAuthStore((s) => s.status === 'authenticated');
-  return Platform.OS === 'web' && width >= DESKTOP_BREAKPOINT && isAuthed;
+  return Platform.OS === 'web' && width >= DESKTOP_BREAKPOINT;
 }
 
 export function DesktopShell({ children }: { children: React.ReactNode }) {
@@ -102,17 +125,23 @@ export function DesktopShell({ children }: { children: React.ReactNode }) {
     return <>{children}</>;
   }
 
-  // Wide web, no session yet: the auth screens are the mobile ones. Frame
-  // them in a phone-width column rather than stretching them across a
-  // metre of pixels. (Web-only branch — native never reaches here.)
+  // Wide web, no session yet: DesktopAuth (a Platinum Glass pre-auth
+  // screen), not the mobile login/verify screens — see this file's
+  // docstring. Falling back to the old phone-width-column framing of
+  // `children` only if the lazy require somehow comes back empty, which
+  // can't happen off-web and this branch is already web-only.
   if (!isAuthed) {
-    return (
-      <View className="flex-1 flex-row justify-center bg-bg-canvas dark:bg-bg-canvas-dark">
-        <View className="flex-1" style={{ maxWidth: AUTH_COLUMN_WIDTH }}>
-          {children}
+    const DesktopAuth = loadDesktopAuth();
+    if (DesktopAuth == null) {
+      return (
+        <View className="flex-1 flex-row justify-center bg-bg-canvas dark:bg-bg-canvas-dark">
+          <View className="flex-1" style={{ maxWidth: AUTH_COLUMN_WIDTH }}>
+            {children}
+          </View>
         </View>
-      </View>
-    );
+      );
+    }
+    return <DesktopAuth />;
   }
 
   const DesktopApp = loadDesktopApp();
