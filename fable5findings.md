@@ -330,6 +330,27 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 # Build log
 
+### 2026-09-01 — 010bc9b2 — fix(agents): budget ceiling resets at midnight UTC, not rolling 24h
+
+Follow-up to `ae4c44e8` below, caught by verifying the just-deployed fix against the LIVE
+Railway service rather than trusting the passing tests alone. The live service has
+`USE_POSTGRES=1`, so `MAX_DAILY_LLM_SPEND_USD`'s `sum_cost_since(timedelta(hours=24))`
+reads the durable Postgres ledger — which still holds today's ~$10, 638-call spike from
+16:47-18:16 UTC. A rolling 24h window means that spike stays "in the window" and keeps
+tripping the $3.00 ceiling for a full 24 hours after it happened, so the user topping up
+credits tonight (their words: *"once done let me know i will rebalance with $10"*) would
+have found every candidate still HOLDing uncosted until roughly the same time tomorrow —
+long after the real Anthropic balance was healthy again. That defeats the point of the
+fix, and I would not have caught it without actually checking `USE_POSTGRES` state on the
+live box rather than assuming the in-memory-ledger-in-tests behavior generalized.
+
+Replaced with `_seconds_since_midnight_utc()` — the ceiling now clears at UTC midnight
+(a few hours away at the time of the fix) regardless of what happened earlier that day.
+New test pins the exact fix (fixed "now" at 19:30 UTC → 19h30m elapsed, not 24h),
+revert-checked (hardcoded the old `timedelta(hours=24)` return, confirmed the new test
+failed with `1 day` instead of `19h30m`, restored). Full suite: 1382 passed, 11 skipped.
+
+
 ### 2026-09-01 — ae4c44e8 — fix(agents): hard budget/count gates before ANY council LLM call
 
 User reported (verbatim): *"i just got a message that my $10 API credits have been
