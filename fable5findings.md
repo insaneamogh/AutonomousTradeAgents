@@ -385,6 +385,160 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-09-01 — `58d76620` fix(mobile): explain WHY the Refusal Ledger's pending tiles say "$—" and WHEN they resolve
+
+`ID:MODEL2OFF`. User reacted twice tonight to the Dashboard's "Risk saved
+$— · 6 marks pending" / "Regret $— · 2 marks pending" tiles reading as
+broken or unbuilt — most recently "WHAT DOES THIS EVEN MAKE SENSE??". The
+brief was explicit and I did not re-derive it: **the underlying data is
+correct** (already verified live twice tonight against real Postgres —
+`ghost_eval` marks forward and only finalizes at 5 elapsed trading days;
+today's real vetoes are 1–4 days old, so `$—`/pending is the honest
+state). This was a pure copy/UX task: make the tile say WHY it's pending
+and WHEN it resolves, without touching the underlying computation.
+
+**What changed:**
+
+1. **Backend, small and additive** (`apps/api/app/services/council/ghost_service.py`):
+   `GhostBucket` gains `oldest_pending_triggered_at` /
+   `oldest_pending_remaining_trading_days` — the OLDEST still-marking row
+   in the bucket (the next one expected to finalize) and how many trading
+   days are left on it. Computed with `ghost_eval.trading_day_offset`
+   (renamed from private `_trading_day_offset` — apps/agents/trading_agents/jobs/ghost_eval.py
+   — specifically so the API layer reuses the SAME function the evaluator
+   itself uses to decide `status="final"`, rather than a second hand-
+   rolled day-counter that could disagree with it by a day around a
+   weekend; CLAUDE.md §4.4's trap, applied to logic rather than a
+   literal constant). Pulled the aggregation out of `build_ghost_summary`'s
+   closure into a standalone `_bucket_from_rows(rows, reasons, *, now)` —
+   same reason `count_trim_rules` is already split from its query:
+   testable without a database. Both fields threaded through
+   `GhostBucketDto` (`apps/api/app/routers/insights.py`) and
+   `packages/shared-types/src/index.ts`, camelCase, optional, None-safe.
+
+2. **Frontend, and this is the part that actually mattered — two designs, not one:**
+   - **First cut (wrong, caught before shipping):** put the finalize
+     countdown straight into the StatTile's big value string — `pendingAwareUsd`
+     returning `"$— · 6 marks pending — finalizes in 3 trading days"`.
+     Per CLAUDE.md §4.3 ("measure against reality, don't reason about
+     it") I built a static HTML preview reusing the REAL `theme.ts` CSS
+     verbatim (`.pg-grid`/`.pg-cell[data-span]`/`.pg-card`/`.pg-num`/
+     `.pg-caption`/`.pg-truncate`, real colors/fonts) at the real
+     3-column Dashboard tile width (1112px content area, sidebar
+     subtracted) and rendered it live in the Browser pane. **The long
+     string wraps the value across THREE lines** and blows the tile's
+     height out next to its untouched siblings — `.pg-num` (the Numeral
+     the value renders into) has no `white-space`/truncation rule at all,
+     unlike a caption's `.pg-truncate`. Would have shipped a tile that
+     looks WORSE than the one the user was already complaining about.
+   - **Fix:** `pendingAwareUsd`'s value stays exactly as short as it
+     always was (`"$— · 6 marks pending"`, unchanged). The countdown
+     moved to a new `pendingAwareCaption(fallback, amount, pendingCount,
+     oldestPendingRemainingTradingDays?)`, which swaps the StatTile's
+     *caption* (single-line, `.pg-truncate`, degrades via ellipsis
+     instead of wrapping) for `"Finalizes in 3 trading days"` /
+     `"Finalizes any day now"`. Re-rendered the same static preview to
+     confirm: clean at the real desktop width, and still clean (no
+     wrapping, ellipsis only if truly out of room) at the tablet
+     breakpoint's narrower span=6 tile even with the worst-case "long"
+     horizon (20 trading days).
+   - `pendingAwareCaption` only swaps when `pendingAwareUsd`, given the
+     *same* `amount`/`pendingCount`, would itself be rendering `"$—"` —
+     shared via one `isShowingPending` predicate so the two can't
+     disagree. Without this: a bucket with 8 finalized rows and 2 still
+     marking already shows a real (if incomplete) dollar value, and the
+     caption must not claim the whole tile is unresolved next to a
+     number that plainly isn't a placeholder. Revert-checked (see below).
+   - `stillMarkingCaption(count, pendingCount, oldestPendingRemainingTradingDays?)`
+     replaces the ad hoc, duplicated "{count} finalised · {n} still
+     X" strings that had already drifted between screens — Dashboard's
+     `GhostRow` said "still open", Insights' Ghost P&L tab said "still
+     marking", for the identical `pendingCount`. Now both say "still
+     marking" and both append the same finalize countdown. Verified live
+     in the same preview: wraps cleanly onto a second line inside the
+     wider Ghost P&L card body — that width tolerates it; the StatTile
+     doesn't, which is exactly why the countdown isn't in `pendingAwareUsd`.
+   - Applied everywhere the brief named: Dashboard's "Risk saved"/"Regret"
+     tiles + Ghost P&L card, and Insights' Ghost tab "Loss avoided"/
+     "Upside missed" tiles + "Vetoed by risk"/"Declined by you" cards.
+
+**Verified, precisely:**
+- Full Python suite: **1313 passed, 11 skipped** (`python -m uv run pytest
+  apps/agents apps/api packages/ -q`; was 1295 as of the last entry above
+  — the remainder of the +18 is other concurrent work already landed on
+  this branch via merges, not mine; my own contribution is 5 new tests in
+  `test_veto_ledger_aggregation.py`). `ruff check` on every touched file:
+  the only findings are the 4 pre-existing `B008 Depends()` errors in
+  `insights.py`, confirmed via `git stash`/re-run/`git stash pop` to be
+  identical in rule and file, shifted only by my own inserted lines above
+  them — not mine.
+- Full mobile jest: **11 suites / 97 tests passed**
+  (`pnpm --filter mobile exec jest --silent`). `pnpm -s exec tsc --noEmit
+  -p apps/mobile/tsconfig.json`: clean.
+- **Revert-checked three separate pieces of new logic per CLAUDE.md §4.1**
+  (broke each, ran the specific test, confirmed it failed with the exact
+  expected assertion message, restored, confirmed green again — not just
+  "wrote a test that happened to pass"):
+  1. `_bucket_from_rows`'s oldest-vs-newest pending-row selection (flipped
+     the comparison to prefer newest — `test_bucket_names_the_oldest_pending_marks_remaining_trading_days`
+     failed exactly as expected).
+  2. `finalizesPhrase`'s singular/plural wording (hardcoded plural —
+     both `format.test.ts`'s singular-day test AND
+     `Insights.test.tsx`'s malformed-plural assertion failed).
+  3. `isShowingPending`'s amount/pendingCount sync (made it ignore
+     `amount` — both the pre-existing `pendingAwareUsd` non-zero test
+     AND the new `pendingAwareCaption` sync test failed).
+- Also ran `eslint` on every touched frontend file even though it is
+  **not** one of CLAUDE.md §7's listed verification commands. 3 findings;
+  checked each via `git stash`: `Dashboard.tsx`'s unescaped-apostrophe
+  and one of `Insights.test.tsx`'s two `no-unsafe-call` findings are
+  100% pre-existing (identical rule/line content, shifted only by my
+  inserted lines). The second `no-unsafe-call` finding IS new — my
+  `openGhostTab` test helper's `ghostTabButton.props.onClick()` — but
+  it's a mechanical repeat of the exact same already-unaddressed
+  react-test-renderer idiom (`.props.onClick()` on a loosely-typed
+  `TestInstance`) the pre-existing test in the same file already
+  triggers. Left as-is rather than inventing a one-off suppression for
+  a lint rule this repo's own stated gate doesn't include.
+
+**Left open / found-but-out-of-scope (flagged separately, not fixed):**
+- **`ExemplarCard.tsx` / `ExemplarCard.test.tsx` target a stale response
+  shape.** Read these while orienting on the ghost-tab code and confirmed
+  a real, separate bug: their `VetoExemplarResponse` (both the component
+  and `packages/shared-types/src/index.ts`'s type) expects `found`,
+  `price`, `markPrice`, `tradingDaysElapsed`, etc. — documented in-file as
+  "did not exist server-side as of this writing." It exists now (the
+  `56da03fb`/earlier `2026-08-31` entries above built
+  `GET /api/v1/risk/vetoes/{rule}/exemplar`), and its real response
+  (`decisionId`/`entryPrice`/`lastPrice`/`isOption`/`occSymbol`/…, no
+  `found` field at all) never satisfies `d.found`. Every real,
+  successful response therefore renders the card's `!d.found` branch —
+  "No finalized refusal yet" — regardless of what actually finalized.
+  Textbook CLAUDE.md §4.1 shape (a whole test file mocking the stale
+  shape, green, testing a path production can't reach) — just on the
+  Story Trade card, not the two tiles this task named. Did not touch it:
+  real fix is a second, non-trivial task (rewire the component, its
+  test file, and the shared type to the real shape), not a copy tweak.
+- Did not re-verify `ghost_eval`'s finalization timing/data itself —
+  independently verified live twice earlier tonight per the brief, and
+  explicitly out of scope for this pass.
+- Did not add a dedicated `Dashboard.test.tsx` — none exists today, and
+  building one from scratch would mean mocking eight-plus hooks
+  (`useAccount`, `useActivity`, `usePendingApprovals`,
+  `useBrokerConnections`, `useHealthFull`, `useGhostSummary`,
+  `useVetoLedger`, `useOpenPositions`, `useScannerStatus`, `useRegime`)
+  for a copy fix — disproportionate to this task. Coverage instead: the
+  new pure helpers are exhaustively unit-tested in `format.test.ts`, the
+  one existing screen-level harness (`Insights.test.tsx`, which shares
+  the exact same `ghost.data` shape and `StatTile`/card wiring Dashboard
+  uses) is extended with two new render-level assertions, `tsc` catches
+  any prop-mismatch in Dashboard's own wiring, and the CSS-faithful
+  static preview (built from theme.ts's actual rules, not reinvented)
+  gave a real visual check neither test type would have caught on its
+  own. Said plainly rather than silently: this is real coverage of the
+  logic and of one live render path, not of Dashboard.tsx's own JSX
+  wiring specifically.
+
 ### 2026-09-01 — `56da03fb` fix(options): guard.py computed the contract funnel and threw it away
 
 `ID:MODEL2OFF`. User's ask: "loosen the funnel a bit i dont see any options
