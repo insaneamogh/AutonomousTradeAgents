@@ -511,13 +511,14 @@ export interface VetoLedgerResponse {
   windowDays: number;
   totalVetoes: number;
   totalBlockedNotional: number;
+  /** Which reviewed RiskCaps profile is live right now ("conservative" |
+   * "aggressive_paper") — sent by the API as of 2026-09-01. Previously
+   * documented here as "not yet sent," which the backend genuinely never
+   * did until this field existed — see fable5findings.md for that fix. */
+  riskProfile: string;
   rules: VetoRuleDto[];
   trims: TrimRuleDto[];
   totalTrims: number;
-  /** `reasoning["risk_profile"]` in force over this window — not yet sent
-   * by the API as of this writing (backend tracked separately), so this is
-   * optional/absent rather than a value the client can rely on. */
-  riskProfile?: string | null;
 }
 
 /**

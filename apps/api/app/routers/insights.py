@@ -88,6 +88,12 @@ class VetoLedgerResponse(CamelCaseModel):
     window_days: int
     total_vetoes: int
     total_blocked_notional: float
+    risk_profile: str
+    """Which reviewed `RiskCaps` profile is live right now ("conservative" |
+    "aggressive_paper") — same resolution `RiskCaps.from_env()` uses. Added
+    2026-09-01: this field didn't exist before, so the mobile client's
+    "under the X% caps" disclosure caption always fell back to a generic
+    placeholder regardless of the real profile."""
     rules: list[VetoRuleDto] = Field(default_factory=list)
     trims: list[TrimRuleDto] = Field(default_factory=list)
     """Partial refusals — rules that resized a trade instead of stopping
@@ -170,6 +176,7 @@ async def veto_ledger(
         window_days=ledger.window_days,
         total_vetoes=ledger.total_vetoes,
         total_blocked_notional=ledger.total_blocked_notional,
+        risk_profile=ledger.risk_profile,
         rules=[
             VetoRuleDto(
                 rule=r.rule,

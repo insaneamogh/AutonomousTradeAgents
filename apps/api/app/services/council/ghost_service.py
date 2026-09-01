@@ -12,6 +12,7 @@ notional and ghost P&L as the caller's own numbers.
 
 from __future__ import annotations
 
+import os
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -22,6 +23,13 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from engine.db import async_session_factory
 from engine.db.models import AgentDecision, GhostOutcome
+
+# Reusing RiskCaps.from_env()'s own profile-name resolution rather than a
+# second, possibly-diverging re-derivation (CLAUDE.md §4.4) — this is the
+# exact same env-var read `from_env()` itself does, just exposed here so
+# the ledger can DISCLOSE which profile is live without needing a full
+# RiskCaps instance.
+from engine.risk.types import _select_risk_profile
 from trading_agents.jobs.ghost_eval import trading_day_offset
 from trading_agents.memory.decision_log import ALL_USERS
 
@@ -118,6 +126,7 @@ class VetoLedger:
     total_vetoes: int
     total_blocked_notional: float
     rules: list[VetoRuleRow]
+    risk_profile: str
     trims: list[TrimRuleRow] = field(default_factory=list)
     """Partial refusals, kept in their own list rather than mixed into
     ``rules``. A trim approved a smaller trade; a veto approved nothing.
@@ -241,6 +250,9 @@ async def build_ghost_summary(window_days: int = 30, *, user_id: str) -> GhostSu
 async def build_veto_ledger(window_days: int = 30, *, user_id: str) -> VetoLedger:
     """Per-rule veto scorecard for ``user_id`` over the window."""
     cutoff = datetime.now(UTC) - timedelta(days=window_days)
+    # Same env var, same resolution `RiskCaps.from_env()` itself uses —
+    # computed once, reused on every return path below.
+    risk_profile = _select_risk_profile(os.environ.get("RISK_PROFILE", ""))
     try:
         tenant = _tenant_filters(user_id)
     except _NoSuchTenant:
@@ -249,6 +261,7 @@ async def build_veto_ledger(window_days: int = 30, *, user_id: str) -> VetoLedge
             total_vetoes=0,
             total_blocked_notional=0.0,
             rules=[],
+            risk_profile=risk_profile,
         )
     session_factory = async_session_factory()
     async with session_factory() as session:
@@ -319,6 +332,7 @@ async def build_veto_ledger(window_days: int = 30, *, user_id: str) -> VetoLedge
         total_vetoes=sum(r.count for r in out),
         total_blocked_notional=round(total_notional, 2),
         rules=out,
+        risk_profile=risk_profile,
         trims=trims,
         total_trims=sum(t.count for t in trims),
     )

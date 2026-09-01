@@ -190,7 +190,7 @@ describe('InsightsScreen — veto ledger honesty rules', () => {
   it('stamps the risk profile in force as a caption', () => {
     const tree = renderScreen();
     const json = JSON.stringify(tree.toJSON());
-    expect(json).toContain('under the 2.5%/12% aggressive caps');
+    expect(json).toContain('under the 2.5%/7.5% aggressive caps');
   });
 
   it('clicking a rule row opens the story-trade exemplar for that rule', () => {

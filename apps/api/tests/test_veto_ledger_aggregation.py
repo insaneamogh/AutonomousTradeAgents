@@ -437,3 +437,35 @@ def test_ledger_scopes_to_the_window(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert long_window < short_window, "a wider window must reach further back"
     assert (short_window - long_window) > timedelta(days=250)
+
+
+def test_ledger_reports_the_real_live_risk_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression test for the 2026-09-01 fix: `VetoLedger.risk_profile` did
+    not exist at all, so the mobile client's "under the X% caps" disclosure
+    caption always fell back to a generic placeholder. Hits the real
+    `build_veto_ledger` (not a mocked hook) so this can't recur silently —
+    reuses `RiskCaps.from_env()`'s own profile-name resolution, so this
+    test would also catch the two ever disagreeing in the future."""
+    session = _QueueSession([[], []])
+    _patch(monkeypatch, session)
+
+    monkeypatch.setenv("RISK_PROFILE", "aggressive_paper")
+    ledger = anyio.run(lambda: ghost_service.build_veto_ledger(30, user_id=USER_ID))
+    assert ledger.risk_profile == "aggressive_paper"
+
+    session2 = _QueueSession([[], []])
+    _patch(monkeypatch, session2)
+    monkeypatch.delenv("RISK_PROFILE", raising=False)
+    ledger2 = anyio.run(lambda: ghost_service.build_veto_ledger(30, user_id=USER_ID))
+    assert ledger2.risk_profile == "conservative"
+
+
+def test_ledger_reports_risk_profile_even_for_an_unknown_tenant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The early-return path (no matching tenant) must populate
+    `risk_profile` too — it's a required field, not optional."""
+    monkeypatch.setenv("RISK_PROFILE", "aggressive_paper")
+    ledger = anyio.run(lambda: ghost_service.build_veto_ledger(30, user_id="not-a-real-user"))
+    assert ledger.risk_profile == "aggressive_paper"
+    assert ledger.total_vetoes == 0

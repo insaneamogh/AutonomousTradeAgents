@@ -74,11 +74,12 @@ export function humanize(value: string): string {
 
 const RISK_PROFILE_CAPTIONS: Record<string, string> = {
   conservative: 'under the 1%/5% conservative caps',
-  aggressive_paper: 'under the 2.5%/12% aggressive caps',
+  aggressive_paper: 'under the 2.5%/7.5% aggressive caps',
 };
 
 /** Verified against `RiskCaps.aggressive_paper()` (packages/engine/engine/risk/types.py):
- * options_max_premium_pct 1.0→2.5, options_max_total_premium_pct 5.0→12.0. */
+ * options_max_premium_pct 1.0→2.5, options_max_total_premium_pct 5.0→7.5 (briefly,
+ * wrongly, 12.0 for one day — see fable5findings.md's 2026-09-01 `ebfc8718` entry). */
 export function riskProfileCaption(profile: string | null | undefined): string {
   if (!profile) return 'risk profile disclosure pending';
   return RISK_PROFILE_CAPTIONS[profile] ?? `under the "${profile}" risk profile`;

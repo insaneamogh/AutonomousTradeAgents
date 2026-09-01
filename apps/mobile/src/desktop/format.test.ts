@@ -14,7 +14,13 @@
  * form wraps the tile's big value line across three lines, since `.pg-num`
  * has no truncation rule the way a caption's `.pg-truncate` does.
  */
-import { pendingAwareCaption, pendingAwareUsd, stillMarkingCaption, usd } from './format';
+import {
+  pendingAwareCaption,
+  pendingAwareUsd,
+  riskProfileCaption,
+  stillMarkingCaption,
+  usd,
+} from './format';
 
 describe('pendingAwareUsd', () => {
   it('renders a real, non-zero amount normally even if some marks are still pending', () => {
@@ -128,5 +134,28 @@ describe('stillMarkingCaption', () => {
 
   it('reads "finalizes any day now" instead of a zero countdown', () => {
     expect(stillMarkingCaption(0, 2, 0)).toBe('0 finalised · 2 still marking — finalizes any day now');
+  });
+});
+
+describe('riskProfileCaption', () => {
+  // The real 2026-09-01 fix this covers: the API never sent `riskProfile`
+  // at all (always undefined in production), AND separately the aggressive
+  // caption text itself still said "12%" a full day after the real cap
+  // dropped to 7.5% — this test would have caught either regression.
+  it('names the real caps for the aggressive profile', () => {
+    expect(riskProfileCaption('aggressive_paper')).toBe('under the 2.5%/7.5% aggressive caps');
+  });
+
+  it('names the real caps for the conservative profile', () => {
+    expect(riskProfileCaption('conservative')).toBe('under the 1%/5% conservative caps');
+  });
+
+  it('falls back to a generic disclosure only when the profile is genuinely absent', () => {
+    expect(riskProfileCaption(undefined)).toBe('risk profile disclosure pending');
+    expect(riskProfileCaption(null)).toBe('risk profile disclosure pending');
+  });
+
+  it('names an unrecognised profile literally rather than silently hiding it', () => {
+    expect(riskProfileCaption('some_future_profile')).toBe('under the "some_future_profile" risk profile');
   });
 });
