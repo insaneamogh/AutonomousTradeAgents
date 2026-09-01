@@ -2,8 +2,17 @@
  * Approval hooks — pending list + decision mutation.
  *
  * The mutation optimistically removes the proposal from the cached list,
- * then invalidates account + activity so the related views reflect the
- * decision without a manual refetch.
+ * then invalidates account + activity + open positions so the related
+ * views reflect the decision without a manual refetch.
+ *
+ * The positions invalidation matters more than it looks: an approval can
+ * create a brand-new open position, and useOpenPositions (usePositions.ts)
+ * has a 15s staleTime + 30s poll. Without this, a user who approves then
+ * immediately checks Positions gets served the pre-approval cached list —
+ * "approved it but can't see it in positions" — even though the backend
+ * already has the row (confirmed live: GET /api/v1/positions returns the
+ * new decision right after approval). This was a missing cache
+ * invalidation, not a backend lag.
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -60,6 +69,11 @@ export function useDecideApproval() {
       qc.invalidateQueries({ queryKey: QK.pendingApprovals });
       qc.invalidateQueries({ queryKey: QK.account });
       qc.invalidateQueries({ queryKey: ['activity'] });
+      // Raw literal, not a shared const: matches usePositions.ts's
+      // POSITIONS_KEY = ['positions'] by prefix (invalidateQueries isn't
+      // exact-match by default), same idiom already used for ['activity']
+      // above against useActivity.ts's QK.activity(limit) key.
+      qc.invalidateQueries({ queryKey: ['positions'] });
     },
   });
 }
