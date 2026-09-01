@@ -330,6 +330,78 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 # Build log
 
+### 2026-09-01 — ebfc8718 — post-mortem on the -3.67% open
+
+**Nothing was broken. Every rule behaved exactly as written and the
+account still lost more than its own halt threshold.**
+
+```
+last_equity (Aug 31 close)   100,871.17
+equity at 13:30:18 UTC        97,281.68   -> breaker tripped, -3.56%
+equity settled                97,166.90   -> -3,704  (-3.67%)
+positions vs the -40% stop:   -33.3 / -26.4 / -26.3 / -25.3 / -20.4
+stops fired:                  ZERO
+```
+
+The loss was an **overnight gap**, complete before the bell. The breaker
+tripped 18 seconds after the open. No intraday stop can act on a gap.
+
+**Root cause 1 — my own error, corrected.** Yesterday I raised
+`options_max_total_premium_pct` 12 -> 18 arguing *"the halt bounds the
+single-day loss at -3% whatever the book's size."* False. `drawdown_halt`
+blocks new ENTRIES and closes nothing (`position_manager` keeps closes
+legal under a halt *because* the halt de-risks nothing). It bounds new
+risk-taking, not loss. The real invariant, now a `RiskCaps` property and a
+parametrized test over both profiles:
+
+```
+options_max_total_premium_pct x (options_stop_loss_pct/100) <= |daily_drawdown_halt_pct|
+
+ 5%  x 50% = 2.50%   conservative — always satisfied it
+12%  x 40% = 4.80%   VIOLATED, shipped for weeks
+18%  x 40% = 7.20%   VIOLATED, my change, one day
+7.5% x 40% = 3.00%   now (= |halt| / stop, exactly)
+```
+
+Stop stays -40%; below ~35% it fires on quote noise against a 12%-spread
+delayed mark. Operator chose the 7.5%/-40% pair over 12%/-25%.
+
+**Root cause 2 — the correlation cap could not see index exposure.**
+SPY/QQQ/DIA/IWM had a sector bucket but NO cluster, so six calls
+(NVDA x3 `ai_capex` + SPY x2 + QQQ x1) read as ONE clustered name against
+a limit of four. One levered long-beta bet wearing six rows, opened inside
+ten minutes. All four ETFs now share `broad_market`.
+
+Neither fix would have SAVED today. Only size and correlation bound gap
+risk — which is what both are.
+
+**Root cause 3 — account swap would have inherited all of it.**
+`broker_connections.account_number` was NULL on every row, so a key change
+was undetectable, and every derived table is keyed on `user_id`. A fresh
+paper account would start **halted** (the breaker never auto-unhalts), with
+8 phantom open decisions that `_detect_external_closes` would close at the
+old account's marks, and order ids that 404 forever.
+`reconcile_account_identity` now runs first in the fleet tick. Stamps, never
+deletes — the Refusal Ledger needs the audit chain. NULL stored number =
+backfill, not switch, or it would retire a live book on deploy.
+
+**Operational state at time of writing**
+- Both users `halted`; the breaker does NOT auto-clear. Resume is
+  `POST /api/v1/circuit-breaker/acknowledge`. Operator chose to stay halted
+  and move to a new paper account instead.
+- 5 option positions still open, -20% to -33%, ladder live and evaluating
+  (verified) — simply nothing at -40% to fire on.
+- NVDA 225C was closed `user_manual` by the operator, -$580.
+- AAPL entry + its two bracket children canceled at the open.
+
+**Still open**
+- `max_position_pct` / options sizing does not consider how many
+  positions land in one 10-minute window. The burst shape is unaddressed;
+  only its size and correlation are now capped.
+- No overnight-exposure limit exists. A gap remains the dominant risk and
+  nothing measures it.
+
+
 ### 2026-09-01 — a962f566 / bdba6ce1 / c8e78d58 / 9310e2a4 — pre-open repair round
 
 Reported: only +$279 since the account opened; a wall of "AWAITING FILL"
