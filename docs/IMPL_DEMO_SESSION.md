@@ -129,8 +129,11 @@ These accept the bypass today and must not be reachable by a demo session:
 
 A persistent banner while the session is demo:
 
-> **Read-only demo** · viewing the live `PA3IAZI74E5R` paper account · trading actions
-> are disabled
+> **Read-only demo** · viewing the live paper account · trading actions are disabled
+
+(Shipped deliberately without a hardcoded account ID — `DemoSessionBanner.tsx` reads
+generic "the live paper account" text precisely so a future account swap, like the
+`PA3IAZI74E5R`→`PA31OTNBGE9I` one on 2026-09-01, never leaves stale copy on screen.)
 
 And **disable** (not hide) Approve / Decline / Close / Revoke buttons, with a tooltip.
 A judge who clicks Approve and gets a silent 401 reads it as a bug; a disabled button

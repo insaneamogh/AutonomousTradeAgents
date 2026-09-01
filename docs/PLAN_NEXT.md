@@ -15,7 +15,7 @@ Thu 3 · Fri 4 (90 min).
 | Thing | Status |
 |---|---|
 | Suite | **937 passed, 9 skipped.** ruff 252 (unchanged baseline) |
-| Account | `PA3IAZI74E5R`, paper, **$100,000**, **options level 3**, ACTIVE |
+| Account | `PA3IAZI74E5R` at time of writing (2026-08-30) — **superseded 2026-09-01 by `PA31OTNBGE9I`** after a data-corruption incident on the old account (fixed same day, see `fable5findings.md`'s `ccae611f` entry). **`PA31OTNBGE9I` is the current submission account** — see the checklist below. |
 | Ratchet (A.1/A.2) | ✅ shipped, revert-checked |
 | Aggressive profile (B) | ✅ shipped — `RISK_PROFILE=aggressive_paper` now set on Railway |
 | Candlestick patterns (C) | ✅ detector + fit + prompt. **Chart not built.** |
@@ -261,7 +261,10 @@ harness (ship the exit agent single-turn) → A.3 entirely. **Never cut** §1, �
 
 - [ ] Public GitHub repo (done)
 - [ ] Demo application + live URL (done — `autonomoustradeagents-autonomous.up.railway.app`)
-- [ ] **Alpaca paper account ID: `PA3IAZI74E5R`** — judges read P&L from this
+- [ ] **Alpaca paper account ID: `PA31OTNBGE9I`** (updated 2026-09-01 — the previous
+      submission account, `PA3IAZI74E5R`, was retired after a data-corruption incident;
+      see the table above) — judges read P&L from this. Double-check every slide/
+      screenshot/write-up references this one, not an older account number.
 - [ ] Video presentation + slide deck
 - [ ] One-page write-up: AI logic · risk gates · Alpaca infrastructure
 - [ ] Screenshot `market_open_source: "alpaca_cli"` from the scanner status payload —

@@ -51,7 +51,10 @@ putting them on screen.
   it** — its only caller is `cli/reflection.py`. That is why every strategy sits at
   the `NEUTRAL_PRIOR = 0.5` default → `50/100`.
 - **93 decisions and +$47 realised in the DB are from the OLD account**
-  (`PA3RFT091VEB`, Aug 27). The submitted account is `PA3IAZI74E5R`.
+  (`PA3RFT091VEB`, Aug 27). At the time of writing the submitted account was
+  `PA3IAZI74E5R`; that account was itself retired 2026-09-01 after a data-corruption
+  incident (`fable5findings.md`'s `ccae611f` entry) — the current submitted account is
+  `PA31OTNBGE9I`.
 - `_SNAPSHOT_BLOCKS` now includes `"patterns"`, so pattern scores reach
   `reasoning.feature_snapshot`.
 

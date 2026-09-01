@@ -144,6 +144,12 @@ outstanding.
 PA3IAZI74E5R` caption on every analytics screen, and either filter by
 `triggered_at >= <switch date>` or show both with the boundary marked.
 
+**Update, 2026-09-01: this happened again, one account later.** `PA3IAZI74E5R` was
+itself retired after a data-corruption incident (`fable5findings.md`'s `ccae611f`
+entry) — the submitted account is now `PA31OTNBGE9I`. Whatever labeling approach gets
+built for the `PA3RFT091VEB`→`PA3IAZI74E5R` boundary should be general enough to cover
+this second boundary too, not hardcoded to one pair of account IDs.
+
 **Do not delete history to make the demo cleaner.** The ledger's whole pitch is honest
 measurement; quietly pruning it is exactly the thing that reads badly if noticed. But do
 not leave it ambiguous either — a judge asking *"is this the account you submitted?"*
