@@ -330,6 +330,78 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 # Build log
 
+### 2026-09-01 — a962f566 / bdba6ce1 / c8e78d58 / 9310e2a4 — pre-open repair round
+
+Reported: only +$279 since the account opened; a wall of "AWAITING FILL"
+rows; picks only ever analysed LONG; the Strategies page looking unwired;
+Risk Saved / Regret rendering "$—"; "is anything checking, before the open,
+that a working order is still worth taking?"
+
+**Measured first, against the live account and the production DB.**
+
+| Claim | What the data said |
+|---|---|
+| "nothing has fired on options" | 6 long calls FILLED at Alpaca, $11,481 premium. The two-agent council IS running: `options_bull` 45 LLM calls, `options_bear` 21, over 3 days. |
+| "AWAITING FILL forever" | All 6 had `fill_qty IS NULL`; `orders` held **zero** option rows. |
+| "+$279 / +$53 today" | Alpaca: equity 100297.33 vs last_equity 100871.17 = **-573.84 (-0.57%)**. The UI was baselining off a pre-open UTC-day snapshot. |
+| "only long" | `ALLOW_SHORTS` was never set on Railway, so `forbid_short_phase_0` blocked every equity short. The fit engine scores BOTH directions and had picked `momentum short` on TSLA and META. |
+| "no puts" | Wrong — `TSLA260911P00365000` and `META260918P00585000` were both selected. Vetoed on the premium cap, not on being puts. |
+| "strategies unwired" | All 5 in real use: vol_regime_switch 25, sma_crossover 24, momentum 11, rsi_mean_reversion 7, breakout 3. |
+| "$— risk saved" | `ghost_outcomes` held -163.03 vetoed / -87.83 declined, all `status='partial'`. The tiles sum finals only. |
+| cost | $0.886 on Aug 31, $0.479 Aug 28, $0.650 Aug 27. |
+
+**Fixed**
+
+1. `order_sync._adopt_orphaned_fills` (new step 0). The six options reached
+   the broker without an `orders` row, and BOTH `manage_positions_for_user`
+   and `sweep_expiring_options_for_user` filter `fill_qty IS NOT NULL` — so
+   six real positions had **no stop, no trail, no expiry sweep**, silently.
+   Heals from the broker's own position. Same-side only, qty clamped to the
+   proposal, already-claimed keys skipped. **VERIFIED IN PRODUCTION**: after
+   deploy all 6 rows carry `fill_qty`/`fill_avg_price` matching Alpaca exactly.
+2. `_daily_pnl` now prefers Alpaca's `last_equity` over the earliest
+   snapshot bearing today's UTC date. The US session is 13:30-20:00 UTC, so
+   every snapshot the 30s fleet writes before 13:30 carries yesterday's close
+   under today's date. **Risk bug, not display**: `reconciler.breaker` trips
+   the -3% halt off this number. **VERIFIED IN PRODUCTION**: snapshots now
+   read -565.27 / -0.560%.
+3. `options_max_total_premium_pct` 12.0 -> 18.0 (`aggressive_paper`). 12.0
+   was measured binding: at 11.45% deployed, the next four options proposals
+   were vetoed at 13.3-13.8%. Halt-coupling re-derived in the docstring;
+   `daily_drawdown_halt_pct` deliberately unmoved.
+4. `ALLOW_SHORTS=1` set on Railway. `require_stop_on_short` stays on and the
+   drafter does emit `stop_price`, so shorts arrive bounded.
+5. Drafter's specialist floor was the literal `45` in the prompt while
+   `aggressive_paper` sets the cap to 40 — CLAUDE.md §4.4 exactly. The model
+   refused a layer BEFORE the engine was consulted, so the profile could
+   never reach a trade. Now injected from `RiskCaps`.
+6. `reasoning` carries `options_resolution` + `tool_denials`, so a HOLD from
+   two agents disagreeing is distinguishable from a HOLD where no agent ran.
+7. `sweep_stale_entry_orders_for_user` (new). Cancels a working ENTRY order
+   submitted before this session's open that is still unfilled once the
+   session opened. Never touches an exit; zero-fill only; cancels only, the
+   symbol goes back to the scanner.
+8. Mobile: `stillMarkingCaption` read its first arg as the finalised subset
+   while both call sites pass the bucket TOTAL — "6 finalised · 6 still
+   marking" on a bucket where nothing had. `pendingAwareUsd` now renders
+   "$163 so far · 6 still marking" from the new `savedSoFarUsd`/
+   `missedSoFarUsd`; `savedUsd`/`missedUsd` stay final-only.
+
+**Verified**: 1339 passed / 11 skipped (py), 103 passed (jest), tsc clean,
+ruff clean against the 4-error `insights.py` B008 baseline. Every new suite
+revert-checked.
+
+**Left open, deliberately**
+- The Picks SELECTOR card still shows only the winning direction. Both are
+  in `reasoning.strategy_fit.ranked` — this is a UI read, not missing data.
+- `contract_funnel` is NULL on the pre-2026-09-01 refusal rows (the guard
+  only started emitting it today). Insights' "0 runs" heals on the first
+  options pass after this deploy; not backfilled.
+- Ghosts still finalize at `horizon_days` TRADING days, so the strict
+  `savedUsd` stays $0 until ~Sep 4. Item 8 is what makes the tile honest in
+  the meantime; it is not a substitute for finals.
+
+
 > Everything below the audit (§1–§8) is the running history of what's been built on top of it. **Per CLAUDE.md: every commit appends an entry here** so the next agent can resume without re-deriving context. Newest first. Don't edit the audit above; append here.
 
 ## 📍 Start here if you are a model picking up this repo
