@@ -4,27 +4,35 @@
  * the exact contract, the named rule that refused it, the thesis behind
  * it, and what it did afterwards in dollars.
  *
- * Backs onto GET /api/v1/risk/vetoes/{rule}/exemplar, which did not exist
- * server-side as of this writing — every field below is read defensively
- * so the card degrades to omission rather than crashing if the shape it
- * eventually ships with differs from `VetoExemplarResponse`.
+ * Backs onto GET /api/v1/risk/vetoes/{rule}/exemplar
+ * (`apps/api/app/routers/insights.py`'s `veto_exemplar` / `VetoExemplarResponse`
+ * — the real, now-shipped shape this component reads). An earlier version
+ * of this file was written before that endpoint existed and guessed a
+ * different shape (a `found: boolean` field, `price`/`markPrice`/
+ * `tradingDaysElapsed`/`notionalPctOfEquity`/`capPct`/`approvalMode`/
+ * `riskProfile`) — the real response has none of those, so every read
+ * against the guessed names was silently `undefined` and the card always
+ * rendered its empty state. `build_veto_exemplar` only ever returns a
+ * FINALIZED ghost (or none at all, signaled by a 404 — never a `found:
+ * false`), so `ghostPnl` here is always a real number and `horizonDays` IS
+ * the elapsed trading-day count, not something to compute separately.
  */
 
 import { useVetoExemplar } from '@/hooks/useInsights';
+import { ApiError } from '@/lib/api';
 
-import { ago, riskProfileCaption, ruleLabel, usd } from './format';
+import { ago, ruleLabel, usd } from './format';
 import { Button, Card, CardHead, Label, Pill, Row, SkelRows, Stack } from './primitives';
 import type { Tone } from './primitives';
 
-function wouldHaveTone(ghostPnl: number | null | undefined): Tone {
-  if (ghostPnl == null) return 'neutral';
+function wouldHaveTone(ghostPnl: number): Tone {
   if (ghostPnl < 0) return 'bull';
   if (ghostPnl > 0) return 'warn';
   return 'neutral';
 }
 
-function wouldHaveVerdict(ghostPnl: number, preventedLossUsd: number | null | undefined): string {
-  if (ghostPnl < 0) return `That refusal saved ${usd(preventedLossUsd ?? -ghostPnl)}.`;
+function wouldHaveVerdict(ghostPnl: number, preventedLossUsd: number): string {
+  if (ghostPnl < 0) return `That refusal saved ${usd(preventedLossUsd)}.`;
   if (ghostPnl > 0) return `That refusal would have made ${usd(ghostPnl)}.`;
   return 'That refusal was a wash.';
 }
@@ -32,6 +40,12 @@ function wouldHaveVerdict(ghostPnl: number, preventedLossUsd: number | null | un
 export function ExemplarCard({ rule, onClose }: { rule: string; onClose: () => void }) {
   const exemplar = useVetoExemplar(rule);
   const d = exemplar.data;
+  // The real endpoint's ONLY "nothing to show" signal is a 404 (see the
+  // module docstring) — never a data shape with found:false. Any OTHER
+  // error (network failure, 500, ...) is genuinely unexpected and gets
+  // the "not available" copy below instead of "no finalized refusal yet".
+  const notFinalizedYet =
+    exemplar.error instanceof ApiError && exemplar.error.status === 404;
 
   return (
     <Card>
@@ -45,14 +59,7 @@ export function ExemplarCard({ rule, onClose }: { rule: string; onClose: () => v
       />
       {exemplar.isLoading ? (
         <SkelRows rows={7} />
-      ) : exemplar.isError ? (
-        <div className="pg-empty">
-          <p className="pg-empty-title">Exemplar not available</p>
-          <p className="pg-empty-body">
-            {`GET /api/v1/risk/vetoes/${rule}/exemplar didn't respond — this endpoint may not be built yet.`}
-          </p>
-        </div>
-      ) : !d || !d.found ? (
+      ) : notFinalizedYet ? (
         <div className="pg-empty">
           <p className="pg-empty-title">No finalized refusal yet</p>
           <p className="pg-empty-body">
@@ -60,37 +67,29 @@ export function ExemplarCard({ rule, onClose }: { rule: string; onClose: () => v
             finalizes.
           </p>
         </div>
+      ) : exemplar.isError || !d ? (
+        <div className="pg-empty">
+          <p className="pg-empty-title">Exemplar not available</p>
+          <p className="pg-empty-body">
+            {`GET /api/v1/risk/vetoes/${rule}/exemplar didn't respond — try again shortly.`}
+          </p>
+        </div>
       ) : (
         <Stack gap={14}>
           <Stack gap={4}>
             <Row gap={8} style={{ flexWrap: 'wrap' }}>
               <span className="pg-num" style={{ fontSize: 16, fontWeight: 600 }}>
-                {d.occSymbol ?? d.symbol ?? 'Unknown contract'}
+                {d.occSymbol ?? d.symbol}
               </span>
-              <Pill tone="bear">refused by {ruleLabel(d.rule ?? rule)}</Pill>
-              {d.approvalMode === 'auto' ? (
-                <Pill tone="warn" title="Executed by the auto-approve sweeper — no human tap">
-                  AUTO
-                </Pill>
-              ) : null}
+              <Pill tone="bear">refused by {ruleLabel(d.rule)}</Pill>
             </Row>
-            {d.triggeredAt ? <span className="pg-caption">{ago(d.triggeredAt)}</span> : null}
+            <span className="pg-caption">{ago(d.triggeredAt)}</span>
           </Stack>
 
-          {d.qty != null && d.price != null ? (
-            <p className="pg-body-sm">
-              The council wanted {d.qty} contract{d.qty === 1 ? '' : 's'} at {usd(d.price, 2)}
-              {d.estimatedNotional != null ? (
-                <>
-                  {' '}
-                  ({usd(d.estimatedNotional)}
-                  {d.notionalPctOfEquity != null ? ` = ${d.notionalPctOfEquity.toFixed(1)}% of equity` : ''}
-                  {d.capPct != null ? `, cap ${d.capPct}%` : ''})
-                </>
-              ) : null}
-              .
-            </p>
-          ) : null}
+          <p className="pg-body-sm">
+            The council wanted {d.qty} contract{d.qty === 1 ? '' : 's'} at {usd(d.entryPrice, 2)}
+            {d.estimatedNotional != null ? <> ({usd(d.estimatedNotional)})</> : null}.
+          </p>
 
           {d.bullCase ? (
             <Stack gap={4}>
@@ -106,31 +105,23 @@ export function ExemplarCard({ rule, onClose }: { rule: string; onClose: () => v
             </Stack>
           ) : null}
 
-          {d.markPrice != null ? (
+          {d.lastPrice != null ? (
             <p className="pg-body-sm">
-              {d.tradingDaysElapsed != null
-                ? `${d.tradingDaysElapsed} session${d.tradingDaysElapsed === 1 ? '' : 's'} later, `
-                : 'Since then, '}
-              the contract was worth <span className="pg-num">{usd(d.markPrice, 2)}</span>.
+              {d.horizonDays} session{d.horizonDays === 1 ? '' : 's'} later, the contract was worth{' '}
+              <span className="pg-num">{usd(d.lastPrice, 2)}</span>.
             </p>
           ) : null}
 
           <div className="pg-inset">
-            {d.ghostPnl == null ? (
-              <span className="pg-caption pg-dim">pending — still marking, no verdict yet</span>
-            ) : (
-              <Row gap={8}>
-                <Pill tone={wouldHaveTone(d.ghostPnl)}>
-                  {d.ghostPnl < 0 ? 'SAVED' : d.ghostPnl > 0 ? 'MISSED' : 'EVEN'}
-                </Pill>
-                <span style={{ fontWeight: 600, fontSize: 13 }}>
-                  {wouldHaveVerdict(d.ghostPnl, d.preventedLossUsd)}
-                </span>
-              </Row>
-            )}
+            <Row gap={8}>
+              <Pill tone={wouldHaveTone(d.ghostPnl)}>
+                {d.ghostPnl < 0 ? 'SAVED' : d.ghostPnl > 0 ? 'MISSED' : 'EVEN'}
+              </Pill>
+              <span style={{ fontWeight: 600, fontSize: 13 }}>
+                {wouldHaveVerdict(d.ghostPnl, d.preventedLossUsd)}
+              </span>
+            </Row>
           </div>
-
-          <span className="pg-caption">{riskProfileCaption(d.riskProfile)}</span>
         </Stack>
       )}
     </Card>

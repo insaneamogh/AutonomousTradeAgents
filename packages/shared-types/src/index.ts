@@ -513,34 +513,41 @@ export interface VetoLedgerResponse {
  * ahead of that endpoint landing, mirroring the doc's own worked example
  * (the NVDA260918C00225000 / max_premium_pct story trade).
  */
+/**
+ * Real shape of `GET /api/v1/risk/vetoes/{rule}/exemplar` — matches
+ * `apps/api/app/routers/insights.py`'s `VetoExemplarResponse` field for
+ * field (source of truth; verify there, not here, before changing this).
+ *
+ * There is no `found` field: the endpoint 404s when nothing under `rule`
+ * has finalized yet (`build_veto_exemplar` returns `None` in that case)
+ * rather than returning a 200 with a false flag — the caller reads the
+ * 404 itself as "not finalized yet". Every field below is therefore
+ * always present on a successful response; nothing here is optional
+ * because "the ghost is still marking" can't reach this shape at all.
+ */
 export interface VetoExemplarResponse {
+  decisionId: string;
   rule: string;
-  /** False when every ghost under this rule in the window is still
-   * pending/partial — there is no finalized exemplar to show yet. */
-  found: boolean;
-  decisionId?: string | null;
-  symbol?: string | null;
+  symbol: string;
+  side: string;
+  qty: number;
+  entryPrice: number;
+  lastPrice?: number | null;
+  ghostPnl: number;
+  preventedLossUsd: number;
+  isOption: boolean;
   occSymbol?: string | null;
-  side?: string | null;
-  qty?: number | null;
-  price?: number | null;
+  bullCase: string;
+  bearCase: string;
+  rationale: string;
   estimatedNotional?: number | null;
-  notionalPctOfEquity?: number | null;
-  capPct?: number | null;
-  bullCase?: string | null;
-  bearCase?: string | null;
-  rationale?: string | null;
-  markPrice?: number | null;
-  tradingDaysElapsed?: number | null;
-  ghostPnl?: number | null;
-  preventedLossUsd?: number | null;
   /** ISO 8601 string. */
-  triggeredAt?: string | null;
-  /** ISO 8601 string. */
-  finalizedAt?: string | null;
-  riskProfile?: string | null;
-  /** 'ask' or 'auto' — see `DecisionSummaryDto.approvalMode`. */
-  approvalMode?: string | null;
+  triggeredAt: string;
+  /** Also the elapsed trading-day count for this exemplar: only a
+   * FINALIZED ghost is ever returned, and finalization happens exactly
+   * at `horizonDays` elapsed — there is no separate "days elapsed" field
+   * to drift out of sync with this one. */
+  horizonDays: number;
 }
 
 // ─────────────────────────────────────────────────────────────────────

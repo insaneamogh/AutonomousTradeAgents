@@ -385,6 +385,61 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-09-01 — fix(desktop): ExemplarCard read a field the real API response never had — always showed "No finalized refusal yet"
+
+`ID:MODEL2OFF`. Confirmed bug flagged by an earlier task (the ghost-copy
+pending-tile fix, `58d76620`) rather than fixed there — out of that
+task's scope, done as its own fix here.
+
+`ExemplarCard.tsx` and its `VetoExemplarResponse` type
+(`packages/shared-types/src/index.ts`) were written before `GET
+/api/v1/risk/vetoes/{rule}/exemplar` existed server-side — the
+component's own docstring said so. The guessed shape had `found:
+boolean` plus `price`/`markPrice`/`tradingDaysElapsed`/
+`notionalPctOfEquity`/`capPct`/`approvalMode`/`riskProfile`. The real,
+now-shipped endpoint (`apps/api/app/routers/insights.py`'s
+`veto_exemplar`/`VetoExemplarResponse`) has none of those — it 404s
+when nothing has finalized yet rather than returning `found: false`,
+and uses `entryPrice`/`lastPrice`/`horizonDays` instead. Since a real
+response never has a `found` field, `d.found` was always `undefined`
+on every successful call, so `!d.found` was always true — the card
+showed "No finalized refusal yet" regardless of whether a real,
+finalized exemplar existed. `ExemplarCard.test.tsx` stayed green
+because it mocked the OLD guessed shape wholesale, never exercising
+the real response at all (CLAUDE.md §4.1's "green test on a path
+production doesn't take").
+
+Verified the real shape directly against `insights.py`'s Pydantic
+model before writing any code (CLAUDE.md §4.3), not against the bug
+report's paraphrase of it.
+
+**Fix**: rewrote `ExemplarCard.tsx` against the real fields. The
+empty-state signal is now `error instanceof ApiError && error.status
+=== 404` (the endpoint's real "nothing yet" signal), not a nonexistent
+`found` field. `horizonDays` doubles as the elapsed-session count for
+the "N sessions later, worth $X" line — `build_veto_exemplar` only
+ever returns a FINALIZED ghost, and finalization happens at exactly
+`horizonDays` elapsed, so there's no separate elapsed-count field to
+drift out of sync with it. Dropped the AUTO pill and risk-profile
+caption — `approvalMode`/`riskProfile` aren't in the real DTO, and
+fabricating them back would be worse than omitting them. Rewrote
+`VetoExemplarResponse` to match `insights.py`'s model field-for-field,
+with a docstring pointing back at that file as the source of truth.
+Rewrote `ExemplarCard.test.tsx` against the real shape and the real
+404 signal; dropped two tests for scenarios that can't reach this
+component anymore (a "still marking, no verdict yet" ghost — the
+endpoint never returns one; the AUTO pill — the field doesn't exist).
+
+**Revert-checked per CLAUDE.md §4.1**: reintroduced a `!d.found` check
+alongside the real logic, confirmed both real-data tests fail (render
+"Exemplar not available" instead of the actual card, since `d.found`
+is always `undefined` on real data), restored, confirmed all 4 tests
+pass again.
+
+**Verified**: `tsc --noEmit` clean; full mobile suite 12 suites / 96
+tests passed (was 98 — net -2 from the two removed impossible-scenario
+tests, +0 new, existing 4 rewritten in place).
+
 ### 2026-09-01 — fix(desktop): `.pg-typeahead` dropdown had the same missing-scrollbar-styling gap as the Stream panel
 
 `ID:MODEL2OFF`. Follow-up flagged by the earlier CSS-fix pass
