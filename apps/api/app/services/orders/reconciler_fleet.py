@@ -228,6 +228,24 @@ class ReconcilerFleet:
                 logger.exception("fleet: order/position sync failed for user=%s", uid)
 
             try:
+                from app.services.orders.stale_entries import sweep_stale_entry_orders_for_user
+
+                # Before the exit ladder runs, drop working ENTRY orders
+                # whose thesis predates this session's open — otherwise a
+                # GTC entry drafted two sessions ago fills today on data
+                # nothing re-examined. Cancels only; the symbol goes back
+                # to the scanner for a fresh council pass.
+                stale = await sweep_stale_entry_orders_for_user(
+                    user_id=uid, session_factory=self.session_factory
+                )
+                if stale:
+                    logger.info(
+                        "fleet: canceled %d stale entry order(s) for %s", stale, uid
+                    )
+            except Exception:
+                logger.exception("fleet: stale-entry sweep failed for user=%s", uid)
+
+            try:
                 from app.services.orders.position_manager import manage_positions_for_user
 
                 closes = await manage_positions_for_user(
