@@ -147,6 +147,15 @@ class UserWatchlistItem(Base):
         String(10), nullable=False, default="equity", server_default="equity"
     )
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    source: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="manual", server_default="manual"
+    )
+    """``'manual'`` (a human added it via Settings/the API) or ``'auto'``
+    (written by the universe-screener job, see
+    ``apps.agents.trading_agents.jobs.universe_refresh``). The screener
+    only ever replaces its OWN ``'auto'`` rows on refresh — a ``'manual'``
+    row is never touched or deleted by it, regardless of what the screen
+    finds."""
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

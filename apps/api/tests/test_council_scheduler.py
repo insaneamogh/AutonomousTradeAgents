@@ -207,3 +207,76 @@ async def test_scan_once_caps_selected_symbols_at_max_runs(
     assert captured["symbols"] == ["AAA", "BBB"]
     assert scheduler.last_council_run_symbols == ("AAA", "BBB")
     assert scheduler.last_triggered == ("AAA", "BBB", "CCC", "DDD")
+
+
+# ── Universe refresh loop ────────────────────────────────────────────
+#
+# ``_run_universe_refresh_once`` — zero-LLM-cost daily screen, see
+# trading_agents.jobs.universe_refresh. ``refresh_watchlist`` is imported
+# INSIDE the method (same lazy-import convention as daily_cron.main
+# above), so it must be patched on its defining module.
+
+
+async def test_universe_refresh_skips_and_records_when_no_alpaca_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.council.scheduler import CouncilScheduler
+
+    monkeypatch.delenv("ALPACA_API_KEY", raising=False)
+    monkeypatch.delenv("ALPACA_SECRET_KEY", raising=False)
+
+    scheduler = CouncilScheduler()
+    await scheduler._run_universe_refresh_once()
+
+    assert scheduler.last_universe_refresh_result == "skipped_no_keys"
+    assert scheduler.last_universe_refresh_at is None
+
+
+async def test_universe_refresh_calls_refresh_watchlist_and_records_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.council.scheduler import CouncilScheduler
+    from trading_agents.jobs import universe_refresh
+
+    monkeypatch.setenv("ALPACA_API_KEY", "k")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "s")
+    monkeypatch.setenv("AGENT_CRON_USER_ID", "fixture-user")
+
+    captured: dict = {}
+
+    async def fake_refresh_watchlist(user_id, *, api_key, secret_key):
+        captured["user_id"] = user_id
+        captured["api_key"] = api_key
+        captured["secret_key"] = secret_key
+        return {"equity": 56, "options": 12}
+
+    monkeypatch.setattr(universe_refresh, "refresh_watchlist", fake_refresh_watchlist)
+
+    scheduler = CouncilScheduler()
+    await scheduler._run_universe_refresh_once()
+
+    assert captured == {"user_id": "fixture-user", "api_key": "k", "secret_key": "s"}
+    assert scheduler.last_universe_refresh_result == {"equity": 56, "options": 12}
+    assert scheduler.last_universe_refresh_at is not None
+
+
+def test_universe_refresh_hour_defaults_to_12_utc(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.council.scheduler import _universe_refresh_hour
+
+    monkeypatch.delenv("UNIVERSE_REFRESH_HOUR_UTC", raising=False)
+    assert _universe_refresh_hour() == 12
+
+
+def test_universe_refresh_hour_reads_env_and_falls_back_on_garbage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.council.scheduler import _universe_refresh_hour
+
+    monkeypatch.setenv("UNIVERSE_REFRESH_HOUR_UTC", "9")
+    assert _universe_refresh_hour() == 9
+
+    monkeypatch.setenv("UNIVERSE_REFRESH_HOUR_UTC", "not-a-number")
+    assert _universe_refresh_hour() == 12
+
+    monkeypatch.setenv("UNIVERSE_REFRESH_HOUR_UTC", "99")
+    assert _universe_refresh_hour() == 12

@@ -49,6 +49,22 @@ Config:
                               thresholds to stay conservative forever.
   AGENT_CRON_USER_ID          Whose watchlist/decisions. Defaults to the
                               fixture user.
+  UNIVERSE_REFRESH_ENABLED    1 to arm a third, much cheaper daily loop
+                              (default off — explicit opt-in, same as the
+                              other two): once/day, screens Alpaca's real
+                              tradable universe (no LLM calls at all — see
+                              trading_agents.jobs.universe_refresh) and
+                              writes the survivors into user_watchlist's
+                              auto-discovered tier, which the baseline/
+                              trigger loops above then sweep like any
+                              other watchlist row. Zero LLM cost of its
+                              own; it only widens what the other two loops
+                              already do.
+  UNIVERSE_REFRESH_HOUR_UTC   Hour (0-23) the daily refresh fires, default
+                              12 — before the first scan time and before
+                              the 13:30 UTC US market open, so freshly
+                              auto-discovered symbols are in the watchlist
+                              before anything sweeps it that day.
 """
 
 from __future__ import annotations
@@ -78,6 +94,19 @@ def _flag(name: str, *, default: bool = False) -> bool:
 
 def _enabled() -> bool:
     return _flag("COUNCIL_SCHEDULER_ENABLED")
+
+
+def _universe_refresh_enabled() -> bool:
+    return _flag("UNIVERSE_REFRESH_ENABLED")
+
+
+def _universe_refresh_hour() -> int:
+    try:
+        h = int(os.environ.get("UNIVERSE_REFRESH_HOUR_UTC", "").strip() or 12)
+    except ValueError:
+        logger.warning("ignoring malformed UNIVERSE_REFRESH_HOUR_UTC — using 12")
+        return 12
+    return h if 0 <= h <= 23 else 12
 
 
 def _int_env(name: str, default: int) -> int:
@@ -214,6 +243,8 @@ class CouncilScheduler:
         vs this flag."""
         self.scanner_interval_minutes: int | None = None
         self.scanner_max_council_runs: int | None = None
+        self.last_universe_refresh_at: datetime | None = None
+        self.last_universe_refresh_result: dict[str, int] | str | None = None
 
     def start(self) -> None:
         if self._tasks:
@@ -226,6 +257,10 @@ class CouncilScheduler:
             self._tasks.append(asyncio.create_task(self._trigger_loop()))
         else:
             logger.info("trigger loop disabled (set SCANNER_ENABLED=1 to arm it)")
+        if _universe_refresh_enabled():
+            self._tasks.append(asyncio.create_task(self._universe_refresh_loop()))
+        else:
+            logger.info("universe refresh disabled (set UNIVERSE_REFRESH_ENABLED=1 to arm it)")
 
     async def stop(self) -> None:
         for t in self._tasks:
@@ -258,6 +293,49 @@ class CouncilScheduler:
             # Guard against a scan finishing inside the same minute it
             # started, which would otherwise re-fire immediately.
             await asyncio.sleep(61)
+
+    # ── Universe refresh loop ────────────────────────────────────────
+    #
+    # Zero LLM cost — a real broker screen (list_most_active_symbols +
+    # list_tradable_assets), not a council pass. Once/day is enough: the
+    # tradable/fractionable/has_options facts this screens on change on
+    # the order of days, not minutes (see
+    # trading_agents.jobs.universe_refresh's own module docstring).
+
+    async def _universe_refresh_loop(self) -> None:
+        hour = _universe_refresh_hour()
+        logger.info("universe refresh armed — fires daily at %02d:00 UTC", hour)
+        while True:
+            delay = _seconds_until_next(datetime.now(UTC), [(hour, 0)])
+            logger.info("next universe refresh in %.0f min", delay / 60)
+            try:
+                await asyncio.sleep(delay)
+            except asyncio.CancelledError:
+                raise
+            try:
+                await self._run_universe_refresh_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("universe refresh failed — will retry next window")
+                self.last_universe_refresh_result = "failed"
+            # Same same-minute re-fire guard as the baseline loop.
+            await asyncio.sleep(61)
+
+    async def _run_universe_refresh_once(self) -> None:
+        api_key = os.environ.get("ALPACA_API_KEY", "").strip()
+        secret_key = os.environ.get("ALPACA_SECRET_KEY", "").strip()
+        if not api_key or not secret_key:
+            logger.warning("universe refresh skipped — Alpaca keys not set")
+            self.last_universe_refresh_result = "skipped_no_keys"
+            return
+
+        from trading_agents.jobs.universe_refresh import refresh_watchlist
+
+        result = await refresh_watchlist(_cron_user(), api_key=api_key, secret_key=secret_key)
+        self.last_universe_refresh_at = datetime.now(UTC)
+        self.last_universe_refresh_result = result
+        logger.info("universe refresh done: %s", result)
 
     # ── Trigger loop ─────────────────────────────────────────────────
     #

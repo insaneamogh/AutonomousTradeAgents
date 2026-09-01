@@ -511,6 +511,19 @@ class AssetInfo(NamedTuple):
     """On the ETB list: locate is automatic and the borrow is effectively
     free. Off it (HTB) the borrow accrues a daily fee and the lender can
     force a buy-in — neither is modelled by the sizer."""
+    has_options: bool = False
+    """From Alpaca's own ``attributes`` list on the asset record — real
+    options-eligibility, not inferred. Lets a universe screener (see
+    ``engine.universe.screener``) build its options-eligible candidate set
+    without a separate per-symbol options-chain lookup."""
+
+
+def _has_options_attr(a: object) -> bool:
+    """Alpaca's own real options-eligibility flag, read off the asset
+    record's ``attributes`` list (a plain list of strings, e.g.
+    ``["has_options", "fractional_eh_enabled"]``) — never inferred."""
+    attrs = getattr(a, "attributes", None) or []
+    return "has_options" in attrs
 
 
 async def lookup_asset(symbol: str, *, api_key: str, secret_key: str) -> AssetInfo | None:
@@ -537,6 +550,7 @@ async def lookup_asset(symbol: str, *, api_key: str, secret_key: str) -> AssetIn
             fractionable=bool(getattr(a, "fractionable", False)),
             shortable=_opt_bool(getattr(a, "shortable", None)),
             easy_to_borrow=_opt_bool(getattr(a, "easy_to_borrow", None)),
+            has_options=_has_options_attr(a),
         )
 
     _ = GetAssetsRequest  # imported for callers that want to list; keep the dep explicit
@@ -567,10 +581,50 @@ async def list_tradable_assets(*, api_key: str, secret_key: str) -> list[AssetIn
                 fractionable=bool(getattr(a, "fractionable", False)),
                 shortable=_opt_bool(getattr(a, "shortable", None)),
                 easy_to_borrow=_opt_bool(getattr(a, "easy_to_borrow", None)),
+                has_options=_has_options_attr(a),
             )
             for a in assets
             if getattr(a, "tradable", False)
         ]
+
+    return await asyncio.to_thread(_fetch)
+
+
+async def list_most_active_symbols(
+    *, api_key: str, secret_key: str, top: int = 200
+) -> list[str]:
+    """US equities ranked by real trading activity right now, per Alpaca's
+    own market screener (``/v1beta1/screener/stocks/most-actives``) — a
+    real, already-ranked signal, not something this codebase computes
+    itself from raw bars. Includes low-quality/penny names by design (it
+    ranks by raw share volume / trade count, not liquidity quality) —
+    callers MUST intersect this with ``list_tradable_assets``'s
+    ``tradable``/``fractionable`` flags before treating a symbol as a real
+    candidate. See ``trading_agents.jobs.universe_refresh`` for that
+    combination.
+
+    Queries BOTH ``by=volume`` and ``by=trades`` and merges them
+    (duplicates removed, volume-rank first) — Alpaca's endpoint hard-caps
+    ``top`` at 100 per call (``"invalid top: should not be larger than
+    100"``, confirmed live), so one ranking alone tops out at 100 symbols;
+    two independent rankings give a richer, still-real pool without
+    exceeding that per-call ceiling. ``top`` is clamped to 100 for the
+    same reason.
+    """
+    from alpaca.data.enums import MostActivesBy
+    from alpaca.data.historical.screener import ScreenerClient
+    from alpaca.data.requests import MostActivesRequest
+
+    capped_top = min(top, 100)
+
+    def _fetch() -> list[str]:
+        client = ScreenerClient(api_key=api_key, secret_key=secret_key)
+        seen: dict[str, None] = {}  # insertion-ordered dedupe, no set() needed
+        for by in (MostActivesBy.VOLUME, MostActivesBy.TRADES):
+            resp = client.get_most_actives(MostActivesRequest(top=capped_top, by=by))
+            for a in resp.most_actives:
+                seen.setdefault(str(a.symbol), None)
+        return list(seen)
 
     return await asyncio.to_thread(_fetch)
 

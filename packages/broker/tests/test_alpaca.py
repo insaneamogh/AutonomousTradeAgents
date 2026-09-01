@@ -30,9 +30,15 @@ with warnings.catch_warnings():
     warnings.filterwarnings(
         "ignore", message="websockets.legacy is deprecated", category=DeprecationWarning
     )
+    import alpaca.data.historical.screener as alpaca_screener_client
     import alpaca.trading.client as alpaca_trading_client
 
-    from broker.alpaca import AssetInfo, list_tradable_assets, lookup_asset
+    from broker.alpaca import (
+        AssetInfo,
+        list_most_active_symbols,
+        list_tradable_assets,
+        lookup_asset,
+    )
 
 
 def _fake_client_class(
@@ -181,6 +187,129 @@ async def test_list_tradable_assets_rechecks_tradable_flag(monkeypatch: pytest.M
 
     assert [a.symbol for a in assets] == ["AAPL"]
     assert assets[0].tradable is True
+
+
+# ── has_options (attributes list) ────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_lookup_asset_reads_has_options_off_the_attributes_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    row = _row(attributes=["has_options", "fractional_eh_enabled"])
+    monkeypatch.setattr(
+        alpaca_trading_client, "TradingClient", _fake_client_class(get_asset_result=row)
+    )
+
+    info = await lookup_asset("AAPL", api_key="k", secret_key="s")
+
+    assert info is not None
+    assert info.has_options is True
+
+
+@pytest.mark.asyncio
+async def test_lookup_asset_has_options_false_when_attributes_absent_or_missing_the_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # No `attributes` key at all (row built without one) AND an empty list
+    # both mean "not options-eligible" -- neither should raise or default
+    # to True.
+    for row in (_row(), _row(attributes=[])):
+        monkeypatch.setattr(
+            alpaca_trading_client, "TradingClient", _fake_client_class(get_asset_result=row)
+        )
+        info = await lookup_asset("AAPL", api_key="k", secret_key="s")
+        assert info is not None
+        assert info.has_options is False
+
+
+@pytest.mark.asyncio
+async def test_list_tradable_assets_reads_has_options_per_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = [
+        _row(symbol="AAPL", attributes=["has_options"]),
+        _row(symbol="TINY", attributes=[]),
+    ]
+    monkeypatch.setattr(
+        alpaca_trading_client, "TradingClient", _fake_client_class(get_all_assets_result=rows)
+    )
+
+    assets = await list_tradable_assets(api_key="k", secret_key="s")
+
+    by_symbol = {a.symbol: a.has_options for a in assets}
+    assert by_symbol == {"AAPL": True, "TINY": False}
+
+
+# ── list_most_active_symbols ─────────────────────────────────────────
+
+
+def _fake_screener_client_class(*, by_volume: list[str], by_trades: list[str]):
+    """Two independent rankings, keyed by the request's own `by` value —
+    real Alpaca behavior: volume-rank and trade-count-rank are genuinely
+    different orderings, not the same list twice."""
+    from alpaca.data.enums import MostActivesBy
+
+    results = {
+        MostActivesBy.VOLUME: [types.SimpleNamespace(symbol=s) for s in by_volume],
+        MostActivesBy.TRADES: [types.SimpleNamespace(symbol=s) for s in by_trades],
+    }
+
+    class FakeScreenerClient:
+        def __init__(self, **kwargs: object) -> None:
+            self.init_kwargs = kwargs
+
+        def get_most_actives(self, request: object) -> object:
+            return types.SimpleNamespace(most_actives=results[request.by])
+
+    return FakeScreenerClient
+
+
+@pytest.mark.asyncio
+async def test_list_most_active_symbols_merges_both_rankings_deduped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        alpaca_screener_client,
+        "ScreenerClient",
+        _fake_screener_client_class(
+            by_volume=["NVDA", "TSLA", "AAPL"],
+            by_trades=["AAPL", "MSFT"],  # AAPL overlaps -- must not duplicate
+        ),
+    )
+
+    symbols = await list_most_active_symbols(api_key="k", secret_key="s")
+
+    assert symbols == ["NVDA", "TSLA", "AAPL", "MSFT"], (
+        "volume ranking first (in its own order), then any NEW symbols "
+        "trade-count ranking adds, with no duplicate for the AAPL overlap"
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_most_active_symbols_clamps_top_to_alpacas_real_100_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Alpaca's screener rejects `top > 100` outright (confirmed live:
+    "invalid top: should not be larger than 100") -- verified against the
+    real endpoint, not assumed. A caller passing a larger pool size must
+    not crash the request."""
+    fake_cls = _fake_screener_client_class(by_volume=[], by_trades=[])
+    monkeypatch.setattr(alpaca_screener_client, "ScreenerClient", fake_cls)
+
+    requests: list[object] = []
+    orig_get = fake_cls.get_most_actives
+
+    def _capturing_get(self: object, request: object) -> object:
+        requests.append(request)
+        return orig_get(self, request)
+
+    fake_cls.get_most_actives = _capturing_get  # type: ignore[method-assign]
+
+    await list_most_active_symbols(api_key="k", secret_key="s", top=400)
+
+    assert len(requests) == 2, "one call per ranking (volume, trades)"
+    assert all(r.top == 100 for r in requests)
 
 
 # ── _opt_bool tri-state ──────────────────────────────────────────────
