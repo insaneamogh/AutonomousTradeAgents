@@ -256,9 +256,13 @@ export default function PositionsScreen() {
                       : `${p.side} ${p.qty} ${p.symbol}`}
                   </Text>
                   <View className="flex-row items-center gap-2">
+                    {/* Broker side, not thesis direction — a bearish options
+                        bet is a LONG put, and Alpaca calls it Long. Badging it
+                        "SHORT" collided with that (verified live 2026-09-01).
+                        PUT/CALL in the title already conveys the thesis. */}
                     <DirectionPill
-                      label={p.direction.toUpperCase()}
-                      tone={p.direction === 'short' ? 'rose' : 'mint'}
+                      label={p.side === 'SELL' ? 'SHORT' : 'LONG'}
+                      tone={p.side === 'SELL' ? 'rose' : 'mint'}
                     />
                     <View
                       className={cn(
@@ -392,9 +396,10 @@ export default function PositionsScreen() {
                       ? `${p.symbol} $${p.strike?.toFixed(2) ?? '—'} ${(p.contractType ?? '').toUpperCase()} x${p.qty}`
                       : `${p.side} ${p.qty} ${p.symbol}`}
                   </Text>
+                  {/* Broker side, not thesis direction — see the comment above. */}
                   <DirectionPill
-                    label={p.direction.toUpperCase()}
-                    tone={p.direction === 'short' ? 'rose' : 'mint'}
+                    label={p.side === 'SELL' ? 'SHORT' : 'LONG'}
+                    tone={p.side === 'SELL' ? 'rose' : 'mint'}
                   />
                 </View>
 

@@ -213,8 +213,16 @@ export function PositionsScreen() {
                                     ? `${p.symbol} $${p.strike?.toFixed(2) ?? '—'} ${(p.contractType ?? '').toUpperCase()}`
                                     : p.symbol}
                                 </Numeral>
-                                <Pill tone={p.direction === 'short' ? 'bear' : 'bull'}>
-                                  {p.direction.toUpperCase()}
+                                {/* Broker side, not thesis direction — a bearish bet
+                                    on an option is a LONG put, and Alpaca's own UI calls
+                                    it Long. Badging it "SHORT" here collided with that and
+                                    read as a broker mismatch (verified live 2026-09-01: a
+                                    long META put, Alpaca said "Long", this said "SHORT").
+                                    The bearish thesis is already conveyed by PUT/CALL in
+                                    the row title above; this badge now only ever says what
+                                    Alpaca would say. */}
+                                <Pill tone={p.side === 'SELL' ? 'bear' : 'bull'}>
+                                  {p.side === 'SELL' ? 'SHORT' : 'LONG'}
                                 </Pill>
                               </Row>
                               <span className="pg-caption">
@@ -308,8 +316,10 @@ export function PositionsScreen() {
                                 ? `${p.symbol} $${p.strike?.toFixed(2) ?? '—'} ${(p.contractType ?? '').toUpperCase()}`
                                 : p.symbol}
                             </Numeral>
-                            <Pill tone={p.direction === 'short' ? 'bear' : 'bull'}>
-                              {p.direction.toUpperCase()}
+                            {/* Broker side, not thesis direction — see the closed-row
+                                comment above for the live incident this fixes. */}
+                            <Pill tone={p.side === 'SELL' ? 'bear' : 'bull'}>
+                              {p.side === 'SELL' ? 'SHORT' : 'LONG'}
                             </Pill>
                             {p.status === 'pending_fill' ? <Pill tone="neutral">AWAITING FILL</Pill> : null}
                             {!p.managed ? <Pill tone="neutral">UNMANAGED</Pill> : null}

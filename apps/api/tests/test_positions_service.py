@@ -98,6 +98,50 @@ def test_option_short_direction_unrealized_pnl_scaled_by_multiplier() -> None:
     assert dto.unrealized_pnl == 50.00
 
 
+def test_a_long_put_is_not_flipped_by_its_bearish_thesis() -> None:
+    """The real bug, live 2026-09-01: a long PUT (BUY to open,
+    ``direction="short"`` because the THESIS is bearish) entered at
+    $20.55, marked at $18.60 -- a real $195 LOSS on a contract we own --
+    rendered as "+$195" because ``is_short`` was reading the thesis label
+    instead of the broker side. Alpaca's own account showed this position
+    as Long, with a real loss, the entire time.
+
+    Phase A never sells an option (``RiskCaps.options_disabled``'s own
+    docstring: "long calls/puts only, no spreads/assignment"), so ``side``
+    is ALWAYS "BUY" here regardless of what ``direction`` says -- a
+    bearish bet is a fact about the THESIS, not about which side of the
+    contract we hold. Every long option's P&L must move the same
+    direction as its own price, whether it's a call or a put.
+    """
+    decision = _decision(
+        symbol="META260918P00585000",
+        proposal={"side": "BUY", "direction": "short", "multiplier": 100},
+        fill_qty=1,
+        fill_avg_price=20.55,
+    )
+    marks = {"META260918P00585000": 1860.0}  # raw mv/qty for an $18.60 mark
+    dto = _from_decision(decision, marks, status="open")
+    assert dto.direction == "short"
+    assert dto.last_price == 18.60
+    # A real loss: (18.60 - 20.55) * 1 * 100 = -195.00, NOT +195.00.
+    assert dto.unrealized_pnl == -195.00
+
+
+def test_a_long_call_with_bullish_thesis_is_unaffected() -> None:
+    """The mirror case, to pin that the fix didn't just flip the bug the
+    other way: a long CALL (``direction="long"``) must keep gaining when
+    price rises, exactly as before."""
+    decision = _decision(
+        symbol="AAPL260828C00250000",
+        proposal={"side": "BUY", "direction": "long", "multiplier": 100},
+        fill_qty=1,
+        fill_avg_price=2.50,
+    )
+    marks = {"AAPL260828C00250000": 300.0}
+    dto = _from_decision(decision, marks, status="open")
+    assert dto.unrealized_pnl == 50.00
+
+
 def test_open_option_position_gets_a_live_mark_via_occ_symbol_not_underlying() -> None:
     """The realistic shape: ``symbol`` is the underlying, ``proposal``
     carries ``isOption``/``occSymbol`` separately (this is what

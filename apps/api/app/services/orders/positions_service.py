@@ -198,7 +198,26 @@ def _from_decision(
     direction = raw_direction if raw_direction in ("long", "short") else (
         "short" if side == "SELL" else "long"
     )
-    is_short = direction == "short"
+    # NOT `direction == "short"`. `direction` is the trading THESIS
+    # ("short" = a bearish bet), and for an option that bearish bet is
+    # implemented by BUYING a put — Phase A is long-calls/long-puts only
+    # (`RiskCaps.options_disabled`'s own docstring), so `side` is ALWAYS
+    # "BUY" for every options row this system ever writes, regardless of
+    # whether `direction` says "long" or "short". The P&L SIGN has to
+    # follow what we actually hold at the broker (`side == "SELL"` means
+    # we are short the contract/shares — true only for a genuine equity
+    # short), not what the thesis was betting on. Every sibling
+    # computation in this file agrees: `_unmanaged()` below derives its
+    # own `is_short` from the broker's signed qty, and
+    # `position_manager.py` derives it from `held.qty < 0` — this was the
+    # one place still keying off the thesis label instead.
+    #
+    # Verified live 2026-09-01: a long PUT (BUY META260918P00585000,
+    # direction="short") entered at $20.55, marked at $18.60 — a REAL
+    # -$195 loss on a position we own — rendered as "+$195" here because
+    # `is_short` was true and flipped the sign. Alpaca's own account
+    # confirmed the position as "Long" with a real loss the whole time.
+    is_short = side == "SELL"
 
     # A pending-fill row has no fill yet, so it reports the proposal's
     # planned qty rather than a fill_qty that is NULL by definition.
