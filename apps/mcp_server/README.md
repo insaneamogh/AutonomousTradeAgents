@@ -13,6 +13,21 @@ upholds the codebase's one architectural rule (see the root
 > broker APIs directly — every order routes through
 > `packages/engine/risk` → `packages/broker`.
 
+**Scope note, since the wider app changed this week:** the sentence above is still
+completely true of every tool *in this server* — nothing here ever reaches
+`packages/broker`, full stop, see "Will never build" below. It is no longer true of
+the app as a whole, and this file describes only itself, not the rest of the repo.
+Two separate, unattended-execution paths now exist elsewhere in this codebase — an
+equity auto-approve sweeper (`apps/api/app/services/orders/auto_approver.py`) and a
+live options Bull/Bear council whose winning agent can call a real, guarded trade
+tool (`apps/agents/trading_agents/options/tools/guard.py`) — both off by default,
+both hard-coded to paper trading, both gated behind an explicit consent step, and
+both described in full in the root [`README.md`](../../README.md)'s "How autonomous
+is 'autonomous'" section. Neither is reachable from this MCP server, through any
+tool below, under any config — the architecture rule quoted above still holds
+end-to-end, it just no longer implies "and therefore a human always approves it,"
+which used to be true of the whole app and now isn't.
+
 ---
 
 ## ⚠️ This does NOT satisfy the hackathon's MCP requirement
