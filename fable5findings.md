@@ -330,6 +330,139 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 # Build log
 
+### 2026-09-01 — ae4c44e8 — fix(agents): hard budget/count gates before ANY council LLM call
+
+User reported (verbatim): *"i just got a message that my $10 API credits have been
+consumed?? did you do anything check once."* Checked live — I hadn't (zero Anthropic
+calls from this session), but the live account genuinely had: 638 real calls between
+16:47-18:16 UTC, then every call failed `credit balance is too low` for the rest of the
+day. Confirmed via `railway logs --json` on the real service, not assumed.
+
+**Root cause, traced to the actual graph code, not guessed:** `strategy_fit_node`
+already runs first and is genuinely free — a HOLD there costs zero LLM calls
+(`graph.py`'s own docstring says so and the code matches it). But nothing capped how
+many symbols that CLEAR its floor could go on to spend a real pass. The trigger loop
+has always had `SCANNER_MAX_COUNCIL_RUNS`; the baseline sweep — full watchlist,
+once/day, via `daily_cron.main`, no count limit — did not. The watchlist had grown to
+123+ symbols that same day (my own universe-screener commit a few hours earlier, plus a
+concurrent bulk add), and on a trending day most cleared `MIN_FIT_TO_TRADE=0.42` and
+each got a full paid pass.
+
+**Fix — two independent gates in `daily_cron.main`, the one entry point every caller
+(baseline, trigger, CLI) already shares:**
+- `MAX_LLM_SYMBOLS_PER_SWEEP` (default 15) — ledger-independent hard cap.
+  `_score_candidates_for_sweep` scores every symbol with the SAME zero-cost
+  `best_strategy()` call the real gate uses, ranks by score, admits only the top N. A
+  symbol that would legitimately HOLD anyway always runs.
+- `MAX_DAILY_LLM_SPEND_USD` (default $3.00) — real dollars off the cost ledger that
+  already existed (`/api/v1/health/full` already sums from it), checked LIVE before each
+  admitted candidate, so it trips mid-sweep. $3.00 = user's own $10 top-up / ~3 remaining
+  contest days, rounded down. Documented gap: `InMemoryCostLedger` resets on a
+  restart/redeploy — the count cap doesn't depend on the ledger and still holds then.
+
+Also reverted `MIN_FIT_TO_TRADE` 0.42→0.45 (undoing today's earlier aggressive-profile
+loosening) — a smaller, separate lever on top of the caps: fewer marginal setups compete
+for the now-bounded budget. Hard floor 0.41 (`blind_weight_fraction` invariant)
+untouched.
+
+**Revert-checked both gates individually** (disabled each with `if False and ...`,
+confirmed the matching new test failed with the wrong call-list, restored, confirmed
+green) — new file `test_llm_budget_gate.py`, 7 tests. Verified the pre-pass doesn't
+disturb `test_daily_cron.py`'s existing exact-order/call-count assertions (it doesn't —
+watchlist order is preserved for every symbol regardless of which bucket it lands in).
+
+**Verified**: full suite 1381 passed, 11 skipped (was 1370), zero failures. Corrected
+two now-false doc claims in the same pass: `HACKATHON.md` §8's "LLM cost is not a
+constraint" (it was, today, literally) and `PLAN_AGGRESSIVE_PROFILE.md` §2's table.
+
+**Not yet done, left for the next session**: the account is still at $0 balance — the
+user said *"once done let me know i will rebalance with $10"* — I have not yet told them
+it's done, set the new Railway env vars, or deployed. That's the very next step. Also
+still open from before this fix: task #64 (FundamentalsProvider integration) and #65
+(real historical backtest via Alpaca data) — created, not started, deprioritized when
+the universe-expansion and this credit-crisis work both arrived with higher urgency.
+
+
+### 2026-09-01 — 4047950f — feat(scanner): screen Alpaca's real tradable universe
+
+Expanded the scanned universe past the user's hand-curated watchlist (45 symbols) to
+Alpaca's real tradable universe (14,280 total, 13,410 tradable, verified live). New
+`broker.alpaca.list_most_active_symbols` merges the VOLUME and TRADES screener rankings
+(Alpaca hard-caps `top` at 100/call, hit live — worked around by querying both and
+deduping); `list_tradable_assets`/`lookup_asset` now also read `has_options` off the
+`attributes` list (free, no chain lookup). New `trading_agents.jobs.universe_refresh`
+screens tradable+fractionable+has_options, ranked by activity, caps at 100 equity/15
+options, writes into a new `user_watchlist.source` column (`'auto'` vs `'manual'`,
+migration `0018_watchlist_source`, applied to prod) — never touches or duplicates a
+manual row. Wired into `CouncilScheduler` as a third daily loop
+(`UNIVERSE_REFRESH_ENABLED`, zero LLM cost of its own). **This is the change that grew
+the watchlist to 123+ symbols the same day, which the very next commit (`ae4c44e8`
+above) had to cap for LLM cost** — the two are directly connected; read them together.
+Verified live: a concurrent peer session had already bulk-added 86 manual option symbols
+between the audit and this fix — `refresh_watchlist`'s existing-symbol exclusion handled
+it with no special-casing, correctly skipping 32 already-tracked candidates.
+`UNIVERSE_REFRESH_ENABLED=1` set on the live Railway `autonomous` environment.
+
+
+### 2026-09-01 — 84c462f0 — docs: correct stale PA3IAZI74E5R account references
+
+The Alpaca paper account switched to `PA31OTNBGE9I` earlier the same day (data-corruption
+incident, fixed same day — see `ccae611f` below). `PLAN_NEXT.md`'s own submission
+checklist still named the retired account as "judges read P&L from this" — a judge
+checking a stale reference would see an abandoned account's history. Fixed there plus
+`PLAN_LEDGER_SURFACE.md`, `IMPL_REFUSAL_LEDGER.md` (noted the switch rather than
+rewriting history), and `IMPL_DEMO_SESSION.md` (a stale mockup banner example — the real
+`DemoSessionBanner.tsx` never hardcoded an account ID, so no code change needed).
+
+
+### 2026-09-01 — e192f2bc — fix(prompts): technical analyst had no mirrored bearish risk language
+
+`docs/PLAN_SHORTS.md` said the prompt "gives zero worked bearish examples" — re-verified
+against the live prompt text and found the real, narrower gap: the long/short comparison
+bullet gave the bearish case a 6-word parenthetical with no numeric mirror, and the
+entire "flag risk" paragraph was 100% long-framed (overbought RSI, extended below the
+200DMA) with nothing mirroring "oversold bounce risk against a short." Added an explicit
+mirrored bearish RSI band (30-55 vs the long's 45-70) with one worked numeric example, a
+note that a strongly negative raw Sharpe is the short's "getting paid for the risk"
+signal, and a "SHORT at risk" clause (squeeze/oversold-bounce, RSI<25) alongside the
+existing long-only language. Real behavior change, flagged as such — no threshold or
+deterministic rule touched, prompt text only. New test asserts the "30-55" band,
+"oversold"+"short" co-occurring, and "squeeze" are all present.
+
+
+### 2026-09-01 — ad7ef738 — fix(insights): veto ledger never sent risk_profile
+
+`VetoLedgerResponse` had no `risk_profile` field at all (shared-types' own comment said
+"not yet sent by the API"), so `Insights.tsx`'s "under the 2.5%/7.5% aggressive caps"
+caption always fell back to the generic placeholder regardless of which profile was
+actually live — the existing test only mocked the hook wholesale, so it never caught
+this. Fixed by computing the profile once in `build_veto_ledger` via the same
+`_select_risk_profile` `RiskCaps.from_env()` already uses, threading it through
+`VetoLedger` → `VetoLedgerResponse` → the shared TS type (now required, not optional).
+Also fixed a real, separate display bug found in the same pass: `format.ts`'s aggressive
+caption text still said "2.5%/12%", stale since the same-day 7.5% premium-cap fix. New
+apps/api test hits the real `build_veto_ledger` (not a mock) for both profiles.
+
+
+### 2026-09-01 — e4ec6473 — fix(risk): min_specialist_avg_score self-gated but recorded as passed
+
+The 40-point specialist-quality floor never runs for options trades — the options graph
+path never populates `specialists=`, so the rule's own self-gate fires every time. Traced
+via a dedicated design-intent investigation before touching anything: this is BY DESIGN
+(Bull/Bear's conviction is deliberately `min()`-combined, not averaged — forcing it
+through `min_specialist_avg_score` would silently reverse that separate decision), not a
+bug to fix by threading conviction in. The real bug, found riding along with it: both
+call sites (`engine.py`, `options/risk.py`) unconditionally recorded the rule as
+**passed** in `checks_passed` even when it self-gated and never ran, violating that
+field's own documented contract. Fixed to match `min_council_confidence`'s
+already-correct pattern (`if d is not None: ...`) — zero change to
+`approved`/`veto_rule`/`adjusted_qty`, a Refusal-Ledger bookkeeping fix only. Made the
+options self-gate explicit and disclosed (`specialists=()` passed with a comment at both
+`guard.py` call sites) rather than silent, mirroring the `earnings_blackout` disclosure
+convention. Also corrected two stale "5.0 → 12.0" premium-cap numbers to "7.5" in
+`HACKATHON.md`/`OPTIONS_PLAYBOOK.md`.
+
+
 ### 2026-09-01 — docs/PLAN_SHORTS.md — why no equity shorts, investigated live
 
 User: "why are no shorts being placed... document it... give it to next model."
