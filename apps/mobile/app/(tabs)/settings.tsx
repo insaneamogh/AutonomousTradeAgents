@@ -436,6 +436,16 @@ function brokerLabel(connection: BrokerConnection): string {
   return `${name} ${connection.isPaper ? 'paper' : 'live'}`;
 }
 
+/** `Connected since Aug 26, 2026` — an absolute date, deliberately not a
+ * relative "6d ago": the whole reason this line exists is to answer "is
+ * this a fresh account?" concretely, and a relative string still asks the
+ * reader to do the subtraction that produces that exact confusion. */
+function connectedSince(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return `Connected since ${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`;
+}
+
 function ConnectedBrokerCard({ connection }: { connection: BrokerConnection }) {
   const revoke = useRevokeBrokerConnection();
   const isEnvLinked = connection.connectionSource === 'environment';
@@ -487,6 +497,9 @@ function ConnectedBrokerCard({ connection }: { connection: BrokerConnection }) {
               {connection.accountNumber}
             </Text>
           ) : null}
+          <Text className="text-[12px] text-text-tertiary dark:text-text-tertiary-dark">
+            {connectedSince(connection.createdAt)}
+          </Text>
         </View>
         <View className="h-2 w-2 rounded-full bg-gain dark:bg-gain-dark" />
       </View>

@@ -56,8 +56,11 @@ export function AutoApprovePill() {
         'no approval tap from you, up to the daily cap. Every auto-opened ' +
         'trade still passes the full risk gate and is logged as ' +
         'machine-approved, not yours. Live trading stays fully blocked no ' +
-        'matter what — this can only ever act on the paper account. You ' +
-        'can turn it back off instantly, any time.',
+        'matter what — this can only ever act on the paper account. This ' +
+        'is the same paper account already connected in Settings, with ' +
+        'whatever positions and history it already has — arming this ' +
+        'does not reset it or create a new one. You can turn it back ' +
+        'off instantly, any time.',
       [
         { text: 'Not yet', style: 'cancel' },
         {

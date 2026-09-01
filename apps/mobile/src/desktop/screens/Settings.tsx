@@ -159,6 +159,7 @@ export function SettingsScreen() {
                     <th>Broker</th>
                     <th>Account</th>
                     <th>Status</th>
+                    <th className="pg-num-right">Connected</th>
                     <th className="pg-num-right">Last used</th>
                     <th />
                   </tr>
@@ -186,6 +187,13 @@ export function SettingsScreen() {
                       <td className="pg-num">{c.accountNumber ?? '—'}</td>
                       <td>
                         <Pill tone={c.status === 'active' ? 'bull' : 'bear'}>{c.status.toUpperCase()}</Pill>
+                      </td>
+                      {/* Concrete, un-missable answer to "is this a fresh
+                          account?" — a connection this old with history
+                          already on it is not new just because someone
+                          reconnected or flipped a consent toggle today. */}
+                      <td className="pg-num-right pg-dim" title={new Date(c.createdAt).toLocaleString()}>
+                        {ago(c.createdAt)}
                       </td>
                       <td className="pg-num-right pg-dim">{ago(c.lastUsedAt)}</td>
                       <td className="pg-num-right">
