@@ -207,34 +207,25 @@ class ReconcilerFleet:
 
         reconciled = 0
         for uid in user_ids:
-            try:
-                result = await self._reconciler_for(uid).tick()
-                reconciled += 1
-                if result.transition.tripped:
-                    logger.warning(
-                        "fleet: breaker TRIPPED for user=%s (%s)",
-                        uid, result.transition.reason,
-                    )
-            except Exception:
-                logger.exception("fleet: reconcile tick failed for user=%s", uid)
-
-            try:
-                from app.services.orders.order_sync import sync_user_orders_and_positions
-
-                await sync_user_orders_and_positions(
-                    user_id=uid, session_factory=self.session_factory
-                )
-            except Exception:
-                logger.exception("fleet: order/position sync failed for user=%s", uid)
-
+            # GENUINELY first, before this tick reads or writes ANY
+            # position state — not just commented as first while sitting
+            # after `.tick()`/`sync_user_orders_and_positions` in the
+            # source, which is what happened here on 2026-09-01: the
+            # reconciler's own tick and the order sync BOTH ran once
+            # against a freshly-swapped Alpaca account before this check
+            # ever got a chance to retire the old account's state, and
+            # `_detect_external_closes` read every position on the OLD
+            # account as having "vanished at the broker" and closed all 7
+            # of them with a fabricated realized P&L under
+            # `close_reason='external_broker'` — wrong on both counts: no
+            # such close happened, and the account had simply changed
+            # under it. Order is the whole point of this block; it must
+            # never move back below the calls it exists to protect —
+            # pinned by test_reconciler_fleet_ordering.py, which fails on
+            # exactly this reordering.
             try:
                 from app.services.orders.account_switch import reconcile_account_identity
 
-                # FIRST, before anything reads or writes position state:
-                # everything derived is keyed on user_id, not on the broker
-                # account, so a key swap silently inherits the old
-                # account's halt, open decisions and order ids. See
-                # account_switch.py.
                 async with (
                     with_broker_client(uid, broker="alpaca") as (_b, _conn),
                     self.session_factory() as _s,
@@ -256,6 +247,26 @@ class ReconcilerFleet:
                             continue
             except Exception:
                 logger.exception("fleet: account identity check failed for user=%s", uid)
+
+            try:
+                result = await self._reconciler_for(uid).tick()
+                reconciled += 1
+                if result.transition.tripped:
+                    logger.warning(
+                        "fleet: breaker TRIPPED for user=%s (%s)",
+                        uid, result.transition.reason,
+                    )
+            except Exception:
+                logger.exception("fleet: reconcile tick failed for user=%s", uid)
+
+            try:
+                from app.services.orders.order_sync import sync_user_orders_and_positions
+
+                await sync_user_orders_and_positions(
+                    user_id=uid, session_factory=self.session_factory
+                )
+            except Exception:
+                logger.exception("fleet: order/position sync failed for user=%s", uid)
 
             try:
                 from app.services.orders.stale_entries import sweep_stale_entry_orders_for_user
