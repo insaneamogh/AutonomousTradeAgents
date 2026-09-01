@@ -385,6 +385,56 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-09-01 — `f5ca51ae` fix(reflection): reconcile two independent fixes to the same pending-reflection gap
+
+`ID:MODEL2OFF`. Two subagents were dispatched in parallel to investigate two
+separate symptoms — Review screen's flat 0% agreement, and Strategies'
+flat 50/100 confidence across every strategy — and independently converged
+on the same function, `DecisionLog.list_pending_reflection`, without either
+knowing about the other.
+
+Agent A (`96da4fe2`) found the query anchored on `triggered_at` instead of
+`closed_at` (migration 0009) — since `triggered_at` only gets OLDER
+relative to "now", any decision taking longer than `since` to close became
+permanently unreachable the moment it finally closed. Fixed the anchor,
+left `since=24h` untouched.
+
+Agent B (`677b8832`) found the 24h `since` itself too narrow given this
+system's multi-day holding periods, and widened it to 30d — reasoning from
+the (at the time still `triggered_at`-anchored) code.
+
+Neither fix alone is complete: Agent A's alone still drops a close that
+happens more than a day before the next actual (unscheduled,
+hand-invoked — `COUNCIL_SCHEDULER_ENABLED` is off) run of `daily_cron.py`.
+Agent B's alone keeps Agent A's original bug, just with a longer fuse.
+
+I combined both by hand rather than merge either branch as-is: `closed_at`
+stays the anchor (Agent A), `since` stays 30d (Agent B), justified now as
+insurance against the job's own scheduling gap rather than about holding
+period. `reviewed_at IS NULL` is the actual re-grade guard either way, so
+widening `since` cannot double-grade anything (CLAUDE.md §4.4).
+
+Changed: `memory/postgres.py` (the real impl), `memory/decision_log.py`
+(Protocol + `InMemoryDecisionLog` defaults — the in-memory one stays
+anchored on `triggered_at`, matching Agent A's own scoping decision that
+it only backs the CLI demo/tests), `nodes/reflection.py`, `jobs/daily_cron.py`
+(the one real caller's hardcoded `since=24h`). Pulled both agents' new
+test files in unmodified (pure additions, no divergence from `main` since
+either branched).
+
+**Verified**: full suite (`apps/agents apps/api packages/ -q`) with both
+agents' tests present — **1313 passed, 11 skipped**, zero regressions.
+Did not re-run either agent's own revert-check by hand; both already did
+so independently in isolation per their own reports (CLAUDE.md §4.1), and
+this change is additive on top of logic each already exercised that way.
+
+**Left open**: the 6 already-stuck decisions will be picked up by the next
+real run of `daily_cron.py` itself (no separate backfill needed now that
+both the anchor and the window are right) — but that run makes real LLM
+calls and permanently stamps `reviewed_at`, so it wasn't run here. Whether
+to enable `COUNCIL_SCHEDULER_ENABLED` or run `daily_cron.py` by hand once
+is the user's call, same as both agents already flagged independently.
+
 ### 2026-09-01 — `452bb044`/`7dabbd4a` fix(mobile): "opened 5d ago" positions — diagnosed the shared-account confusion, not a bug in the connect flow
 
 **The report:** user saw closed positions labeled "opened 5d ago" and was alarmed —
