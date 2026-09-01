@@ -190,10 +190,29 @@ class PostgresDecisionLog:
         limit: int = 200,
     ) -> list[DecisionEntry]:
         """Pulls rows where ``realized_pnl IS NOT NULL AND reviewed_at IS NULL``
-        within the window, scoped to ``user_id`` (or every tenant when the
-        caller passes ``ALL_USERS``). Uses the partial index from migration
-        0003 (``ix_agent_decisions_pending_reflection``) — the trailing
-        WHERE clauses are byte-equal to the index predicate.
+        AND ``closed_at`` falls within ``since``, scoped to ``user_id`` (or
+        every tenant when the caller passes ``ALL_USERS``).
+
+        Anchored on ``closed_at`` (migration 0009 — when the position from
+        this decision actually went flat), NOT ``triggered_at`` (when the
+        decision/entry order was placed). Those two can be days apart for
+        an ordinary swing position, and ``triggered_at`` only ever gets
+        OLDER relative to "now" — so anchoring the window on it made every
+        decision that took longer than ``since`` to close permanently
+        invisible to Reflection the moment it finally did close, not just
+        late for one cycle. Confirmed live 2026-09-01: 6/6 real closed
+        decisions (triggered ~117h earlier, closed ~48h earlier — both past
+        the daily cron's 24h ``since``) still had ``reviewed_at IS NULL``,
+        and every ``strategy_confidence`` row was still sitting at the
+        migration-0003 seed value (confidence=0.500, wins=0, losses=0,
+        last_reflection_at=None) — Reflection had never once fired against
+        real production data, which is why the Review screen's agreement
+        stat reads a flat 0%: every prior sits dead-center in the "neutral"
+        band, and neutral can never register as agreement.
+
+        Uses the index from migration 0017
+        (``ix_agent_decisions_pending_reflection``, now on ``closed_at``)
+        — the trailing WHERE clauses are byte-equal to the index predicate.
         """
         try:
             tenant = _tenant_uuid(user_id)
@@ -201,7 +220,8 @@ class PostgresDecisionLog:
             return []
         cutoff = _now() - since
         conditions = [
-            AgentDecision.triggered_at >= cutoff,
+            AgentDecision.closed_at.is_not(None),
+            AgentDecision.closed_at >= cutoff,
             AgentDecision.realized_pnl.is_not(None),
             AgentDecision.reviewed_at.is_(None),
         ]
@@ -211,7 +231,7 @@ class PostgresDecisionLog:
             stmt = (
                 select(AgentDecision)
                 .where(*conditions)
-                .order_by(AgentDecision.triggered_at.asc())
+                .order_by(AgentDecision.closed_at.asc())
                 .limit(limit)
             )
             rows = (await session.execute(stmt)).scalars().all()

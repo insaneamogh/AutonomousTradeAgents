@@ -237,6 +237,29 @@ async def test_postgres_notification_store_register_idempotent_and_revoke_by_tok
 
 
 async def test_postgres_decision_log_pending_reflection_window() -> None:
+    """``list_pending_reflection`` must gate on ``closed_at``, not
+    ``triggered_at``.
+
+    Regression coverage added alongside the 2026-09-01 fix: verified live
+    against production that 6/6 real closed decisions (``triggered_at``
+    ~117h in the past, ``closed_at`` ~48h in the past) had never once been
+    picked up by Reflection, because the query filtered on ``triggered_at``
+    — a column that only ever gets OLDER relative to "now", so once a
+    decision has been open longer than the reflection job's ``since``
+    window, filtering on ``triggered_at`` makes it unreachable FOREVER, not
+    just late for one cycle. ``stale_trigger_recent_close`` below
+    reproduces exactly that shape.
+
+    (This test previously called ``list_pending_reflection()`` with no
+    arguments at all, which raises ``TypeError`` — ``user_id`` became a
+    required keyword-only argument in a later refactor and this
+    ``RUN_POSTGRES_TESTS``-gated file was never run against that change.
+    Fixed here too.)
+    """
+    from sqlalchemy import update
+
+    from engine.db.models import AgentDecision
+    from engine.db.session import async_session_factory
     from trading_agents.memory.decision_log import DecisionEntry
     from trading_agents.memory.postgres import (
         FIXTURE_USER_ID,
@@ -245,8 +268,9 @@ async def test_postgres_decision_log_pending_reflection_window() -> None:
 
     log = PostgresDecisionLog()
     fixture_user = str(FIXTURE_USER_ID)
+    now = datetime.now(timezone.utc)
 
-    # One closed, ready-for-review row.
+    # Closed a moment ago, triggered a moment ago — the ordinary case.
     closed = DecisionEntry(
         user_id=fixture_user,
         symbol=f"PX{secrets.token_hex(3)}",
@@ -264,7 +288,7 @@ async def test_postgres_decision_log_pending_reflection_window() -> None:
         fill_avg_price=200.0,
         realized_pnl=120.0,
     )
-    # One still-open row in the same window — should NOT come back.
+    # Still open (no realized_pnl) — should NOT come back regardless.
     open_entry = DecisionEntry(
         user_id=fixture_user,
         symbol=f"OP{secrets.token_hex(3)}",
@@ -276,17 +300,84 @@ async def test_postgres_decision_log_pending_reflection_window() -> None:
         final_action="BUY",
         risk_approved=True,
     )
+    # THE regression shape: triggered long before the window, closed just
+    # inside it. Must be included — this is what the old triggered_at-gated
+    # query could never do once triggered_at aged past `since`.
+    stale_trigger_recent_close = DecisionEntry(
+        user_id=fixture_user,
+        symbol=f"ST{secrets.token_hex(3)}",
+        horizon="short",
+        triggered_at=now - timedelta(hours=117),
+        regime="bull",
+        selected_strategy="momentum",
+        selector_confidence=0.6,
+        selector_rationale="seed",
+        final_action="BUY",
+        risk_approved=True,
+        fill_qty=10,
+        fill_avg_price=200.0,
+        realized_pnl=55.79,
+    )
+    # Closed outside the window too — must stay excluded either way (not
+    # just "closed_at unfiltered").
+    long_closed = DecisionEntry(
+        user_id=fixture_user,
+        symbol=f"LC{secrets.token_hex(3)}",
+        horizon="short",
+        triggered_at=now - timedelta(days=10),
+        regime="bull",
+        selected_strategy="momentum",
+        selector_confidence=0.6,
+        selector_rationale="seed",
+        final_action="BUY",
+        risk_approved=True,
+        fill_qty=10,
+        fill_avg_price=200.0,
+        realized_pnl=10.0,
+    )
+
     rec_closed = await log.record(closed)
     rec_open = await log.record(open_entry)
+    rec_stale = await log.record(stale_trigger_recent_close)
+    rec_long_closed = await log.record(long_closed)
 
-    pending = await log.list_pending_reflection()
+    # record() has no closed_at parameter (DecisionEntry doesn't carry
+    # it — production's only writer, order_sync.py, stamps closed_at via
+    # a raw UPDATE too). Same pattern here.
+    async with async_session_factory()() as session:
+        await session.execute(
+            update(AgentDecision)
+            .where(AgentDecision.id == uuid.UUID(rec_closed.id))
+            .values(closed_at=now - timedelta(hours=1))
+        )
+        await session.execute(
+            update(AgentDecision)
+            .where(AgentDecision.id == uuid.UUID(rec_stale.id))
+            .values(closed_at=now - timedelta(hours=2))
+        )
+        await session.execute(
+            update(AgentDecision)
+            .where(AgentDecision.id == uuid.UUID(rec_long_closed.id))
+            .values(closed_at=now - timedelta(days=9))
+        )
+        await session.commit()
+
+    pending = await log.list_pending_reflection(user_id=fixture_user)
     ids = [p.id for p in pending]
     assert rec_closed.id in ids
-    assert rec_open.id not in ids
+    assert rec_stale.id in ids, (
+        "a decision triggered 117h ago but CLOSED 2h ago must still be "
+        "reflected on — this is the exact production bug this test pins"
+    )
+    assert rec_open.id not in ids, "still-open (no realized_pnl) must be excluded"
+    assert rec_long_closed.id not in ids, "closed outside the window must stay excluded"
 
     await log.mark_reviewed(rec_closed.id)
-    pending_after = await log.list_pending_reflection()
-    assert rec_closed.id not in [p.id for p in pending_after]
+    await log.mark_reviewed(rec_stale.id)
+    pending_after = await log.list_pending_reflection(user_id=fixture_user)
+    remaining_ids = [p.id for p in pending_after]
+    assert rec_closed.id not in remaining_ids
+    assert rec_stale.id not in remaining_ids
 
 
 async def test_postgres_confidence_store_clamps_delta() -> None:

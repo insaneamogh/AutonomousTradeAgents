@@ -563,6 +563,146 @@ thresholds. Not a bug today (both idioms happen to agree on the
 literal string), but worth a deliberate pick one day if a third
 cross-file consumer of the positions key shows up.
 
+### 2026-09-01 — `96da4fe2` fix(reflection): list_pending_reflection gated on triggered_at, not closed_at
+
+`ID:MODEL2OFF`. User's ask: Review screen shows "AGREEMENT 0% · 6 reviewed ·
+30d", "QUEUE 0 · Awaiting your grade", "GRADED 6 · This window" for the 6
+real closed decisions (KO, XOM, CVX, UNP, SPY, JNJ). Two separate things to
+verify per the brief: is 0% agreement a real formula bug, and is "nothing
+left to grade" actually correct given these closed ~2 days ago. Investigated
+both against the real production DB per CLAUDE.md §4.3 — measured, didn't
+reason about it.
+
+**Queue/grading side — verified CORRECT, no bug, no change.**
+`review_service.build_queue` (decisions with `realized_pnl` set in a
+30-day `triggered_at` window, minus whatever's already in `ReviewStore`)
+and the empty-state copy ("closed decisions land here the day after they
+settle") are both doing exactly what they claim. Live query against
+production confirmed: all 6 decisions have a matching `DecisionReview` row
+— CVX/JNJ graded `skip`, KO/SPY/UNP/XOM graded `good` — all
+`reviewed_at≈2026-08-30T14:12`, i.e. ~8h after `closed_at≈2026-08-30T06:18`.
+Faster than "the day after." `total_in_window`/`graded_in_window` both
+compute to 6, queue computes to 0 items. Nothing to fix here.
+
+**Agreement side — the 0% is arithmetically correct given its inputs, but
+the inputs were permanently broken upstream.** `review_service.
+build_agreement` buckets by `direction = sign(strategy_confidence - 0.5)`
+and only counts `(good,positive)` or `(bad,negative)` as agreement. Real
+data: 4 counted reviews (2 `skip` excluded), all graded `good`, all mapped
+to a strategy (`sma_crossover` or `vol_regime_switch`) whose
+`strategy_confidence.confidence` sits at EXACTLY `0.500` — dead center of
+the `[0.48, 0.52]` "neutral" band the code treats as never-agreeing. 0/4 =
+0%. The function itself is not buggy — it's a correct, faithful
+implementation of its own documented contract ("sign of current_confidence
+- 0.5", straight from the module docstring). Added
+`apps/api/tests/test_review_route.py::
+test_agreement_reads_zero_when_priors_never_left_neutral` to pin this as
+an intentional, tested contract rather than a silent accident: all-good
+grades against untouched priors → 0.0%, not because anyone disagreed with
+anything.
+
+**The real bug, found one layer up:**
+`PostgresDecisionLog.list_pending_reflection`
+(`apps/agents/trading_agents/memory/postgres.py`) — the only feed into
+`StrategyConfidence`, via `reflection_agent_run` — filtered/ordered on
+`AgentDecision.triggered_at` (when the entry order was placed) instead of
+`closed_at` (migration 0009 — when the position actually went flat). Those
+two are days apart for an ordinary swing position, and `triggered_at` only
+ever gets OLDER relative to "now" as time passes — so once a decision has
+been open longer than the reflection job's `since` window (24h, hardcoded
+in `daily_cron.py`), filtering on `triggered_at` makes it UNREACHABLE
+FOREVER the instant it finally closes, not just late for one cycle. It
+can never re-enter a trailing 24h window anchored on a timestamp that
+never moves forward.
+
+**Verified live against production** (read-only queries, `DATABASE_URL`
+from `apps/api/.env`, ad-hoc script written to the scratchpad and
+discarded — never committed):
+```
+NOW (UTC): 2026-09-01T06:38:53
+6/6 closed decisions: triggered_at ~117h before now, closed_at ~48h before now
+  (both past the 24h `since` the daily cron passes to reflection_agent_run)
+AgentDecision.reviewed_at (Reflection's OWN bookkeeping column — distinct
+  from the operator's decision_review.reviewed_at) = NULL on all 6
+strategy_confidence, all 5 rows: confidence=0.500 wins=0 losses=0
+  last_reflection_at=None  <- the migration-0003 SEED value, untouched
+Distinct user_ids with any closed decision: 1 (43221580-69bc-...)
+```
+Reflection has never once fired successfully against real production
+data. That is the actual root cause of the flat 0% — not a disagreement
+signal, a starvation bug.
+
+**Fix:** gate + order on `closed_at` instead (with an explicit
+`IS NOT NULL` — redundant today since every current write path,
+`order_sync.py`'s two close branches, always sets `realized_pnl` and
+`closed_at` together, but it turns the docstring's invariant into an
+assertion instead of an assumption). Migration `0017` moves the
+supporting partial index (`ix_agent_decisions_pending_reflection`) from
+`triggered_at` to `closed_at` so it still matches the query the method's
+own docstring promises ("byte-equal to the index predicate").
+
+**Tests, revert-checked per CLAUDE.md §4.1** (reverted the fix by hand,
+ran the new test, watched it fail with the exact old-code compiled SQL
+quoted in the assertion message, restored the fix, watched it pass again
+— transcript in the commit):
+- `apps/agents/tests/test_postgres_decision_log.py` (new, DB-independent):
+  intercepts the SQLAlchemy statement right before `session.execute()`
+  and asserts on its compiled WHERE/ORDER BY. This is the one I could
+  mechanically revert-check — no Docker in this sandbox, so no live
+  Postgres round-trip was possible here.
+- `apps/api/tests/test_postgres_stores.py`: found (while reading the
+  method's existing coverage) that the `RUN_POSTGRES_TESTS`-gated
+  round-trip test for this exact method was ALREADY broken independent
+  of my fix — it called `list_pending_reflection()` with zero arguments,
+  which raises `TypeError` now that `user_id` became a required
+  keyword-only arg (per this file's own earlier entry on the
+  `ALL_USERS` sentinel refactor). Never caught because
+  `RUN_POSTGRES_TESTS` isn't set in normal dev/CI, so the whole module
+  just skips silently — another instance of CLAUDE.md §4.1's point, just
+  with the test not even running rather than passing wrongly. Fixed the
+  call site and extended it with the actual regression shape
+  (`triggered_at` 117h in the past + `closed_at` inside the window →
+  must come back now; `closed_at` also outside the window → must still
+  stay excluded). Collection-checked (`pytest --collect-only`, imports
+  and parses clean) but **not executed** — no local/dockerized Postgres
+  available here, and I chose not to point a row-writing test at the one
+  configured `DATABASE_URL`, which is the shared production DB, without
+  being asked.
+- `apps/api/tests/test_review_route.py`: added the neutral-priors test
+  described above (in-memory stores, no DB needed) — passes as-is,
+  confirming `build_agreement` needed no change.
+
+Full suite: `apps/agents apps/api packages -q` → **1311 passed, 11
+skipped**, both before and after (skips are the `RUN_POSTGRES_TESTS`-gated
+tests + a couple of other opt-ins — consistent with the baseline, just a
+higher count than CLAUDE.md's stale "757/9" note from 2026-08-29).
+
+**Left open, deliberately — not mine to decide unilaterally:**
+- The 6 already-stuck decisions will **not** self-heal from this fix
+  alone: by the next cron run their `closed_at` will also be >24h old.
+  Someone needs to run the reflection CLI/cron once with a wider
+  `--since` (96h or 7d comfortably covers them) to backfill. Did not run
+  it — it costs one real LLM (Sonnet) call per affected strategy AND
+  permanently stamps `reviewed_at` on those rows (no do-over if the
+  delta it applies is wrong), which is a production-mutating action past
+  "fix the code and add tests." Flagged to the user instead of just doing
+  it.
+- Migration `0017` verified to chain cleanly (`alembic heads` →
+  single head, `0017_reflection_index_closed_at`) but **not applied** to
+  the live DB. The query is correct without it either way (the index only
+  shapes the plan, not the result) — apply whenever convenient, no
+  urgency at this table's current size (6 rows total with `realized_pnl`
+  set).
+- `InMemoryDecisionLog.list_pending_reflection`
+  (`apps/agents/trading_agents/memory/decision_log.py`) has the identical
+  conceptual gap — `DecisionEntry` doesn't carry a `closed_at` field at
+  all — but it's test/CLI-demo-only (`trading_agents.cli.reflection`
+  seeds synthetic decisions at `triggered_at = now - 18h`, well inside
+  any real window, so it never even exercises the boundary).
+  `USE_POSTGRES=1` is what serves the live app, so left untouched to keep
+  this change scoped to the actual production bug rather than widening
+  into a `DecisionEntry` schema change nobody asked for.
+
 ### 2026-09-01 — `56da03fb` fix(options): guard.py computed the contract funnel and threw it away
 
 `ID:MODEL2OFF`. User's ask: "loosen the funnel a bit i dont see any options
