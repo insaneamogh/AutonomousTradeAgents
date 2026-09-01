@@ -1,7 +1,18 @@
 # Plan H — let judges log in and connect their own Alpaca account
 
-**Status:** plan, not built. Written 2026-08-30 by `ID:MODEL1REAL`.
-**§1 is a live security issue and must land before anyone else is invited in.**
+**Status:** §1 is FIXED — see below. §2/§3/§4 remain plan, not built.
+Written 2026-08-30 by `ID:MODEL1REAL`.
+
+**§1 update, verified 2026-09-01 by `ID:MODEL2OFF`:** the allowlist fix landed the
+same day this plan was written — commit `2709d236` ("fix(auth,broker): stop
+auto-attaching every signup to the operator's own Alpaca account"),
+2026-08-30T18:12 UTC, ~39 minutes after the last confirmed leak. Verified directly
+against the live production DB: a real signup at 2026-08-30T17:33 UTC (before the
+fix) *did* get auto-attached to the operator's env connection — the exact failure
+mode this section describes — and no signup since the fix has. That leaked
+connection was later revoked and no orders were ever placed on it. This section's
+narrative below is kept as-written for context; treat "what happens today" in it as
+"what happened before 2026-08-30T18:12 UTC," not current behavior.
 
 ---
 
