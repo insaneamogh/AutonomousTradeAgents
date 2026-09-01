@@ -190,7 +190,7 @@ export function DashboardScreen() {
         <Cell span={3}>
           <StatTile
             label="Risk saved"
-            value={ghost.data ? pendingAwareUsd(ghost.data.savedUsd, ghost.data.vetoed.pendingCount) : '—'}
+            value={ghost.data ? pendingAwareUsd(ghost.data.savedUsd, ghost.data.vetoed.pendingCount, ghost.data.savedSoFarUsd) : '—'}
             caption={
               ghost.data
                 ? pendingAwareCaption(
@@ -209,7 +209,7 @@ export function DashboardScreen() {
           <StatTile
             label="Regret"
             value={
-              ghost.data ? pendingAwareUsd(ghost.data.missedUsd, ghost.data.declined.pendingCount) : '—'
+              ghost.data ? pendingAwareUsd(ghost.data.missedUsd, ghost.data.declined.pendingCount, ghost.data.missedSoFarUsd) : '—'
             }
             caption={
               ghost.data

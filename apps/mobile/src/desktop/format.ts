@@ -123,8 +123,22 @@ function isShowingPending(amount: number | null | undefined, pendingCount: numbe
  * unmeasured one must never look the same. Deliberately stays this short:
  * see `finalizesPhrase`'s docstring for why the finalize countdown lives in
  * the caption (`pendingAwareCaption`) instead of here. */
-export function pendingAwareUsd(amount: number | null | undefined, pendingCount: number): string {
+export function pendingAwareUsd(
+  amount: number | null | undefined,
+  pendingCount: number,
+  markedAmount?: number | null,
+): string {
   if (isShowingPending(amount, pendingCount)) {
+    // A ghost finalizes only after `horizonDays` TRADING days, so for the
+    // first week of any account's life EVERY row is still marking and this
+    // tile is a bare "$—" — the Refusal Ledger, which is the whole claim,
+    // showing nothing on exactly the days someone looks at it. When the
+    // API has a marks-so-far figure (savedSoFarUsd / missedSoFarUsd),
+    // show it, explicitly labelled "so far" so a provisional mark can
+    // never be read as the settled number.
+    if (markedAmount != null && markedAmount !== 0) {
+      return `${usd(markedAmount)} so far · ${pendingCount} still marking`;
+    }
     return `$— · ${pendingCount} mark${pendingCount === 1 ? '' : 's'} pending`;
   }
   return usd(amount);
@@ -165,6 +179,12 @@ export function stillMarkingCaption(
   oldestPendingRemainingTradingDays?: number | null,
 ): string {
   if (pendingCount <= 0) return `${count} finalised`;
+  // `count` is the bucket TOTAL, not its finalized subset — both call
+  // sites pass `bucket.count`. Rendering it as "N finalised" produced
+  // "6 finalised · 6 still marking" for a bucket where NOTHING had
+  // finalised, which is a straight contradiction sitting next to a "$—"
+  // value. The finalized subset is what's left after the pending ones.
+  const finalised = Math.max(0, count - pendingCount);
   const phrase = finalizesPhrase(oldestPendingRemainingTradingDays);
-  return `${count} finalised · ${pendingCount} still marking${phrase ? ` — ${phrase}` : ''}`;
+  return `${finalised} finalised · ${pendingCount} still marking${phrase ? ` — ${phrase}` : ''}`;
 }

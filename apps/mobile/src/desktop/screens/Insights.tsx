@@ -276,7 +276,7 @@ export function InsightsScreen() {
               <StatTile
                 label="Loss avoided"
                 value={
-                  ghost.data ? pendingAwareUsd(ghost.data.savedUsd, ghost.data.vetoed.pendingCount) : '—'
+                  ghost.data ? pendingAwareUsd(ghost.data.savedUsd, ghost.data.vetoed.pendingCount, ghost.data.savedSoFarUsd) : '—'
                 }
                 caption={
                   ghost.data
@@ -296,7 +296,7 @@ export function InsightsScreen() {
               <StatTile
                 label="Upside missed"
                 value={
-                  ghost.data ? pendingAwareUsd(ghost.data.missedUsd, ghost.data.declined.pendingCount) : '—'
+                  ghost.data ? pendingAwareUsd(ghost.data.missedUsd, ghost.data.declined.pendingCount, ghost.data.missedSoFarUsd) : '—'
                 }
                 caption={
                   ghost.data

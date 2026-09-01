@@ -23,6 +23,20 @@ describe('pendingAwareUsd', () => {
     expect(pendingAwareUsd(1234, 3)).toBe(usd(1234));
   });
 
+  it('shows the marks-so-far figure instead of "$—" when the API has one', () => {
+    // The Refusal Ledger's whole claim is measured in dollars. A ghost
+    // finalizes only after `horizonDays` TRADING days, so for the first
+    // week EVERY row is pending and the tile was a bare "$—" while the
+    // table already held real marks. Labelled "so far" so a provisional
+    // mark can never read as the settled number.
+    expect(pendingAwareUsd(0, 6, 163.03)).toBe('$163 so far · 6 still marking');
+  });
+
+  it('keeps the bare pending placeholder when there is no mark yet either', () => {
+    expect(pendingAwareUsd(0, 6, 0)).toBe('$— · 6 marks pending');
+    expect(pendingAwareUsd(0, 6, null)).toBe('$— · 6 marks pending');
+  });
+
   it('renders a genuine zero normally when nothing is pending', () => {
     expect(pendingAwareUsd(0, 0)).toBe(usd(0));
   });
@@ -84,18 +98,31 @@ describe('pendingAwareCaption', () => {
 });
 
 describe('stillMarkingCaption', () => {
+  // First argument is the bucket TOTAL (`GhostBucketDto.count`) — that is
+  // what both call sites pass — so the finalised subset is total minus
+  // pending. Reading it as "already finalised" is what produced the live
+  // "6 finalised · 6 still marking" for a bucket where nothing had.
   it('omits the pending clause entirely once nothing is left marking', () => {
     expect(stillMarkingCaption(10, 0)).toBe('10 finalised');
     expect(stillMarkingCaption(10, 0, 3)).toBe('10 finalised');
   });
 
   it('falls back to the bare "still marking" count when the countdown is not supplied', () => {
-    expect(stillMarkingCaption(6, 2)).toBe('6 finalised · 2 still marking');
+    expect(stillMarkingCaption(8, 2)).toBe('6 finalised · 2 still marking');
   });
 
   it('names a concrete countdown alongside the still-marking count', () => {
-    expect(stillMarkingCaption(6, 2, 3)).toBe(
+    expect(stillMarkingCaption(8, 2, 3)).toBe(
       '6 finalised · 2 still marking — finalizes in 3 trading days',
+    );
+  });
+
+  it('reports zero finalised when every row in the bucket is still marking', () => {
+    // The live Insights render on 2026-09-01: six vetoed ghosts, all
+    // `partial`, and the caption claimed all six had finalised while the
+    // value beside it read "$—".
+    expect(stillMarkingCaption(6, 6, 3)).toBe(
+      '0 finalised · 6 still marking — finalizes in 3 trading days',
     );
   });
 

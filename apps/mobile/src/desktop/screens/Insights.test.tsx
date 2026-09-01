@@ -243,7 +243,10 @@ describe('InsightsScreen — veto ledger honesty rules', () => {
     openGhostTab(tree);
 
     const json = JSON.stringify(tree.toJSON());
-    // vetoed.count=10, pendingCount=2, oldestPendingRemainingTradingDays=3.
-    expect(json).toContain('10 finalised · 2 still marking — finalizes in 3 trading days');
+    // vetoed.count=10 is the bucket TOTAL, pendingCount=2,
+    // oldestPendingRemainingTradingDays=3 — so 8 have finalised, not 10.
+    // Reading `count` as the finalised subset is what rendered "6
+    // finalised · 6 still marking" live for a bucket where nothing had.
+    expect(json).toContain('8 finalised · 2 still marking — finalizes in 3 trading days');
   });
 });

@@ -463,6 +463,15 @@ export interface GhostBucketDto {
    * clamped to >=0. Lets the UI say WHEN "pending" resolves instead of
    * just that it is pending — see `pendingAwareUsd` in desktop/format.ts. */
   oldestPendingRemainingTradingDays?: number | null;
+  /** `ghostPnl` PLUS the running mark on every still-`partial` row.
+   * PROVISIONAL — a partial can still move before its horizon. Exists
+   * because a ghost finalizes only after `horizonDays` TRADING days, so
+   * `ghostPnl` is 0 for the first week of an account's life while real
+   * marked counterfactuals already sit in the table. Render as "so far",
+   * never as the settled claim. */
+  markedPnl?: number;
+  /** How many rows contribute to `markedPnl` (finals + marked partials). */
+  markedCount?: number;
 }
 
 export interface GhostSummaryResponse {
@@ -474,6 +483,11 @@ export interface GhostSummaryResponse {
   savedUsd: number;
   /** What finalized declined/expired picks would have MADE (>=0). */
   missedUsd: number;
+  /** `savedUsd` over marks-so-far rather than finals only. PROVISIONAL —
+   * see `GhostBucketDto.markedPnl`. Shown alongside, labelled "so far". */
+  savedSoFarUsd?: number;
+  /** The `missedUsd` counterpart. Same provisional contract. */
+  missedSoFarUsd?: number;
 }
 
 export interface VetoRuleDto {
