@@ -391,6 +391,17 @@ that a working order is still worth taking?"
 ruff clean against the 4-error `insights.py` B008 baseline. Every new suite
 revert-checked.
 
+**Follow-up, same session — c6ece604**
+
+9. `_specialist.MAX_TOKENS` 500 -> 900. `max_out` for the `technical` role
+   was pinned at exactly 500 over 5 days — truncation, not coincidence.
+   `calls/run` 1.70 vs 1.02 for every non-binding role IS the re-ask rate,
+   and `degraded_nodes` carried "technical" on 36/55 decisions with nothing
+   else ever in it. The retry asks the model to be shorter, so the thesis
+   reaching the Drafter, the audit row and the Picks card was the
+   compressed one — on the one analyst that runs every pass. Drafter's 900
+   promoted to a named `MAX_TOKENS` so the test compares symbols.
+
 **Left open, deliberately**
 - The Picks SELECTOR card still shows only the winning direction. Both are
   in `reasoning.strategy_fit.ranked` — this is a UI read, not missing data.
