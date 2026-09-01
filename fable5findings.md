@@ -385,6 +385,66 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-09-01 — merge: two finished worktrees (MockAuthStore CAS fix; runErrorMessage wiring) reconciled against 2f974934
+
+`ID:MODEL2OFF`. User asked me to audit what was sitting in the repo's
+active worktrees, then merge what was ready. Two had genuinely finished,
+unmerged work; two were already fully merged (one still locked by a
+live `claude` process, left untouched).
+
+**`claude/vigorous-burnell-2b057a`** (`430efe13`, own entry above) —
+clean, isolated (`auth_store.py` + its own test), merged with only the
+expected `fable5findings.md` append-conflict (resolved by
+concatenation, per this repo's established pattern). Re-ran
+`test_auth_hardening.py` (13/13) and the full workspace suite (1319
+passed / 11 skipped) after.
+
+**`claude/xenodochial-snyder-f1d0bd`** (`9b35b51d`, own entry above) —
+genuinely conflicted with `2f974934` (this session's own desktop-login
+fix): both rewrote the same `login.tsx`/`verify.tsx` catch blocks. That
+branch reused the existing `runErrorMessage()`; `2f974934` introduced a
+separate `authErrorMessage()` specifically because `runErrorMessage`'s
+429 wording ("Daily council budget reached") is council-run-specific
+and wrong on a login screen — a reason the other branch's own
+reasoning never weighed (it only considered the "may still be starting
+up" wording). Kept `authErrorMessage` for both auth screens; took the
+other branch's `positions.tsx` / desktop `Positions.tsx` fixes as-is
+(no overlap — those wire the open/closed-positions `ErrorState`s to
+the real query error instead of a static string).
+
+**Real bug this surfaced, fixed while reconciling:** that branch's own
+commit message noted `runErrorMessage` already handles a FastAPI
+validation-array `detail` (`{detail: [{loc, msg, type}]}`) by reading
+`detail[0].msg`, calling it out as a fix over the old hand-rolled
+extraction. `authErrorMessage` (written a few hours earlier, this
+session) had NOT been given that same handling — its `String(detail)`
+would render `"[object Object]"` on that exact shape. Extracted the
+shared parsing into one `extractDetail()`, used by both
+`runErrorMessage` and `authErrorMessage`, so this can't drift into a
+third differently-buggy copy. Revert-checked per §4.1: reintroduced the
+bare `String(detail)` version, confirmed the new
+`authErrorMessage`/array-detail test fails with exactly
+`"[object Object]"` (pasted below), restored, confirmed it passes.
+
+```
+Expected: "field required"
+Received: "[object Object]"
+```
+
+**Also fixed, found while touching the same file:** `positions.tsx`'s
+CLOSED-tab `ErrorState` had the identical static-string bug the merged
+branch fixed for the open tab — `closedQuery.error` was never wired in
+either, because the closed-positions tab was added to `main` after
+that branch diverged and it never saw the pattern. One-line fix in the
+same spot, same pattern, flagged here per §4.7 rather than silently
+folded in as if it were part of either original branch's own work.
+
+**Verified:** `tsc --noEmit` clean; full mobile suite 12 suites / 100
+tests passed (99 + 1 new). Left alone: `agent-a00975d8662b9a692`
+(fully merged already, still locked by a live process) and
+`agent-a326fbc25255c4875` (fully merged, idle) — nothing pending in
+either.
+
 ### 2026-09-01 — fix(desktop): the pre-auth screen was the mobile login flow in a narrow column, on every desktop load
 
 `ID:MODEL2OFF`. User report: "the login screen its wired to look like
@@ -2433,6 +2493,73 @@ Best read: this sandboxed shell's network egress doesn't reach
 not something a different token would fix, and not something to route
 around by disabling TLS verification. Left as an open item; did not
 retry with `--browserless` or any cert-bypass flag.
+
+### 2026-08-31 — `9b35b51d` fix(mobile): wire positions + auth screens to the shared runErrorMessage
+
+`ID:MODEL2OFF`. Task: the four screens d8cf7871 (below) explicitly
+flagged as out-of-scope follow-up -- `app/positions.tsx`,
+`src/desktop/screens/Positions.tsx`, `app/auth/login.tsx`,
+`app/auth/verify.tsx` -- each still had their own hardcoded "can't
+reach the server" string instead of importing the shared
+`runErrorMessage`.
+
+**First had to reconcile a stale premise.** The task description said
+the consolidation was already done on this branch. It wasn't:
+`runErrorMessage` was still a module-private, unexported function in
+`Picks.tsx`, and `approvals.tsx`/`council/[runId].tsx` still had their
+own independent strings -- none of d8cf7871's actual diff was present.
+`git status` showed a clean tree (nothing lost), and `git log --all
+--grep` found `d8cf7871` sitting on `main`, landed through a sibling
+worktree (`worktree-agent-a42e55f95da149506`) less than a minute
+before I checked. This branch (`claude/xenodochial-snyder-f1d0bd`) had
+zero commits `main` didn't already have, so `git merge main --ff-only`
+was a clean, lossless fast-forward -- not a "the fix never happened"
+situation, just a "this branch hadn't caught up yet" one.
+
+**Fixed**, each replacing the hardcoded fallback with
+`runErrorMessage(err)`:
+- `app/positions.tsx`: `closeErrorDetail`'s generic fallback, and the
+  open-positions list `ErrorState` (which wasn't reading `error` off
+  `useOpenPositions()` at all before -- a static description
+  regardless of the real failure).
+- `src/desktop/screens/Positions.tsx`: same fallback fix in the
+  desktop twin's `closeErrorMessage`.
+- `app/auth/login.tsx` / `app/auth/verify.tsx`: replaced the whole
+  `err instanceof ApiError` branch with `runErrorMessage(err)` rather
+  than just swapping the `else` string -- it's a strict superset of
+  the hand-rolled detail extraction, and fixes a latent bug in the
+  old code: `String(err.body.detail)` on a FastAPI validation-array
+  422 rendered as junk text; `runErrorMessage` already reads
+  `detail[0].msg` for that shape.
+
+**Judgment call the task asked for:** whether `runErrorMessage`'s
+"may still be starting up" wording belongs on PRE-auth screens. Kept
+it -- the message describes server boot state, not session state, and
+login/verify are if anything the MOST likely screens to hit a cold
+container (first request of a session).
+
+**Verified:** `pnpm --filter mobile exec jest --silent` -> 9
+suites/73 passed (same baseline d8cf7871 left, no tests added or
+removed); `pnpm -s exec tsc --noEmit -p apps/mobile/tsconfig.json` ->
+clean; grepped apps/mobile post-fix for the old strings -> zero hits
+in these four files; confirmed all four files still decode as valid
+UTF-8 (guarding against this box's known curly-apostrophe mojibake
+hazard noted below -- moot here, no apostrophes in any of my new
+strings).
+
+**Left open / deliberately not touched:** several OTHER screens carry
+a wider version of the same bug -- a static "isn't reachable"
+ErrorState/EmptyState description that never reads the query's real
+`error` at all (not even the old per-screen hardcoded-string pattern
+d8cf7871 targeted, just never wired to begin with): `(tabs)/index.tsx`
+(x2), `(tabs)/review.tsx`, `(tabs)/settings.tsx`,
+`(tabs)/strategies.tsx`, `watchlist.tsx`, `decision/[id].tsx` (whose
+copy also conflates a second, unrelated failure mode -- read
+carefully before touching), and a second, separate spot in
+`(tabs)/approvals.tsx` (the `usePendingApprovals()` list load, distinct
+from the run-button error d8cf7871 already fixed). Flagged as a
+follow-up task rather than widened here -- none were in this task's
+scope or in d8cf7871's own flagged list.
 
 ### 2026-08-31 — `9f824b4b` docs(options): add the adjust_option_position gate asymmetry to the trap list
 

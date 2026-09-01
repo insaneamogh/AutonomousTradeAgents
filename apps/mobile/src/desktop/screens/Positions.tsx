@@ -8,6 +8,7 @@ import {
   useClosePosition,
   useOpenPositions,
 } from '@/hooks/usePositions';
+import { runErrorMessage } from '@/lib/api';
 import { DEMO_DISABLED_REASON, useIsDemoSession } from '@/lib/demoSession';
 import type { ClosedPositionDto, OpenPositionDto } from '@app/shared-types';
 
@@ -438,6 +439,6 @@ function closeErrorMessage(err: unknown): string {
   const code = typeof e?.body?.detail === 'string' ? e.body.detail : null;
   if (code && CLOSE_ERROR_COPY[code]) return CLOSE_ERROR_COPY[code];
   if (code) return code;
-  return "Couldn't reach the agent server — try again.";
+  return runErrorMessage(err);
 }
 

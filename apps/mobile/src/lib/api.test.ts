@@ -348,6 +348,18 @@ describe('authErrorMessage', () => {
     expect(authErrorMessage(err, 'fallback')).toBe('HTTP 500');
   });
 
+  it('reads the first message out of a FastAPI validation-array detail, not "[object Object]"', () => {
+    // Caught while reconciling against claude/xenodochial-snyder-f1d0bd's
+    // runErrorMessage wiring: this exact shape is what a 422 from
+    // /auth/verify's own Pydantic body validation looks like, and the
+    // first version of authErrorMessage did a bare `String(detail)` on
+    // it, which stringifies an array of objects as "[object Object]".
+    const err = new ApiError(422, {
+      detail: [{ loc: ['body', 'token'], msg: 'field required', type: 'value_error' }],
+    });
+    expect(authErrorMessage(err, 'fallback')).toBe('field required');
+  });
+
   it('uses the caller-supplied fallback for a non-ApiError failure', () => {
     expect(authErrorMessage(new TypeError('Failed to fetch'), "Couldn't reach the agent server.")).toBe(
       "Couldn't reach the agent server.",

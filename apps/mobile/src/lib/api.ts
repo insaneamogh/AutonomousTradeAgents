@@ -110,19 +110,33 @@ export class ApiError extends Error {
  * errors carry `{detail: "<plain string>"}`, but FastAPI's own pydantic
  * validation carries `{detail: [{loc, msg, type}, ...]}` — an ARRAY.
  *
+ * Shared by `runErrorMessage` and `authErrorMessage` below so this
+ * parsing can't drift into a second, differently-buggy copy — it
+ * already did once: `authErrorMessage`'s first version read `detail`
+ * with a bare `String(...)`, which on the array shape produces
+ * `"[object Object]"` instead of the actual validation message.
+ * Returns null when neither shape is present.
+ */
+function extractDetail(body: unknown): string | null {
+  const detail = (body as { detail?: unknown } | null)?.detail;
+  if (typeof detail === 'string' && detail) return detail;
+  if (Array.isArray(detail) && detail.length > 0) {
+    const first = detail[0] as { msg?: unknown } | undefined;
+    if (typeof first?.msg === 'string') return first.msg;
+  }
+  return null;
+}
+
+/**
  * A response with no `status` at all (network failure, CORS, DNS, or a
  * container that hadn't finished booting yet) is the only case that's
  * genuinely infrastructure, so that keeps the "may still be starting up"
  * wording rather than blaming the caller's connection.
  */
 export function runErrorMessage(err: unknown): string {
-  const e = err as { status?: number; body?: { detail?: unknown } } | null;
-  const detail = e?.body?.detail;
-  if (typeof detail === 'string' && detail) return detail;
-  if (Array.isArray(detail) && detail.length > 0) {
-    const first = detail[0] as { msg?: unknown } | undefined;
-    if (typeof first?.msg === 'string') return first.msg;
-  }
+  const e = err as { status?: number; body?: unknown } | null;
+  const detail = extractDetail(e?.body);
+  if (detail) return detail;
   if (e?.status === 429) return 'Daily council budget reached. Try again tomorrow.';
   if (typeof e?.status === 'number') {
     return `The server refused the request (${e.status}). Try again.`;
@@ -147,9 +161,7 @@ export function runErrorMessage(err: unknown): string {
  */
 export function authErrorMessage(err: unknown, fallback: string): string {
   if (err instanceof ApiError) {
-    return typeof err.body === 'object' && err.body && 'detail' in err.body
-      ? String((err.body as { detail: unknown }).detail)
-      : err.message;
+    return extractDetail(err.body) ?? err.message;
   }
   return fallback;
 }
