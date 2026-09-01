@@ -385,6 +385,138 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-09-01 — `53f8cf1d` docs: rewrite READMEs for the auto-approve + live options era
+
+`ID:MODEL2OFF`. User's ask (their words, verbatim): "OUR PROJECT HAS CHANGED ALOT
+FROM SOMETHING STABLE TO A RISKY AUTO APPROVE AGENT SO I NEED YOU TO UPDATE THE
+REVELANT READMES TOO GET RID OF ANYTHING FROM PREVIOUS PLANS AND WE WANT A FRESH
+WRITEUP AS TO WHAT SYSTEM DOES." Documentation-only task, no application code
+touched. Rewrote the three reader-orienting docs fresh against the CURRENT code
+(root `README.md`, `docs/README.md`, `apps/mcp_server/README.md`) rather than
+patching stale sentences one at a time, per the brief's explicit instruction — and
+per CLAUDE.md §4.2, read the code as the source of truth rather than trusting
+either the old docs or the task brief's own paraphrases of the code.
+
+**Read directly before writing anything:** `apps/api/app/services/orders/
+auto_approver.py` (full file, 323 lines), `apps/agents/trading_agents/options/
+agents.py`, `.../options/tools/guard.py` (full file, 1437 lines),
+`.../options/escalation.py`, `apps/api/app/services/orders/position_manager.py`,
+`.../reconciler_fleet.py`, `apps/api/app/services/council/scheduler.py`,
+`packages/engine/engine/risk/engine.py`, `packages/engine/engine/options/risk.py` —
+plus `docs/HACKATHON.md` and `docs/OPTIONS_PLAYBOOK.md` in full (both explicitly
+named by the brief as current/authoritative) and the relevant build-log history
+below (auto-approve's three commits `3bce40b2`/`4e46507e`/`7362a3a3` + fixup
+`db79fa78`; the options funnel-persistence fix `56da03fb`; the closed-position
+history feature `2310c3dc`; the multi-tenant security fix `2709d236`).
+
+**Verified, not assumed:**
+- Ran the full suite fresh in this worktree (`uv sync --all-packages` first — no
+  venv existed here yet): `uv run pytest apps/agents apps/api packages/ -q` →
+  **1308 passed, 11 skipped**; `uv run pytest apps/ packages/ -q` (adds
+  `apps/mcp_server`) → **1319 passed, 11 skipped**. Both now in the new root
+  README's Quick Start, replacing the long-stale "757 passing."
+- Counted `engine.risk.engine.evaluate()`'s fixed rule sequence directly off its
+  own inline numbered comments: **17** named equity rules (steps 1-17; an options
+  proposal diverts out at step 1.5 and never reaches the equity-only rules). This
+  does **not** match the "21 equity ... named risk rules" both the old root README
+  and `docs/HACKATHON.md` state — I could not reconcile 21 against a direct read of
+  the canonical `evaluate()` body (even counting every trim-variant veto name
+  separately only reaches ~19). The new README states 17, sourced to that function
+  directly, instead of repeating a number I independently checked and could not
+  confirm. Did **not** go fix `docs/HACKATHON.md` itself — out of this task's
+  stated scope (README-style orienting docs only) — flagging it here instead, per
+  CLAUDE.md §4.7.
+- Counted `ToolGuard._before_open_option_trade`'s gate stack directly off
+  `guard.py`: its own module docstring says "the full **12**-step stack," and its
+  inline comments run 1 through 12 exactly. The task brief's paraphrase said
+  "13-step guarded tool stack" — used the verified 12 in both new READMEs instead,
+  and separately cited `docs/OPTIONS_PLAYBOOK.md`'s own stated **13** for the
+  *options risk-engine* rule count (`engine.options.risk.evaluate_option`, a
+  different, downstream number from the guard's own gate stack) rather than
+  re-derive a possibly-conflicting count of my own for that one, since that
+  document was named by the brief as already-current.
+- **Found a real doc/code drift, outside this task's scope, and did not fix it —
+  flagging per CLAUDE.md §4.2/§4.7 instead.** `docs/OPTIONS_PLAYBOOK.md`'s own
+  top-of-file blockquote states the monotone LLM exit-agent "has **not** shipped
+  yet." Direct evidence says otherwise: `git log --oneline -- apps/agents/
+  trading_agents/options/escalation.py` shows it shipped 2026-08-31
+  (`3b67222d feat(agents): options escalation loop`, plus a same-day docstring
+  fixup `9694cff9`), and it is wired live into `position_manager.
+  manage_positions_for_user` with **no feature flag gating it at all** — only a
+  cooldown (`OPTIONS_ESCALATION_COOLDOWN_S`, default 900s), a daily cap
+  (`OPTIONS_ESCALATION_MAX_PER_DAY`, default 4), and a hard, non-env-tunable
+  `MAX_ESCALATIONS_PER_FLEET_TICK = 1` (read the literal constant, not inferred).
+  `git log --oneline -5 -- docs/OPTIONS_PLAYBOOK.md` shows its last edit
+  (`56da03fb`) postdates both escalation commits — this is not "doc written before
+  code landed," it is a status blockquote nobody updated when the feature actually
+  shipped. The two new READMEs describe the escalation agent as shipped (sourced to
+  the code directly, not to that blockquote). `OPTIONS_PLAYBOOK.md` itself was left
+  untouched — it is the options rule-set reference, not a reader-orienting README,
+  and the brief was explicit that the plan/reference-doc corpus stays alone; a
+  future session should fix that blockquote specifically.
+- Confirmed `docs/PLAN_MULTI_TENANT.md` §1's security issue (every signup silently
+  auto-attached to the operator's own Alpaca connection, write access included) is
+  actually fixed (`2709d236`, 2026-08-30 — an allowlist gate + an honest
+  `status="disconnected"` state for anyone not on it) before writing the new
+  "honest limitations" section, so as not to either scaremonger about a closed
+  issue or miss a still-open one.
+- Confirmed the Alpaca CLI (`alpaca clock`) is genuinely wired into
+  `engine.scanner.engine.Scanner`'s market-open check (`ScanResult.
+  market_open_source` records which clock actually answered) — real, live
+  infrastructure, not a demo prop — but found **no judge-visible UI surface** for
+  it (grepped `apps/mobile` for `marketOpenSource`/`market_open_source`/
+  `clockSource`: zero hits) and **no code integration of Alpaca's own MCP server**
+  anywhere in the repo (grepped for `alpaca-mcp-server`/`alpaca_mcp` outside the
+  docs/ plan corpus: zero hits, confirming `docs/PLAN_MCP_DEMO.md`'s "spec fetched"
+  status is still just that — a verified plan, not yet code). The new root
+  README's Alpaca-integration table states these three states precisely (CLI: live
+  but no on-screen indicator; Alpaca's MCP server: not integrated; our own
+  `mcp_server/`: shipped bonus) instead of the old README's flat "both planned, not
+  shipped," which was half wrong.
+
+**What the old READMEs got wrong — listed once, so it doesn't quietly happen
+again, per the task's own explicit ask:**
+1. Root `README.md`'s Alpaca-integration table called **both** the Alpaca CLI and
+   Alpaca's own MCP server "Planned, not shipped." The CLI half was false — see
+   above.
+2. Neither README mentioned `auto_approver.py`, `AUTO_APPROVE_ENABLED`,
+   `auto_approve_consent`, the options Bull/Bear council, `AUTO_TRADE_ENABLED`, or
+   `ToolGuard` anywhere, at all.
+3. `docs/README.md`'s Scope section stated flatly "per-trade self-approval," no
+   qualification, and separately listed "options/F&O" under **Out of v1** — options
+   have been a hard hackathon requirement and live in some form since 2026-08-28.
+   Both claims were wrong the moment they were read.
+4. `docs/README.md`'s architecture diagram and decision-lifecycle sequence showed
+   one equity council and a bare `Reconciler` box — no scheduler (baseline sweep /
+   trigger scanner, the thing that actually produces autonomous runs), no options
+   fork, no `ToolGuard`, no `ReconcilerFleet` exit/ratchet/escalation/auto-approve
+   responsibilities. It was an accurate diagram of an earlier system that no longer
+   exists.
+5. `docs/README.md`'s environment-variable tables had zero entries for any
+   auto-approve or options-agent flag — nobody could have configured or even
+   discovered either unattended path from that table.
+6. Root `README.md`'s risk-rule count ("21 equity ... named risk rules") does not
+   match a direct count of `engine.risk.engine.evaluate()`'s own fixed sequence
+   (17) — see the verification note above.
+
+**Left open / not verified this pass:**
+- Did not re-run the mobile/TypeScript suite (`tsc`/`jest`) fresh — relied on very
+  recent build-log entries (`2310c3dc`, `7362a3a3`) that verified them passing
+  within the last few commits rather than re-running myself; the new docs do not
+  cite a specific JS test count for exactly this reason.
+- Did not check the live Railway deployment's actual current env var values
+  (whether `AUTO_APPROVE_ENABLED`/`AUTO_TRADE_ENABLED`/`RISK_PROFILE` are really set
+  there right now). "Set in production" claims are sourced to `docs/OPTIONS_
+  PLAYBOOK.md` §0.5's own explicit statement and to the code's documented defaults,
+  not to a live query of Railway's config — said so in the README text itself
+  rather than implying I'd checked.
+- `docs/OPTIONS_PLAYBOOK.md`'s stale "escalation not shipped" blockquote (above)
+  left uncorrected on purpose, out of this task's scope.
+- Did not touch any `PLAN_*.md` file, the audit sections of this file above the
+  build log, or any application code.
+- Not merged to `main`, not pushed — worktree changes only, per the brief's own
+  instruction that the user reviews and merges personally.
+
 ### 2026-09-01 — `56da03fb` fix(options): guard.py computed the contract funnel and threw it away
 
 `ID:MODEL2OFF`. User's ask: "loosen the funnel a bit i dont see any options
