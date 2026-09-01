@@ -2,7 +2,7 @@
 (Anthropic 5-min ephemeral cache). Every edit busts the cache — be deliberate.
 """
 
-from trading_agents.prompts.drafter import DRAFTER
+from trading_agents.prompts.drafter import DRAFTER, drafter_prompt
 from trading_agents.prompts.fundamental_analyst import FUNDAMENTAL_ANALYST
 from trading_agents.prompts.macro_analyst import MACRO_ANALYST
 from trading_agents.prompts.reflection import REFLECTION
@@ -11,6 +11,7 @@ from trading_agents.prompts.technical_analyst import TECHNICAL_ANALYST
 
 __all__ = [
     "DRAFTER",
+    "drafter_prompt",
     "FUNDAMENTAL_ANALYST",
     "MACRO_ANALYST",
     "REFLECTION",

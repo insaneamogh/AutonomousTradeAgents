@@ -95,7 +95,7 @@ from engine.risk import RiskCaps
 from engine.sizing import SizingInputs, atr_position_size
 from trading_agents.llm import LLM, Model, complete_json
 from trading_agents.nodes._guards import clamp_confidence, clamp_level
-from trading_agents.prompts import DRAFTER
+from trading_agents.prompts import drafter_prompt
 from trading_agents.state import CouncilState
 from trading_agents.strategies import resolve_strategy
 
@@ -159,9 +159,15 @@ async def drafter_node(state: CouncilState, llm: LLM) -> CouncilState:
         )
     user = "\n".join(parts) + "\n"
 
+    # The score floor the model is told to refuse below MUST be the one
+    # the risk engine will actually enforce. Hard-coding 45 in the prompt
+    # while `RISK_PROFILE=aggressive_paper` set the cap to 40 meant the
+    # profile change could never reach a trade — the model refused a layer
+    # before the engine was ever consulted (CLAUDE.md §4.4).
     data, degraded = await complete_json(
         llm,
-        system=DRAFTER, user=user, model=Model.SONNET, max_tokens=900,
+        system=drafter_prompt(RiskCaps.from_env().min_specialist_avg_score),
+        user=user, model=Model.SONNET, max_tokens=900,
         council_run_id=state.get("council_run_id"), user_id=state.get("user_id"),
     )
     if degraded:
