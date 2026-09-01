@@ -726,6 +726,102 @@ not a dashboard redesign); the existing open-positions screen's per-row
 `unrealizedPnl` already covers the other half of "where did my gain come
 from" for currently-open positions. The unmanaged-close gap above.
 
+### 2026-09-01 — `279eac80` fix(mobile): reload logging users out + focus loss resetting nav to Dashboard
+
+`ID:MODEL2OFF`. User reported two web/desktop bugs: (1) "every time i
+reload i have to login again the app is not persistant", (2) "every time
+i am on say insights screen i go to another window and go back i am
+always taken to the dashboard only". Both traced to real races between
+`authStore.restore()`'s boot logic and everything else that fires the
+instant the app mounts — not the storage-adapter or overeager-clear-on-
+boot hypotheses the brief suggested checking first. Full detail is in the
+commit message; short version + what was actually verified below.
+
+**Bug 1, auth persistence — TWO compounding bugs, both fixed.**
+1. `authStore.restore()` posted its own direct `/auth/refresh` call
+   instead of going through `refresh()`'s `inFlightRefresh` de-dupe.
+   **Verified live** against the real backend (before any fix): a cold
+   reload fired TWO concurrent `POST /auth/refresh` calls with the same
+   stored refresh token; separately confirmed re-presenting an
+   already-rotated refresh token deterministically returns
+   `401 {"code":"superseded"}` — which the client already treats as a
+   dead credential and wipes storage on, per `CREDENTIAL_DEAD_CODES`.
+   Fixed: `restore()` now calls `get().refresh()` instead of posting its
+   own request (`authStore.ts`).
+2. Even with (1) fixed, live testing still showed **six** separate
+   `/auth/refresh` calls on one reload (one superseded) — `inFlightRefresh`
+   only merges callers overlapping in the same tick, and ~8 screens'
+   queries mounting at once don't all 401 in that same tick on a real
+   round trip. Fixed at the source: `api.ts`'s `_request()` now waits for
+   `authStore` to leave `'idle'`/`'restoring'` before an authenticated
+   call fires at all (`waitUntilBootstrapped`, wired from
+   `app/_layout.tsx` via the existing lazy-getter — `api.ts` still never
+   imports the store). **Verified live** (this worktree's real build,
+   see the tooling note below): three consecutive reloads, exactly one
+   `/auth/refresh` call each, zero forced logouts.
+
+**Bug 2, nav reset on focus loss.** `BiometricGate`'s AppState
+background/foreground listener had no web guard. react-native-web's
+`AppState` is a polyfill over the Page Visibility API (read the actual
+node_modules source to confirm, not just the type signature) — a
+browser tab losing focus (switch tabs OR switch to a different app
+window) fires it exactly like a native app backgrounding. Locking
+unmounts `children`, which on desktop web is everything below the gate
+including `NavProvider` (`src/desktop/nav.tsx`) — a bare `useState` with
+no persistence, so remounting resets to the hardcoded dashboard default.
+Fixed: skip that effect on web (matches `prompt()`'s existing web
+pass-through reasoning — no biometric API in a browser). **Verified
+live**: navigated to Insights, dispatched a real `visibilitychange`
+hidden→visible cycle (the actual DOM event, not a simulated tab switch —
+see the tooling note), stayed on Insights.
+
+**Tooling trap worth flagging for whoever reads this next:** this
+session's `preview_start`/Browser-pane tooling resolves `.claude/launch.json`'s
+relative `cwd`s against the MAIN checkout, not the calling worktree. Named
+dev-server previews (`dev-api`, `mobile-web`) serve the unfixed
+main-checkout code regardless of what's rebuilt in the worktree — confirmed
+by diffing the served JS bundle's content hash against the worktree's own
+`apps/mobile/dist/index.html`. An absolute `cwd` in launch.json did NOT
+fix this (the tool still resolved the same way) — the reliable workaround
+is to launch the process manually via Bash from the worktree path and
+`preview_start` a `url` pointing at that port, confirming via `curl` that
+the served bundle hash matches before trusting anything the browser shows.
+Every "still broken" observation earlier in that investigation reflects
+real, unfixed behavior (useful — it's what proved the bugs exist); only
+the final round (port 8001) is against this worktree's actual fix.
+
+**What I verified vs. believe, explicitly:**
+- Verified live: both original bugs are real (reproduced against running,
+  unfixed code, multiple ways).
+- Verified live: both fixes resolve the reported symptom (reproduced
+  against this worktree's actual build once the tooling trap above was
+  worked around).
+- Verified mechanically: all three fix points have a Jest test that fails
+  on the pre-fix code and passes on the fix (reverted + restored each to
+  check, per §4.1) — `authStore.test.ts`, `api.test.ts`,
+  `BiometricGate.test.tsx` (new file).
+- Verified: full suite 82 passed (was 76), `tsc --noEmit` clean, changed
+  files lint-clean. The one lint error `eslint` reports on
+  `BiometricGate.tsx` (`react-hooks/set-state-in-effect`, line 119, an
+  effect this change never touched) is confirmed pre-existing via
+  `git stash` against the unmodified baseline — not introduced here.
+- Did NOT touch: `apps/mobile/src/desktop/nav.tsx` itself (no persistence
+  was added to the route stack) — the fix is that nothing should be
+  unmounting it on a mere focus change in the first place. If a future
+  need arises for nav to survive an ACTUAL full reload too, that's a
+  separate, deliberate feature, not this bug.
+- Left open: the MockAuthStore-backed local dev API has its own latent
+  bug — `rotate_session`'s compare-and-swap reads `expected_current_hash`
+  off a live, shared `SessionRecord` object reference rather than a value
+  captured at the time of the original hash check, so a genuinely
+  concurrent pair of `refresh()` calls can silently double-rotate instead
+  of the loser being detected and revoked (`apps/api/app/services/auth/auth_store.py`'s
+  `MockAuthStore.rotate_session` vs. `PostgresAuthStore.rotate_session`,
+  which does a real atomic SQL `UPDATE ... WHERE` and does not have this
+  problem). Out of scope for this fix (backend, not the reported frontend
+  bug; discovered as a side effect of forcing the race to prove the
+  frontend diagnosis) — flagged here rather than fixed.
+
 ### 2026-09-01 — `36930944`/`abdbce7c` fix(agents): why every position was long/calls-only — one deliberate gate, two real bugs
 
 `ID:MODEL2OFF`. User looked at their real position list and asked: every

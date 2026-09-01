@@ -12,6 +12,7 @@ import {
   ApiError,
   TradingLockedError,
   isTradingUnlocked,
+  registerAuthSnapshot,
   request,
   runErrorMessage,
   setTradingUnlocked,
@@ -175,6 +176,110 @@ describe('request(): network-error retry', () => {
         retryOnNetworkError: true,
       }),
     ).rejects.toMatchObject({ status: 502 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * `waitUntilBootstrapped` — an authenticated call must not fire (and 401,
+ * and independently trigger its own `refresh()`) while `authStore.restore()`
+ * is still hydrating the access token from storage on a cold boot.
+ *
+ * Several dashboard queries mount and fire the instant the app boots; with
+ * no access token yet, each one used to 401 immediately and call
+ * `auth.refresh()` on its own, racing `restore()`'s own refresh attempt for
+ * the same single-use, rotating refresh token — the backend correctly
+ * revokes the loser as a replay ("superseded"), which the client treats as
+ * a dead credential and signs the user out, even though nothing was
+ * actually wrong with the stored session. Waiting here means these calls
+ * never fire with no token in the first place, so they never become extra
+ * competitors for the network call `restore()` already has in flight.
+ */
+describe('request(): waits for auth bootstrap before firing', () => {
+  const realFetch = global.fetch;
+
+  afterEach(() => {
+    global.fetch = realFetch;
+    // Leave a harmless no-op snapshot registered so later tests in this
+    // same module registry never see a stale bootstrapping flag.
+    registerAuthSnapshot(() => ({
+      accessToken: null,
+      refresh: async () => null,
+      isBootstrapping: false,
+      waitUntilBootstrapped: async () => undefined,
+    }));
+  });
+
+  const ok = () =>
+    ({ ok: true, status: 200, text: async () => JSON.stringify({ value: 1 }) }) as Response;
+
+  it('does not call fetch until waitUntilBootstrapped resolves', async () => {
+    const fetchMock = jest.fn().mockResolvedValue(ok());
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    let releaseBootstrap!: () => void;
+    const bootstrapped = new Promise<void>((resolve) => {
+      releaseBootstrap = resolve;
+    });
+
+    registerAuthSnapshot(() => ({
+      accessToken: 'token-after-bootstrap',
+      refresh: async () => null,
+      isBootstrapping: true,
+      waitUntilBootstrapped: () => bootstrapped,
+    }));
+
+    const pending = request('/api/v1/account');
+    // Give any (incorrect) synchronous fetch a chance to happen.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    releaseBootstrap();
+    await pending;
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>).authorization).toBe(
+      'Bearer token-after-bootstrap',
+    );
+  });
+
+  it('fires immediately when not bootstrapping', async () => {
+    const fetchMock = jest.fn().mockResolvedValue(ok());
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    registerAuthSnapshot(() => ({
+      accessToken: 'already-authenticated-token',
+      refresh: async () => null,
+      isBootstrapping: false,
+      waitUntilBootstrapped: async () => undefined,
+    }));
+
+    await request('/api/v1/account');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>).authorization).toBe(
+      'Bearer already-authenticated-token',
+    );
+  });
+
+  it('never waits for bootstrap on a skipAuth call', async () => {
+    const fetchMock = jest.fn().mockResolvedValue(ok());
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const waitUntilBootstrapped = jest.fn(() => new Promise<void>(() => {})); // never resolves
+    registerAuthSnapshot(() => ({
+      accessToken: null,
+      refresh: async () => null,
+      isBootstrapping: true,
+      waitUntilBootstrapped,
+    }));
+
+    await request('/api/v1/auth/refresh', { method: 'POST', skipAuth: true });
+
+    expect(waitUntilBootstrapped).not.toHaveBeenCalled();
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

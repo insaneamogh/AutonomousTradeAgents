@@ -231,6 +231,37 @@ export interface RequestOptions {
 type AuthSnapshot = {
   accessToken: string | null;
   refresh: () => Promise<string | null>;
+  /** True while ``authStore``'s ``restore()`` hasn't yet resolved
+   * ('idle' / 'restoring'). See ``waitUntilBootstrapped`` below — this is
+   * the flag that decides whether an authenticated call needs to wait for
+   * it at all. */
+  isBootstrapping: boolean;
+  /**
+   * Resolves once ``restore()`` has settled (to 'authenticated' OR
+   * 'unauthenticated'); resolves immediately if it already has.
+   *
+   * On a cold boot, several screens' queries mount and fire their
+   * authenticated GETs before ``restore()`` gets a chance to hydrate the
+   * access token from storage — with no token yet, each one 401s, and the
+   * interceptor below independently calls ``auth.refresh()`` to recover.
+   * ``refresh()`` de-dupes concurrent callers into one network call (see
+   * ``authStore.ts``'s ``inFlightRefresh`` docstring) but ONLY catches
+   * ones that overlap closely enough in time — on a real device, several
+   * distinct queries' round-trips rarely land in the exact same tick, so
+   * they end up chaining into SEVERAL separate, sequential
+   * ``/auth/refresh`` calls instead of joining ``restore()``'s one. The
+   * API's refresh tokens are single-use and rotate on every call, so two
+   * of those sequential calls landing close enough together still race:
+   * one reads the token before the other's rotation is applied, and the
+   * backend correctly treats the loser as a replay and revokes the whole
+   * session (``superseded`` — see ``authStore.ts``'s ``CREDENTIAL_DEAD_CODES``),
+   * signing the user out even though nothing was actually wrong with their
+   * stored session. Waiting for bootstrap here means these queries never
+   * fire with no token in the first place, so they never 401, and never
+   * become extra, avoidable competitors for the one refresh ``restore()``
+   * already has in flight.
+   */
+  waitUntilBootstrapped: () => Promise<void>;
 };
 
 let _getAuthSnapshot: (() => AuthSnapshot) | null = null;
@@ -284,7 +315,15 @@ async function _request<T>(
   const headers: Record<string, string> = { 'content-type': 'application/json' };
 
   if (!options.skipAuth) {
-    const auth = currentAuth();
+    let auth = currentAuth();
+    // Let restore() finish hydrating the access token before this call
+    // fires at all — see `waitUntilBootstrapped`'s docstring above for why
+    // firing early (then 401ing, then independently refreshing) is a real
+    // "logged out on reload" bug, not just wasted requests.
+    if (auth?.isBootstrapping) {
+      await auth.waitUntilBootstrapped();
+      auth = currentAuth();
+    }
     if (auth?.accessToken) {
       headers['authorization'] = `Bearer ${auth.accessToken}`;
     }

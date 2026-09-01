@@ -42,6 +42,7 @@ import { registerAuthSnapshot, request } from '@/lib/api';
 import { hasDemoParamInUrl, readAndStripDemoParam } from '@/lib/demoSession';
 import { queryClient } from '@/lib/queryClient';
 import { useAuthStore } from '@/stores/authStore';
+import type { AuthStatus } from '@/stores/authStore';
 import { useThemeStore } from '@/stores/themeStore';
 
 import '../src/global.css';
@@ -64,6 +65,11 @@ if (Platform.OS !== 'web') {
   });
 }
 
+/** 'idle' / 'restoring' = authStore.restore() hasn't resolved yet. */
+function isAuthBootstrapping(status: AuthStatus): boolean {
+  return status === 'idle' || status === 'restoring';
+}
+
 // Wire the auth store into the API client ONCE at module-eval time. Subsequent
 // calls into ``request()`` will read the current access token via the
 // snapshot closure + trigger refresh on 401s.
@@ -72,6 +78,25 @@ registerAuthSnapshot(() => {
   return {
     accessToken: state.accessToken,
     refresh: state.refresh,
+    isBootstrapping: isAuthBootstrapping(state.status),
+    // See api.ts's `waitUntilBootstrapped` docstring for why callers need
+    // this at all. Zustand's `subscribe` is the store's own change feed —
+    // safe to use directly here (unlike importing the store into api.ts
+    // itself, which would create the cycle the lazy-getter pattern above
+    // this file's docstring already calls out).
+    waitUntilBootstrapped: () =>
+      new Promise<void>((resolve) => {
+        if (!isAuthBootstrapping(useAuthStore.getState().status)) {
+          resolve();
+          return;
+        }
+        const unsubscribe = useAuthStore.subscribe((next) => {
+          if (!isAuthBootstrapping(next.status)) {
+            unsubscribe();
+            resolve();
+          }
+        });
+      }),
   };
 });
 
