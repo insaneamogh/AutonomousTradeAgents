@@ -190,11 +190,24 @@ session and should be asked here too.
 
 ---
 
-## 5. What the next model should actually do, in order
+## 5. DECIDED (2026-09-01, same session, after this doc first shipped): leave it
+
+Asked the user directly, given exactly the choice laid out above: leave the
+floor alone, loosen it asymmetrically for shorts, or wait for more data. Answer:
+**leave it — bearish exposure via long puts (§1) is enough; do not lower the
+floor for equity shorts.**
+
+This closes the "should we loosen anything" question. It does NOT close the
+"is there a real model-calibration asymmetry" question in §2/§5.4 below — that
+is still worth investigating on its own, with more data, because the answer
+would inform prompt work elsewhere too. But do not act on it by touching any
+threshold without asking again; the user has now said no once already.
+
+## 5a. What the next model should actually do, in order
 
 1. **Do not touch `min_specialist_avg_score` or `min_council_confidence`.**
-   Declined explicitly this session. If you think it needs revisiting, ask —
-   don't decide it.
+   Declined explicitly this session — see §5's DECIDED note above. If you
+   think it needs revisiting, ask — don't decide it.
 
 2. **Instrument the long-vs-short score gap properly.** Add a query (or a small
    script, mirroring `docs/HACKATHON.md` §5's "dump the funnel" pattern) that
