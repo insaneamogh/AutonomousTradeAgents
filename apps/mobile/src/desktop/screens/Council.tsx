@@ -416,7 +416,7 @@ function EventLog({ events, running }: { events: CouncilProgressEvent[]; running
           )
         }
       />
-      <div ref={ref} style={{ maxHeight: 260, overflowY: 'auto' }} aria-live="polite">
+      <div ref={ref} className="pg-scroll" style={{ maxHeight: 260, overflowY: 'auto' }} aria-live="polite">
         {events.length === 0 ? (
           <Stack gap={10}>
             <Skel h={12} />
