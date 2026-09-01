@@ -17,7 +17,7 @@ from typing import Any
 import anyio
 import pytest
 
-from app.routers.insights import VetoRuleDto
+from app.routers.insights import GhostBucketDto, VetoRuleDto
 from app.services.council import ghost_service
 
 USER_ID = "11111111-1111-1111-1111-111111111111"
@@ -272,6 +272,107 @@ def test_saved_and_missed_both_populate_independently(monkeypatch: pytest.Monkey
 
     assert summary.saved_usd == 400.0
     assert summary.missed_usd == 250.0
+
+
+# ── test_bucket_names_the_oldest_pending_marks_remaining_trading_days ──
+
+
+def test_bucket_names_the_oldest_pending_marks_remaining_trading_days() -> None:
+    """A bare pending count reads as "broken or unbuilt" with no context —
+    the frontend needs to say WHEN the next mark resolves. Must pick the
+    OLDEST pending row (soonest to finalize), not the newest, and must use
+    the real `trading_day_offset` math `ghost_eval` itself finalizes on —
+    two independent day-counters could disagree by a day around a
+    weekend."""
+    now = datetime(2026, 6, 10, tzinfo=UTC)  # a Wednesday
+    newer_pending = _ghost(status="pending", ghost_pnl=None, horizon_days=5, reason="vetoed")
+    older_pending = _ghost(status="partial", ghost_pnl=-10.0, horizon_days=5, reason="vetoed")
+    finalized = _ghost(status="final", ghost_pnl=-500.0, reason="vetoed")
+    rows = [
+        (newer_pending, datetime(2026, 6, 9, tzinfo=UTC)),  # 1 trading day old
+        (older_pending, datetime(2026, 6, 5, tzinfo=UTC)),  # Friday -> 3 trading days old by Wed
+        (finalized, datetime(2026, 6, 1, tzinfo=UTC)),
+    ]
+
+    bucket = ghost_service._bucket_from_rows(rows, ("vetoed",), now=now)
+
+    assert bucket.count == 3
+    assert bucket.pending_count == 2
+    assert bucket.oldest_pending_triggered_at == datetime(2026, 6, 5, tzinfo=UTC), (
+        "must pick the OLDER pending row, not whichever sorts first in the rows list"
+    )
+    # Friday -> Wednesday is 3 elapsed trading days (Mon, Tue, Wed); a
+    # 5-day horizon leaves 2.
+    assert bucket.oldest_pending_remaining_trading_days == 2
+
+
+def test_bucket_clamps_remaining_trading_days_at_zero_when_overdue() -> None:
+    """A ghost that should have finalized (elapsed >= horizon) but hasn't
+    yet — e.g. today's evaluator pass hasn't run — must read as "any day
+    now" (remaining == 0), never a negative countdown."""
+    now = datetime(2026, 6, 10, tzinfo=UTC)
+    stuck = _ghost(status="partial", ghost_pnl=-5.0, horizon_days=1, reason="vetoed")
+    rows = [(stuck, datetime(2026, 6, 1, tzinfo=UTC))]
+
+    bucket = ghost_service._bucket_from_rows(rows, ("vetoed",), now=now)
+
+    assert bucket.oldest_pending_remaining_trading_days == 0
+
+
+def test_bucket_has_no_pending_countdown_once_everything_finalizes() -> None:
+    """No pending rows -> both new fields must be None, not 0 — a `0`
+    would misleadingly claim something is about to resolve when nothing
+    is outstanding at all."""
+    now = datetime(2026, 6, 10, tzinfo=UTC)
+    finalized = _ghost(status="final", ghost_pnl=-500.0, reason="vetoed")
+    rows = [(finalized, datetime(2026, 6, 1, tzinfo=UTC))]
+
+    bucket = ghost_service._bucket_from_rows(rows, ("vetoed",), now=now)
+
+    assert bucket.pending_count == 0
+    assert bucket.oldest_pending_triggered_at is None
+    assert bucket.oldest_pending_remaining_trading_days is None
+
+
+def test_ghost_summary_wires_the_pending_countdown_through(monkeypatch: pytest.MonkeyPatch) -> None:
+    """End-to-end through `build_ghost_summary` (not just the pure
+    `_bucket_from_rows` helper) — confirms the DB-facing wrapper actually
+    threads a real `now` through rather than only the pure function being
+    correct in isolation."""
+    t = datetime.now(UTC) - timedelta(days=1)
+    pending = _ghost(status="pending", ghost_pnl=None, horizon_days=5, reason="vetoed")
+    session = _QueueSession([[(pending, t)]])
+    _patch(monkeypatch, session)
+
+    summary = anyio.run(lambda: ghost_service.build_ghost_summary(30, user_id=USER_ID))
+
+    assert summary.vetoed.pending_count == 1
+    assert summary.vetoed.oldest_pending_triggered_at == t
+    assert summary.vetoed.oldest_pending_remaining_trading_days is not None
+    assert summary.vetoed.oldest_pending_remaining_trading_days >= 0
+
+
+def test_ghost_bucket_dto_serializes_the_pending_countdown_camel_cased() -> None:
+    """The router's DTO must round-trip both new fields to the exact
+    camelCase names `packages/shared-types` and the frontend expect, and
+    must serialize a `None` countdown as JSON `null` (no pending row),
+    never `0` — the same honesty rule as `preventedLossUsd`."""
+    t = datetime(2026, 6, 5, tzinfo=UTC)
+    dto = GhostBucketDto(
+        count=3,
+        ghost_pnl=-10.0,
+        pending_count=2,
+        oldest_pending_triggered_at=t.isoformat(),
+        oldest_pending_remaining_trading_days=2,
+    )
+    dumped = dto.model_dump(by_alias=True)
+    assert dumped["oldestPendingTriggeredAt"] == t.isoformat()
+    assert dumped["oldestPendingRemainingTradingDays"] == 2
+
+    empty_dto = GhostBucketDto(count=0, ghost_pnl=0.0, pending_count=0)
+    empty_dumped = empty_dto.model_dump(by_alias=True)
+    assert empty_dumped["oldestPendingTriggeredAt"] is None
+    assert empty_dumped["oldestPendingRemainingTradingDays"] is None
 
 
 # ── test_exemplar_picks_the_largest_finalized_ghost ────────────────────

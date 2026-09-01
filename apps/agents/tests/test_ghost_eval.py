@@ -19,7 +19,7 @@ from trading_agents.jobs.ghost_eval import (
     _mark_symbol,
     _multiplier,
     _skip_reason,
-    _trading_day_offset,
+    trading_day_offset,
 )
 
 
@@ -53,9 +53,9 @@ def test_trading_day_offset_skips_weekends() -> None:
     friday = date(2026, 6, 5)
     monday = date(2026, 6, 8)
     tuesday = date(2026, 6, 9)
-    assert _trading_day_offset(friday, friday) == 0
-    assert _trading_day_offset(friday, monday) == 1
-    assert _trading_day_offset(friday, tuesday) == 2
+    assert trading_day_offset(friday, friday) == 0
+    assert trading_day_offset(friday, monday) == 1
+    assert trading_day_offset(friday, tuesday) == 2
 
 
 @pytest.mark.asyncio

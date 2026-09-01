@@ -42,8 +42,20 @@ const mockUseFunnel = useFunnel as jest.Mock;
 const GHOST_SUMMARY: GhostSummaryResponse = {
   windowDays: 30,
   asOf: '2026-08-31T00:00:00Z',
-  vetoed: { count: 10, ghostPnl: -500, pendingCount: 2 },
-  declined: { count: 4, ghostPnl: 0, pendingCount: 4 },
+  vetoed: {
+    count: 10,
+    ghostPnl: -500,
+    pendingCount: 2,
+    oldestPendingTriggeredAt: '2026-08-28T00:00:00Z',
+    oldestPendingRemainingTradingDays: 3,
+  },
+  declined: {
+    count: 4,
+    ghostPnl: 0,
+    pendingCount: 4,
+    oldestPendingTriggeredAt: '2026-08-29T00:00:00Z',
+    oldestPendingRemainingTradingDays: 1,
+  },
   savedUsd: 500,
   missedUsd: 0,
 };
@@ -193,5 +205,45 @@ describe('InsightsScreen — veto ledger honesty rules', () => {
 
     const json = JSON.stringify(tree.toJSON());
     expect(json).toContain('exemplar:pdt_block');
+  });
+
+  // A user reacted to the Dashboard's identical tiles reading as broken —
+  // "$— · N marks pending" alone gives no sense of whether the
+  // measurement is real or just never built. These tiles live on the
+  // Ghost P&L tab, so switch to it first.
+  function openGhostTab(tree: ReactTestRenderer): void {
+    const ghostTabButton = tree.root.findAll(
+      (node) => node.type === 'button' && node.props.children === 'Ghost P&L',
+    )[0];
+    act(() => {
+      ghostTabButton.props.onClick();
+    });
+  }
+
+  it('keeps the "Upside missed" value line short and moves the finalize countdown to its caption', () => {
+    const tree = renderScreen();
+    openGhostTab(tree);
+
+    const json = JSON.stringify(tree.toJSON());
+    // declined.pendingCount=4, missedUsd=0 -> the StatTile's value takes
+    // the pending branch of pendingAwareUsd, which must stay exactly this
+    // short: verified live that a longer form wraps a 3-column Dashboard
+    // tile's value line across three lines, so the countdown belongs only
+    // in the caption (pendingAwareCaption), never appended here.
+    expect(json).toContain('$— · 4 marks pending');
+    expect(json).not.toContain('$— · 4 marks pending —');
+    // oldestPendingRemainingTradingDays=1 must render the singular
+    // "trading day" in the caption, capitalized as a standalone sentence.
+    expect(json).toContain('Finalizes in 1 trading day');
+    expect(json).not.toContain('Finalizes in 1 trading days');
+  });
+
+  it('names the same countdown on the "Vetoed by risk" still-marking caption', () => {
+    const tree = renderScreen();
+    openGhostTab(tree);
+
+    const json = JSON.stringify(tree.toJSON());
+    // vetoed.count=10, pendingCount=2, oldestPendingRemainingTradingDays=3.
+    expect(json).toContain('10 finalised · 2 still marking — finalizes in 3 trading days');
   });
 });

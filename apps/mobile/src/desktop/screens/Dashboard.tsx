@@ -25,7 +25,17 @@ import { useOpenPositions } from '@/hooks/usePositions';
 import { useScannerStatus } from '@/hooks/useScannerStatus';
 import type { ScanSignalDto } from '@/hooks/useScannerStatus';
 
-import { ago, pendingAwareUsd, ruleLabel, signedPct, signedUsd, tone, usd } from '../format';
+import {
+  ago,
+  pendingAwareCaption,
+  pendingAwareUsd,
+  ruleLabel,
+  signedPct,
+  signedUsd,
+  stillMarkingCaption,
+  tone,
+  usd,
+} from '../format';
 import { IconSpark } from '../icons';
 import { useNav } from '../nav';
 import {
@@ -180,10 +190,17 @@ export function DashboardScreen() {
         <Cell span={3}>
           <StatTile
             label="Risk saved"
-            value={
-              ghost.data ? pendingAwareUsd(ghost.data.savedUsd, ghost.data.vetoed.pendingCount) : '—'
+            value={ghost.data ? pendingAwareUsd(ghost.data.savedUsd, ghost.data.vetoed.pendingCount) : '—'}
+            caption={
+              ghost.data
+                ? pendingAwareCaption(
+                    'Losses avoided by vetoes · 30d',
+                    ghost.data.savedUsd,
+                    ghost.data.vetoed.pendingCount,
+                    ghost.data.vetoed.oldestPendingRemainingTradingDays,
+                  )
+                : 'Losses avoided by vetoes · 30d'
             }
-            caption="Losses avoided by vetoes · 30d"
             tone={ghost.data && ghost.data.savedUsd > 0 ? 'bull' : 'neutral'}
             loading={ghost.isLoading}
           />
@@ -194,7 +211,16 @@ export function DashboardScreen() {
             value={
               ghost.data ? pendingAwareUsd(ghost.data.missedUsd, ghost.data.declined.pendingCount) : '—'
             }
-            caption="Missed on declined picks · 30d"
+            caption={
+              ghost.data
+                ? pendingAwareCaption(
+                    'Missed on declined picks · 30d',
+                    ghost.data.missedUsd,
+                    ghost.data.declined.pendingCount,
+                    ghost.data.declined.oldestPendingRemainingTradingDays,
+                  )
+                : 'Missed on declined picks · 30d'
+            }
             tone={ghost.data && ghost.data.missedUsd > 0 ? 'bear' : 'neutral'}
             loading={ghost.isLoading}
           />
@@ -451,12 +477,14 @@ export function DashboardScreen() {
                   count={ghost.data.vetoed.count}
                   pnl={ghost.data.vetoed.ghostPnl}
                   pending={ghost.data.vetoed.pendingCount}
+                  pendingRemainingTradingDays={ghost.data.vetoed.oldestPendingRemainingTradingDays}
                 />
                 <GhostRow
                   title="Declined by you"
                   count={ghost.data.declined.count}
                   pnl={ghost.data.declined.ghostPnl}
                   pending={ghost.data.declined.pendingCount}
+                  pendingRemainingTradingDays={ghost.data.declined.oldestPendingRemainingTradingDays}
                 />
                 <span className="pg-caption">
                   What the picks you didn’t take would have done, marked to the same horizon.
@@ -758,11 +786,13 @@ function GhostRow({
   count,
   pnl,
   pending,
+  pendingRemainingTradingDays,
 }: {
   title: string;
   count: number;
   pnl: number;
   pending: number;
+  pendingRemainingTradingDays?: number | null;
 }) {
   return (
     <div className="pg-inset">
@@ -770,7 +800,7 @@ function GhostRow({
         <Stack gap={3}>
           <span style={{ fontSize: 13, fontWeight: 500 }}>{title}</span>
           <span className="pg-caption">
-            {count} finalised{pending > 0 ? ` · ${pending} still open` : ''}
+            {stillMarkingCaption(count, pending, pendingRemainingTradingDays)}
           </span>
         </Stack>
         <Numeral size={20} tone={tone(pnl)}>
