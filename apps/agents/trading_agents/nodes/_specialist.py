@@ -34,7 +34,31 @@ NEUTRAL_ON_PARSE_ERROR = {
     "citations": [],
 }
 
-MAX_TOKENS = 500
+#: Output ceiling for one analyst reply.
+#:
+#: Was 500, and 500 was where the technical analyst's replies were being
+#: CUT OFF mid-JSON. Measured over 5 days of production `llm_calls`:
+#:
+#:     role       calls  runs  calls/run  avg_out  max_out
+#:     technical     95    56       1.70      418      500   <- pinned at the cap
+#:     drafter       55    54       1.02      450      559   <- cap 900, never binds
+#:     router        57    56       1.02       87       99   <- cap 300, never binds
+#:
+#: `calls/run` IS the re-ask rate: `complete_json` retries once on
+#: unparseable output, and truncated JSON is unparseable. 1.70 means 70%
+#: of technical calls were being paid for twice, and `degraded_nodes`
+#: carried "technical" on 36 of 55 decisions with nothing else ever in it.
+#:
+#: The second-order cost is worse than the tokens. The retry appends
+#: "respond with the JSON object ONLY", so the model answers the SAME
+#: question under pressure to be shorter — the thesis every downstream
+#: consumer reads (the Drafter's prompt, the audit row, the Picks card)
+#: is the compressed one, on the analyst that runs on every single pass.
+#:
+#: 900 matches the Drafter, whose longest observed reply is 559. Raising a
+#: ceiling that was binding costs nothing when it is not binding: an
+#: analyst that wanted 418 tokens still emits 418.
+MAX_TOKENS = 900
 
 
 def render_features(

@@ -101,6 +101,13 @@ from trading_agents.strategies import resolve_strategy
 
 logger = logging.getLogger("agents.node.drafter")
 
+#: Output ceiling for the Drafter's reply. Named so `_specialist.MAX_TOKENS`
+#: can be compared against it in a test rather than against a literal — both
+#: emit a verdict plus multi-sentence prose, and the analyst (which runs on
+#: EVERY pass) has no reason to get the tighter of the two budgets. See
+#: `_specialist.MAX_TOKENS` for the measurement that made this matter.
+MAX_TOKENS = 900
+
 # Time-stop per horizon — IDENTICAL to the ghost evaluator's horizon map so
 # executed and non-executed picks are graded over the same window.
 _TIME_STOP_BY_HORIZON: dict[str, int] = {
@@ -167,7 +174,7 @@ async def drafter_node(state: CouncilState, llm: LLM) -> CouncilState:
     data, degraded = await complete_json(
         llm,
         system=drafter_prompt(RiskCaps.from_env().min_specialist_avg_score),
-        user=user, model=Model.SONNET, max_tokens=900,
+        user=user, model=Model.SONNET, max_tokens=MAX_TOKENS,
         council_run_id=state.get("council_run_id"), user_id=state.get("user_id"),
     )
     if degraded:
