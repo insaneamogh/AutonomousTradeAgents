@@ -385,6 +385,172 @@ use of **Alpaca's own** MCP server or CLI are hard eligibility requirements. See
 
 ## Entries
 
+### 2026-09-01 — `56da03fb` fix(options): guard.py computed the contract funnel and threw it away
+
+`ID:MODEL2OFF`. User's ask: "loosen the funnel a bit i dont see any options
+making here in veto" — the Insights screen's contract funnel panel showed
+"No options passes yet in this window," and the veto ledger showed very
+few options-specific vetoes. CLAUDE.md §4.3 names a near-identical-looking
+prior incident (a liquidity gate rejecting 89% of valid contracts due to a
+volume-field bug, not a bad threshold) and explicitly warns against
+cranking a threshold before measuring. Diagnosed before touching anything,
+per that instruction and per the brief's own explicit options: bug,
+miscalibration, or an upstream bottleneck. It was none of the three named
+candidates — it was a persistence bug one layer downstream of all of them.
+
+**What I verified, with real numbers, in order:**
+
+1. **`packages/engine/engine/options/selection.py` read in full.** Six
+   fixed-order stages (`contract_type` → `dte_window` → `delta_band` →
+   `liquidity` → `iv_present` → `iv_realized_vol_band`), `_MIN_VOLUME=1`
+   (already fixed from the CLAUDE.md §4.3 incident), delta bands widened
+   and frozen 2026-08-30 per `docs/PLAN_AGGRESSIVE_PROFILE.md`. Nothing
+   here looked wrong, and per `docs/HACKATHON.md` §8 the thresholds are
+   frozen for the contest window regardless.
+
+2. **Real DB query, live production Postgres** (`DATABASE_URL` from
+   `apps/api/.env`, cron user `43221580-69bc-4134-8e1e-5af75499d874`,
+   read-only, scripts discarded — not committed):
+   - Watchlist: 8 active `asset_class='option'` symbols (AAPL, AMD, META,
+     MSFT, NVDA, QQQ, SPY, TSLA), 37 equity. Matches `a7b3a379`'s commit
+     message exactly.
+   - Last 7 days, those 8 symbols: **68 decision rows** — `final_action`
+     13 BUY / 8 VETOED / 47 HOLD. 39/68 reached the Bull/Bear council with
+     a `bull_case`, 31/68 with a `bear_case`.
+   - Cadence (raw `triggered_at` gaps per symbol, last 2 days): 0-93
+     minutes between consecutive runs on the option symbols — healthy,
+     not scan-starved. `a7b3a379`'s options-first scan-budget fix and
+     today's earlier `36930944` direction-scoring fix are both visibly
+     working in this data (real BUYs, real VETOEDs, both bull and bear
+     cases populated on most rows).
+   - **First query used `reasoning ? 'contract_funnel'` (jsonb has-key)
+     and got 18/68 "yes" — WRONG, and I almost reported it as a partial
+     win.** `runtime._reasoning_block()` unconditionally writes the
+     literal dict key `"contract_funnel": final.get("contract_funnel")`,
+     so the key exists (as JSON `null`) on every row `runtime.py` writes,
+     whether or not anything real was ever computed. Re-ran with
+     `jsonb_typeof(reasoning->'contract_funnel') = 'object'`, matching
+     `funnel_service._extract_funnel`'s actual `isinstance(funnel, dict)`
+     tolerance rule exactly — **0 of 196 rows, every tenant, all history,
+     ever had one.** This is the same class of trap CLAUDE.md §4.3 names
+     (a naive check that LOOKS like it measured something but didn't) —
+     noting it here rather than in the playbook, since it's a "how to
+     query this repo" methodology point, not an options trading rule:
+     future sessions querying JSONB presence should default to
+     `jsonb_typeof(...) = 'object'`/`'array'`, never a bare `?` (has-key),
+     whenever the writer is known to persist explicit `null`s for absent
+     data — as `runtime._reasoning_block()` always does here.
+   - Broken down by `final_action` × real-funnel-present: **BUY: 0/13,
+     VETOED: 0/8, HOLD: 18/47 have the *key* but ALL 18 have `null`
+     value** (confirmed by inspecting `rejection_reason`/`counts` on each
+     — every one was `None`/`None`). Those 18 rows' `bull_case`/
+     `bear_case` presence confirmed they went through the LIVE Bull/Bear
+     path (14 of 18 have both), not the legacy drafter.py path.
+   - The only rows with the FULL legacy reasoning shape (`strategy_fit`,
+     `router_rationale`, `drafter_rationale`, …) are from 2026-08-26/-28,
+     predating either the options-agent fork going live or this field
+     being added to that writer — historical, not a live signal.
+
+3. **Code trace confirmed the mechanism exactly.** `docs/OPTIONS_PLAYBOOK.md`
+   §0.5 says `USE_OPTIONS_AGENT=1` is set in production, meaning every
+   live options pass goes through `options_council_node` →
+   `run_options_agents` → `ToolGuard._before_open_option_trade`
+   (`options/tools/guard.py:555`), which calls `select_contract` directly
+   — completely bypassing `nodes/drafter.py` (confirmed via
+   `options/agents.py`'s own comment, now corrected: "contract_funnel is
+   written by nodes/drafter.py, which the options fork skips entirely").
+   `guard.py` had `selection.funnel_counts` in hand at every one of its
+   four denial sites plus its success path, and dropped it every time:
+   only `selection.rejection_reason` (a bare string) made it out, via
+   `GuardVerdict(False, reason)` with no payload, further discarded by
+   `dispatch_tool_call`'s denial branch
+   (`{"is_error": True, "content": {"denied": verdict.reason}}` —
+   `verdict.payload` wasn't even read on denial). The existing tests
+   (`test_options_pass_persists_the_contract_funnel`,
+   `test_contract_funnel_explains_an_options_hold` in
+   `test_council_mock.py`) stayed green the entire time because they
+   monkeypatch `drafter_mod._fetch_option_candidates` directly and never
+   set `USE_OPTIONS_AGENT=1` — they test the legacy path, which was never
+   broken. Textbook CLAUDE.md §4.1 shape: a green test on a path
+   production doesn't take.
+
+**Verdict: (a), a genuine bug — not (b) miscalibration, not (c) a pure
+upstream bottleneck** (upstream WAS broken until earlier today, per
+`36930944`/`a7b3a379`, and both fixes are confirmed live and working by
+the cadence/BUY/VETOED numbers above — but fixing them did not, and could
+not, fix this, because this sits one layer downstream of all of it: the
+data was never wired to the database at all, regardless of how well the
+funnel or the scan cadence perform).
+
+**Fix** (all in `56da03fb`, no risk rule or `selection.py` threshold
+touched):
+- `engine.options.selection.funnel_block()` — new public function, the
+  one shared shape (`{"counts", "rejection_reason", "selected_occ"}`).
+  `drafter.py`'s existing private `_funnel_block` left alone (already
+  correct, already tested, still the legacy/rollback path).
+- `guard.py`: the "no contract survived" denial and all four
+  `_ledger_refusal` call sites now pass `selection` through; the success
+  payload carries `funnel_block(selection)` too.
+- `dispatch_tool_call`: denial branch now merges `verdict.payload` into
+  `content` instead of hard-dropping it.
+- `trade.py`'s `open_option_trade`: persists `guard_payload["contract_funnel"]`
+  on its own successful-open row (the one `runtime` skips writing, via
+  `decision_row_written`).
+- `nodes/options_council.py`: new `_contract_funnel()` reads the tool
+  transcript and threads the result onto `state["contract_funnel"]`, so a
+  HOLD persists it exactly like `drafter.py`'s path always has.
+
+**Tests — 8 new, every one revert-checked** (removed the specific fix
+line, ran the one test, confirmed it failed with the exact error its
+docstring names, restored the fix, confirmed green again):
+- `test_tool_guard.py`: `test_a_denied_open_carries_the_contract_funnel_to_the_transcript`,
+  `test_a_risk_vetoed_open_ledgers_the_contract_funnel`,
+  `test_a_successful_open_persists_the_contract_funnel_too`. One existing
+  test (`test_risk_veto_returns_is_error_not_an_exception`) had its
+  assertion narrowed from exact-dict-equality to a subset check, since
+  `content` now legitimately carries an extra key by design.
+- `test_options_council_wiring.py`: `test_contract_funnel_reads_a_denied_opens_content`,
+  `test_contract_funnel_is_none_when_the_tool_was_never_called`,
+  `test_contract_funnel_reads_a_successful_opens_content`,
+  `test_a_denied_trade_threads_the_contract_funnel_onto_state`,
+  `test_agents_disagreeing_never_fabricates_a_contract_funnel`.
+- Also independently revert-checked the `dispatch_tool_call` merge line
+  in isolation (separately from the two `guard.py` payload sites that
+  feed it), confirming all three links of the chain are each covered.
+- Full suite: **1295 passed, 11 skipped** (8 of those are the new ones).
+  Ruff clean on every touched file — the 2 ruff errors present in this
+  tree (`test_tool_guard.py:1331`, `guard.py:1281`) confirmed pre-existing
+  via `git stash` (identical errors, identical files, unrelated lines,
+  nowhere near anything this change touches).
+
+**Left open / believed-not-verified:**
+- **No backfill.** Historical rows (all 196, everyone) will show
+  `contract_funnel: null` forever — the underlying `funnel_counts` were
+  genuinely never computed for those specific past runs, so there is
+  nothing to backfill from. The Insights screen starts showing real data
+  only from the next options pass that reaches `select_contract` after
+  this deploys.
+- **Did not touch the frontend.** `ContractFunnel.tsx` and
+  `funnel_service.py` were read and confirmed to already do the right
+  thing once real data exists (`_extract_funnel`'s `isinstance(funnel,
+  dict)` check is exactly what a real `funnel_block()` output satisfies)
+  — no reason to change either, and I didn't.
+- **Did not verify against a live options pass post-deploy** — this is
+  paper trading and I cannot place trades per CLAUDE.md §8, and the
+  market was closed for the remainder of this session. The fix is
+  verified by test (including revert-checks) and by full code trace, not
+  by watching a real row land with real funnel data. Say so plainly: this
+  is "tests pass, logic traced end to end" — not "watched it happen
+  live."
+- **`bull_case` populated on 39/68 but `bear_case` only 31/68** for the
+  7-day option-symbol window — noticed in the raw query output, not
+  investigated (out of scope for a funnel-persistence question; flagging
+  in case a future session is looking at Bull/Bear resolution quality).
+- Per the task brief: did NOT touch `MIN_FIT_TO_TRADE`, premium caps, or
+  `daily_drawdown_halt_pct` — out of scope, confirmed unnecessary by the
+  data (upstream funnel/cadence is healthy; the gap was purely in
+  persistence).
+
 ### 2026-09-01 — `36930944`/`abdbce7c` fix(agents): why every position was long/calls-only — one deliberate gate, two real bugs
 
 `ID:MODEL2OFF`. User looked at their real position list and asked: every
