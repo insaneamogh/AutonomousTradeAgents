@@ -111,6 +111,46 @@ async def test_reflection_marks_decisions_reviewed_and_applies_bounded_delta() -
     ), "Reflection re-ran on already-reviewed decisions — idempotence broken."
 
 
+async def test_reflection_misses_multi_day_holds_under_a_24h_window() -> None:
+    """Documents the exact production bug (verified live, see fable5findings.md):
+    a decision triggered several days ago whose position only just closed has
+    realized_pnl set but its ``triggered_at`` already sits outside a same-day
+    lookback -- a 24h ``since`` (what ``daily_cron.py`` used to hardcode on its
+    only real caller) returns it NEVER, no matter how many times the job runs.
+    A window wide enough for this system's real horizons (ghost_eval's own
+    lookback is max horizon [20d] + a 7d buffer) does catch it.
+    """
+    llm = LLM(api_key=None)
+    decision_log = InMemoryDecisionLog()
+    confidence_store = InMemoryStrategyConfidenceStore()
+
+    # 5 days ago is an entirely ordinary "short"-horizon hold (ghost_eval
+    # treats "short" as needing 5 elapsed trading days) -- not an edge case.
+    await decision_log.record(
+        _completed_decision(triggered_at=datetime.now(UTC) - timedelta(days=5))
+    )
+
+    summary_narrow = await reflection_agent_run(
+        llm=llm,
+        decision_log=decision_log,
+        confidence_store=confidence_store,
+        since=timedelta(hours=24),
+    )
+    assert summary_narrow["reviewed"] == 0, (
+        "a 5-day-old triggered_at must NOT be visible through a 24h window "
+        "-- if this fails, list_pending_reflection's semantics changed."
+    )
+
+    summary_wide = await reflection_agent_run(
+        llm=llm,
+        decision_log=decision_log,
+        confidence_store=confidence_store,
+        since=timedelta(days=30),
+    )
+    assert summary_wide["reviewed"] == 1
+    assert "momentum" in summary_wide["per_strategy"]
+
+
 async def test_reflection_skips_decisions_without_realized_pnl() -> None:
     """Decisions with realized_pnl=None aren't yet closed; Reflection must skip them."""
     llm = LLM(api_key=None)

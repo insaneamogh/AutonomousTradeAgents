@@ -41,11 +41,17 @@ async def reflection_agent_run(
     llm: LLM,
     decision_log: DecisionLog,
     confidence_store: StrategyConfidenceStore,
-    since: timedelta = timedelta(hours=24),
+    since: timedelta = timedelta(days=30),
     limit: int = 200,
     user_id: str = ALL_USERS,
 ) -> dict[str, Any]:
     """Reflect on the last ``since`` window. One LLM call per strategy id.
+
+    ``since`` default matches ``DecisionLog.list_pending_reflection``'s own
+    (30d, not the tighter 24h this used to default to) — see that
+    protocol's docstring for why: this job isn't scheduled in production
+    today, so a wide window is insurance against a late/sporadic run, not
+    a statement about how long a position takes to close.
 
     ``user_id`` defaults to ``ALL_USERS`` because reflection is a
     scheduled job: strategy priors are global, so the EOD pass grades

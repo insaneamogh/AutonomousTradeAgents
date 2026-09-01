@@ -239,3 +239,40 @@ async def test_continues_past_per_symbol_failures(monkeypatch, caplog) -> None:
     assert calls == ["GOOD1", "BROKE", "GOOD2"]
     # Return code reflects the failure but the loop completed.
     assert rc == 1
+
+
+async def test_reflection_pass_uses_a_window_wide_enough_for_multi_day_holds(
+    monkeypatch,
+) -> None:
+    """Regression guard for the exact production bug found investigating the
+    Strategies screen: this call used to hardcode ``since=timedelta(hours=24)``,
+    but ``list_pending_reflection`` filters on ``triggered_at`` (entry time)
+    while ``realized_pnl`` only becomes known once a position CLOSES -- days
+    later for this system's normal multi-day horizons. A 24h window meant
+    reflection could run every single day forever and still never see a
+    trade's outcome, which is exactly what happened: production's
+    ``strategy_confidence`` table has never recorded a non-default row.
+
+    Pins the actual value passed, not just "some value" -- must cover
+    ghost_eval's own horizon-derived lookback (max horizon 20d + 7d buffer).
+    """
+    import trading_agents.nodes as nodes_mod
+    from trading_agents.jobs import daily_cron
+
+    captured: dict[str, object] = {}
+
+    async def fake_reflection_agent_run(*, llm, decision_log, confidence_store, since, **_kw):
+        captured["since"] = since
+        return {"reviewed": 0, "per_strategy": {}}
+
+    monkeypatch.setattr(nodes_mod, "reflection_agent_run", fake_reflection_agent_run)
+
+    user_id = "00000000-0000-0000-0000-000000000001"
+    rc = await daily_cron.main(user_id, [], force=False, skip_ghost_eval=True)
+
+    assert rc == 0
+    assert "since" in captured, "reflection pass never ran (skip_reflect default changed?)"
+    assert captured["since"] >= timedelta(days=20), (
+        f"reflection window is only {captured['since']} -- too narrow to catch "
+        "a trade that takes several days to close (the production bug)"
+    )

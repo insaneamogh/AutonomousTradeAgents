@@ -186,7 +186,7 @@ class PostgresDecisionLog:
         self,
         *,
         user_id: str,
-        since: timedelta = timedelta(hours=24),
+        since: timedelta = timedelta(days=30),
         limit: int = 200,
     ) -> list[DecisionEntry]:
         """Pulls rows where ``realized_pnl IS NOT NULL AND reviewed_at IS NULL``
@@ -209,6 +209,20 @@ class PostgresDecisionLog:
         real production data, which is why the Review screen's agreement
         stat reads a flat 0%: every prior sits dead-center in the "neutral"
         band, and neutral can never register as agreement.
+
+        ``since`` widened from the original 24h to 30d on top of the
+        ``closed_at`` fix above, for a DIFFERENT reason than the anchor
+        change: once anchored correctly, a job that runs reliably every
+        day only ever needs a ~24-36h window to catch everything. But
+        Reflection is not currently scheduled at all in production
+        (`COUNCIL_SCHEDULER_ENABLED`) — it only ever runs when someone
+        invokes `daily_cron.py` by hand. A short window ties correctness to
+        "the operator remembers to run this promptly," which is exactly
+        the assumption that let 6 real closes sit ungraded for days. 30d
+        makes a late or sporadic run still catch everything; the actual
+        de-dup guard is (and was always meant to be) `reviewed_at IS NULL`,
+        not this window — see CLAUDE.md §4.4, a wide `since` and a strict
+        `reviewed_at` filter cannot double-grade anything between them.
 
         Uses the index from migration 0017
         (``ix_agent_decisions_pending_reflection``, now on ``closed_at``)

@@ -402,6 +402,16 @@ async def main(
     # strategy-confidence priors never moved off 0.5 (audit roadmap P1).
     # Runs after ghost eval on the same closed-trade window; failure never
     # fails the cron. Skipped with --no-reflect.
+    #
+    # since=30d, not the tighter 24h this used to hardcode: this job isn't
+    # actually scheduled in production today (COUNCIL_SCHEDULER_ENABLED),
+    # so a run only happens when someone invokes this by hand — sometimes
+    # days apart. A 24h window combined with that made every real close
+    # permanently unreachable the moment it happened outside that one-day
+    # gap; reviewed_at IS NULL (in list_pending_reflection) is what
+    # actually prevents re-grading, not this window — see that function's
+    # own docstring in memory/postgres.py for the live numbers that proved
+    # it.
     if not skip_reflect:
         try:
             from trading_agents.nodes import reflection_agent_run
@@ -410,7 +420,7 @@ async def main(
                 llm=llm,
                 decision_log=get_decision_log(),
                 confidence_store=get_confidence_store(),
-                since=timedelta(hours=24),
+                since=timedelta(days=30),
             )
             log.info("reflection pass — reviewed=%d", summary.get("reviewed", 0))
         except Exception:

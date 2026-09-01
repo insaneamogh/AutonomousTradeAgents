@@ -125,7 +125,7 @@ class DecisionLog(Protocol):
         self,
         *,
         user_id: str,
-        since: timedelta = timedelta(hours=24),
+        since: timedelta = timedelta(days=30),
         limit: int = 200,
     ) -> list[DecisionEntry]:
         """Closed-but-ungraded decisions for ``user_id``.
@@ -133,6 +133,17 @@ class DecisionLog(Protocol):
         Cross-user by nature, so ``user_id`` is required: the EOD
         reflection job passes ``ALL_USERS``; anything request-scoped
         passes the authenticated user's id.
+
+        ``since`` bounds ``closed_at`` (not ``triggered_at`` — see
+        ``postgres.py``'s impl for why that anchor changed). 30d is not
+        about how long a position can take to close; it is insurance
+        against the reflection job itself skipping a day or more (it is
+        not currently scheduled at all in production — see
+        `COUNCIL_SCHEDULER_ENABLED`). A tighter window tied to "how often
+        this SHOULD run" would silently drop a close that happened while
+        the job was down, exactly the failure mode that left every
+        strategy's confidence sitting at the migration seed value in
+        production.
         """
         ...
 
@@ -199,9 +210,15 @@ class InMemoryDecisionLog:
         self,
         *,
         user_id: str,
-        since: timedelta = timedelta(hours=24),
+        since: timedelta = timedelta(days=30),
         limit: int = 200,
     ) -> list[DecisionEntry]:
+        # Still anchored on triggered_at, unlike PostgresDecisionLog below —
+        # this impl only ever backs the CLI demo/tests (see postgres.py's
+        # own docstring), never production, so it's out of scope for the
+        # closed_at correctness fix. The wider default is carried over
+        # anyway, purely so this Protocol's one default doesn't silently
+        # disagree with its real implementation.
         cutoff = datetime.now(UTC) - since
         pending = [
             r for r in self._rows
