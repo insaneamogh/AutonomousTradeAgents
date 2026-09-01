@@ -330,6 +330,68 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 # Build log
 
+### 2026-09-01 — ccae611f — my own fix corrupted production data, same session
+
+The operator added new Alpaca paper keys (`PA31OTNBGE9I`, replacing
+`PA3IAZI74E5R`) and asked to verify the account-switch handling I'd just
+shipped. It ran, but wrong.
+
+**The bug:** `account_switch.py`'s block sat inside `reconciler_fleet.tick()`
+with a comment claiming *"FIRST, before anything reads or writes position
+state"* — but was placed textually AFTER `_reconciler_for(uid).tick()` and
+`sync_user_orders_and_positions` in the actual loop body. On the first tick
+against the new keys, `order_sync._detect_external_closes` ran first,
+read all 7 positions on the OLD account as having vanished from the NEW
+(empty) account, and closed every one with a fabricated realized P&L under
+`close_reason='external_broker'` — as if the operator had closed them by
+hand at Alpaca. They had not.
+
+**Caught by direct verification, not by trusting the deploy.** Checked the
+new account (`equity 100000`, flat — correct), then checked
+`broker_connections.account_number` in the DB (still read the OLD number —
+wrong, meant the switch code hadn't landed yet or hadn't run), then
+`circuit_breaker_state` (still `halted`, describing the old account's
+drawdown against a new account that never breached anything — wrong), then
+`agent_decisions.closed_at > now() - 15m` (7 rows, all `external_broker`,
+all the same timestamp — the tell).
+
+**Fixed in order:**
+1. Moved the block to genuinely execute first. Added
+   `test_reconciler_fleet_ordering.py`, which drives `ReconcilerFleet.tick()`
+   through mocks recording call order and asserts `account_switch` precedes
+   `reconciler_tick` and `order_sync`. Revert-checked by literally
+   reproducing the shipped order — the test fails with
+   `['reconciler_tick', 'order_sync', 'account_switch', ...]`, the exact
+   sequence that ran in production.
+2. Deployed, then let the FIXED code run its own tick rather than hand-
+   patching around it — the only way to prove the fix works end-to-end.
+   **Verified live**: `account_switch: connection … moved from account
+   PA3IAZI74E5R to PA31OTNBGE9I. Retired 0 open decision(s), canceled 0
+   live order row(s), halt_cleared=True.` Both `broker_connections.
+   account_number` and `circuit_breaker_state.status` confirmed correct
+   in the DB afterward.
+3. The 7 already-corrupted rows are DATA, not code — no code path touches
+   an already-`closed_at` decision, so the fix in #1 could never repair
+   them retroactively. Corrected directly: `close_reason` ->
+   `'account_switch'`, `realized_pnl` -> NULL (no real fill backs a
+   number, so none is invented — the same rule `account_switch.py` itself
+   follows). Left the two genuine `user_manual` closes (the operator's own
+   NVDA closes, -$580 and -$600) untouched — matched by symbol AND
+   timestamp AND close_reason before writing anything.
+
+**Verified**: 1353 passed, 11 skipped. New account confirmed live at
+Alpaca (`PA31OTNBGE9I`, $100,000, flat, options level 3). Zero decisions
+mid-flight (`fill_qty IS NOT NULL AND closed_at IS NULL` = 0), so nothing
+was orphaned across the swap — a clean slate.
+
+**The lesson, stated plainly:** a comment asserting an invariant ("this
+runs first") is not the invariant. `test_reconciler_fleet_ordering.py`
+exists because I shipped code whose comment and whose control flow
+disagreed, in the one place — ordering relative to a destructive read —
+where that gap was guaranteed to matter, and it did, within the hour, in
+production, on data the operator was about to submit.
+
+
 ### 2026-09-01 — ebfc8718 — post-mortem on the -3.67% open
 
 **Nothing was broken. Every rule behaved exactly as written and the
