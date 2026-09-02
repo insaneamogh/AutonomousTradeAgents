@@ -53,33 +53,45 @@ logger = logging.getLogger("agents.options.agents")
 def _options_model() -> str:
     """Which model the two options agents run on.
 
-    Defaults to HAIKU. The options council was 84% of a $10 credit balance
-    burned in one afternoon (2026-09-01: `options_bull` 500 calls $4.54 +
-    `options_bear` 241 calls $1.27, against $6.50 total), and Haiku is
-    roughly an order of magnitude cheaper per token.
+    Defaults to SONNET.
 
-    Safe to downgrade HERE specifically because of this repo's core rule —
-    agents propose, deterministic code disposes. Neither agent can place a
-    trade: `ToolGuard.before()` re-runs the entire risk stack (contract
-    selection, liquidity, chain depth, premium caps, sizing, level checks)
-    on every tool call regardless of which model asked. A weaker model
-    yields worse SELECTION, never weaker RISK CONTROL.
+    This defaulted to Haiku for a few hours on 2026-09-02, on a cost
+    argument that was sound in isolation and wrong in context. The
+    argument was: agents propose and deterministic code disposes, so a
+    weaker model degrades SELECTION but never RISK CONTROL, and the
+    options council was 84% of a $10 credit balance.
 
-    `OPTIONS_AGENT_MODEL` overrides it — set to `sonnet` to revert
-    instantly with no deploy if debate quality or tool-calling degrades.
-    Unrecognised values keep the default rather than passing an invalid
-    model id to the API.
+    What that reasoning missed is HOW a weaker model fails here. This is
+    not a prose hop — the trade hop must emit a well-formed
+    `open_option_trade` tool call, and a malformed one used to degrade
+    silently to HOLD. So the visible signature of a model that cannot
+    drive the tool loop is *identical* to the signature of a market with
+    no setups: no trades, no errors, nothing in the ledger. On a book
+    that is already capped at five concurrent positions, there is no way
+    to tell "nothing qualified" from "the model cannot call the tool".
+
+    Cost is now bounded by things that do not trade quality away for it —
+    the per-day and per-hour symbol caps, the account pre-flight, and the
+    chain pre-flight that refuses an untradeable chain for zero model
+    calls. Those cut spend by cutting the number of symbols debated;
+    downgrading the model cuts spend by making each debate worse. With
+    real P&L being judged, the first is the right lever and the second is
+    not.
+
+    `OPTIONS_AGENT_MODEL=haiku` still selects Haiku explicitly for a
+    cost-constrained run. Unrecognised values keep the default rather than
+    passing an invalid model id to the API.
     """
     raw = os.environ.get("OPTIONS_AGENT_MODEL", "").strip().lower()
-    if raw in ("sonnet", "claude-sonnet-4-6"):
-        return Model.SONNET
+    if raw in ("haiku", Model.HAIKU):
+        return Model.HAIKU
     if raw in ("opus", "claude-opus-4-7"):
         return Model.OPUS
-    if raw and raw not in ("haiku", Model.HAIKU):
+    if raw and raw not in ("sonnet", Model.SONNET):
         logger.warning(
-            "ignoring unknown OPTIONS_AGENT_MODEL=%r — keeping haiku", raw
+            "ignoring unknown OPTIONS_AGENT_MODEL=%r — keeping sonnet", raw
         )
-    return Model.HAIKU
+    return Model.SONNET
 
 
 __all__ = [

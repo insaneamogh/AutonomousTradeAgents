@@ -23,8 +23,28 @@ from engine.risk import RiskCaps
 
 def test_aggressive_profile_widens_the_options_premium_caps() -> None:
     caps = RiskCaps.aggressive_paper()
-    assert caps.options_max_premium_pct == pytest.approx(2.5)
+    assert caps.options_max_premium_pct == pytest.approx(1.5)
     assert caps.options_max_total_premium_pct == pytest.approx(7.5)
+
+
+def test_aggressive_profile_holds_at_least_five_concurrent_option_positions() -> None:
+    """The aggregate cap is pinned by the halt coupling and cannot rise, so
+    per-position size is the ONLY lever on how many positions the book can
+    hold at once. At 2.5% it held three, and the measured consequence was a
+    desk that stopped trading: 293 options runs -> 7 trades, with 48 refusals
+    on ``max_total_premium_pct`` after the book filled at 15:00 UTC.
+
+    Asserted as a RATIO, not as the raw 1.5, so that a future change to
+    either number has to keep the book wide or fail here — which is the
+    property that actually matters. Aggregate risk is untouched either way;
+    ``test_every_reviewed_profile_respects_the_halt_coupling`` guards that.
+    """
+    caps = RiskCaps.aggressive_paper()
+    concurrent = caps.options_max_total_premium_pct / caps.options_max_premium_pct
+    assert concurrent >= 5.0, (
+        f"the options book holds only {concurrent:.1f} max-size positions; "
+        "three was measured to saturate mid-session and stop the desk trading"
+    )
 
 
 def test_aggressive_profile_widens_the_confidence_floors() -> None:
@@ -80,7 +100,7 @@ def test_aggressive_profile_still_honors_explicit_overrides() -> None:
 def test_risk_profile_env_selects_the_profile(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("RISK_PROFILE", "aggressive_paper")
     caps = RiskCaps.from_env()
-    assert caps.options_max_premium_pct == pytest.approx(2.5)
+    assert caps.options_max_premium_pct == pytest.approx(1.5)
     assert caps.options_max_total_premium_pct == pytest.approx(7.5)
     assert caps.min_council_confidence == pytest.approx(0.42)
     # The coupled invariant must hold via from_env() too, not just the
@@ -114,7 +134,7 @@ def test_risk_profile_value_is_trimmed_and_case_insensitive(
 ) -> None:
     monkeypatch.setenv("RISK_PROFILE", "  Aggressive_Paper  ")
     caps = RiskCaps.from_env()
-    assert caps.options_max_premium_pct == pytest.approx(2.5)
+    assert caps.options_max_premium_pct == pytest.approx(1.5)
 
 
 def test_aggressive_profile_env_data_quality_floors_still_apply_on_top(
@@ -128,7 +148,7 @@ def test_aggressive_profile_env_data_quality_floors_still_apply_on_top(
     caps = RiskCaps.from_env()
     assert caps.options_stop_loss_pct == pytest.approx(33.0)
     # Untouched fields still come from the aggressive profile.
-    assert caps.options_max_premium_pct == pytest.approx(2.5)
+    assert caps.options_max_premium_pct == pytest.approx(1.5)
 
 
 # ─────────────────────────────────────────────────────────────────────

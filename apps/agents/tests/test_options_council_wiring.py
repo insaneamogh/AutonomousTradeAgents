@@ -378,7 +378,15 @@ async def test_preflight_allowing_still_runs_the_normal_paid_path(
 
     assert calls == [1]
     assert out["final_action"] == "HOLD"  # no trade in the transcript
-    assert out.get("tool_denials") == []
+    # This fixture agrees to trade and then emits an EMPTY transcript,
+    # which is precisely the tool-calling failure `_attempted_trade`
+    # exists to name. It reads as an incidental detail of the fixture and
+    # is not: in production the same shape means the model never asked to
+    # trade, and reporting that as an ordinary stand-down is what hid a
+    # dead desk. The pre-flight's own contract — it adds no refusal of its
+    # own — is what `calls == [1]` above asserts.
+    assert out.get("tool_denials") == ["open_option_trade:no_call_emitted"]
+    assert "tool-calling failure" in out["drafter_rationale"]
 
 
 async def test_a_guard_without_a_preflight_degrades_to_the_normal_path(
@@ -436,15 +444,21 @@ async def test_a_tradeable_chain_still_runs_the_paid_path(
     assert calls == [1]
 
 
-def test_the_options_agents_default_to_haiku() -> None:
-    """The options council was 84% of a $10 balance burned in one afternoon.
-    Haiku is safe HERE specifically because the guard re-runs the entire
-    risk stack on every tool call regardless of which model asked — a weaker
-    model means worse SELECTION, never weaker RISK CONTROL."""
+def test_the_options_agents_default_to_sonnet() -> None:
+    """This defaulted to Haiku for a few hours on 2026-09-02, on the argument
+    that the guard re-runs the whole risk stack regardless of which model
+    asked, so a weaker model costs SELECTION but never RISK CONTROL.
+
+    True, and beside the point. The trade hop has to emit a well-formed
+    `open_option_trade` call, and a hop that never emits one produces no
+    trade, no error and no ledger row — the same observable as a market
+    with nothing worth trading. Cost is bounded by the day/hour symbol
+    caps and the two pre-flights, which cut spend by debating fewer
+    symbols rather than by debating them worse."""
     from trading_agents.llm import Model
     from trading_agents.options.agents import _options_model
 
-    assert _options_model() == Model.HAIKU
+    assert _options_model() == Model.SONNET
 
 
 def test_the_options_model_is_revertible_without_a_deploy(
@@ -453,8 +467,35 @@ def test_the_options_model_is_revertible_without_a_deploy(
     from trading_agents.llm import Model
     from trading_agents.options.agents import _options_model
 
-    monkeypatch.setenv("OPTIONS_AGENT_MODEL", "sonnet")
-    assert _options_model() == Model.SONNET
+    monkeypatch.setenv("OPTIONS_AGENT_MODEL", "haiku")
+    assert _options_model() == Model.HAIKU, "an explicit cost-constrained run"
 
     monkeypatch.setenv("OPTIONS_AGENT_MODEL", "nonsense")
-    assert _options_model() == Model.HAIKU, "an unknown value must not reach the API"
+    assert _options_model() == Model.SONNET, "an unknown value must not reach the API"
+
+
+async def test_a_deliberate_stand_down_reads_differently_from_a_dead_tool_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The two no-trade outcomes must never collapse into one message.
+
+    Both end the pass flat, and until `_attempted_trade` existed both said
+    "Agents agreed but chose not to open a position." They have opposite
+    remedies — one is the desk working, the other is the model failing to
+    drive the tool loop — so a shared wording makes a broken options
+    council invisible for as long as nobody reads the transcripts.
+    """
+    from trading_agents.nodes.options_council import _attempted_trade
+
+    # The model asked and the guard refused: an ATTEMPT. The system worked.
+    denied = ({"tool": "open_option_trade",
+               "input": {},
+               "output": {"is_error": True, "content": {"denied": "illiquid_contract"}}},)
+    assert _attempted_trade(denied) is True
+
+    # The model only looked around and never asked: NOT an attempt.
+    browsed = ({"tool": "get_option_snapshot",
+                "input": {},
+                "output": {"content": {}}},)
+    assert _attempted_trade(browsed) is False
+    assert _attempted_trade(()) is False

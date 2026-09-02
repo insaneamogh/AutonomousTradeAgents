@@ -243,6 +243,22 @@ class ContractQuote:
     delta: float | None
     implied_volatility: float | None
 
+    quote_ts: datetime | None = None
+    """When the venue stamped this bid/ask.
+
+    Optional with a ``None`` default so every existing construction site
+    and fixture keeps working unchanged — but ``None`` means "age unknown"
+    and the freshness gate REFUSES it rather than assuming fresh (see
+    ``engine.options.freshness.quote_freshness``). An option's value moves
+    second to second and the path from this snapshot to a live order runs
+    through two model calls, so an untimestamped quote is the case where a
+    stale price is both most likely and least detectable.
+
+    Chain adapters should populate this from the snapshot's own timestamp.
+    Until one does, the freshness stage is inert by construction: see
+    ``max_quote_age_seconds`` below, which is what actually switches it
+    on."""
+
 
 @dataclass(frozen=True)
 class ContractSelectionInputs:
@@ -267,6 +283,21 @@ class ContractSelectionInputs:
     ``iv_realized_vol_band`` stage (neutral pass) — see module docstring
     §6 for why this differs from ``iv_present``'s own stricter handling of
     a missing IV."""
+    max_quote_age_seconds: float | None = None
+    """Refuse candidates whose quote is older than this, in seconds.
+
+    ``None`` (the default) DISABLES the stage entirely, which is what
+    keeps every existing caller and the ~40 selection fixtures behaving
+    exactly as before — none of them carry ``quote_ts``, and a gate that
+    refuses an absent timestamp would fail all of them at once for a
+    reason that has nothing to do with what they test.
+
+    Production passes ``caps.options_max_quote_age_seconds``. The two-step
+    (field exists, default off, caller opts in) is deliberate: it lets the
+    timestamp plumbing land and be verified before the refusal it enables
+    starts changing outcomes.
+    """
+
     min_liquid_chain_depth: int = _MIN_LIQUID_CHAIN_DEPTH
     """How many contracts must survive the liquidity stage before any of
     them is tradeable — see ``_MIN_LIQUID_CHAIN_DEPTH`` for the measured
@@ -399,6 +430,32 @@ def select_contract(inputs: ContractSelectionInputs) -> ContractSelectionResult:
         return ContractSelectionResult(
             selected=None, rejection_reason="no_candidates", funnel_counts=funnel
         )
+
+    # Freshness FIRST, before any other filter. An option's value moves
+    # second to second, so a stale quote's delta, IV and spread are all
+    # describing a contract that no longer exists at that price — running
+    # the delta band or the liquidity gate on it produces a confident
+    # answer about the past. Cheapest stage too (one subtraction), so
+    # putting it first also costs the least.
+    #
+    # Inert unless the caller opts in with max_quote_age_seconds; see that
+    # field for why the default is off.
+    if inputs.max_quote_age_seconds is not None:
+        from engine.options.freshness import quote_freshness
+
+        remaining = [
+            c for c in remaining
+            if quote_freshness(
+                quote_ts=c.quote_ts,
+                now=inputs.now,
+                max_age_seconds=inputs.max_quote_age_seconds,
+            ).ok
+        ]
+        funnel["fresh_quote"] = len(remaining)
+        if not remaining:
+            return ContractSelectionResult(
+                selected=None, rejection_reason="stale_quote", funnel_counts=funnel
+            )
 
     wanted_type: ContractType = "call" if inputs.direction == "long" else "put"
     remaining = [c for c in remaining if c.contract_type == wanted_type]

@@ -82,6 +82,25 @@ def _traded(transcript: tuple[dict[str, Any], ...]) -> dict[str, Any] | None:
     return None
 
 
+def _attempted_trade(transcript: tuple[dict[str, Any], ...]) -> bool:
+    """Did the model emit an ``open_option_trade`` call AT ALL this pass —
+    successful, denied, or malformed?
+
+    This is the question that separates a DECISION from a FAILURE. Both
+    end the pass with no position, and until this existed both rendered
+    as the same "agents agreed but chose not to open" line, so a model
+    that could not drive the tool loop was indistinguishable from a market
+    with nothing worth trading. On a book capped at five concurrent
+    positions, that ambiguity can hide a dead desk for a whole session.
+
+    Deliberately counts DENIED attempts as attempts: a denial means the
+    model formed a well-shaped call and the deterministic guard refused
+    it, which is the system working. Only the complete ABSENCE of a call,
+    on a pass the resolver said should proceed, indicts the model.
+    """
+    return any(e.get("tool") == "open_option_trade" for e in transcript)
+
+
 def _denials(transcript: tuple[dict[str, Any], ...]) -> list[str]:
     """Every named refusal the guard returned this pass.
 
@@ -282,6 +301,25 @@ async def options_council_node(
         why = f"Refused by the risk guard: {', '.join(denials)}."
     elif not resolution.proceed:
         why = f"Agents did not agree ({resolution.reason})."
+    elif not _attempted_trade(result.tool_transcript):
+        # The resolver said proceed, the trade hop ran, and no
+        # open_option_trade call ever came out of it. That is a
+        # TOOL-CALLING failure, not a judgement, and it must never again
+        # be reported in the same words as a deliberate stand-down:
+        # the two have opposite remedies (change the model / prompt vs.
+        # trust the desk) and identical symptoms.
+        why = (
+            "Trade hop produced no open_option_trade call — tool-calling "
+            "failure, not a decision. The agents agreed to trade "
+            f"{resolution.direction} at conviction "
+            f"{resolution.conviction:.2f} and the hop ended without asking."
+        )
+        out["tool_denials"] = [*denials, "open_option_trade:no_call_emitted"]
+        logger.warning(
+            "options council: %s agreed (%s @ %.2f) but the trade hop emitted "
+            "NO open_option_trade call — check OPTIONS_AGENT_MODEL tool-calling",
+            state.get("symbol"), resolution.direction, resolution.conviction,
+        )
     else:
         why = "Agents agreed but chose not to open a position."
 

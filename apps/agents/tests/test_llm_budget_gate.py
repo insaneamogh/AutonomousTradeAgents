@@ -146,16 +146,29 @@ async def test_free_hold_symbols_run_even_when_the_symbol_cap_is_fully_consumed(
 async def test_watchlist_order_preserved_for_symbols_that_do_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The cap decides WHICH symbols are admitted, never their run order —
-    a regression guard on daily_cron's own "one symbol failing must not
-    stop the rest" contract, which is keyed off exact call order
-    elsewhere (test_daily_cron.py)."""
+    """Admitted symbols now run BEST SCORE FIRST, not in watchlist order.
+
+    This test used to assert watchlist order, as a proxy for daily_cron's
+    "one symbol failing must not stop the rest" contract. That contract is
+    about COMPLETENESS, not sequence, and is asserted as such below; the
+    sequence assertion was incidental and actively wrong once the caps
+    started binding. The caps are first-come-first-served within each
+    hour, so whichever admitted symbol the loop reaches first is the one
+    that gets the money — walking watchlist order meant an 86-symbol list
+    reliably spent its 4 hourly passes on whatever sat near the top of
+    the list rather than on the best setups the screen had just found.
+    """
     scores = {"GOOD1": 0.80, "BROKE": 0.85, "GOOD2": 0.75}
     calls = await _run_main(
         monkeypatch, ["GOOD1", "BROKE", "GOOD2"], scores,
         MAX_LLM_SYMBOLS_PER_SWEEP="10",
     )
-    assert calls == ["GOOD1", "BROKE", "GOOD2"]
+    assert set(calls) == {"GOOD1", "BROKE", "GOOD2"}, "every symbol still runs"
+    assert calls == ["BROKE", "GOOD1", "GOOD2"], (
+        "admitted symbols must run in descending score order (0.85, 0.80, "
+        "0.75) so that a cap tripping mid-sweep spends the budget on the "
+        "best setups rather than on whatever came first in the watchlist"
+    )
 
 
 # ── Dollar budget ceiling ────────────────────────────────────────────
@@ -370,9 +383,13 @@ async def test_free_holds_never_count_against_the_daily_symbol_cap(
         MAX_DAILY_LLM_SPEND_USD="999",
     )
 
-    assert calls == ["FREE1", "PAID1", "FREE2", "PAID2"], (
+    # Paid symbols first in score order (0.9, 0.8), then the free HOLDs.
+    # The property under test is that the free ones neither consume a slot
+    # nor get dropped — not where they land in the sequence.
+    assert set(calls) == {"FREE1", "FREE2", "PAID1", "PAID2"}, (
         "both free HOLDs must still run, and both paid passes fit the cap of 2"
     )
+    assert calls[:2] == ["PAID1", "PAID2"], "admitted symbols lead, best first"
 
 
 async def test_a_ledger_outage_degrades_the_daily_cap_to_a_per_sweep_one(
@@ -486,4 +503,51 @@ async def test_free_holds_never_count_against_the_hourly_cap(
         MAX_DAILY_LLM_SPEND_USD="999",
     )
 
-    assert calls == ["FREE", "PAID1", "PAID2"]
+    assert set(calls) == {"FREE", "PAID1", "PAID2"}
+    assert calls[:2] == ["PAID1", "PAID2"], "admitted symbols lead, best first"
+
+
+async def test_min_llm_score_keeps_a_weak_setup_from_spending_a_capped_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The day/hour caps are first-come-first-served ACROSS sweeps — the
+    scanner runs every 2 minutes, so a mediocre setup at 14:02 can consume
+    an hourly slot a much better one at 14:40 then cannot have. A
+    deterministic floor is the cheap fix, and it costs zero LLM calls.
+
+    Distinct from MIN_FIT_TO_TRADE (0.45), which asks "tradeable at all";
+    this asks "worth paying for". A filtered symbol is treated exactly
+    like a free HOLD — still run, never charged.
+    """
+    scores = {"WEAK": 0.50, "STRONG": 0.90}
+    calls = await _run_main(
+        monkeypatch, ["WEAK", "STRONG"], scores,
+        MIN_LLM_SCORE="0.70",
+        MAX_LLM_SYMBOLS_PER_SWEEP="10",
+    )
+    assert calls == ["STRONG"], (
+        "WEAK cleared MIN_FIT_TO_TRADE so a council pass for it would have "
+        "cost real model calls — the floor's whole job is to not spend them "
+        "on it. It is skipped with its own audit reason, not run."
+    )
+
+
+async def test_min_llm_score_defaults_to_off() -> None:
+    """Defaults OFF on purpose. The live score distribution on this
+    watchlist has not been measured, and a floor guessed too high trades
+    nothing at all — a worse failure than spending a slot on a mediocre
+    setup. Measure first, then set it."""
+    from trading_agents.jobs.daily_cron import _min_llm_score
+
+    assert _min_llm_score() == 0.0
+
+
+async def test_a_malformed_min_llm_score_does_not_silently_filter_everything(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from trading_agents.jobs.daily_cron import _min_llm_score
+
+    monkeypatch.setenv("MIN_LLM_SCORE", "not-a-number")
+    assert _min_llm_score() == 0.0
+    monkeypatch.setenv("MIN_LLM_SCORE", "5.0")  # out of the 0..1 range
+    assert _min_llm_score() == 0.0

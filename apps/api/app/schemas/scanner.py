@@ -22,6 +22,21 @@ from typing import Literal
 from app.schemas.base import CamelCaseModel
 
 
+class AlpacaCliHealthDto(CamelCaseModel):
+    """Health of the ``alpaca`` CLI subprocess integration."""
+
+    available: bool
+    """``alpaca version`` ran and exited 0 — the binary is present and
+    executable. Checked with ``version`` rather than a trading call so
+    this stays true even when credentials are wrong, which is what makes
+    the two failures distinguishable."""
+    enabled: bool
+    """``USE_ALPACA_CLI`` is not explicitly off. Defaults on."""
+    binary: str
+    detail: str
+    """Version string on success; the failure reason otherwise."""
+
+
 class ScanSignalDto(CamelCaseModel):
     """One named trigger firing on one symbol. Mirrors
     ``engine.scanner.types.ScanSignal.as_dict()`` field-for-field."""
@@ -54,9 +69,20 @@ class ScannerStatusResponse(CamelCaseModel):
     trigger_loop_armed: bool
     market_open: bool | None
     market_open_source: str | None
-    """``"alpaca"`` (real ``/v2/clock``) or ``"local_calendar"`` (holiday-table
-    fallback) — which source answered the last scan's market-hours check.
-    ``None`` before any scan has run, same as ``market_open`` itself."""
+    """``"alpaca_cli"`` (Alpaca's own CLI binary), ``"alpaca"`` (REST
+    ``/v2/clock``) or ``"local_calendar"`` (holiday-table fallback) — which
+    source answered the last scan's market-hours check. ``None`` before any
+    scan has run, same as ``market_open`` itself."""
+    alpaca_cli: AlpacaCliHealthDto | None = None
+    """Whether Alpaca's own CLI binary is present and enabled.
+
+    Exists to make the hackathon's "projects must utilize either Alpaca's
+    MCP server or its CLI tools" requirement VISIBLE rather than
+    inferable. ``market_open_source == "alpaca_cli"`` already proves the
+    CLI answered, but only after a scan has run and only to someone who
+    knows to look for that string; this states it outright, and
+    distinguishes "binary missing" from "binary present, flag off" from
+    "present and running" — three states with three different fixes."""
     last_scan_at: datetime | None
     scan_interval_minutes: int | None
     max_council_runs_per_scan: int | None

@@ -299,6 +299,56 @@ def _max_llm_symbols_per_hour() -> int:
     return value if value >= 1 else _DEFAULT_MAX_LLM_SYMBOLS_PER_HOUR
 
 
+_DEFAULT_MIN_LLM_SCORE = 0.0
+"""Deterministic strategy-fit score a symbol must clear before it may
+consume a PAID council pass. 0.0 = off, which is the default.
+
+Distinct from ``strategies.fit.MIN_FIT_TO_TRADE`` (0.45), which asks "is
+this tradeable at all" — a symbol below that already scores ``None`` here
+and never reaches an LLM. This asks the different question "is this good
+enough to spend money on", and exists because the day/hour caps are
+first-come-first-served ACROSS sweeps: the scanner runs every 2 minutes,
+so a mediocre setup at 14:02 can consume an hourly slot that a much
+better one at 14:40 then cannot have. A floor is the cheap, deterministic
+way to stop that, and it is exactly the "only fire when something good
+comes up" gate the scanner is supposed to have.
+
+Defaults to OFF, and **measurement now says it probably cannot be turned
+on usefully** — read this before reaching for it.
+
+``apps/agents/tests/eval`` measured the score distribution on 2026-09-02
+across 300 symbols from the repo's own synthetic feature generator:
+every symbol that clears ``MIN_FIT_TO_TRADE`` scores between **0.6075
+and 0.6107** — 18 distinct values inside a 0.3% band. There is a cliff
+between 0.60 and 0.65 and nothing inside it, so any floor set here either
+admits every passing candidate or none of them. It is a switch, not a
+dial.
+
+That is measured on SYNTHETIC features, which are derived from one hash
+seed per symbol and are low-variance by construction, so the real
+distribution may be wider — but it is unmeasured, and setting this on
+unmeasured data is the exact mistake this repo keeps writing post-mortems
+about. Run ``tests/eval/run_eval.py`` against the live feature provider
+first; if the spread is still ~0.003, this knob is the wrong tool and the
+right fix is a scoring signal with real dynamic range.
+"""
+
+
+def _min_llm_score() -> float:
+    raw = os.environ.get("MIN_LLM_SCORE", "").strip()
+    if not raw:
+        return _DEFAULT_MIN_LLM_SCORE
+    try:
+        value = float(raw)
+    except ValueError:
+        log.warning(
+            "ignoring malformed MIN_LLM_SCORE=%r — keeping %.2f",
+            raw, _DEFAULT_MIN_LLM_SCORE,
+        )
+        return _DEFAULT_MIN_LLM_SCORE
+    return value if 0.0 <= value <= 1.0 else _DEFAULT_MIN_LLM_SCORE
+
+
 def _max_llm_symbols_per_day() -> int:
     raw = os.environ.get("MAX_LLM_SYMBOLS_PER_DAY", "").strip()
     if not raw:
@@ -329,12 +379,43 @@ def _max_llm_symbols_per_sweep() -> int:
     return value if value >= 1 else _DEFAULT_MAX_LLM_SYMBOLS_PER_SWEEP
 
 
+async def _prefetch_bars_for(feature_provider: Any, watchlist: list[str]) -> None:
+    """Batch-warm the daily-bar cache for the whole watchlist.
+
+    Reaches through THIS PASS'S OWN feature provider to its bars provider,
+    never a freshly-constructed one. That distinction is the whole
+    correctness of this function: the cache is per-instance, so warming a
+    new provider's cache would leave the scoring loop's own cache empty
+    and the prefetch would be a silent no-op that still spent the API
+    calls — strictly worse than not doing it.
+
+    Duck-typed at both hops. The ``FeatureProvider`` protocol is just a
+    callable and the ``BarsProvider`` protocol requires only
+    ``daily_bars``, so the synthetic provider, every test double and any
+    future implementation are all entitled to have neither ``.bars`` nor
+    ``prefetch_daily_bars``. Missing either is a no-op, not an error.
+    """
+    if not watchlist:
+        return
+    try:
+        bars = getattr(feature_provider, "bars", None)
+        prefetch = getattr(bars, "prefetch_daily_bars", None)
+        if prefetch is None:
+            return
+        await prefetch(list(watchlist))
+    except Exception:
+        log.warning(
+            "bar prefetch failed for %d symbols — the per-symbol path will "
+            "fetch them individually", len(watchlist), exc_info=True,
+        )
+
+
 async def _score_candidates_for_sweep(
     watchlist: list[str],
     instrument_by_symbol: Mapping[str, str],
     feature_provider: Any,
     priors: Mapping[str, float],
-) -> dict[str, float | None]:
+) -> tuple[dict[str, float | None], dict[str, float]]:
     """Score every symbol's deterministic strategy fit, spending ZERO LLM
     calls, so the real (paid) pass in ``main`` can ration a limited
     per-sweep budget to the best setups first.
@@ -358,9 +439,22 @@ async def _score_candidates_for_sweep(
     """
     from trading_agents.strategies import best_strategy
 
+    # Warm the whole watchlist's daily bars in a handful of batched
+    # requests before scoring it symbol by symbol. Without this, screening
+    # N symbols is N HTTP requests; with it, N/100. That ratio is what
+    # makes a 1000-symbol universe affordable rather than a rate-limit
+    # problem (docs/PLAN_1000_SYMBOL_SCAN.md §2).
+    #
+    # Best-effort by construction: the prefetch writes into the same cache
+    # the per-symbol path reads, so a failure just means the loop below
+    # fetches individually — slower, identical result. Never let an
+    # optimisation be able to break the scan it optimises.
+    await _prefetch_bars_for(feature_provider, watchlist)
+
     allow_shorts_env = env_flag("ALLOW_SHORTS")
     options_flag = env_flag("ALLOW_OPTIONS")
     out: dict[str, float | None] = {}
+    convictions: dict[str, float] = {}
     for symbol in watchlist:
         instrument = (instrument_by_symbol or {}).get(symbol, "equity")
         options_eligible = options_flag and instrument == "option"
@@ -378,7 +472,13 @@ async def _score_candidates_for_sweep(
             )
             winner = None
         out[symbol] = winner.score if winner is not None else None
-    return out
+        # Read defensively: test doubles for `best_strategy` predate this
+        # field, and a missing conviction must degrade to "rank last among
+        # equals", never raise into the sweep.
+        convictions[symbol] = (
+            float(getattr(winner, "conviction", 0.0) or 0.0) if winner is not None else 0.0
+        )
+    return out, convictions
 
 
 async def _should_skip(user_id: str, symbol: str, instrument: str) -> bool:
@@ -597,15 +697,62 @@ async def main(
     except Exception:
         log.warning("could not load strategy priors for pre-pass scoring", exc_info=True)
 
-    scores = await _score_candidates_for_sweep(
+    scores, convictions = await _score_candidates_for_sweep(
         watchlist, instrument_by_symbol or {}, feature_provider, priors
     )
+    # Ranked by CONVICTION first, then score, then symbol.
+    #
+    # `score` is a weighted MEAN of ~9 bounded components and therefore a
+    # central statistic, which compresses: measured across 300 synthetic
+    # symbols it spans 0.6075-0.6107, so sorting by it alone is decided by
+    # the symbol tie-break rather than by quality. `conviction` measures
+    # only the POSITIVE evidence and how far above neutral it sits, which
+    # gives 5.6x the dispersion on that same set (0.0179 vs 0.0032) and 2x
+    # on the eval archetypes. Score stays as the secondary key so the
+    # ordering remains total and deterministic.
+    #
+    # UNVERIFIED on live features — both datasets measured here are
+    # synthetic. See apps/agents/tests/eval/README.md.
     candidates = sorted(
         (sym for sym, score in scores.items() if score is not None),
-        key=lambda sym: (-scores[sym], sym),  # best score first, symbol tie-break
+        key=lambda sym: (-convictions.get(sym, 0.0), -scores[sym], sym),
     )
+    # Quality floor, applied BEFORE the per-sweep cap so a weak setup
+    # cannot occupy a slot that the caps then deny to a better one later
+    # in the session. A filtered symbol is treated exactly like a
+    # never-scored one: a free, uncosted HOLD.
+    min_score = _min_llm_score()
+    below_floor: set[str] = set()
+    if min_score > 0.0:
+        below_floor = {s_ for s_ in candidates if (scores[s_] or 0.0) < min_score}
+        if below_floor:
+            log.info(
+                "MIN_LLM_SCORE=%.2f filtered %d of %d candidates before the "
+                "sweep cap: %s", min_score, len(below_floor), len(candidates),
+                ",".join(sorted(below_floor)),
+            )
+        candidates = [s_ for s_ in candidates if s_ not in below_floor]
+
     max_symbols = _max_llm_symbols_per_sweep()
     admitted = set(candidates[:max_symbols])
+    # Score order for the paid loop below, best first. `admitted` is
+    # already the top-N BY SCORE, but the loop used to walk `watchlist`
+    # order, so which admitted symbols actually spent the day/hour budget
+    # depended on their position in the watchlist rather than on how good
+    # they were. With an 86-symbol options watchlist and 4 paid passes an
+    # hour, that meant whichever names sat early in the list reliably got
+    # the money.
+    #
+    # HONEST LIMIT, measured after this shipped (apps/agents/tests/eval):
+    # passing scores cluster inside a 0.3% band (0.6075-0.6107 across 300
+    # synthetic symbols), so candidates tie to three decimal places and
+    # the sort is effectively decided by the symbol tie-break. This is
+    # still strictly better than walking watchlist order — it is
+    # deterministic and independent of list POSITION — but it does not
+    # yet deliver "the caps ration to the best setups". It will only do
+    # that once the score has real dynamic range; see
+    # `_DEFAULT_MIN_LLM_SCORE` for the measurement and what it implies.
+    admitted_rank = {sym: i for i, sym in enumerate(candidates[:max_symbols])}
     if len(candidates) > max_symbols:
         log.warning(
             "%d symbols cleared strategy_fit this sweep — admitting only the "
@@ -658,9 +805,29 @@ async def main(
     rolled_up: list[dict] = []
     # Sequential — Anthropic prompt-caching benefits from steady cadence
     # within ~30s windows. Parallel would burn separate cache entries.
-    for symbol in watchlist:
+    # Admitted symbols first, best score first; everything else after, in
+    # watchlist order. Only the admitted ones can consume budget, so this
+    # ordering is what decides where the money goes when a cap trips
+    # mid-loop. The others still run — they HOLD for free — so no symbol
+    # is dropped, only re-ordered.
+    sweep_order = sorted(
+        watchlist,
+        key=lambda sym: (admitted_rank.get(sym, len(admitted_rank)), watchlist.index(sym)),
+    )
+    for symbol in sweep_order:
         try:
             score = scores.get(symbol)
+            if symbol in below_floor:
+                # Its own reason, not the cap's. "We ran out of budget" and
+                # "this setup was not good enough to pay for" are different
+                # facts about the desk, and the Refusal Ledger is the whole
+                # differentiator here — collapsing them would misreport a
+                # deliberate quality decision as a resource limit.
+                rolled_up.append({
+                    "symbol": symbol, "skipped": True,
+                    "skip_reason": "below_min_llm_score",
+                })
+                continue
             if score is not None and symbol not in admitted:
                 rolled_up.append({
                     "symbol": symbol, "skipped": True,

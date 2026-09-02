@@ -111,6 +111,95 @@ class AlpacaDailyBarsProvider:
         self._cache[cache_key] = bars
         return bars
 
+    async def prefetch_daily_bars(
+        self, symbols: list[str], *, lookback_days: int = 320, batch_size: int = 100
+    ) -> int:
+        """Warm the cache for many symbols in a few requests. Returns the
+        number newly fetched.
+
+        This is what makes a 1000-symbol scan affordable. ``daily_bars``
+        above is one HTTP request per symbol; Alpaca's ``StockBarsRequest``
+        accepts a LIST for ``symbol_or_symbols``, so the same 150 symbols
+        cost 2 requests instead of 150. Nothing else changes — this writes
+        into the same ``(symbol, today, lookback)`` cache ``daily_bars``
+        reads, so callers keep calling ``daily_bars`` per symbol and simply
+        find it already there.
+
+        Combined with that cache key including the DATE, the first sweep of
+        a session pays for the whole watchlist and every later sweep is a
+        dictionary lookup. Daily bars do not change intraday, so that is
+        exact rather than an approximation.
+
+        Never raises. A failed batch leaves those symbols uncached and
+        ``daily_bars`` fetches them individually — slower, identical
+        result. Degrading to the old behaviour is the only safe failure
+        mode for an optimisation: a prefetch that could break a scan would
+        be worse than no prefetch.
+
+        ``batch_size`` is 100 because that is the largest batch verified
+        against the endpoint's own limits elsewhere in this codebase
+        (``list_most_active_symbols`` rejects ``top`` above 100). It has
+        NOT been measured against the bars endpoint specifically, which
+        may permit more; 100 is the conservative choice, not the maximum.
+        """
+        from alpaca.data.enums import DataFeed
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame
+
+        today = datetime.now(UTC).date()
+        wanted = [
+            sym for sym in {s.upper() for s in symbols}
+            if (sym, today, lookback_days) not in self._cache
+        ]
+        if not wanted:
+            return 0
+
+        start = today - timedelta(days=lookback_days)
+        fetched = 0
+        for i in range(0, len(wanted), batch_size):
+            batch = sorted(wanted[i : i + batch_size])
+            try:
+                req = StockBarsRequest(
+                    symbol_or_symbols=batch,
+                    timeframe=TimeFrame.Day,
+                    start=datetime.combine(start, time.min, tzinfo=UTC),
+                    end=datetime.combine(today - timedelta(days=1), time.max, tzinfo=UTC),
+                    feed=DataFeed.IEX,
+                )
+                raw = await asyncio.to_thread(self._get_client().get_stock_bars, req)
+            except Exception:
+                logger.warning(
+                    "bars: batch prefetch failed for %d symbols — they will be "
+                    "fetched individually", len(batch), exc_info=True,
+                )
+                continue
+
+            for sym in batch:
+                rows = raw.data.get(sym, [])
+                bars = [
+                    DailyBar(
+                        day=b.timestamp.date(),
+                        open=float(b.open),
+                        high=float(b.high),
+                        low=float(b.low),
+                        close=float(b.close),
+                        volume=float(b.volume),
+                    )
+                    for b in rows
+                ]
+                bars.sort(key=lambda b: b.day)
+                # Cache even an EMPTY result. A symbol Alpaca has no bars
+                # for is a fact about today, and re-requesting it on every
+                # sweep is exactly the waste this method exists to remove.
+                self._cache[(sym, today, lookback_days)] = bars
+                fetched += 1
+
+        logger.info(
+            "bars: prefetched %d/%d symbols in %d batch request(s)",
+            fetched, len(wanted), (len(wanted) + batch_size - 1) // batch_size,
+        )
+        return fetched
+
 
 # ─────────────────────────────────────────────────────────────────────
 # Intraday bars — the continuous scanner's live-price feed

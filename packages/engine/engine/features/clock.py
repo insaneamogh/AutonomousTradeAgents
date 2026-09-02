@@ -156,15 +156,25 @@ def clock_from_env() -> AlpacaClock | None:
 def use_alpaca_cli() -> bool:
     """Whether ``resolve_market_clock``'s CLI step is enabled.
 
-    Default OFF (unset, ``"0"``, or anything not in the truthy set below).
-    This flag is the ONLY thing that makes ``resolve_market_clock`` differ
-    from calling ``clock_from_env()``'s ``AlpacaClock`` directly — every
-    existing call site lands here with zero behaviour change until this is
-    deliberately flipped (``docs/PLAN_ALPACA_MCP.md`` D.3). Same truthy-set
-    convention as ``USE_POSTGRES``
-    (``apps/api/app/services/orders/position_manager.py``).
+    **Default ON as of 2026-09-02.** It defaulted OFF when the binary was
+    first added to the image, so that the image change and the behaviour
+    change stayed independently revertible. That was right at the time and
+    is wrong now: the hackathon requires using Alpaca's own MCP server or
+    CLI, this CLI call is the project's eligibility artifact, and a
+    flag-gated artifact that nobody remembered to flip is an artifact that
+    never ran. Shipping the binary but not calling it satisfies nothing.
+
+    Defaulting ON is safe because every failure mode already degrades
+    rather than breaking: ``cli_clock()`` returns ``None`` on a missing
+    binary, a non-zero exit, a timeout or unparseable JSON, and
+    ``resolve_market_clock`` then falls through to Alpaca REST and finally
+    the local calendar. A dev laptop with no ``alpaca`` installed takes
+    exactly the path it took before, one ``logger.info`` louder.
+
+    ``USE_ALPACA_CLI=0`` turns it off again with no deploy.
     """
-    return os.environ.get("USE_ALPACA_CLI", "").strip().lower() in ("1", "true", "yes", "on")
+    raw = os.environ.get("USE_ALPACA_CLI", "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
 
 
 async def resolve_market_clock(

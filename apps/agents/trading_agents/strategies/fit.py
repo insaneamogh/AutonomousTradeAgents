@@ -143,9 +143,47 @@ class StrategyFit:
     """One human sentence. Derived from the components, not written by a model."""
     components: tuple[FitComponent, ...] = field(default_factory=tuple)
 
+    conviction: float = 0.0
+    """Share of this strategy's WEIGHT carried by components that STRONGLY
+    agree (score >= ``STRONG_COMPONENT``). 0..1. **This is the rank key.**
+
+    ``score`` is a weighted MEAN, which is a central-tendency estimator —
+    it compresses. Measured 2026-09-02 across 300 symbols: every symbol
+    clearing the fit floor scored between 0.6075 and 0.6107, eighteen
+    distinct values inside a 0.3% band. You cannot rank a thousand
+    candidates on that; sorting by it is decided by the tie-break, not by
+    quality. That is not a tuning problem, it is what a mean of ~9 bounded
+    components does.
+
+    This is a TAIL statistic over the same components, so it separates
+    cases the mean cannot. Two setups, same nine components, same mean of
+    0.55:
+
+        A: every component ~0.55   -> nothing actually agrees, conviction 0.0
+        B: four at 1.0, five at 0.19 -> real evidence, conviction ~0.44
+
+    A is a shrug; B is a thesis with specific support and specific
+    objections. The mean calls them identical. Ranking B above A is the
+    entire point, and it is why this is a separate number rather than a
+    reweighting of the existing one.
+
+    Deliberately NOT wired into ``tradable``. The pass/fail gate stays
+    ``score >= MIN_FIT_TO_TRADE`` — a floor a mean is genuinely good at —
+    so this change reorders which candidates get attention first and
+    changes nothing about which are allowed to trade at all."""
+
     @property
     def tradable(self) -> bool:
         return self.score >= MIN_FIT_TO_TRADE
+
+    @property
+    def rank_key(self) -> tuple[float, float]:
+        """Sort key, best first: ``sorted(fits, key=lambda f: f.rank_key)``.
+
+        Conviction leads because it has real dispersion; ``score`` breaks
+        the remaining ties and keeps the ordering total and deterministic.
+        Both negated so a plain ascending sort puts the best first."""
+        return (-self.conviction, -self.score)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -233,6 +271,55 @@ def _num(v: object) -> float | None:
 NEUTRAL = 0.5
 """Score for a check whose input is missing. Not 0: a strategy must not be
 penalised for history the data provider could not supply."""
+
+STRONG_COMPONENT = 0.6
+"""A component at or above this is counted as STRONGLY agreeing.
+
+Not a new number: ``_reason_and_summary`` already uses exactly 0.6 to
+decide which checks "carried" a pick and get named in the audit reason.
+Reusing it means the components that produce the conviction figure are
+the same ones the reason string names, so a high-conviction pick and its
+written justification can never disagree."""
+
+
+def _conviction(components: list[FitComponent]) -> float:
+    """Weighted strength of the POSITIVE evidence only. 0..1.
+
+    Continuous, not a step. The first version of this counted the weighted
+    SHARE of components at or above ``STRONG_COMPONENT``, which with ~9
+    components can only take ~9 values and measured out at two distinct
+    values across a hundred scenarios — a coarser instrument than the
+    number it was meant to improve on.
+
+    So instead of counting components over a line, this measures how far
+    over the line they are:
+
+        contribution = max(0, score - NEUTRAL) / (1 - NEUTRAL)
+
+    Evidence at or below NEUTRAL (0.5) contributes nothing — a check that
+    is neutral or negative is not support. Evidence above it contributes
+    in proportion to its strength, so 0.6 and 1.0 are no longer the same
+    observation. Weighted, then normalised, so the result stays 0..1 and
+    stays comparable across strategies with different component sets.
+
+    Missing inputs score exactly NEUTRAL and therefore contribute zero,
+    which is the right asymmetry: absent data should make us less eager
+    about a setup without calling it bad. The weighted MEAN beside this
+    treats the same missing input as a neutral 0.5 pulled toward the
+    middle — that is correct for a "is this tradable at all" floor and
+    wrong for "which of these should we look at first", which is exactly
+    why both numbers exist.
+    """
+    total = sum(c.weight for c in components)
+    if total <= 0:
+        return 0.0
+    headroom = 1.0 - NEUTRAL
+    if headroom <= 0:
+        return 0.0
+    positive = sum(
+        c.weight * max(0.0, c.score - NEUTRAL) / headroom for c in components
+    )
+    return min(1.0, positive / total)
 
 
 _EVIDENCE_QUANT_KEYS: tuple[str, ...] = (
@@ -678,6 +765,7 @@ def score_strategy(
     mult = prior_multiplier(prior)
     reason, summary = _reason_and_summary(strategy_id, direction, components)
     return StrategyFit(
+        conviction=round(_conviction(components), 4),
         strategy_id=strategy_id,
         direction=direction,
         fit=round(fit, 4),

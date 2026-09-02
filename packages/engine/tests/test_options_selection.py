@@ -523,3 +523,89 @@ def test_an_empty_liquidity_stage_still_reports_no_liquid_contract() -> None:
     assert result.selected is None
     assert result.rejection_reason == "no_liquid_contract"
     assert "liquid_chain_depth" not in result.funnel_counts
+
+
+# ── quote freshness stage ────────────────────────────────────────────
+
+
+def _dated_quote(occ: str, *, quote_ts, **kw):
+    """A candidate carrying a quote timestamp, for the freshness stage."""
+    from datetime import date as _date
+
+    from engine.options.selection import ContractQuote
+
+    defaults = dict(
+        contract_type="call", strike=100.0, expiry=_date(2026, 10, 16),
+        bid=4.50, ask=4.60, open_interest=5000, volume=10,
+        delta=0.45, implied_volatility=0.30,
+    )
+    defaults.update(kw)
+    return ContractQuote(occ_symbol=occ, quote_ts=quote_ts, **defaults)
+
+
+def test_the_freshness_stage_is_inert_unless_the_caller_opts_in() -> None:
+    """Every existing caller and ~40 fixtures build candidates with no
+    quote_ts. A gate that refuses an absent timestamp would fail all of
+    them at once, for a reason unrelated to what they test — so it stays
+    off until max_quote_age_seconds is passed."""
+    from datetime import datetime as _dt
+
+    from engine.options.selection import ContractSelectionInputs, select_contract
+
+    now = _dt(2026, 9, 2, 15, 0, tzinfo=UTC)
+    candidates = tuple(
+        _dated_quote(f"X{i}", quote_ts=None, strike=100.0 + i) for i in range(8)
+    )
+    result = select_contract(ContractSelectionInputs(
+        underlying_symbol="X", direction="long", conviction=0.9,
+        candidates=candidates, now=now,
+    ))
+    assert result.selected is not None, "no age cap passed -> stage must not run"
+    assert "fresh_quote" not in result.funnel_counts
+
+
+def test_stale_candidates_are_refused_before_any_other_stage() -> None:
+    """Freshness runs FIRST. A stale snapshot's delta, IV and spread all
+    describe a contract that no longer exists at that price, so running
+    the delta band on it yields a confident answer about the past."""
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
+
+    from engine.options.selection import ContractSelectionInputs, select_contract
+
+    now = _dt(2026, 9, 2, 15, 0, tzinfo=UTC)
+    candidates = tuple(
+        _dated_quote(f"X{i}", quote_ts=now - _td(seconds=3600), strike=100.0 + i)
+        for i in range(8)
+    )
+    result = select_contract(ContractSelectionInputs(
+        underlying_symbol="X", direction="long", conviction=0.9,
+        candidates=candidates, now=now, max_quote_age_seconds=300.0,
+    ))
+    assert result.selected is None
+    assert result.rejection_reason == "stale_quote"
+    assert result.funnel_counts["fresh_quote"] == 0
+
+
+def test_a_mixed_chain_keeps_only_the_fresh_contracts() -> None:
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
+
+    from engine.options.selection import ContractSelectionInputs, select_contract
+
+    now = _dt(2026, 9, 2, 15, 0, tzinfo=UTC)
+    fresh = [
+        _dated_quote(f"F{i}", quote_ts=now - _td(seconds=20), strike=100.0 + i)
+        for i in range(6)
+    ]
+    stale = [
+        _dated_quote(f"S{i}", quote_ts=now - _td(seconds=5000), strike=200.0 + i)
+        for i in range(4)
+    ]
+    result = select_contract(ContractSelectionInputs(
+        underlying_symbol="X", direction="long", conviction=0.9,
+        candidates=tuple(fresh + stale), now=now, max_quote_age_seconds=300.0,
+    ))
+    assert result.funnel_counts["fresh_quote"] == 6
+    assert result.selected is not None
+    assert result.selected.occ_symbol.startswith("F")

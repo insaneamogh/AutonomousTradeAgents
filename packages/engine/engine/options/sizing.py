@@ -49,6 +49,16 @@ class OptionsSizingInputs:
     """100 for standard US equity options. Total cost of one contract is
     ``ask * multiplier``."""
 
+    open_interest: int | None = None
+    """The CONTRACT'S own open interest, for the liquidity trim below.
+    ``None`` (the default) skips the trim entirely, so every existing
+    caller and test keeps its exact previous behaviour — the trim is
+    opt-in by passing real data, never by silently assuming a number."""
+
+    max_pct_of_open_interest: float = 0.0
+    """``RiskCaps.options_max_pct_of_open_interest``. 0 disables the trim,
+    matching how the other options caps document "0 turns this side off"."""
+
 
 @dataclass(frozen=True)
 class OptionsSizingDecision:
@@ -93,12 +103,38 @@ def options_position_size(inputs: OptionsSizingInputs) -> OptionsSizingDecision:
             ),
         )
 
+    # Liquidity trim. The dollar budget answers "what can we afford to
+    # lose"; it says nothing about "can we get back out". A contract with
+    # 167 open interest and one with 28,000 cost the same and so sized the
+    # same, which is how CME261016P00270000 came to be a 5-lot position in
+    # a contract that then gapped 26 points between prints.
+    #
+    # Applied AFTER the budget floor so it can only ever REDUCE a position
+    # that was already affordable — it never rescues a qty<1, and it never
+    # rounds a viable trade to zero (floor of 1 lot). A contract too thin
+    # to hold even one lot is refused upstream by options_min_open_interest
+    # and the chain-depth gate, which is where a veto belongs; sizing
+    # trims, it does not veto.
+    liquidity_note = ""
+    if inputs.open_interest is not None and inputs.max_pct_of_open_interest > 0:
+        oi_cap = math.floor(
+            inputs.open_interest * inputs.max_pct_of_open_interest / 100.0
+        )
+        oi_cap = max(1, oi_cap)
+        if oi_cap < qty:
+            liquidity_note = (
+                f"; trimmed from {qty} to {oi_cap} by the liquidity cap "
+                f"({inputs.max_pct_of_open_interest:g}% of {inputs.open_interest} "
+                f"open interest)"
+            )
+            qty = oi_cap
+
     total_premium = qty * cost_per_contract
     return OptionsSizingDecision(
         qty=qty,
         notes=(
             f"{qty} contract{'s' if qty != 1 else ''} at ${inputs.ask:.2f} ask "
             f"x{inputs.multiplier} = ${total_premium:.2f} premium, within "
-            f"${inputs.budget_usd:.2f} budget"
+            f"${inputs.budget_usd:.2f} budget{liquidity_note}"
         ),
     )

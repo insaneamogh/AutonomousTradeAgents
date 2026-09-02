@@ -187,6 +187,7 @@ async def fetch_option_candidates(
             volume=int(q.last_trade_size) if q.last_trade_size is not None else None,
             delta=q.delta,
             implied_volatility=q.implied_volatility,
+            quote_ts=getattr(q, "quote_ts", None),
         )
         for q in chain_quotes
     )

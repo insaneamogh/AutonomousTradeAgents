@@ -781,9 +781,19 @@ class ToolGuard:
             return GuardVerdict(False, "context_fetch_failed")
 
         # 11. options_position_size -> qty<1 is size_rounds_to_zero.
+        # open_interest/max_pct feed the liquidity trim: the dollar budget
+        # says what we can afford to lose, open interest says whether we
+        # can get back out. Passing both is what stopped a 167-OI contract
+        # sizing to 5 lots purely because the budget allowed it.
         budget_usd = context.account_equity * caps.options_max_premium_pct / 100.0
         sizing = options_position_size(
-            OptionsSizingInputs(budget_usd=budget_usd, ask=ask, multiplier=option.multiplier)
+            OptionsSizingInputs(
+                budget_usd=budget_usd,
+                ask=ask,
+                multiplier=option.multiplier,
+                open_interest=option.open_interest,
+                max_pct_of_open_interest=caps.options_max_pct_of_open_interest,
+            )
         )
         if sizing.qty < 1:
             return await self._ledger_refusal(
@@ -1008,7 +1018,13 @@ class ToolGuard:
 
         budget_usd = context.account_equity * ctx.caps.options_max_premium_pct / 100.0
         sizing = options_position_size(
-            OptionsSizingInputs(budget_usd=budget_usd, ask=match.ask, multiplier=100)
+            OptionsSizingInputs(
+                budget_usd=budget_usd,
+                ask=match.ask,
+                multiplier=100,
+                open_interest=match.open_interest,
+                max_pct_of_open_interest=ctx.caps.options_max_pct_of_open_interest,
+            )
         )
         if sizing.qty < 1:
             return GuardVerdict(False, "size_rounds_to_zero")

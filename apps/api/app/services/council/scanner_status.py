@@ -20,7 +20,11 @@ from __future__ import annotations
 import logging
 
 from app.core.time import utc_now
-from app.schemas.scanner import ScannerStatusResponse, ScanSignalDto
+from app.schemas.scanner import (
+    AlpacaCliHealthDto,
+    ScannerStatusResponse,
+    ScanSignalDto,
+)
 from app.services.council.scheduler import (
     configured_watchlist,
     get_council_scheduler,
@@ -53,11 +57,27 @@ async def build_scanner_status_report() -> ScannerStatusResponse:
     except Exception as exc:
         logger.warning("scanner watchlist read failed — %s", exc)
         watchlist_size = 0
+
+    # One subprocess round trip (`alpaca version`) per status read. Cheap,
+    # and it is the one place the hackathon's CLI requirement is provable
+    # on demand rather than only as a side effect of a scan having run.
+    # Failure here must never blank the rest of the report — a health
+    # probe that takes down the panel it reports into is worse than no
+    # probe, so this degrades to None and the field simply goes absent.
+    cli_health = None
     try:
-        return _build(watchlist_size)
+        from engine.features.alpaca_cli import cli_health as _cli_health
+
+        cli_health = AlpacaCliHealthDto(**await _cli_health())  # type: ignore[arg-type]
+    except Exception as exc:
+        logger.info("alpaca CLI health probe failed — %s", exc)
+
+    try:
+        report = _build(watchlist_size)
     except Exception as exc:
         logger.warning("scanner status read failed — %s", exc)
-        return _empty_report(watchlist_size)
+        report = _empty_report(watchlist_size)
+    return report.model_copy(update={"alpaca_cli": cli_health})
 
 
 def _empty_report(watchlist_size: int = 0) -> ScannerStatusResponse:
