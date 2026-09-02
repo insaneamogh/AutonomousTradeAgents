@@ -313,15 +313,24 @@ better one at 14:40 then cannot have. A floor is the cheap, deterministic
 way to stop that, and it is exactly the "only fire when something good
 comes up" gate the scanner is supposed to have.
 
-Defaults to OFF deliberately. The live distribution of scores on this
-watchlist has NOT been measured, and this repo's own rule is to measure
-before setting a threshold rather than reason about it. A floor guessed
-too high trades nothing at all, which is a worse failure than spending a
-slot on a mediocre setup. To set it honestly: run one session, read the
-scores off the ``llm_symbol_cap_reached`` rollup rows, and put the floor
-at the level that would have admitted the day's best handful. The
-docstring for ``MIN_FIT_TO_TRADE`` notes a clean uptrend breakout scores
-~0.75, so the useful band is likely 0.50-0.60.
+Defaults to OFF, and **measurement now says it probably cannot be turned
+on usefully** — read this before reaching for it.
+
+``apps/agents/tests/eval`` measured the score distribution on 2026-09-02
+across 300 symbols from the repo's own synthetic feature generator:
+every symbol that clears ``MIN_FIT_TO_TRADE`` scores between **0.6075
+and 0.6107** — 18 distinct values inside a 0.3% band. There is a cliff
+between 0.60 and 0.65 and nothing inside it, so any floor set here either
+admits every passing candidate or none of them. It is a switch, not a
+dial.
+
+That is measured on SYNTHETIC features, which are derived from one hash
+seed per symbol and are low-variance by construction, so the real
+distribution may be wider — but it is unmeasured, and setting this on
+unmeasured data is the exact mistake this repo keeps writing post-mortems
+about. Run ``tests/eval/run_eval.py`` against the live feature provider
+first; if the spread is still ~0.003, this knob is the wrong tool and the
+right fix is a scoring signal with real dynamic range.
 """
 
 
@@ -668,10 +677,18 @@ async def main(
     # order, so which admitted symbols actually spent the day/hour budget
     # depended on their position in the watchlist rather than on how good
     # they were. With an 86-symbol options watchlist and 4 paid passes an
-    # hour, that meant the alphabetically-early names reliably got the
-    # money and the best setups reliably did not. Ranking here is the
-    # difference between "the caps ration to the best" (what the ranking
-    # above was written to do) and "the caps ration to whoever is first".
+    # hour, that meant whichever names sat early in the list reliably got
+    # the money.
+    #
+    # HONEST LIMIT, measured after this shipped (apps/agents/tests/eval):
+    # passing scores cluster inside a 0.3% band (0.6075-0.6107 across 300
+    # synthetic symbols), so candidates tie to three decimal places and
+    # the sort is effectively decided by the symbol tie-break. This is
+    # still strictly better than walking watchlist order — it is
+    # deterministic and independent of list POSITION — but it does not
+    # yet deliver "the caps ration to the best setups". It will only do
+    # that once the score has real dynamic range; see
+    # `_DEFAULT_MIN_LLM_SCORE` for the measurement and what it implies.
     admitted_rank = {sym: i for i, sym in enumerate(candidates[:max_symbols])}
     if len(candidates) > max_symbols:
         log.warning(
