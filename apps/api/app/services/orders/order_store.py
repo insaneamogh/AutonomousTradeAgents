@@ -157,6 +157,9 @@ async def _insert_pending_order_row(
     is_option: bool,
     multiplier: int,
     option_action: str | None,
+    limit_price: float | None = None,
+    stop_price: float | None = None,
+    time_in_force: str = "DAY",
 ) -> uuid.UUID:
     """Shared INSERT body for ``persist_linked_order_submit`` and
     ``persist_unlinked_order_submit`` — identical row shape, differing only
@@ -188,6 +191,9 @@ async def _insert_pending_order_row(
                 is_option=is_option,
                 multiplier=multiplier,
                 option_action=option_action,
+                limit_price=limit_price,
+                stop_price=stop_price,
+                time_in_force=time_in_force,
             )
             .on_conflict_do_nothing(constraint="uq_orders_client_order_id")
         )
@@ -212,6 +218,9 @@ async def persist_linked_order_submit(
     is_option: bool = False,
     multiplier: int = 1,
     option_action: str | None = None,
+    limit_price: float | None = None,
+    stop_price: float | None = None,
+    time_in_force: str = "DAY",
 ) -> uuid.UUID | None:
     """Pending ``orders`` row for an order that already knows its decision
     (the position manager's agent/manual closes). Same idempotency +
@@ -240,6 +249,9 @@ async def persist_linked_order_submit(
         is_option=is_option,
         multiplier=multiplier,
         option_action=option_action,
+        limit_price=limit_price,
+        stop_price=stop_price,
+        time_in_force=time_in_force,
     )
 
 

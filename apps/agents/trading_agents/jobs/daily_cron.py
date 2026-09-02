@@ -299,6 +299,47 @@ def _max_llm_symbols_per_hour() -> int:
     return value if value >= 1 else _DEFAULT_MAX_LLM_SYMBOLS_PER_HOUR
 
 
+_DEFAULT_MIN_LLM_SCORE = 0.0
+"""Deterministic strategy-fit score a symbol must clear before it may
+consume a PAID council pass. 0.0 = off, which is the default.
+
+Distinct from ``strategies.fit.MIN_FIT_TO_TRADE`` (0.45), which asks "is
+this tradeable at all" — a symbol below that already scores ``None`` here
+and never reaches an LLM. This asks the different question "is this good
+enough to spend money on", and exists because the day/hour caps are
+first-come-first-served ACROSS sweeps: the scanner runs every 2 minutes,
+so a mediocre setup at 14:02 can consume an hourly slot that a much
+better one at 14:40 then cannot have. A floor is the cheap, deterministic
+way to stop that, and it is exactly the "only fire when something good
+comes up" gate the scanner is supposed to have.
+
+Defaults to OFF deliberately. The live distribution of scores on this
+watchlist has NOT been measured, and this repo's own rule is to measure
+before setting a threshold rather than reason about it. A floor guessed
+too high trades nothing at all, which is a worse failure than spending a
+slot on a mediocre setup. To set it honestly: run one session, read the
+scores off the ``llm_symbol_cap_reached`` rollup rows, and put the floor
+at the level that would have admitted the day's best handful. The
+docstring for ``MIN_FIT_TO_TRADE`` notes a clean uptrend breakout scores
+~0.75, so the useful band is likely 0.50-0.60.
+"""
+
+
+def _min_llm_score() -> float:
+    raw = os.environ.get("MIN_LLM_SCORE", "").strip()
+    if not raw:
+        return _DEFAULT_MIN_LLM_SCORE
+    try:
+        value = float(raw)
+    except ValueError:
+        log.warning(
+            "ignoring malformed MIN_LLM_SCORE=%r — keeping %.2f",
+            raw, _DEFAULT_MIN_LLM_SCORE,
+        )
+        return _DEFAULT_MIN_LLM_SCORE
+    return value if 0.0 <= value <= 1.0 else _DEFAULT_MIN_LLM_SCORE
+
+
 def _max_llm_symbols_per_day() -> int:
     raw = os.environ.get("MAX_LLM_SYMBOLS_PER_DAY", "").strip()
     if not raw:
@@ -604,8 +645,34 @@ async def main(
         (sym for sym, score in scores.items() if score is not None),
         key=lambda sym: (-scores[sym], sym),  # best score first, symbol tie-break
     )
+    # Quality floor, applied BEFORE the per-sweep cap so a weak setup
+    # cannot occupy a slot that the caps then deny to a better one later
+    # in the session. A filtered symbol is treated exactly like a
+    # never-scored one: a free, uncosted HOLD.
+    min_score = _min_llm_score()
+    below_floor: set[str] = set()
+    if min_score > 0.0:
+        below_floor = {s_ for s_ in candidates if (scores[s_] or 0.0) < min_score}
+        if below_floor:
+            log.info(
+                "MIN_LLM_SCORE=%.2f filtered %d of %d candidates before the "
+                "sweep cap: %s", min_score, len(below_floor), len(candidates),
+                ",".join(sorted(below_floor)),
+            )
+        candidates = [s_ for s_ in candidates if s_ not in below_floor]
+
     max_symbols = _max_llm_symbols_per_sweep()
     admitted = set(candidates[:max_symbols])
+    # Score order for the paid loop below, best first. `admitted` is
+    # already the top-N BY SCORE, but the loop used to walk `watchlist`
+    # order, so which admitted symbols actually spent the day/hour budget
+    # depended on their position in the watchlist rather than on how good
+    # they were. With an 86-symbol options watchlist and 4 paid passes an
+    # hour, that meant the alphabetically-early names reliably got the
+    # money and the best setups reliably did not. Ranking here is the
+    # difference between "the caps ration to the best" (what the ranking
+    # above was written to do) and "the caps ration to whoever is first".
+    admitted_rank = {sym: i for i, sym in enumerate(candidates[:max_symbols])}
     if len(candidates) > max_symbols:
         log.warning(
             "%d symbols cleared strategy_fit this sweep — admitting only the "
@@ -658,9 +725,29 @@ async def main(
     rolled_up: list[dict] = []
     # Sequential — Anthropic prompt-caching benefits from steady cadence
     # within ~30s windows. Parallel would burn separate cache entries.
-    for symbol in watchlist:
+    # Admitted symbols first, best score first; everything else after, in
+    # watchlist order. Only the admitted ones can consume budget, so this
+    # ordering is what decides where the money goes when a cap trips
+    # mid-loop. The others still run — they HOLD for free — so no symbol
+    # is dropped, only re-ordered.
+    sweep_order = sorted(
+        watchlist,
+        key=lambda sym: (admitted_rank.get(sym, len(admitted_rank)), watchlist.index(sym)),
+    )
+    for symbol in sweep_order:
         try:
             score = scores.get(symbol)
+            if symbol in below_floor:
+                # Its own reason, not the cap's. "We ran out of budget" and
+                # "this setup was not good enough to pay for" are different
+                # facts about the desk, and the Refusal Ledger is the whole
+                # differentiator here — collapsing them would misreport a
+                # deliberate quality decision as a resource limit.
+                rolled_up.append({
+                    "symbol": symbol, "skipped": True,
+                    "skip_reason": "below_min_llm_score",
+                })
+                continue
             if score is not None and symbol not in admitted:
                 rolled_up.append({
                     "symbol": symbol, "skipped": True,

@@ -148,3 +148,82 @@ def test_a_twelve_dollar_contract_sizes_to_at_least_one() -> None:
         OptionsSizingInputs(budget_usd=budget_usd, ask=12.0, multiplier=100)
     )
     assert decision.qty >= 1
+
+
+# ── liquidity trim (the CME sizing hole) ─────────────────────────────
+
+
+def test_open_interest_trims_a_position_the_budget_alone_would_oversize() -> None:
+    """CME261016P00270000, reconstructed: ask $4.60, open interest 167,
+    $2,300 of premium budget available. Budget alone sizes 5 contracts —
+    which is what actually happened, and the position then gapped 26
+    points between prints. At 1% of open interest it sizes 1."""
+    decision = options_position_size(
+        OptionsSizingInputs(
+            budget_usd=2300.0,
+            ask=4.60,
+            multiplier=100,
+            open_interest=167,
+            max_pct_of_open_interest=1.0,
+        )
+    )
+    assert decision.qty == 1
+    assert "liquidity cap" in decision.notes
+    assert "167" in decision.notes
+
+
+def test_the_trim_does_not_bind_on_a_genuinely_liquid_contract() -> None:
+    """SPY-shaped: 2,841 open interest allows 28 lots, far above what the
+    dollar budget affords. The premium budget must stay the operative
+    constraint on liquid names — this cap exists to shrink doubtful
+    positions, not to shrink every position."""
+    decision = options_position_size(
+        OptionsSizingInputs(
+            budget_usd=2300.0,
+            ask=4.60,
+            multiplier=100,
+            open_interest=2841,
+            max_pct_of_open_interest=1.0,
+        )
+    )
+    assert decision.qty == 5
+    assert "liquidity cap" not in decision.notes
+
+
+def test_the_trim_never_rounds_a_viable_trade_to_zero() -> None:
+    """Sizing TRIMS; it does not veto. A contract too thin to hold one lot
+    is refused upstream by options_min_open_interest and the chain-depth
+    gate, which is where a refusal belongs and where it gets a named
+    reason in the ledger."""
+    decision = options_position_size(
+        OptionsSizingInputs(
+            budget_usd=2300.0,
+            ask=4.60,
+            multiplier=100,
+            open_interest=10,  # 1% of 10 == 0.1, floors to 0
+            max_pct_of_open_interest=1.0,
+        )
+    )
+    assert decision.qty == 1
+
+
+def test_omitting_open_interest_leaves_sizing_exactly_as_it_was() -> None:
+    """The trim is opt-in by passing real data. Every pre-existing caller
+    and fixture that does not pass open interest must size identically to
+    before, or this change silently alters unrelated paths."""
+    without = options_position_size(
+        OptionsSizingInputs(budget_usd=2300.0, ask=4.60, multiplier=100)
+    )
+    assert without.qty == 5
+    assert "liquidity cap" not in without.notes
+
+    disabled = options_position_size(
+        OptionsSizingInputs(
+            budget_usd=2300.0,
+            ask=4.60,
+            multiplier=100,
+            open_interest=167,
+            max_pct_of_open_interest=0.0,  # 0 turns the side off
+        )
+    )
+    assert disabled.qty == 5

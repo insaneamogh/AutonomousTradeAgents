@@ -1484,3 +1484,45 @@ def _in_flight_session_factory(*, in_flight: bool):
             return False
 
     return lambda: _CM()
+
+
+# ─────────────────────────────────────────────────────────────────────
+# The resting protective stop must NOT read as a close in flight
+# ─────────────────────────────────────────────────────────────────────
+
+
+async def test_a_resting_protective_stop_is_not_treated_as_a_close_in_flight() -> None:
+    """The single interaction that makes broker-side option stops safe.
+
+    ``_has_in_flight_close`` matches ANY open order tied to a decision,
+    deliberately unfiltered by side. A protective stop is exactly that —
+    an open order that is MEANT to sit there for the life of the position
+    — so without an explicit exclusion every protected option would look
+    permanently "closing" and the manager would skip it on every tick,
+    silently disabling the time stop, the signal exit, the ratchet close
+    and escalation. That trades four working exits for one.
+
+    Asserted on the compiled SQL because the guard's filtering happens in
+    the database, not in Python: a fake session returning a canned row
+    cannot distinguish "the query excluded the stop" from "the query
+    matched it and the fake said no".
+    """
+    from app.services.orders.option_stops import PROTECTIVE_STOP_PREFIX
+    from app.services.orders.position_manager import _has_in_flight_close
+
+    session = MagicMock()
+    result = MagicMock()
+    result.scalar_one_or_none = MagicMock(return_value=None)
+    session.execute = AsyncMock(return_value=result)
+
+    await _has_in_flight_close(session, uuid.uuid4())
+
+    stmt = session.execute.await_args.args[0]
+    sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+    assert "NOT" in sql.upper() and "LIKE" in sql.upper(), (
+        "the in-flight-close query must EXCLUDE resting protective stops"
+    )
+    assert PROTECTIVE_STOP_PREFIX in sql, (
+        f"the exclusion must key off {PROTECTIVE_STOP_PREFIX!r} — the prefix "
+        "option_stops actually places its orders under"
+    )

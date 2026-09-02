@@ -206,6 +206,36 @@ class RiskCaps:
     block that holds real volume. A floor of 10 rejected 16 of 18 live SPY
     contracts that had already cleared DTE, delta and IV. Open interest above
     is the real liquidity gate; this only asserts the contract has traded."""
+    options_max_pct_of_open_interest: float = 1.0
+    """A new option position may not exceed this percent of the CONTRACT'S
+    OWN open interest. Sizing's liquidity dimension — the one the -$1,200
+    CME loss exposed by not existing.
+
+    ``options_position_size`` is ``floor(budget / cost)`` and takes no
+    liquidity input at all, so on ``CME261016P00270000`` (open interest
+    167, stamped 4 days stale) it sized 5 contracts purely because $2,300
+    of dollar budget was available. Open interest is the whole gate today
+    (see ``options_min_open_interest``), and it is a PASS/FAIL gate — a
+    contract at 167 and one at 28,000 size identically.
+
+    Open interest, not volume: ``options_min_volume``'s docstring above
+    records that ``OptionLegDetails.volume`` carries a last-trade SIZE,
+    not a daily total, so it cannot support a "percent of average daily
+    volume" cap. Open interest is the only honest liquidity denominator
+    this feed gives us.
+
+    At 1.0: open interest 167 sizes to 1 contract (CME would have lost
+    ~$240, not $1,200); SPY at 2,841 sizes to 28, far above what the
+    dollar budget allows, so on genuinely liquid contracts this cap never
+    binds and the premium budget stays the operative constraint. That
+    asymmetry is the point — it shrinks exactly the positions whose exit
+    is doubtful and leaves every other one alone.
+
+    Never rounds a viable trade to zero: the floor is 1 contract when the
+    dollar budget affords one, so this cap TRIMS, it does not veto. A
+    contract too thin to hold even one lot is refused earlier, by
+    ``options_min_open_interest`` and the chain-depth gate."""
+
     options_max_relative_spread_pct: float = 12.0
     """Liquidity floor read by ``illiquid_contract``: ``(ask-bid)/mid`` as
     a percentage. On a 15-min-delayed indicative feed this is the single
@@ -272,6 +302,50 @@ class RiskCaps:
     it is set deliberately high because the trail, not this ceiling, is
     now the mechanism that locks in ordinary gains."""
 
+    options_protective_stop_enabled: bool = True
+    """Place a RESTING stop-limit at the broker after an option entry fills.
+
+    Until 2026-09-02 the options stop lived only in our own 30-second
+    polling loop, on the belief that a broker-side stop was structurally
+    impossible. That belief was half right and is now out of date: a
+    BRACKET is still impossible for a single-leg option (``OrderClass``
+    allows only simple/mleg for ``us_option``), but Alpaca's options docs
+    state that an options order's ``type`` may be ``stop`` or
+    ``stop_limit`` for single-leg orders. So a STANDALONE protective stop
+    is placeable, and this switch turns it on.
+
+    It does not replace the software stop — both run, and the software
+    one still owns the time stop, the signal exit and the expiry sweep.
+    What this covers is what polling structurally cannot: our process
+    down or redeploying, a broker read that errors and holds every option
+    un-stopped for a tick, the gap between ticks, and overnight/weekend.
+
+    It is NOT a fix for gap risk. A resting stop elects on a print exactly
+    like ours does; a contract that jumps -26% → -52% in one print fills
+    at the bad level either way. Gap risk is addressed at entry, by chain
+    depth and by liquidity-relative sizing."""
+
+    options_stop_limit_slippage_pct: float = 12.0
+    """How far below the trigger the protective stop's LIMIT sits.
+
+    A stop-MARKET on a thin option can fill anywhere, and this repo's
+    standing rule is never to send a market order on a premium quoted off
+    a delayed indicative feed — so the resting order is a stop-LIMIT and
+    this is its band. Matched to ``options_max_relative_spread_pct`` (12)
+    rather than picked independently: that is the widest book we let
+    ourselves enter, so it is the width a fill has to cross in the worst
+    contract we hold. Too tight and the stop elects but never fills,
+    which is the failure mode a stop-limit must not have."""
+
+    options_protective_stop_min_step_pct: float = 5.0
+    """Percentage POINTS of P&L the ratchet's trail line must advance
+    before the resting stop is cancel-replaced at the tighter level.
+
+    Every replace is two broker calls and a brief window with no resting
+    stop at all, so moving the order a few cents is a bad trade. 5 points
+    matches the granularity the trail actually moves at (it arms at +35%
+    and gives back 30% of the peak)."""
+
     # Wash-sale (US tax informational warning)
     wash_sale_lookback_days: int = 30
     """IRS rule: closing at a loss + re-entering within 30 calendar days
@@ -316,11 +390,38 @@ class RiskCaps:
         docstring).
 
         Widens exactly six numbers:
-          - ``options_max_premium_pct`` 1.0 -> 2.5 — the plan's §1 finding
+          - ``options_max_premium_pct`` 1.0 -> 1.5 — the plan's §1 finding
             is that 1.0% was not really "small risk", it was a silent
             sizing-floor bug: at $100k equity, ANY contract priced above
             $10.00 floored to zero contracts and the pass became an
-            un-ledgered HOLD.
+            un-ledgered HOLD. 1.5 clears that (contracts to $15.00 size at
+            $100k) while keeping the book WIDE rather than deep.
+
+            This was 2.5 on 2026-09-01 and is now 1.5, and the reason is
+            book WIDTH, not appetite. The aggregate cap is pinned at 7.5
+            by the halt coupling below and cannot rise, so per-position
+            size is the only lever on how many positions the book holds:
+
+                7.5 / 2.5 = 3 concurrent positions
+                7.5 / 1.5 = 5 concurrent positions
+
+            At 2.5 the measured consequence was a desk that stopped
+            trading: 293 options runs produced 7 trades, and 48 of the
+            refusals were ``max_total_premium_pct`` — the book filled at
+            15:00 UTC on 2026-09-01 and stayed full for the rest of the
+            session. Three positions is also a concentration the rest of
+            this class works hard to avoid everywhere else (``max_open_
+            positions``, ``correlation_cap``, ``sector_concentration``).
+
+            Aggregate risk is UNCHANGED — the same 7.5% of equity is at
+            work either way, and ``max_options_book_drawdown_pct`` is
+            untouched at 3.0%. What changes is that it is spread over
+            five independent theses instead of three, which lowers
+            single-name variance without lowering exposure. That cuts
+            both ways over a short window and is stated here so the
+            trade-off is not rediscovered later: five smaller positions
+            land nearer the strategy's expected value, so a book that is
+            RIGHT wins less on its best name than three would have.
 
           - ``options_max_total_premium_pct`` 5.0 -> 7.5, which is
             ``|daily_drawdown_halt_pct| / (options_stop_loss_pct/100)``
@@ -389,7 +490,7 @@ class RiskCaps:
         # profile's value instead of colliding with it as a duplicate
         # keyword argument.
         values: dict[str, object] = {
-            "options_max_premium_pct": 2.5,
+            "options_max_premium_pct": 1.5,
             "options_max_total_premium_pct": 7.5,
             "min_council_confidence": 0.42,
             "min_specialist_avg_score": 40.0,

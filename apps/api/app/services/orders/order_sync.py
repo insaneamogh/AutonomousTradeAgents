@@ -212,6 +212,15 @@ async def _apply_decision_lifecycle(session: AsyncSession, order_row: object) ->
     if order_row.side == entry_side:
         decision.fill_qty = int(order_row.filled_qty)
         decision.fill_avg_price = order_row.avg_fill_price
+        # An option entry has just filled and we now know its real average
+        # premium — the first moment a protective stop can be priced off
+        # anything but a guess. Placed here rather than in the executor for
+        # exactly that reason: at submit time there is no fill price, and
+        # a sell-to-close on a position that has not filled is rejected.
+        # Best-effort: a stop that cannot be placed must never make a
+        # good fill look like a failed one, and the software stop covers
+        # the position either way.
+        await _maybe_place_protective_stop(decision, order_row)
         return
 
     # Opposite side of the entry → the decision's position is (fully or
@@ -240,6 +249,41 @@ async def _apply_decision_lifecycle(session: AsyncSession, order_row: object) ->
         if decision.close_reason is None:
             decision.close_reason = "user_manual"
         await _maybe_record_pdt(session, decision, order_row, entry_side)
+
+
+async def _maybe_place_protective_stop(decision: object, order_row: object) -> None:
+    """Place the resting broker-side stop for a freshly-filled option entry.
+
+    Swallows everything. This runs inside ``sync_user_orders_and_positions``,
+    which is on the reconciler fleet's hot path for every user — an
+    exception here would abort the rest of that user's sync (fills,
+    closes, orphan adoption) over a protective order that the software
+    stop already duplicates in the common case.
+    """
+    if getattr(decision, "closed_at", None) is not None:
+        return
+    if not bool(
+        (getattr(decision, "proposal", None) or {}).get(
+            "isOption", (getattr(decision, "proposal", None) or {}).get("is_option", False)
+        )
+    ):
+        return
+    try:
+        from engine.db.session import async_session_factory
+
+        from app.services.orders.option_stops import sync_protective_stop
+
+        await sync_protective_stop(
+            async_session_factory(),
+            user_id=str(order_row.user_id),
+            decision=decision,
+        )
+    except Exception:
+        logger.warning(
+            "order_sync: could not place a protective stop for decision %s — "
+            "the position keeps the software stop only",
+            getattr(decision, "id", "?"), exc_info=True,
+        )
 
 
 async def _maybe_record_pdt(

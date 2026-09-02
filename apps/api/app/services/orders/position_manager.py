@@ -206,6 +206,30 @@ async def manage_positions_for_user(
                         "peak for %s (%s) — continuing without it",
                         decision.symbol, decision.id,
                     )
+                # Re-tighten the RESTING broker-side stop to the ratchet's
+                # new trail line. Deliberately inside the peak-advanced
+                # branch, not run every tick: each re-tighten is a cancel
+                # plus a place, and the peak advances ~10 times a session
+                # against ~800 ticks. `sync_protective_stop` is monotone
+                # and idempotent, so a missed advancement costs a slightly
+                # looser resting level until the next one, never a wrong
+                # one. Failures never touch the ratchet itself.
+                try:
+                    from app.services.orders.option_stops import sync_protective_stop
+
+                    await sync_protective_stop(
+                        session_factory,
+                        user_id=user_id,
+                        decision=decision,
+                        caps=caps,
+                        trail_line_pct=ratchet_outcome.trail_line_pct,
+                    )
+                except Exception:
+                    logger.exception(
+                        "position_manager: could not re-tighten the resting stop "
+                        "for %s (%s) — the software ratchet is unaffected",
+                        decision.symbol, decision.id,
+                    )
             if reason is None:
                 # The deterministic ratchet/stop/time/expiry checks all
                 # said "keep holding" this tick. `ratchet_outcome is None`
@@ -930,7 +954,18 @@ async def _has_in_flight_close(session, decision_id) -> bool:
     a ``side == "SELL"`` filter would be blind to it and risk a double
     close-submit on a slow tick. Any open order tied to this decision past
     entry-resolution is a close attempt, whichever side it placed as.
+
+    ONE exception, and it is load-bearing: a RESTING PROTECTIVE STOP
+    (``option_stops.PROTECTIVE_STOP_PREFIX``) is an open order tied to
+    this decision that is deliberately meant to sit there for the life of
+    the position. It is not an attempt in progress. Without this
+    exclusion, placing a broker-side stop would make every protected
+    option look permanently "closing", and this function would skip it on
+    every tick — silently disabling the time stop, the signal exit, the
+    ratchet close and escalation. That trades four working exits for one,
+    which is strictly worse than having no broker stop at all.
     """
+    from app.services.orders.option_stops import PROTECTIVE_STOP_PREFIX
     from app.services.orders.order_sync import IN_FLIGHT_STATUSES
     from engine.db.models import Order
 
@@ -938,6 +973,7 @@ async def _has_in_flight_close(session, decision_id) -> bool:
         select(Order.id)
         .where(Order.agent_decision_id == decision_id)
         .where(Order.status.in_(IN_FLIGHT_STATUSES))
+        .where(~Order.client_order_id.like(f"{PROTECTIVE_STOP_PREFIX}%"))
         .limit(1)
     )
     return (await session.execute(stmt)).scalar_one_or_none() is not None

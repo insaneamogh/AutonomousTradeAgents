@@ -235,8 +235,12 @@ async def test_continues_past_per_symbol_failures(monkeypatch, caplog) -> None:
     monkeypatch.setattr(daily_cron, "run_council", fake_run_council)
 
     rc = await daily_cron.main(user_id, ["GOOD1", "BROKE", "GOOD2"], force=False)
-    # All three were attempted.
-    assert calls == ["GOOD1", "BROKE", "GOOD2"]
+    # All three were attempted. Asserted as a SET: the contract under test
+    # is completeness ("one symbol throwing must not stop the rest"), and
+    # the paid loop now runs admitted symbols in descending score order,
+    # so pinning the sequence here would pin an unrelated decision.
+    assert set(calls) == {"GOOD1", "BROKE", "GOOD2"}
+    assert len(calls) == 3, "no symbol attempted twice"
     # Return code reflects the failure but the loop completed.
     assert rc == 1
 
