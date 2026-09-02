@@ -330,6 +330,77 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 # Build log
 
+### 2026-09-02 — 0a94024a — post-mortem: the -$1,200 CME loss
+
+Operator: "I suffered a heavy loss on this trade, analyse this."
+
+**The stop did not fail, and nothing was late.** `CME261016P00270000`,
+5 contracts @ $4.60, stop 35% (~$2.99), exited $2.20 = -52%.
+Reconstructed from 510 consecutive reconciler snapshots:
+
+```
+$3.40 (-26.1%)  17:33:37 -> 19:49:42   2h16m frozen, 510 snapshots
+$2.20 (-52.2%)  19:50:13               ONE print, 26-point gap
+stop fired      19:50:15               2 seconds later
+```
+
+There was never a -35% level to catch. **A price-based stop cannot function
+on a mark that does not print.** The risk control silently stopped working
+— worse than visibly failing.
+
+**Why that contract got bought.** Its funnel: 29 contracts entered the
+delta band, exactly ONE survived liquidity. Every gate in `select_contract`
+judges one contract at a time, so a chain where one contract scrapes past
+`open_interest >= 100` is indistinguishable from one where two hundred do.
+At 1 survivor the ranking did no work — it was not selected, it was all
+that was left, at the very edge of the threshold that admitted it (OI 167,
+stamped 4 days stale).
+
+```
+survivors  contract                behaviour
+        1  CME261016P00270000      -26% -> -52% in ONE print
+        1  CDNS260918P00320000     -8.9% -> +18.8% (27-point swing)
+       45  AMD260918P00457500      -5.06%
+       57  META260918P00585000     -3.65%
+      166  QQQ260930C00710000      -0.36%
+```
+
+CDNS, equally thin, swung 27 points the OTHER way. **Not "illiquid loses
+money"** — illiquid means P&L is dominated by quote noise rather than the
+thesis, and the stop is decorative. No directional claim from n=5.
+
+`_MIN_LIQUID_CHAIN_DEPTH` (5) -> new named reason `illiquid_chain`, funnel
+key `liquid_chain_depth`. The pre-existing zero-survivor case keeps
+`no_liquid_contract` (downstream readers depend on that name; pinned by a
+test). 5 is conservative; the 2-44 range is UNMEASURED — set there because
+at 1 the scoring is provably inert, not because 5 is derived.
+
+Threshold lives on `ContractSelectionInputs`, not as a bare constant:
+almost every existing selection test builds a one-contract chain to isolate
+a PER-CONTRACT gate, and this is a SET-level judgement that would mask them
+all. Those pass depth 1 explicitly; guard/drafter/agent-loop/council-mock
+integration fixtures got realistic multi-strike chains (siblings
+deliberately wider-spread so `_tie_break` still returns the named contract,
+all under the 12% spread cap — at 3.00/3.40 they are 12.5% and filter out,
+which defeats the depth they exist to provide; that cost one debugging
+round).
+
+**Related, same session:** CME was one of the 78 symbols I bulk-added to
+the options watchlist on 2026-09-01. My own universe screen had already
+measured it at 46 contracts with OI>=100 — near the bottom of the 123
+screened, against SPY's 2841 — and I added it anyway on a
+">=5 liquid contracts" bar that was far too low. The screen was right; the
+threshold I applied to it was not.
+
+Verified: 1401 passed, 11 skipped. Revert-checked. Ruff clean.
+
+**Still open:** the watchlist still contains the other thin names from that
+bulk add. The new gate now refuses them at selection time (correct, and
+free), but they still consume scanner attention and a paid council pass
+before the funnel runs. Pruning the watchlist by measured chain depth is
+the cheaper fix and is not done.
+
+
 ### 2026-09-02 — 8b810e1f / 330c22a6 — a real PER-DAY ceiling on paid passes
 
 Operator, after the credit burn: "max 10-20 symbols debated per day —
