@@ -330,6 +330,86 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 # Build log
 
+### 2026-09-02 — b6fb21db — the $10 key burned in one afternoon: order of operations
+
+Operator: "my whole $10 API credit got exhausted, check what caused this."
+
+**Measured first (console $7.11 / ledger $6.50, 880 calls, credits dead
+18:16 UTC). Cost per council run was FLAT at ~$0.025 all day — this was
+pure VOLUME, not a per-call regression.**
+
+```
+hour    runs  calls    $      what changed
+14:00      4     14  0.08     baseline
+15:00     33    108  0.85     <- MY scanner widening went live ~15:20
+16:00     37    122  0.95
+17:00    111    388  2.76     <- + universe screener, uncapped baseline sweep
+18:00     82    248  1.88     <- credits exhausted
+```
+
+**The 4 -> 33 jump is mine.** Yesterday I widened five knobs at once without
+modelling the compounding: scan interval 5->2min, max runs 8->15, options
+cooldown 45->20min, scheduled sweeps 2->5, and the options watchlist
+**8 -> 86 symbols**. Options runs cost ~4 Sonnet calls vs ~3 for equity, so
+widening the OPTIONS list specifically was the expensive choice. 84% of all
+spend was `options_bull` (500 calls, $4.54) + `options_bear` (241, $1.27).
+
+**Verified the other model's budget gates rather than trusting the commit
+message:** `MAX_LLM_SYMBOLS_PER_SWEEP=15` and `MAX_DAILY_LLM_SPEND_USD=3.00`
+are correctly implemented (live ledger read before each paid symbol, trips
+mid-sweep, midnight-UTC reset), 8 tests pass, and — the claim worth
+checking — I read BOTH scheduler call sites and confirmed the 2-min trigger
+loop and the scheduled baseline sweep really do route through the gated
+`cron_main`. Escalation/reflection have never fired (zero ledger rows);
+escalation is bounded to 1/fleet-tick; the options tool loop is bounded by
+`DEFAULT_MAX_ROUNDS`. No unbounded LLM path remains.
+
+**The operator's own question was the better fix**: "do we not have
+deterministic checks to filter options FIRST and only pass qualifying ones
+to the agent?" We do — they were running in the wrong ORDER.
+
+```
+293 options runs ->  7 traded (2.4%)
+ 48  max_total_premium_pct   <- portfolio-level, symbol-independent
+ 17  no_liquid_contract
+  6  size_rounds_to_zero
+```
+
+Every deterministic gate lived inside `_before_open_option_trade`, which the
+tool loop only reaches AFTER two Sonnet debate calls and the trade hop's
+third. The book hit its premium cap at 15:00 UTC and stayed there, and every
+options pass for the next three hours paid ~3 Sonnet calls to be told a fact
+that had nothing to do with the symbol.
+
+`ToolGuard.preflight_can_open()` + a short-circuit in `options_council_node`
+now answer the symbol-INDEPENDENT half first, for zero LLM calls, HOLDing
+with the SAME named rule the guard would have returned (so the audit row and
+Refusal Ledger read identically either way). Two properties are load-bearing
+and both revert-checked: **never a false negative** (asks whether the
+already-held book ALONE meets the cap; new premium is always > 0, so
+`existing >= cap` means every entry is already doomed — a book under the cap
+is untouched), and **fails open** (a broken pre-flight degrades to the normal
+paid path, never a silent HOLD).
+
+**Deliberately not moved:** `select_contract`'s funnel and
+`size_rounds_to_zero` (the other 23 runs, ~$0.58/day). Both need a chain
+fetch plus resolved direction/conviction, and rejecting on a GUESSED
+conviction could refuse a contract the real call would have taken — a lost
+trade, strictly worse than the spend saved.
+
+**Still open — the honest remainder.** The pre-flight removes ~$1.20/day of
+the $6.50. The rest is legitimate debate: 74 abstained, 56 below the
+conviction floor, 20 disagreed. That cost is inherent to having an opinion
+per symbol — the only lever on it is HOW MANY symbols get debated, i.e. the
+cadence knobs I widened, which are still at their wide values. At those
+settings the $3.00 daily cap trips roughly midday and the agent then HOLDs
+uncosted for the rest of the session. Recommended rollback (interval 2->5,
+max_runs 15->6, sweeps 5->3, options cooldown 20->45) is with the operator.
+
+Verified: 1391 passed, 11 skipped. Ruff clean (the one RUF100 in guard.py is
+pre-existing baseline, confirmed via stash).
+
+
 ### 2026-09-01 — 010bc9b2 — fix(agents): budget ceiling resets at midnight UTC, not rolling 24h
 
 Follow-up to `ae4c44e8` below, caught by verifying the just-deployed fix against the LIVE
