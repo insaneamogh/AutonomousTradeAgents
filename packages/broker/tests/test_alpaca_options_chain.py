@@ -64,9 +64,14 @@ def _fake_option_data_client_class(
     return FakeOptionHistoricalDataClient
 
 
-def _quote(*, bid_price: float, ask_price: float) -> Quote:
+def _quote(
+    *, bid_price: float, ask_price: float, timestamp: datetime | None = None
+) -> Quote:
     return Quote.model_construct(
-        symbol="X", timestamp=datetime.now(UTC), bid_price=bid_price, ask_price=ask_price
+        symbol="X",
+        timestamp=timestamp or datetime.now(UTC),
+        bid_price=bid_price,
+        ask_price=ask_price,
     )
 
 
@@ -105,9 +110,16 @@ async def test_maps_the_live_verified_example_fixture(monkeypatch: pytest.Monkey
     """AAPL260828P00305000, δ -0.2790, IV 0.2644 — the exact contract
     docs/OPTIONS_PLAN.md §0 measured live against a real paper account."""
     occ = "AAPL260828P00305000"
+    # Pinned rather than `now()` so the assertion below can name the exact
+    # value: this test is what proves `quote_ts` actually flows from the
+    # snapshot's own `latest_quote.timestamp` rather than defaulting to
+    # None. Selection reads delta/IV/spread off this same snapshot, so a
+    # stale one picks the wrong strike — the timestamp is what lets the
+    # freshness stage see that.
+    quote_ts = datetime(2026, 9, 2, 11, 41, 43, 443356, tzinfo=UTC)
     snapshot = _snapshot(
         occ,
-        quote=_quote(bid_price=4.85, ask_price=5.05),
+        quote=_quote(bid_price=4.85, ask_price=5.05, timestamp=quote_ts),
         trade=_trade(size=3.0),
         greeks=_greeks(delta=-0.2790),
         implied_volatility=0.2644,
@@ -132,6 +144,7 @@ async def test_maps_the_live_verified_example_fixture(monkeypatch: pytest.Monkey
             delta=-0.2790,
             implied_volatility=0.2644,
             last_trade_size=3.0,
+            quote_ts=quote_ts,
         )
     ]
 

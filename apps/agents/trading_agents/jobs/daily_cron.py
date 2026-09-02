@@ -384,7 +384,7 @@ async def _score_candidates_for_sweep(
     instrument_by_symbol: Mapping[str, str],
     feature_provider: Any,
     priors: Mapping[str, float],
-) -> dict[str, float | None]:
+) -> tuple[dict[str, float | None], dict[str, float]]:
     """Score every symbol's deterministic strategy fit, spending ZERO LLM
     calls, so the real (paid) pass in ``main`` can ration a limited
     per-sweep budget to the best setups first.
@@ -411,6 +411,7 @@ async def _score_candidates_for_sweep(
     allow_shorts_env = env_flag("ALLOW_SHORTS")
     options_flag = env_flag("ALLOW_OPTIONS")
     out: dict[str, float | None] = {}
+    convictions: dict[str, float] = {}
     for symbol in watchlist:
         instrument = (instrument_by_symbol or {}).get(symbol, "equity")
         options_eligible = options_flag and instrument == "option"
@@ -428,7 +429,13 @@ async def _score_candidates_for_sweep(
             )
             winner = None
         out[symbol] = winner.score if winner is not None else None
-    return out
+        # Read defensively: test doubles for `best_strategy` predate this
+        # field, and a missing conviction must degrade to "rank last among
+        # equals", never raise into the sweep.
+        convictions[symbol] = (
+            float(getattr(winner, "conviction", 0.0) or 0.0) if winner is not None else 0.0
+        )
+    return out, convictions
 
 
 async def _should_skip(user_id: str, symbol: str, instrument: str) -> bool:
@@ -647,12 +654,25 @@ async def main(
     except Exception:
         log.warning("could not load strategy priors for pre-pass scoring", exc_info=True)
 
-    scores = await _score_candidates_for_sweep(
+    scores, convictions = await _score_candidates_for_sweep(
         watchlist, instrument_by_symbol or {}, feature_provider, priors
     )
+    # Ranked by CONVICTION first, then score, then symbol.
+    #
+    # `score` is a weighted MEAN of ~9 bounded components and therefore a
+    # central statistic, which compresses: measured across 300 synthetic
+    # symbols it spans 0.6075-0.6107, so sorting by it alone is decided by
+    # the symbol tie-break rather than by quality. `conviction` measures
+    # only the POSITIVE evidence and how far above neutral it sits, which
+    # gives 5.6x the dispersion on that same set (0.0179 vs 0.0032) and 2x
+    # on the eval archetypes. Score stays as the secondary key so the
+    # ordering remains total and deterministic.
+    #
+    # UNVERIFIED on live features — both datasets measured here are
+    # synthetic. See apps/agents/tests/eval/README.md.
     candidates = sorted(
         (sym for sym, score in scores.items() if score is not None),
-        key=lambda sym: (-scores[sym], sym),  # best score first, symbol tie-break
+        key=lambda sym: (-convictions.get(sym, 0.0), -scores[sym], sym),
     )
     # Quality floor, applied BEFORE the per-sweep cap so a weak setup
     # cannot occupy a slot that the caps then deny to a better one later

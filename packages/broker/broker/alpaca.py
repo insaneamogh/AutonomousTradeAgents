@@ -773,6 +773,21 @@ class ChainQuote(NamedTuple):
     latter; true daily volume would need a separate per-contract bars
     call. A documented, imperfect liquidity proxy."""
 
+    quote_ts: datetime | None = None
+    """When the venue stamped this bid/ask (``latest_quote.timestamp``).
+
+    Carried so downstream code can tell a live quote from a stale one.
+    Selection reads delta, IV and spread off this same snapshot, so a
+    stale snapshot picks the WRONG STRIKE — and the limit price then
+    faithfully protects the price of a contract that should never have
+    been selected.
+
+    Expect this to look ~15 minutes old on the default INDICATIVE feed
+    (see ``_default_options_feed``), which is a documented property of
+    that tier, not a fault. Any staleness threshold has to be set against
+    the feed actually in use; see
+    ``RiskCaps.options_max_quote_age_seconds``."""
+
 
 def _default_options_feed() -> OptionsFeed:
     """``ALPACA_OPTIONS_FEED`` env override (``"opra"``/``"indicative"``,
@@ -859,6 +874,7 @@ async def list_option_chain_quotes(
                     delta=g.delta if g is not None else None,
                     implied_volatility=snapshot.implied_volatility,
                     last_trade_size=t.size if t is not None else None,
+                    quote_ts=getattr(q, "timestamp", None) if q is not None else None,
                 )
             )
         return quotes

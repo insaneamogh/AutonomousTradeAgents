@@ -302,6 +302,43 @@ class RiskCaps:
     it is set deliberately high because the trail, not this ceiling, is
     now the mechanism that locks in ordinary gains."""
 
+    options_max_quote_age_seconds: float = 0.0
+    """Refuse to SIZE an option on a quote older than this. **0 = OFF.**
+
+    An option's value changes second to second, and until 2026-09-02
+    nothing measured this at all: neither ``ChainQuote`` nor
+    ``ContractQuote`` carried a timestamp, so no downstream code could
+    apply a staleness rule even in principle — while the EQUITY path has
+    had a 1800s gate since it was written.
+
+    The timestamp is now plumbed (Alpaca snapshot ``latest_quote.timestamp``
+    -> ``ChainQuote.quote_ts`` -> ``ContractQuote.quote_ts``) and
+    ``select_contract`` has a freshness stage. This cap is what switches
+    that stage on, and it ships **off**.
+
+    Off, deliberately, and this is a judgement call worth stating. The
+    gate refuses a quote whose age is UNKNOWN as well as one that is old,
+    because an unknown age is exactly where a stale price is most likely
+    and least detectable. That is the right rule and it has a bad failure
+    mode: if the timestamp plumbing does not deliver in production, every
+    option refuses and the desk trades nothing. Turning that on
+    unverified, the night before a submission judged on P&L, risks the
+    whole entry to fix a correctness issue that has been latent for
+    weeks.
+
+    **What to set it to depends entirely on the feed.** The default
+    options feed is INDICATIVE (``_default_options_feed``): derived
+    quotes on a documented ~15-minute delay. Every quote is then ~900s
+    old as a PROPERTY OF THE TIER, not a fault, so:
+
+      * INDICATIVE feed -> 1800 (catches "this contract has not quoted in
+        half an hour" while passing the baseline delay);
+      * OPRA feed (real-time) -> 300.
+
+    Setting 300 on the indicative feed refuses 100% of options trades.
+    Verify with the ``quote_ts`` check in ``docs/RAILWAY_CHECKS.md``
+    before enabling either."""
+
     options_protective_stop_enabled: bool = True
     """Place a RESTING stop-limit at the broker after an option entry fills.
 
@@ -572,6 +609,9 @@ class RiskCaps:
             ),
             options_stop_loss_pct=_env_float(
                 "OPTIONS_STOP_LOSS_PCT", base.options_stop_loss_pct
+            ),
+            options_max_quote_age_seconds=_env_float(
+                "OPTIONS_MAX_QUOTE_AGE_SECONDS", base.options_max_quote_age_seconds
             ),
             options_ratchet_enabled=env_flag(
                 "OPTIONS_RATCHET_ENABLED", default=base.options_ratchet_enabled
