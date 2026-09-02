@@ -379,6 +379,37 @@ def _max_llm_symbols_per_sweep() -> int:
     return value if value >= 1 else _DEFAULT_MAX_LLM_SYMBOLS_PER_SWEEP
 
 
+async def _prefetch_bars_for(feature_provider: Any, watchlist: list[str]) -> None:
+    """Batch-warm the daily-bar cache for the whole watchlist.
+
+    Reaches through THIS PASS'S OWN feature provider to its bars provider,
+    never a freshly-constructed one. That distinction is the whole
+    correctness of this function: the cache is per-instance, so warming a
+    new provider's cache would leave the scoring loop's own cache empty
+    and the prefetch would be a silent no-op that still spent the API
+    calls — strictly worse than not doing it.
+
+    Duck-typed at both hops. The ``FeatureProvider`` protocol is just a
+    callable and the ``BarsProvider`` protocol requires only
+    ``daily_bars``, so the synthetic provider, every test double and any
+    future implementation are all entitled to have neither ``.bars`` nor
+    ``prefetch_daily_bars``. Missing either is a no-op, not an error.
+    """
+    if not watchlist:
+        return
+    try:
+        bars = getattr(feature_provider, "bars", None)
+        prefetch = getattr(bars, "prefetch_daily_bars", None)
+        if prefetch is None:
+            return
+        await prefetch(list(watchlist))
+    except Exception:
+        log.warning(
+            "bar prefetch failed for %d symbols — the per-symbol path will "
+            "fetch them individually", len(watchlist), exc_info=True,
+        )
+
+
 async def _score_candidates_for_sweep(
     watchlist: list[str],
     instrument_by_symbol: Mapping[str, str],
@@ -407,6 +438,18 @@ async def _score_candidates_for_sweep(
     exists to protect is dollars spent on Claude, not fetch count.
     """
     from trading_agents.strategies import best_strategy
+
+    # Warm the whole watchlist's daily bars in a handful of batched
+    # requests before scoring it symbol by symbol. Without this, screening
+    # N symbols is N HTTP requests; with it, N/100. That ratio is what
+    # makes a 1000-symbol universe affordable rather than a rate-limit
+    # problem (docs/PLAN_1000_SYMBOL_SCAN.md §2).
+    #
+    # Best-effort by construction: the prefetch writes into the same cache
+    # the per-symbol path reads, so a failure just means the loop below
+    # fetches individually — slower, identical result. Never let an
+    # optimisation be able to break the scan it optimises.
+    await _prefetch_bars_for(feature_provider, watchlist)
 
     allow_shorts_env = env_flag("ALLOW_SHORTS")
     options_flag = env_flag("ALLOW_OPTIONS")

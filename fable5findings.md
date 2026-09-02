@@ -355,6 +355,82 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 # Build log
 
+### 2026-09-02 — batched bars, the 1000-symbol plan, and three new docs
+
+Operator: "formulate a 1000 symbol options plus equity plan and fix
+everything thats happening wrong... make sure deterministic checks and
+maths is correct as options can arrive one second and their value
+changes another second."
+
+**The 10k-every-5-minutes number cannot work, and the reason is worth
+keeping.** Daily bars are one request per batch and the free tier allows
+200/minute; 10k symbols every 5 minutes is 2,000 symbols/minute of fetch
+traffic sustained. You also do not need it: `list_most_active_symbols`
+IS the market-wide screen, computed server-side, for TWO calls. The plan
+uses it as Tier 1 and spends real compute on the ~150 names it returns.
+~1000 eligible universe -> ~150 examined/sweep -> ~30-40 through the
+maths -> ~20 to the LLM, ~190 Alpaca calls/day total.
+`docs/PLAN_1000_SYMBOL_SCAN.md`.
+
+**Batched bar prefetch — the enabling change.** `StockBarsRequest` takes
+a LIST; the code sent one symbol per call. 150 symbols is now 2 requests,
+not 150, written into the same `(symbol, today, lookback)` cache the
+per-symbol path reads, so the first sweep of a day pays and every later
+one is a dict lookup.
+
+Two traps, both caught before they shipped:
+
+1. My first wiring built a FRESH `AlpacaDailyBarsProvider` to prefetch
+   with. The cache is per-instance, so that would have warmed a cache
+   nothing reads — a silent no-op that still spent the API calls, i.e.
+   strictly worse than not doing it. It now reaches through the pass's
+   own feature provider.
+2. **The revert-check failed to fail.** Breaking `symbol_or_symbols` to a
+   single symbol left the test green: it counted requests, and a loop
+   sending one symbol per request has the identical count, still caches
+   every symbol (as empty), and still reports 250 fetched. The test now
+   asserts request CONTENTS and that bars actually arrived. This is the
+   third time in this repo a test has passed against broken code; the
+   rule in §4.1 earned its place again.
+
+**Quote freshness — the operator's question was right, but not about the
+thing it sounds like.** "The ask moves while the agents debate, so we
+overpay" is structurally impossible: every entry is `OrderType.LIMIT` at
+the guard price. I built a re-fetch drift check, proved it was guarding
+nothing, and deleted it with its cap and helper rather than ship an API
+call per trade to re-prove an invariant.
+
+The real exposure is the contract CHOICE. Selection reads delta, IV and
+spread off the same snapshot, so a stale snapshot picks the wrong strike
+and the limit then faithfully protects the price of a contract we should
+never have selected. `latest_quote.timestamp` is now plumbed end to end
+and there is a `fresh_quote` stage that runs FIRST. **Ships disabled**:
+the default INDICATIVE feed is ~15 min delayed, so every quote is ~900s
+old by construction and a 300s gate would refuse 100% of options trades.
+
+**Conviction — a rank key with dispersion.** `score` is a weighted mean,
+i.e. a central statistic, and it compresses: 300 symbols all score
+0.6075-0.6107. The first version of the fix counted components over a
+0.6 line and measured out at TWO distinct values across 100 scenarios —
+coarser than what it replaced. Made continuous (how far above neutral,
+not how many above a line): 5.6x the dispersion on synthetic, 2x on the
+archetypes. Wired as the primary sort key, deliberately NOT into
+`tradable`.
+
+**Docs:** `PLAN_1000_SYMBOL_SCAN.md`, `AGENT_SCORING_AND_TOOLS.md`,
+`RAILWAY_CHECKS.md` (for the agent with account access — this session's
+Railway token could not see the deployment at all). CLAUDE.md's queue
+now leads with the fresh-account eligibility gate.
+
+Verified: 1477 passed, 11 skipped. Ruff exactly at baseline. Revert-checked
+the freshness stage, the continuous conviction, and the batching (twice —
+see above).
+
+**Still open, in order:** the fresh $100k account; Tier 0/1 wiring to
+actually raise the watchlist to ~1000; the live dispersion measurement
+that decides whether ranking works at all; Alpaca's MCP server still not
+consumed anywhere.
+
 ### 2026-09-02 — ada555fa — broker stops, liquidity sizing, wider book, Sonnet back
 
 Operator, after a review of the last 3 commits: fix the stop broker-side,

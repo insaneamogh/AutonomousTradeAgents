@@ -5,32 +5,61 @@ If you are touching anything options-related, also read
 [`docs/OPTIONS_PLAYBOOK.md`](docs/OPTIONS_PLAYBOOK.md) — it is the authoritative
 rule set, derived from the code, and §5 lists the traps that have already bitten.**
 
-**Work queued for you, in priority order.** Each is a full implementation plan with
-verified measurements, a revert-check matrix, and a "where you will go wrong" section.
-Read the whole plan before starting it:
+**Work queued for you, in priority order.**
+
+> ## 🔴 READ FIRST — the submission runs on an account that does not exist yet
+>
+> The hackathon rules (fetched 2026-09-02) require a **brand-new Alpaca
+> paper account at $100,000** for judging, and state that a project run
+> on a reused account **is not eligible**. The account in use is a reused
+> development one, so its P&L — including the ~-$800 currently showing —
+> **cannot be submitted and does not matter.**
+>
+> Nothing else in this file is worth doing before that account exists.
+> Full checklist: [`docs/RAILWAY_CHECKS.md`](docs/RAILWAY_CHECKS.md).
+
+**Current state, 2026-09-02.** Read these three before starting:
+
+| Doc | What it is |
+|---|---|
+| [`docs/RAILWAY_CHECKS.md`](docs/RAILWAY_CHECKS.md) | Every deployment check, ranked by consequence. §1 and §2 are eligibility gates. |
+| [`docs/AGENT_SCORING_AND_TOOLS.md`](docs/AGENT_SCORING_AND_TOOLS.md) | The two scoring numbers, the funnel, and what the guard re-derives on every tool call. |
+| [`docs/PLAN_1000_SYMBOL_SCAN.md`](docs/PLAN_1000_SYMBOL_SCAN.md) | Tiered scan to ~1000 symbols, with the one number in the original ask that cannot work and why. |
+
+**Verification that runs offline, in under a second, with no keys:**
+
+```bash
+.venv/bin/python -m pytest apps/agents/tests/eval -q        # 100-case funnel eval
+cd apps/agents && ../../.venv/bin/python -m tests.eval.run_eval   # scorecard
+```
+
+**Three things are shipped but UNPROVEN against a live broker.** Each
+degrades safely rather than breaking, but none has executed for real:
+
+| Thing | Where | How you will know |
+|---|---|---|
+| Resting broker-side option stop | `apps/api/app/services/orders/option_stops.py` | log line `option_stops: resting stop-limit on ...` after the first fill |
+| Quote-freshness gate | `engine/options/freshness.py` | ships DISABLED; see RAILWAY_CHECKS §3 before enabling |
+| Batched bar prefetch | `engine/features/bars.py` | log line `bars: prefetched N/M symbols in K batch request(s)` |
+
+**Older plan docs below are partly superseded.** Where one disagrees with
+the three docs above, the newer doc wins.
 
 | # | Plan | What |
 |---|---|---|
-| — | **IMPLEMENTATION SPECS — build these, in this order** | |
-| I1 | [`docs/IMPL_LLM_TOOLS.md`](docs/IMPL_LLM_TOOLS.md) | `llm.py` tool support. **Foundation — I2 depends on it.** ~4h |
-| I2 | [`docs/IMPL_OPTIONS_AGENTS.md`](docs/IMPL_OPTIONS_AGENTS.md) | Bull/Bear agents + guarded `open_option_trade` / `adjust_option_position`. ~16h |
-| I3 | [`docs/IMPL_CONTRACT_FUNNEL_UI.md`](docs/IMPL_CONTRACT_FUNNEL_UI.md) | The funnel view. **Highest demo value per hour**, no dependencies. ~5h |
-| I4 | [`docs/IMPL_REFUSAL_LEDGER.md`](docs/IMPL_REFUSAL_LEDGER.md) | Make the ledger show real dollars. **Starts with a diagnose-before-you-fix step.** ~6h |
+| — | **IMPLEMENTATION SPECS** | |
+| I1 | [`docs/IMPL_LLM_TOOLS.md`](docs/IMPL_LLM_TOOLS.md) | `llm.py` tool support. Shipped. |
+| I2 | [`docs/IMPL_OPTIONS_AGENTS.md`](docs/IMPL_OPTIONS_AGENTS.md) | Bull/Bear agents + guarded trade tools. Shipped. |
+| I3 | [`docs/IMPL_CONTRACT_FUNNEL_UI.md`](docs/IMPL_CONTRACT_FUNNEL_UI.md) | The funnel view. **Highest demo value per hour.** ~5h |
+| I4 | [`docs/IMPL_REFUSAL_LEDGER.md`](docs/IMPL_REFUSAL_LEDGER.md) | Make the ledger show real dollars. ~6h |
 | I5 | [`docs/IMPL_DEMO_SESSION.md`](docs/IMPL_DEMO_SESSION.md) | Read-only judge link. ~4h |
-| | | |
-| 0 | [`docs/PLAN_NEXT.md`](docs/PLAN_NEXT.md) | **START HERE.** What is left after the four below shipped, in order, plus the product gaps found reviewing the live app. |
-| 0a | [`docs/PLAN_AUTO_APPROVE.md`](docs/PLAN_AUTO_APPROVE.md) | **Do this first.** The agent cannot open a trade today — entries are human-gated. Nothing trades Mon–Thu without it. |
-| 0b | [`docs/PLAN_LEDGER_SURFACE.md`](docs/PLAN_LEDGER_SURFACE.md) | The Refusal Ledger renders $0 across the board. It is the entry's whole differentiator. |
-| 0c | [`docs/PLAN_JUDGE_SURFACE.md`](docs/PLAN_JUDGE_SURFACE.md) | Judges hit a login wall, cannot see WHY an options trade was picked, and nothing on screen proves we use Alpaca's CLI. |
-| 0e | [`docs/PLAN_CLI_SURFACE.md`](docs/PLAN_CLI_SURFACE.md) | **Deliverable 1/3.** The Alpaca CLI works and is invisible — one System Health row makes it judge-visible. ~1 hour. |
-| 0f | [`docs/PLAN_MCP_DEMO.md`](docs/PLAN_MCP_DEMO.md) | **Deliverable 2/3.** Alpaca's MCP server, read-only. The §0 verification gate is PASSED — spec fetched 2026-08-31. |
-| 0g | [`docs/PLAN_OPTIONS_AGENTS.md`](docs/PLAN_OPTIONS_AGENTS.md) | **Deliverable 3/3, ~3 days.** Two arguing options agents with REAL trade tools (`open_option_trade` / `adjust_option_position`), a deterministic guard running the full risk stack inside every call, a trailing ratchet that only tightens, and the trail state fed back for scale-in/exit decisions. Plus `llm.py` tool support, SSE debate UI, charts. |
-| 0d | [`docs/PLAN_MULTI_TENANT.md`](docs/PLAN_MULTI_TENANT.md) | **§1 is a live security issue.** Any judge who signs up is auto-attached to the operator's Alpaca account with write access. Fix before inviting anyone. |
-| 1 | [`docs/PLAN_AGGRESSIVE_PROFILE.md`](docs/PLAN_AGGRESSIVE_PROFILE.md) | Loosen the caps for the contest window via a reviewed profile. Changes outcomes; the delta band is frozen after Monday's open. |
-| 2 | [`docs/PLAN_EXIT_AGENT.md`](docs/PLAN_EXIT_AGENT.md) | Trailing ratchet (hold winners) + a monotone LLM exit agent with read-only tools. |
-| 3 | [`docs/PLAN_ALPACA_MCP.md`](docs/PLAN_ALPACA_MCP.md) | **Eligibility requirement.** Starts with a blocking verification gate — no code until you have quoted the spec. |
+| 0 | [`docs/PLAN_NEXT.md`](docs/PLAN_NEXT.md) | What is left, plus product gaps found reviewing the live app. |
+| 0d | [`docs/PLAN_MULTI_TENANT.md`](docs/PLAN_MULTI_TENANT.md) | **§1 is a live security issue.** Any judge who signs up is auto-attached to the operator's Alpaca account with write access. |
+| 0f | [`docs/PLAN_MCP_DEMO.md`](docs/PLAN_MCP_DEMO.md) | Alpaca's MCP server, read-only. **Still not consumed anywhere** — the CLI is what currently satisfies eligibility. |
+| 1 | [`docs/PLAN_AGGRESSIVE_PROFILE.md`](docs/PLAN_AGGRESSIVE_PROFILE.md) | The reviewed wide profile. Live via `RISK_PROFILE=aggressive_paper`. |
+| 2 | [`docs/PLAN_EXIT_AGENT.md`](docs/PLAN_EXIT_AGENT.md) | Trailing ratchet + monotone LLM exit agent. Shipped. |
 | 4 | [`docs/PLAN_CANDLE_PATTERNS.md`](docs/PLAN_CANDLE_PATTERNS.md) | Candlestick detection feeding strategy fit + the chart. |
-| 5 | [`docs/PLAN_SHORTS.md`](docs/PLAN_SHORTS.md) | **Read before touching anything short-related.** Bearish options (long puts) already work — 4 live fills. Equity shorts have never been proposed: blocked solely by the specialist-score floor, not a bug. `shortable_check` live-verified clean. Selling/writing options is a separate, unbuilt, deliberately-scoped-out capability — do not build it as a side effect. |
+| 5 | [`docs/PLAN_SHORTS.md`](docs/PLAN_SHORTS.md) | **Read before touching anything short-related.** Long puts work (4 live fills); equity shorts are blocked only by the specialist-score floor. Writing options is deliberately out of scope. |
 
 ---
 
