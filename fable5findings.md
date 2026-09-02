@@ -330,6 +330,54 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 # Build log
 
+### 2026-09-02 — f6f9e94c — funnel before the debate + options agents on Haiku
+
+Operator: "why is paid council pass first? also replace the model from
+sonnet to a cheaper haiku model for options."
+
+**1. The funnel now runs BEFORE the debate.** I had declined this the hour
+before, reasoning that `select_contract`'s `delta_band` stage needs
+`conviction` (an LLM output) and a guessed conviction risks a false
+negative. That was right but incomplete: conviction selects between exactly
+TWO bands (`_HIGH_CONVICTION_DELTA_BAND` / `_LOW_CONVICTION_DELTA_BAND`),
+so running the REAL `select_contract` once per regime covers the entire
+space. `preflight_chain_is_tradeable` refuses only when BOTH regimes return
+a chain-shaped rejection — a false negative is impossible by construction,
+and if either finds a contract the normal paid path runs unchanged.
+
+Only chain-shaped reasons short-circuit (`illiquid_chain`,
+`no_liquid_contract`, `no_candidates`). `no_delta_in_band` / `no_iv` / the
+IV-band rejections are conviction- or market-data-sensitive and are
+explicitly NOT treated as fatal — pinned by
+`test_chain_preflight_does_not_short_circuit_a_conviction_shaped_refusal`.
+`direction` comes from `strategy_fit` (deterministic, already free). Runs
+only after the account-level pre-flight, so a halted/capped account never
+pays for a chain fetch either.
+
+CME would now be refused for **zero** model calls instead of ~3.
+
+**2. Options agents default to Haiku.** The council was 84% of the $10 burn
+(`options_bull` 500 calls $4.54 + `options_bear` 241 $1.27 of $6.50).
+Safe HERE specifically because agents propose and deterministic code
+disposes: `ToolGuard.before()` re-runs the whole risk stack on every tool
+call regardless of which model asked, so a weaker model degrades SELECTION,
+never RISK CONTROL. `OPTIONS_AGENT_MODEL=sonnet` reverts with no deploy;
+unknown values keep Haiku rather than sending an invalid model id.
+
+Verified: 1410 passed, 11 skipped. Both revert-checked. Ruff clean.
+
+**Watch on the next session** — this is a real quality change, not just a
+cost one, and nobody has seen Haiku drive this loop yet:
+- whether `options_bull`/`options_bear` abstain or disagree materially more
+  often (they already abstained on 74 of 293 runs on Sonnet);
+- whether the trade hop's TOOL-CALLING holds up — that hop emits a
+  structured `open_option_trade` call, and a malformed one degrades to
+  HOLD rather than a bad trade, but a high degradation rate would show up
+  as calls/run climbing on `options_bull`.
+Compare `calls_per_run` and the abstain rate against the Sonnet baseline
+recorded in the 2026-09-01 entries before concluding the switch is free.
+
+
 ### 2026-09-02 — 0a94024a — post-mortem: the -$1,200 CME loss
 
 Operator: "I suffered a heavy loss on this trade, analyse this."
