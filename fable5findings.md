@@ -355,6 +355,65 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 # Build log
 
+### 2026-09-02 — the resting protective stop was silently broken from its first live fill
+
+Operator saw an open AAPL260918C00320000 position on the Positions screen and asked
+whether Alpaca actually holds a resting sell/stop order for it, and how the take-profit
+price was decided.
+
+**It does not, and every attempt to place one has failed since this feature's first-ever
+live fill.** `option_stops._resting_stop_row` — the query that checks whether a resting
+stop already exists before placing or re-tightening one — ordered by `Order.created_at`.
+That column does not exist on the model; the real one is `submitted_at` (confirmed
+directly in `packages/engine/engine/db/models/trading.py`). Every call raised
+`AttributeError: type object 'Order' has no attribute 'created_at'` before ever reaching
+the broker. Confirmed live in Railway logs, twice, for decision `9dbd83f3-...`
+(AAPL260918C00320000, 13 @ $10.65): once right after the fill (`order_sync: could not
+place a protective stop ... the position keeps the software stop only`), once ~5 minutes
+later on the ratchet's re-tighten path (`position_manager: could not re-tighten the
+resting stop ... the software ratchet is unaffected`). This is exactly the "unproven
+against a live broker" feature flagged at the top of `CLAUDE.md` — now proven, and proven
+broken, on its very first live opportunity.
+
+**Why nothing caught it:** zero existing test exercises this query against anything but a
+wholesale-mocked session (`test_position_manager.py`'s only related test mocks the
+session and asserts on compiled SQL for a *different* query). Referencing a nonexistent
+column on a SQLAlchemy declarative class raises at STATEMENT-BUILD time, before any
+session touches a real database — so a mocked-session test would have caught this with
+zero DB dependency, had one existed.
+
+**Fix:** one line, `option_stops.py:131`, `Order.created_at` → `Order.submitted_at`. Not
+`updated_at` (Python's own AttributeError suggestion) — that column has
+`onupdate=func.now()`, so ordering by it would resurface whichever stop row was most
+recently *modified* (e.g. a status transition), not most recently *placed*, which is
+wrong for "find the current resting stop." New `apps/api/tests/test_option_stops.py` (2
+tests): builds the query against a mocked session and asserts it does not raise, and
+separately asserts `submitted_at` (not `created_at`) appears in the compiled SQL. Revert-
+checked per CLAUDE.md §4.1: reintroduced `created_at`, both new tests failed with the
+exact live `AttributeError`; restored, both pass. Full `apps/api` suite: 518 passed, 10
+skipped, zero failures.
+
+**Blast radius while this was broken:** every option position opened since this shipped
+had (and until this fix deploys, still has) ONLY the software-side polling stop —
+no broker-side backstop for the process being down, redeployed, or rate-limited, or for
+the 30s gap between ticks, or over a weekend. The software ratchet/ ordinary stop/
+time-stop/expiry-sweep were never affected — this only ever touched the broker-side
+resting-order half of the protection.
+
+**Separately, on "how was take-profit decided":** there is no fixed take-profit price at
+the broker — by design. `packages/engine/engine/options/exits.py`'s `option_ratchet_signal`
+is a pure, LLM-free function (confirmed by reading it directly) that arms a trailing stop
+once premium gain crosses a threshold, then trails a proportional giveback off the peak,
+with a hard take-profit ceiling as a backstop. **Already 100% deterministic Python** — its
+own header states "No LLM is anywhere near this." The one LLM-shaped hook it emits
+(`may_consult`, intended for a future "exit agent" per `docs/PLAN_EXIT_AGENT.md`) is
+consumed by ZERO production code today — grepped the whole repo, the only references are
+tests and the plan doc itself, which states its own status plainly: "plan, not built...
+nothing in this document is in the code yet." `CLAUDE.md`'s own summary table calling this
+"Shipped" is imprecise — the ratchet is shipped; the LLM exit agent it was paired with
+never got built. Worth a `CLAUDE.md` correction; not done in this entry, flagged here so
+it isn't lost.
+
 ### 2026-09-02 — the symbol-scan funnel: universe → sweep → math → LLM, on the Insights screen
 
 Operator's second ask, same conversation as the preflight-visibility fix

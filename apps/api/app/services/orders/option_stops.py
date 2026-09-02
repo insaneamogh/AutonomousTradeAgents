@@ -128,7 +128,7 @@ async def _resting_stop_row(session, decision_id) -> Any | None:
         .where(Order.agent_decision_id == decision_id)
         .where(Order.client_order_id.like(f"{PROTECTIVE_STOP_PREFIX}%"))
         .where(Order.status.in_(IN_FLIGHT_STATUSES))
-        .order_by(Order.created_at.desc())
+        .order_by(Order.submitted_at.desc())
         .limit(1)
     )
     return (await session.execute(stmt)).scalars().first()
