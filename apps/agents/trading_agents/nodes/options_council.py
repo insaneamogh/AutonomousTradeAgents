@@ -227,10 +227,27 @@ async def options_council_node(
             "options council SKIPPED for %s — %s (deterministic pre-flight, "
             "0 LLM calls)", state.get("symbol"), reason,
         )
+        # `preflight.payload` carries whichever of risk_veto_rule /
+        # contract_funnel this specific reason actually earned — see
+        # guard.py's own docstrings on preflight_can_open /
+        # preflight_chain_is_tradeable for exactly which reasons carry
+        # which key. Read generically rather than re-deriving the
+        # classification here: until 2026-09-02 this branch set neither
+        # field, so a preflight-skipped symbol was invisible to both the
+        # veto ledger (`risk_veto_rule IS NOT NULL`) and the funnel report
+        # (skips rows with no `contract_funnel`) even though it was a real,
+        # named refusal — the more this optimisation saved, the blinder
+        # the Refusal Ledger got to options. risk_checks_passed is
+        # deliberately NEVER set here: neither preflight runs evaluate(),
+        # so nothing here has "passed" a risk check in that field's sense.
+        payload = preflight.payload or {}
         return {
             **state,
             "final_action": "HOLD",
             "proposal": None,
+            "risk_approved": False,
+            "risk_veto_rule": payload.get("risk_veto_rule"),
+            "contract_funnel": payload.get("contract_funnel"),
             "tool_denials": [f"preflight:{reason}"],
             "drafter_rationale": (
                 f"Refused before any model call by the deterministic "

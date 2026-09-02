@@ -1515,6 +1515,60 @@ async def test_preflight_blocks_when_the_market_is_closed() -> None:
     assert verdict.reason == "market_closed"
 
 
+async def test_preflight_names_the_veto_rule_for_max_total_premium_pct() -> None:
+    """Regression guard for the 2026-09-02 visibility gap: this refusal IS
+    a real RiskDecision.veto_rule (packages/engine/engine/options/rules/
+    max_total_premium_pct.py), so it must carry enough for the caller to
+    thread it into ghost_service.build_veto_ledger's
+    `risk_veto_rule IS NOT NULL` filter — a name in `.reason` alone never
+    reached the ledger before this fix."""
+    caps = _preflight_caps()
+    at_cap = PortfolioPosition(
+        symbol="NVDA260918C00225000",
+        qty=1,
+        avg_entry_price=75.0,
+        market_value=caps.options_max_total_premium_pct / 100.0 * 100_000.0,
+        is_option=True,
+        multiplier=100,
+    )
+    guard = _guard(
+        context_provider=MockRiskContextProvider(
+            account_equity=100_000.0, open_positions=(at_cap,)
+        )
+    )
+
+    verdict = await guard.preflight_can_open(user_id=str(uuid.uuid4()), caps=caps)
+
+    assert verdict.payload == {"risk_veto_rule": "max_total_premium_pct"}
+
+
+async def test_preflight_names_the_veto_rule_for_options_level_insufficient() -> None:
+    caps = _preflight_caps()
+    guard = _guard(
+        context_provider=MockRiskContextProvider(
+            account_equity=100_000.0, options_trading_level=1
+        )
+    )
+
+    verdict = await guard.preflight_can_open(user_id=str(uuid.uuid4()), caps=caps)
+
+    assert verdict.payload == {"risk_veto_rule": "options_level_insufficient"}
+
+
+async def test_preflight_gate_refusal_carries_no_veto_rule() -> None:
+    """The other side of the same fix: an operator/environment gate
+    (`market_closed` here) is NOT a RiskDecision.veto_rule — no evaluate()
+    ever ran — so it must not fabricate one. Locks the negative case so a
+    future edit can't "fix" this by defaulting every refusal to carry a
+    veto rule."""
+    caps = _preflight_caps()
+    guard = _guard(clock=lambda: datetime(2026, 9, 2, 2, 0, tzinfo=UTC))
+
+    verdict = await guard.preflight_can_open(user_id=str(uuid.uuid4()), caps=caps)
+
+    assert verdict.payload is None
+
+
 async def test_preflight_fails_open_when_the_context_provider_raises() -> None:
     """A pre-flight is an OPTIMISATION. A broken one must degrade to
     running the normal paid path, never to a silent HOLD that quietly stops
@@ -1649,3 +1703,60 @@ async def test_chain_preflight_refuses_an_empty_chain(
 
     assert verdict.allow is False
     assert verdict.reason == "no_candidates"
+
+
+async def test_chain_preflight_reports_the_real_funnel_for_illiquid_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression guard for the 2026-09-02 visibility gap: select_contract
+    genuinely ran (twice, once per conviction regime) before this refuses —
+    that real ContractSelectionResult must not be discarded. Without this,
+    funnel_service.py's Insights funnel report silently excludes every
+    symbol this pre-flight ever saves money on (it skips rows with no
+    `contract_funnel`), even though a real, non-fabricated funnel exists."""
+    guard = _guard()
+    monkeypatch.setattr(
+        "trading_agents.options.tools.guard.fetch_option_candidates", _thin_chain
+    )
+    monkeypatch.setenv("ALPACA_API_KEY", "k")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "s")
+
+    verdict = await guard.preflight_chain_is_tradeable(
+        underlying="CME", direction="long", caps=RiskCaps.aggressive_paper()
+    )
+
+    assert verdict.payload is not None
+    funnel = verdict.payload["contract_funnel"]
+    assert funnel["rejection_reason"] == "illiquid_chain"
+    assert funnel["counts"]["total"] == 1
+    # Not a RiskDecision.veto_rule — this is selection's own funnel
+    # vocabulary, not the risk engine's. Locked here so a future edit
+    # can't conflate the two vocabularies again.
+    assert "risk_veto_rule" not in verdict.payload
+
+
+async def test_chain_preflight_reports_a_zero_total_funnel_for_no_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The empty-chain case never calls select_contract at all, so there is
+    no real ContractSelectionResult to report — but `total: 0` is itself a
+    real, honest, cheaply-computable fact (select_contract treats an empty
+    chain the same way), not a fabrication."""
+    guard = _guard()
+    monkeypatch.setattr(
+        "trading_agents.options.tools.guard.fetch_option_candidates", _empty_chain
+    )
+    monkeypatch.setenv("ALPACA_API_KEY", "k")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "s")
+
+    verdict = await guard.preflight_chain_is_tradeable(
+        underlying="NVDA", direction="long", caps=RiskCaps.aggressive_paper()
+    )
+
+    assert verdict.payload == {
+        "contract_funnel": {
+            "counts": {"total": 0},
+            "rejection_reason": "no_candidates",
+            "selected_occ": None,
+        }
+    }

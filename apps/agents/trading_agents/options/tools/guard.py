@@ -526,6 +526,17 @@ class ToolGuard:
         Fails OPEN on any infrastructure error (context provider down,
         etc.): a pre-flight is an optimisation, and a broken one must
         degrade to "run the normal path", never to a silent HOLD.
+
+        A refusal that names a REAL ``RiskDecision.veto_rule``
+        (``options_level_insufficient``, ``max_total_premium_pct``) carries
+        it in ``GuardVerdict.payload["risk_veto_rule"]`` — until 2026-09-02
+        this pre-flight saved the LLM call but the refusal it produced was
+        invisible to ``ghost_service.build_veto_ledger`` (which filters on
+        ``risk_veto_rule IS NOT NULL``), so the more this optimisation
+        worked the blinder the Refusal Ledger got to options. The three
+        operator/environment gates above (`auto_trade_disabled`,
+        `live_mode_refused`, `market_closed`) carry no payload — they are
+        not risk-engine rules and must not be counted as one.
         """
         if not env_flag("AUTO_TRADE_ENABLED"):
             return GuardVerdict(False, "auto_trade_disabled")
@@ -545,14 +556,23 @@ class ToolGuard:
 
         level = context.options_trading_level
         if level is None or level < caps.options_min_trading_level:
-            return GuardVerdict(False, "options_level_insufficient")
+            return GuardVerdict(
+                False, "options_level_insufficient",
+                payload={"risk_veto_rule": "options_level_insufficient"},
+            )
 
         if context.account_equity <= 0:
-            return GuardVerdict(False, "max_total_premium_pct")
+            return GuardVerdict(
+                False, "max_total_premium_pct",
+                payload={"risk_veto_rule": "max_total_premium_pct"},
+            )
         existing = sum(p.market_value for p in context.open_positions if p.is_option)
         existing_pct = (existing / context.account_equity) * 100.0
         if existing_pct >= caps.options_max_total_premium_pct:
-            return GuardVerdict(False, "max_total_premium_pct")
+            return GuardVerdict(
+                False, "max_total_premium_pct",
+                payload={"risk_veto_rule": "max_total_premium_pct"},
+            )
 
         return GuardVerdict(True, None)
 
@@ -592,6 +612,20 @@ class ToolGuard:
         treating those as fatal here would refuse trades the paid path
         would have taken. Fails OPEN on any error, same contract as
         `preflight_can_open`.
+
+        Every refusal here carries a REAL `contract_funnel` in
+        `GuardVerdict.payload` — either the empty-chain sentinel
+        (`{"total": 0}`) or the actual `ContractSelectionResult` from
+        whichever of the two already-computed conviction regimes matches
+        the chosen reason. `select_contract` genuinely ran (twice) before
+        this returns; until 2026-09-02 that real funnel was computed and
+        then discarded, making every symbol this pre-flight saved money on
+        invisible to the Insights funnel report (`funnel_service.py`
+        skips any decision row with no `contract_funnel`). None of these
+        three reasons (`no_candidates`, `illiquid_chain`,
+        `no_liquid_contract`) is a `RiskDecision.veto_rule` — no
+        `evaluate()` call ever ran — so `risk_veto_rule` is deliberately
+        never set here; only the funnel is.
         """
         api_key, secret_key = _alpaca_credentials()
         if not api_key or not secret_key:
@@ -610,7 +644,12 @@ class ToolGuard:
             return GuardVerdict(True, None)
 
         if not candidates:
-            return GuardVerdict(False, "no_candidates")
+            empty = ContractSelectionResult(
+                selected=None, rejection_reason="no_candidates", funnel_counts={"total": 0}
+            )
+            return GuardVerdict(
+                False, "no_candidates", payload={"contract_funnel": funnel_block(empty)}
+            )
 
         # The two conviction regimes are the complete space of delta bands.
         # 0.9 selects the high band, 0.1 the low one.
@@ -634,7 +673,15 @@ class ToolGuard:
         if reasons and reasons <= chain_shaped:
             # Deterministic across both regimes and about the CHAIN, not the
             # thesis — no conviction the agents could reach changes it.
-            return GuardVerdict(False, next(iter(reasons)))
+            # Report whichever ALREADY-COMPUTED result actually carries the
+            # chosen reason, so the funnel persisted is real (this chain was
+            # genuinely fetched and run through select_contract twice), not
+            # fabricated from a bare reason string.
+            reason = next(iter(reasons))
+            reported = next((r for r in results if r.rejection_reason == reason), results[0])
+            return GuardVerdict(
+                False, reason, payload={"contract_funnel": funnel_block(reported)}
+            )
         return GuardVerdict(True, None)
 
     async def before(

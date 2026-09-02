@@ -137,14 +137,20 @@ class _Result:
 
 
 class _FakeVerdict:
-    def __init__(self, allow: bool, reason: str | None = None) -> None:
-        self.allow, self.reason, self.payload = allow, reason, None
+    def __init__(
+        self, allow: bool, reason: str | None = None, payload: dict[str, Any] | None = None
+    ) -> None:
+        self.allow, self.reason, self.payload = allow, reason, payload
 
 
 class _FakeGuard:
     """Stands in for ToolGuard. `preflight_allow=False` simulates the
     account-level pre-flight refusing before any model call;
-    `chain_allow=False` simulates the CHAIN pre-flight doing the same."""
+    `chain_allow=False` simulates the CHAIN pre-flight doing the same.
+    `payload` (default None, matching a preflight that carries nothing —
+    e.g. a gate refusal) is threaded onto whichever verdict actually
+    denies, so a test can pin exactly what options_council_node does with
+    it without needing a real guard.py call underneath."""
 
     def __init__(
         self,
@@ -153,15 +159,19 @@ class _FakeGuard:
         *,
         chain_allow: bool = True,
         chain_reason: str | None = None,
+        payload: dict[str, Any] | None = None,
     ) -> None:
         self._allow, self._reason = preflight_allow, reason
         self._chain_allow, self._chain_reason = chain_allow, chain_reason
+        self._payload = payload
 
     async def preflight_can_open(self, **_: Any) -> _FakeVerdict:
-        return _FakeVerdict(self._allow, self._reason)
+        payload = self._payload if not self._allow else None
+        return _FakeVerdict(self._allow, self._reason, payload)
 
     async def preflight_chain_is_tradeable(self, **_: Any) -> _FakeVerdict:
-        return _FakeVerdict(self._chain_allow, self._chain_reason)
+        payload = self._payload if not self._chain_allow else None
+        return _FakeVerdict(self._chain_allow, self._chain_reason, payload)
 
 
 def _patch(
@@ -442,6 +452,97 @@ async def test_a_tradeable_chain_still_runs_the_paid_path(
     await options_council_node(_state(selected_direction="long"), llm=object())
 
     assert calls == [1]
+
+
+async def test_preflight_refusal_threads_risk_veto_rule_onto_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression guard for the 2026-09-02 visibility gap: a preflight
+    refusal that names a REAL RiskDecision.veto_rule
+    (`max_total_premium_pct`) must reach `out["risk_veto_rule"]`, or
+    ghost_service.build_veto_ledger's `risk_veto_rule IS NOT NULL` filter
+    silently excludes it — the more this pre-flight saves, the blinder the
+    Refusal Ledger got to options, until this fix."""
+    _patch(
+        monkeypatch,
+        _Result(proceed=True),
+        guard=_FakeGuard(
+            preflight_allow=False, reason="max_total_premium_pct",
+            payload={"risk_veto_rule": "max_total_premium_pct"},
+        ),
+    )
+
+    out = await options_council_node(_state(), llm=object())
+
+    assert out["risk_veto_rule"] == "max_total_premium_pct"
+    assert out["risk_approved"] is False
+
+
+async def test_preflight_gate_refusal_does_not_fabricate_a_risk_veto_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other side of the same fix: an operator/environment gate
+    (`market_closed`) carries no payload, so `risk_veto_rule` must stay
+    None rather than defaulting to the bare reason string — that string is
+    not a RiskDecision.veto_rule, no evaluate() ever ran."""
+    _patch(
+        monkeypatch,
+        _Result(proceed=True),
+        guard=_FakeGuard(preflight_allow=False, reason="market_closed"),
+    )
+
+    out = await options_council_node(_state(), llm=object())
+
+    assert out["risk_veto_rule"] is None
+
+
+async def test_chain_preflight_refusal_threads_the_contract_funnel_onto_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The funnel/veto distinction must survive the full node, not just
+    the guard: illiquid_chain/no_liquid_contract carry a contract_funnel,
+    never a risk_veto_rule (they're selection's vocabulary, not the risk
+    engine's)."""
+    funnel = {
+        "counts": {"total": 1},
+        "rejection_reason": "illiquid_chain",
+        "selected_occ": None,
+    }
+    _patch(
+        monkeypatch,
+        _Result(proceed=True),
+        guard=_FakeGuard(
+            chain_allow=False, chain_reason="illiquid_chain",
+            payload={"contract_funnel": funnel},
+        ),
+    )
+
+    out = await options_council_node(_state(selected_direction="long"), llm=object())
+
+    assert out["contract_funnel"] == funnel
+    assert out["risk_veto_rule"] is None
+
+
+async def test_preflight_refusal_never_claims_checks_passed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Direct lock on RiskDecision.checks_passed's own documented contract
+    (packages/engine/engine/risk/types.py): a rule that self-gates out —
+    or, here, was never reached because evaluate() never ran at all — must
+    not be recorded as having passed. Neither preflight runs evaluate(),
+    so this branch must never populate risk_checks_passed."""
+    _patch(
+        monkeypatch,
+        _Result(proceed=True),
+        guard=_FakeGuard(
+            preflight_allow=False, reason="max_total_premium_pct",
+            payload={"risk_veto_rule": "max_total_premium_pct"},
+        ),
+    )
+
+    out = await options_council_node(_state(), llm=object())
+
+    assert not out.get("risk_checks_passed")
 
 
 def test_the_options_agents_default_to_sonnet() -> None:

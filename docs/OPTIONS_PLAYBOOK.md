@@ -114,6 +114,38 @@ a simplification for the contest; it is what bounds the loss.
 > six stages, their order, and their frozen constants (§4) are exactly as
 > they were. The funnel was never too tight; it was invisible.
 
+> ⚠️ **The same gap shape, reintroduced 2026-09-02 by the day's own cost
+> optimization, fixed the same way.** `preflight_can_open`/
+> `preflight_chain_is_tradeable` (`options/tools/guard.py`) shipped the same
+> day specifically to skip a doomed options symbol for ZERO LLM calls —
+> and both new HOLD paths set `final_action="HOLD"` without ever setting
+> `risk_veto_rule` or `contract_funnel` on the returned state.
+> `ghost_service.build_veto_ledger` filters on `risk_veto_rule IS NOT
+> NULL`; `funnel_service.py` skips any row with no `contract_funnel` — so
+> every symbol this optimization successfully saved money on became
+> invisible to both the veto ledger and the funnel report. The more it
+> worked, the blinder the Refusal Ledger got to options. Confirmed live:
+> ABNB (`no_liquid_contract`) and AAL (`illiquid_chain`) were both
+> correctly refused and both absent from Insights.
+>
+> Fixed the same way as the 2026-09-01 gap: thread what already ran back
+> onto state instead of discarding it. `preflight_chain_is_tradeable`
+> already runs the real `select_contract()` twice (once per conviction
+> regime) before refusing on `illiquid_chain`/`no_liquid_contract`/
+> `no_candidates` — that real `ContractSelectionResult` now rides in
+> `GuardVerdict.payload["contract_funnel"]` instead of being thrown away.
+> `preflight_can_open`'s two reasons that ARE real `RiskDecision.veto_rule`
+> names (`options_level_insufficient`, `max_total_premium_pct`) now carry
+> `payload["risk_veto_rule"]`; its three operator/environment gates
+> (`auto_trade_disabled`, `live_mode_refused`, `market_closed`) carry
+> nothing, since no risk rule ever ran for those. `risk_checks_passed` is
+> deliberately never set on either path — neither preflight calls
+> `evaluate()`, so nothing here has honestly "passed" a check.
+> `select_contract`, the risk engine, and every existing consumer of
+> `risk_veto_rule`/`contract_funnel` were untouched — this is a recording
+> fix, not a threshold or rule-ordering change. 9 new tests, each
+> revert-checked per CLAUDE.md §4.1.
+
 ---
 
 ## 0. The one-line version

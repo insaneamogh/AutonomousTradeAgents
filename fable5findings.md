@@ -355,6 +355,86 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 # Build log
 
+### 2026-09-02 — preflight refusals were invisible to the veto ledger and funnel report
+
+Operator: *"why do I not see any options make into my deterministic
+window?"* — checking the live app, right after activating the fresh
+$100k account.
+
+**Real answer, not just a missing feature.** The SAME day's own cost
+optimization (`preflight_can_open`/`preflight_chain_is_tradeable` in
+`guard.py`, shipped earlier 2026-09-02 specifically to skip a doomed
+options symbol for zero LLM calls) broke the Refusal Ledger's visibility
+into options — the exact gap shape already fixed once on 2026-09-01 for
+the LIVE paid path (see that date's own entry / `OPTIONS_PLAYBOOK.md`'s
+first ⚠️ callout on this), reintroduced structurally by the new
+short-circuit. `options_council.py`'s preflight-HOLD branch set
+`final_action="HOLD"` but never `risk_veto_rule` or `contract_funnel` —
+so `ghost_service.build_veto_ledger` (`risk_veto_rule IS NOT NULL`
+filter) and `funnel_service.py` (skips rows with no `contract_funnel`)
+both silently excluded every preflight-skipped symbol. Confirmed live:
+ABNB (`no_liquid_contract`) and AAL (`illiquid_chain`) were both
+correctly refused, both invisible in Insights. Measured 2026-09-01, this
+is the MAJORITY of what happens to options symbols (48/293 runs on
+`max_total_premium_pct` alone) — the more the optimization worked, the
+blinder the ledger got.
+
+**Fix: thread what already ran back onto state, classified correctly —
+not "always set risk_veto_rule."** `options_level_insufficient`/
+`max_total_premium_pct` (in `preflight_can_open`) ARE real
+`RiskDecision.veto_rule` names — they now carry
+`payload["risk_veto_rule"]`. `no_candidates`/`illiquid_chain`/
+`no_liquid_contract` (in `preflight_chain_is_tradeable`) are NOT — that's
+`select_contract`'s own funnel vocabulary, not the risk engine's — but a
+real `ContractSelectionResult` already exists for them (the chain
+genuinely got fetched and run through `select_contract` twice, once per
+conviction regime) and was being discarded; it now carries
+`payload["contract_funnel"]` via the existing `funnel_block()` helper.
+The three operator/environment gates (`auto_trade_disabled`,
+`live_mode_refused`, `market_closed`) carry neither — no risk rule ran.
+`risk_checks_passed` is deliberately never set on any preflight HOLD:
+neither function calls `evaluate()`, so nothing here "passed" a check in
+that field's documented sense (`RiskDecision.checks_passed`'s own
+contract, `packages/engine/engine/risk/types.py`).
+
+Two files changed, both purely additive to an existing `GuardVerdict`
+field that was already declared but never populated by either preflight:
+`guard.py` (5 return statements gain a `payload`) and
+`options_council.py` (the HOLD branch reads `preflight.payload` instead
+of ignoring it). Nothing in `select_contract`, the risk engine's rule
+ordering, `funnel_service.py`, `ghost_service.py`, `runtime.py`, or
+`Insights.tsx` needed to change — all were already-correct, generic
+consumers waiting on honest data.
+
+**Verified**: 9 new tests (5 in `test_tool_guard.py` pinning
+`GuardVerdict.payload` for both preflight functions across every reason,
+including the negative case that a gate refusal carries no payload; 4 in
+`test_options_council_wiring.py` pinning the full node's behavior,
+including an explicit lock that `risk_checks_passed` never gets
+populated). Each individually revert-checked per CLAUDE.md §4.1: stripped
+every `payload=` in `guard.py` — the 4 positive guard tests failed with
+`None` instead of the real payload (the 1 negative test correctly still
+passed); restored, confirmed green. Separately stripped the
+`options_council.py` read — 3 of the 4 node tests failed with `KeyError`
+(the 4th, about `checks_passed`, correctly still passed, since that key
+was never touched by this revert); restored, confirmed green. Targeted
+suite (`test_tool_guard.py test_options_council_wiring.py
+test_council_mock.py test_risk_officer_options.py`): 126 passed, 1
+skipped. Full suite: see this entry's own commit for the exact number —
+run immediately before committing, not assumed.
+
+Doc follow-up: `OPTIONS_PLAYBOOK.md` gets a new ⚠️ callout right after the
+2026-09-01 "contract funnel had never reached the database" one, naming
+this as the same gap shape, reintroduced by the same day's own
+optimization, fixed the same way.
+
+**Still open**: the new `docs/PLAN_1000_SYMBOL_SCAN.md`-shaped "symbol
+scan funnel" UI the operator also asked for (universe → active →
+deterministic math → LLM) — this fix was the prerequisite, sequenced
+first per the approved plan; that feature is next, not yet started as of
+this entry.
+
+
 ### 2026-09-02 — batched bars, the 1000-symbol plan, and three new docs
 
 Operator: "formulate a 1000 symbol options plus equity plan and fix
