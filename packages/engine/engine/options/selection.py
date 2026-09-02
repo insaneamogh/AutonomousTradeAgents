@@ -163,6 +163,45 @@ _MIN_OPEN_INTEREST = 100
 # now means only "the contract has traded at all", and open interest (which IS
 # real, from /v2/options/contracts) carries the liquidity judgment.
 _MIN_VOLUME = 1
+
+_MIN_LIQUID_CHAIN_DEPTH = 5
+"""How many contracts must survive the liquidity stage before ANY of them
+is tradeable — a property of the CHAIN, not of the winning contract.
+
+Every gate above judges one contract at a time, so a chain where a single
+contract scrapes past `open_interest >= 100` looks identical to one where
+two hundred do. It is not. When the liquidity stage collapses to one
+survivor, the ranking below did no work: that contract was not selected,
+it was the only thing left, and it sits by definition at the very edge of
+the threshold that admitted it.
+
+Measured, 2026-09-01. Survivors at this stage vs. how the position then
+behaved:
+
+    survivors  contract                 behaviour
+            1  CME261016P00270000       -26% -> -52% in ONE print
+            1  CDNS260918P00320000      -8.9% -> +18.8% (27-point swing)
+           45  AMD260918P00457500       -5.06%
+           57  META260918P00585000      -3.65%
+          166  QQQ260930C00710000       -0.36%
+
+The CME contract's mark sat frozen at $3.40 for 2h16m across 510
+consecutive reconciler snapshots, then printed once at $2.20 — a 26-point
+gap in a single tick. The stop fired 2 seconds later, correctly, at -52%
+against a -35% setting. Nothing was late and no code was wrong: **a
+price-based stop cannot function on a mark that does not print.** The risk
+control silently stopped working, which is worse than it visibly failing.
+
+Note the direction-agnosticism: CDNS, equally thin, swung 27 points the
+OTHER way. This is not "illiquid loses money" — it is "illiquid means P&L
+is dominated by quote noise instead of the thesis, and the stop is
+decorative". Both are reasons not to take the trade.
+
+5 is deliberately conservative and the 2-44 range is UNMEASURED — no
+position in the sample sat there. It is set where it is because at 1 the
+selection scoring is provably inert; do not raise it further on the
+strength of this evidence alone.
+"""
 # Widened from 8.0: the free tier's indicative feed is 15 minutes delayed, so
 # the quoted book reads wider than the one you would actually fill against.
 _MAX_RELATIVE_SPREAD_PCT = 12.0
@@ -228,6 +267,14 @@ class ContractSelectionInputs:
     ``iv_realized_vol_band`` stage (neutral pass) — see module docstring
     §6 for why this differs from ``iv_present``'s own stricter handling of
     a missing IV."""
+    min_liquid_chain_depth: int = _MIN_LIQUID_CHAIN_DEPTH
+    """How many contracts must survive the liquidity stage before any of
+    them is tradeable — see ``_MIN_LIQUID_CHAIN_DEPTH`` for the measured
+    incident behind it.
+
+    Injectable so a unit test that isolates a PER-CONTRACT gate can build a
+    one-contract chain without tripping this SET-level one. Production
+    never passes it; it takes the module default."""
 
 
 @dataclass(frozen=True)
@@ -373,6 +420,20 @@ def select_contract(inputs: ContractSelectionInputs) -> ContractSelectionResult:
     if remaining:
         remaining = [c for c in remaining if _passes_liquidity(c)]
     funnel["liquidity"] = len(remaining)
+
+    # CHAIN-DEPTH gate. Unlike every other stage this judges the SET, not
+    # the contract: too few survivors means the underlying's options are
+    # too thin to risk-manage at all, however well the last one standing
+    # scores. Cleared to empty (rather than returning here) so the normal
+    # naming path below reports it, and so the later funnel stages still
+    # record honest zeros instead of stale counts.
+    if 0 < len(remaining) < inputs.min_liquid_chain_depth:
+        funnel["liquid_chain_depth"] = len(remaining)
+        return ContractSelectionResult(
+            selected=None,
+            rejection_reason="illiquid_chain",
+            funnel_counts=funnel,
+        )
 
     if remaining:
         remaining = [c for c in remaining if c.implied_volatility is not None]

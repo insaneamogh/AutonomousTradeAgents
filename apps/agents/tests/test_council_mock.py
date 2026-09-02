@@ -324,8 +324,30 @@ async def test_run_council_options_proposal_reaches_evaluate_option_and_is_appro
         implied_volatility=0.30,
     )
 
+    # Chain DEPTH: `select_contract` refuses a chain yielding fewer than
+    # `_MIN_LIQUID_CHAIN_DEPTH` liquidity survivors (see its docstring —
+    # the 2026-09-01 CME position, 1 of 29, whose mark then gapped 26
+    # points in one print so the stop could not function). Siblings are
+    # wider-spread (3.05/3.35 vs 3.00/3.20) so tie-break still returns the
+    # contract this test names, and both stay under the 12% spread cap.
+    _siblings = tuple(
+        ContractQuote(
+            occ_symbol=f"NVDA_TEST_CALL_SIB{i}",
+            contract_type="call",
+            strike=250.0 + i,
+            expiry=(datetime.now(UTC) + timedelta(days=30)).date(),
+            bid=3.05,
+            ask=3.35,
+            open_interest=500,
+            volume=200,
+            delta=0.55,
+            implied_volatility=0.30,
+        )
+        for i in range(1, 6)
+    )
+
     async def _fake_fetch(symbol: str) -> tuple[ContractQuote, ...]:
-        return (quote,)
+        return (quote, *_siblings)
 
     monkeypatch.setenv("ALLOW_OPTIONS", "1")
     monkeypatch.setattr(drafter_mod, "_fetch_option_candidates", _fake_fetch)
@@ -555,8 +577,27 @@ async def test_options_pass_persists_the_contract_funnel(
         implied_volatility=0.30,
     )
 
+    # Chain DEPTH — see `_MIN_LIQUID_CHAIN_DEPTH`. Siblings are
+    # wider-spread (3.05/3.35 vs 3.00/3.20) so tie-break still selects the
+    # contract named below; both stay under the 12% spread cap.
+    _siblings = tuple(
+        ContractQuote(
+            occ_symbol=f"NVDA_TEST_CALL_SIB{i}",
+            contract_type="call",
+            strike=250.0 + i,
+            expiry=(datetime.now(UTC) + timedelta(days=30)).date(),
+            bid=3.05,
+            ask=3.35,
+            open_interest=500,
+            volume=200,
+            delta=0.55,
+            implied_volatility=0.30,
+        )
+        for i in range(1, 6)
+    )
+
     async def _fake_fetch(symbol: str) -> tuple[ContractQuote, ...]:
-        return (quote,)
+        return (quote, *_siblings)
 
     monkeypatch.setenv("ALLOW_OPTIONS", "1")
     monkeypatch.setattr(drafter_mod, "_fetch_option_candidates", _fake_fetch)

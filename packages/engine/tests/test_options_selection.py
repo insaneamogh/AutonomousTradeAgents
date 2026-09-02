@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from engine.options.selection import (
+    _MIN_LIQUID_CHAIN_DEPTH,
     ContractQuote,
     ContractSelectionInputs,
     select_contract,
@@ -56,6 +57,7 @@ def _inputs(
     conviction: float = 0.8,
     days_to_earnings: int | None = None,
     realized_vol_pct: float | None = None,
+    min_liquid_chain_depth: int = 1,
 ) -> ContractSelectionInputs:
     # 0.8 is high-conviction (band [0.35, 0.75]), matching _quote()'s own
     # default delta=0.50 — tests exercising the conviction/delta-band
@@ -68,6 +70,12 @@ def _inputs(
         now=_NOW,
         days_to_earnings=days_to_earnings,
         realized_vol_pct=realized_vol_pct,
+        # Depth 1 by DEFAULT here, unlike production: almost every test in
+        # this file builds a one-contract chain to isolate a PER-CONTRACT
+        # gate, and the chain-DEPTH gate is a set-level judgement that
+        # would otherwise mask all of them. The tests that exercise the
+        # real production default pass it explicitly.
+        min_liquid_chain_depth=min_liquid_chain_depth,
     )
 
 
@@ -460,3 +468,58 @@ def test_days_to_earnings_none_does_not_reject() -> None:
     result = select_contract(_inputs((_quote(),), days_to_earnings=None))
     assert result.selected is not None
     assert result.selected.days_to_earnings is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Chain-depth gate — the CME post-mortem
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_a_chain_with_one_liquid_contract_is_refused() -> None:
+    """CME261016P00270000, 2026-09-01: 29 contracts entered the delta band,
+    exactly ONE survived liquidity, and that one was bought for -$1,200.
+
+    Its mark then sat frozen at $3.40 for 2h16m across 510 consecutive
+    reconciler snapshots and printed once at $2.20 — a 26-point gap in a
+    single tick. The stop fired 2 seconds later, correctly, at -52% against
+    a -35% setting. Nothing was late and no code was wrong: a price-based
+    stop cannot function on a mark that does not print, so the risk control
+    silently stopped working."""
+    result = select_contract(
+        _inputs((_quote(),), min_liquid_chain_depth=_MIN_LIQUID_CHAIN_DEPTH)
+    )
+
+    assert result.selected is None
+    assert result.rejection_reason == "illiquid_chain"
+    assert result.funnel_counts["liquid_chain_depth"] == 1
+
+
+def test_a_chain_with_real_depth_still_selects() -> None:
+    """QQQ had 166 survivors and moved -0.36%. The depth gate must not
+    become a blanket refusal of options."""
+    candidates = tuple(
+        _quote(occ_symbol=f"QQQ260930C0071{i:04d}", strike=250.0 + i)
+        for i in range(6)
+    )
+    result = select_contract(
+        _inputs(candidates, min_liquid_chain_depth=_MIN_LIQUID_CHAIN_DEPTH)
+    )
+
+    assert result.selected is not None
+    assert result.rejection_reason is None
+
+
+def test_an_empty_liquidity_stage_still_reports_no_liquid_contract() -> None:
+    """The depth gate must not swallow the pre-existing zero case — that
+    has always been named `no_liquid_contract`, and the Refusal Ledger and
+    funnel UI both read that name."""
+    result = select_contract(
+        _inputs(
+            (_quote(open_interest=1, volume=0),),
+            min_liquid_chain_depth=_MIN_LIQUID_CHAIN_DEPTH,
+        )
+    )
+
+    assert result.selected is None
+    assert result.rejection_reason == "no_liquid_contract"
+    assert "liquid_chain_depth" not in result.funnel_counts

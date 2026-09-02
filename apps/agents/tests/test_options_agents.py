@@ -907,20 +907,48 @@ def _ctx(**kwargs: Any) -> GuardContext:
 
 
 async def _fetch_ok(*args: Any, **kwargs: Any) -> tuple[ContractQuote, ...]:
-    return (
+    """A chain with real DEPTH, not one contract.
+
+    `select_contract` refuses a chain yielding fewer than
+    `_MIN_LIQUID_CHAIN_DEPTH` liquidity survivors — see its docstring for
+    the 2026-09-01 CME position (1 of 29 survived; its mark then sat frozen
+    for 2h16m and gapped 26 points in a single print, so the stop could not
+    function). These tests exercise the AGENT LOOP, so the fixture models a
+    normal chain.
+
+    Siblings are wider-spread (2.08/2.22 = 6.5% vs the target's 2.10/2.20 =
+    4.65%) so `_tie_break`'s tightest-spread-first still returns the 225
+    strike every assertion below names — and both stay under the 12%
+    `options_max_spread_pct` cap, or they would be filtered out and defeat
+    the depth this exists to provide."""
+    target = ContractQuote(
+        occ_symbol="NVDA260918C00225000",
+        contract_type="call",
+        strike=225.0,
+        expiry=date(2026, 9, 18),
+        bid=2.10,
+        ask=2.20,
+        open_interest=500,
+        volume=20,
+        delta=0.45,
+        implied_volatility=0.30,
+    )
+    siblings = tuple(
         ContractQuote(
-            occ_symbol="NVDA260918C00225000",
+            occ_symbol=f"NVDA260918C0{225 + i:05d}000",
             contract_type="call",
-            strike=225.0,
+            strike=225.0 + i,
             expiry=date(2026, 9, 18),
-            bid=2.10,
-            ask=2.20,
+            bid=2.08,
+            ask=2.22,
             open_interest=500,
             volume=20,
             delta=0.45,
             implied_volatility=0.30,
-        ),
+        )
+        for i in range(1, 6)
     )
+    return (target, *siblings)
 
 
 async def test_open_then_scale_in_end_to_end_through_dispatch(

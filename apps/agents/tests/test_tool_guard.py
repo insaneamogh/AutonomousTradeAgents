@@ -90,7 +90,23 @@ def _quote(
 
 
 async def _fetch_ok(*args: Any, **kwargs: Any) -> tuple[ContractQuote, ...]:
-    return (_quote(),)
+    """A chain with real DEPTH, not a single contract.
+
+    `select_contract` refuses a chain whose liquidity stage yields fewer
+    than `_MIN_LIQUID_CHAIN_DEPTH` survivors (see its docstring: the
+    2026-09-01 CME position, where 1 of 29 survived and the resulting mark
+    gapped 26 points between prints, so the stop could not function). These
+    guard tests exercise the GUARD, not chain depth, so the fixture models
+    a normal chain — the target contract plus liquid siblings at adjacent
+    strikes. `_tie_break` still returns the 225 strike (closest to the
+    delta band's centre), which every assertion below already expects."""
+    return (
+        _quote(),
+        *(
+            _quote(occ=f"NVDA260918C0{225 + i}000", strike=225.0 + i)
+            for i in range(1, 6)
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -475,7 +491,10 @@ async def test_a_risk_vetoed_open_ledgers_the_contract_funnel(monkeypatch: pytes
     funnel = row.reasoning["contract_funnel"]
     assert funnel["selected_occ"] == "NVDA260918C00225000"
     assert funnel["rejection_reason"] is None
-    assert funnel["counts"]["liquidity"] == 1
+    # 6 = the depth `_fetch_ok` now models (see its docstring). This test's
+    # point is that the funnel is PERSISTED on a risk-vetoed row at all,
+    # not the specific count.
+    assert funnel["counts"]["liquidity"] == 6
 
 
 async def test_dispatch_never_raises_when_the_handler_raises() -> None:
@@ -690,7 +709,18 @@ async def test_no_delta_in_band_denied() -> None:
 
 async def test_size_rounds_to_zero_denied() -> None:
     async def _expensive(*a: Any, **k: Any) -> tuple[ContractQuote, ...]:
-        return (_quote(ask=50.0, bid=49.0),)  # $5,000/contract vs a $1,000 (1%) budget
+        # $5,000/contract vs a $1,000 (1%) budget. Chain depth matters here
+        # too — a one-contract chain is refused `illiquid_chain` before
+        # sizing is ever reached, which would pass this test for the wrong
+        # reason.
+        return (
+            _quote(ask=50.0, bid=49.0),
+            *(
+                _quote(occ=f"NVDA260918C0{225 + i}000", strike=225.0 + i,
+                       ask=50.0, bid=49.0)
+                for i in range(1, 6)
+            ),
+        )
 
     guard = _guard()
     ctx = _ctx()

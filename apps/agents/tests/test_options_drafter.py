@@ -70,6 +70,26 @@ def _quote(
     )
 
 
+def _chain(**kw: object) -> tuple[ContractQuote, ...]:
+    """A chain with real DEPTH, not one contract.
+
+    `select_contract` refuses a chain whose liquidity stage yields fewer
+    than `_MIN_LIQUID_CHAIN_DEPTH` survivors — see its docstring for the
+    2026-09-01 CME incident (1 of 29 survived; the mark then gapped 26
+    points between prints and the stop could not function). These tests
+    exercise the DRAFTER, so the fixture models a normal chain: the target
+    contract plus liquid siblings at adjacent strikes."""
+    base_strike = float(kw.pop("strike", 250.0))  # type: ignore[arg-type]
+    occ = str(kw.pop("occ_symbol", "AAPL_TEST_CALL"))
+    return (
+        _quote(occ_symbol=occ, strike=base_strike, **kw),  # type: ignore[arg-type]
+        *(
+            _quote(occ_symbol=f"{occ}_SIB{i}", strike=base_strike + i, **kw)  # type: ignore[arg-type]
+            for i in range(1, 6)
+        ),
+    )
+
+
 def _drafter_state(**overrides: object) -> dict:
     base = {
         "symbol": "AAPL",
@@ -399,7 +419,7 @@ async def test_options_drafter_produces_long_call_with_is_option_true(
     monkeypatch.setattr(
         drafter_mod,
         "_fetch_option_candidates",
-        AsyncMock(return_value=(_quote(contract_type="call"),)),
+        AsyncMock(return_value=_chain(contract_type="call")),
     )
 
     out = await drafter_mod.drafter_node(
@@ -453,7 +473,9 @@ async def test_options_drafter_bearish_thesis_buys_a_put_but_side_stays_buy(
         drafter_mod,
         "_fetch_option_candidates",
         AsyncMock(
-            return_value=(_quote(contract_type="put", occ_symbol="AAPL_TEST_PUT", delta=-0.55),)
+            return_value=_chain(
+                contract_type="put", occ_symbol="AAPL_TEST_PUT", delta=-0.55
+            )
         ),
     )
 
@@ -523,7 +545,7 @@ async def test_options_drafter_zero_qty_holds_with_sizer_reason(
     monkeypatch.setattr(
         drafter_mod,
         "_fetch_option_candidates",
-        AsyncMock(return_value=(_quote(bid=498.0, ask=500.0),)),
+        AsyncMock(return_value=_chain(bid=498.0, ask=500.0)),
     )
 
     out = await drafter_mod.drafter_node(
@@ -636,19 +658,57 @@ async def test_drafter_options_path_end_to_end_through_real_alpaca_shapes(
     )
     contract = OptionContract.model_construct(symbol=occ, open_interest="500")
 
+    # Chain DEPTH, through the real path. `select_contract` refuses a chain
+    # with fewer than `_MIN_LIQUID_CHAIN_DEPTH` liquidity survivors (see its
+    # docstring: the 2026-09-01 CME position, 1 of 29, whose mark then
+    # gapped 26 points between prints so the stop could not function).
+    #
+    # The siblings are deliberately WIDER-spread than `occ` (3.05/3.35 =
+    # 9.4% vs 3.10/3.30 = 6.25%), so `_tie_break`'s "tightest relative
+    # spread first" still returns `occ` and every assertion below stays
+    # about the real contract, not about which sibling happened to win.
+    # Both sit UNDER the 12% `options_max_spread_pct` liquidity cap — at
+    # 3.00/3.40 they are 12.5% and get filtered out, which would defeat the
+    # depth this fixture exists to provide.
+    sibling_occs = [
+        _occ_symbol("AAPL", expiry, "call", 250.0 + i) for i in range(1, 6)
+    ]
+    sibling_snapshots = {
+        sym: OptionsSnapshot.model_construct(
+            symbol=sym,
+            latest_quote=Quote.model_construct(
+                symbol=sym, timestamp=_NOW, bid_price=3.05, ask_price=3.35
+            ),
+            latest_trade=Trade.model_construct(
+                symbol=sym, timestamp=_NOW, price=3.20, size=25.0
+            ),
+            implied_volatility=0.28,
+            greeks=OptionsGreeks.model_construct(
+                delta=0.55, gamma=0.0, rho=0.0, theta=0.0, vega=0.0
+            ),
+        )
+        for sym in sibling_occs
+    }
+    sibling_contracts = [
+        OptionContract.model_construct(symbol=sym, open_interest="500")
+        for sym in sibling_occs
+    ]
+
     class FakeOptionHistoricalDataClient:
         def __init__(self, **kwargs: object) -> None:
             pass
 
         def get_option_chain(self, request: object) -> dict[str, OptionsSnapshot]:
-            return {occ: snapshot}
+            return {occ: snapshot, **sibling_snapshots}
 
     class FakeTradingClient:
         def __init__(self, **kwargs: object) -> None:
             pass
 
         def get_option_contracts(self, request: object) -> object:
-            return type("Resp", (), {"option_contracts": [contract]})()
+            return type(
+                "Resp", (), {"option_contracts": [contract, *sibling_contracts]}
+            )()
 
     monkeypatch.setattr(
         alpaca_option_data, "OptionHistoricalDataClient", FakeOptionHistoricalDataClient
