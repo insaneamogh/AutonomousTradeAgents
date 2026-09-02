@@ -330,6 +330,71 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 # Build log
 
+### 2026-09-02 — 8b810e1f / 330c22a6 — a real PER-DAY ceiling on paid passes
+
+Operator, after the credit burn: "max 10-20 symbols debated per day —
+checked deterministically by maths first rather than sending 74 directly
+to LLMs."
+
+**The gap that made that impossible, and I had missed it in my own
+verification an hour earlier:** `MAX_LLM_SYMBOLS_PER_SWEEP=15` is re-armed
+on EVERY call to `main()`, and the trigger loop calls `main()` every
+`SCANNER_INTERVAL_MINUTES` (2). So "15 per sweep" was really "15 every two
+minutes" — ~450/hour of headroom. The only thing between that and the
+credit balance was the dollar ceiling. Measured: **267 paid council passes
+across 134 distinct symbols** on 2026-09-01.
+
+`MAX_LLM_SYMBOLS_PER_DAY` (20) — ledger-backed, counted in RUNS not
+dollars, enforced in `daily_cron.main` (the entry point the baseline sweep,
+trigger loop and CLI all share). New `CostLedger.count_runs_since()` on the
+protocol + both impls: `sum_cost_since` counts CALLS (3-5 per pass) and
+dollars, neither of which answers "how many symbols have we paid to debate
+today". Independent of the dollar gate on purpose — this bounds VOLUME,
+that bounds COST, and it still holds when the in-memory ledger fallback has
+reset.
+
+`MAX_LLM_SYMBOLS_PER_HOUR` (4) — because a daily cap alone is
+first-come-first-served: 20 passes would be gone ~15 minutes after the
+13:30 UTC open and the desk would HOLD uncosted for six hours. Same failure
+the daily cap prevents, re-expressed in symbols. 4/hour x 6.5h ~ 26, so the
+daily cap stays binding over a full day while no single hour can consume
+it.
+
+**Deterministic screening untouched and still unlimited.**
+`_score_candidates_for_sweep` scores every watchlist symbol via
+`best_strategy()` at zero LLM cost; a symbol that would HOLD anyway never
+consumes a slot against either cap (pinned by its own test for each). That
+is the shape asked for: screen everything with maths, debate only the best
+handful.
+
+Implementation notes worth keeping: the day count is read once per sweep
+and incremented locally per admitted candidate — a pass's own ledger writes
+land DURING that pass, so re-reading mid-loop would race them and
+under-count. Incremented BEFORE the await, so a pass that raises still
+counts (it consumed real calls either way).
+
+**A test caught the code being safer than my own description.** I asserted
+that a ledger outage left the daily cap "unenforced"; the real behaviour
+starts the count at zero but keeps the local increment, so it degrades to a
+per-sweep cap rather than removing the ceiling. Corrected the docstring and
+the test to the real, better behaviour rather than changing the code to
+match a worse claim.
+
+Verified: 1398 passed, 11 skipped. Both gates revert-checked individually
+(3 tests fail without the day gate including the cross-sweep one; the
+pacing test fails without the hour gate). Ruff clean.
+
+**Still open:** the cadence knobs (interval 2min, max_runs 15, 5 scheduled
+sweeps, 86-symbol options watchlist) are unchanged and no longer urgent —
+the day/hour caps bound spend regardless of how often the scanner looks.
+What cadence still affects is WHICH 20 get debated: the caps are
+first-come-first-served within each hour, not best-of-day, so a very wide
+scan can still spend an hour's slots on early mediocre setups before better
+ones appear. A best-of-window selection (buffer candidates, debate the top
+N at the end of each pacing window) is the principled version and is not
+built.
+
+
 ### 2026-09-02 — b6fb21db — the $10 key burned in one afternoon: order of operations
 
 Operator: "my whole $10 API credit got exhausted, check what caused this."
