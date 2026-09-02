@@ -70,33 +70,53 @@ def _patch_broker_alpaca(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 async def test_drops_non_tradable_and_non_fractionable_noise() -> None:
-    equity, _options = await screen_universe(api_key="k", secret_key="s")
-    assert "PENNY" not in equity, "not fractionable -- quality filter must drop it"
-    assert "HALTD" not in equity, "not tradable -- must drop it"
-    assert "ILLQ" not in equity, "absent from the tradable-assets response -- must drop it"
+    screen = await screen_universe(api_key="k", secret_key="s")
+    assert "PENNY" not in screen.equity, "not fractionable -- quality filter must drop it"
+    assert "HALTD" not in screen.equity, "not tradable -- must drop it"
+    assert "ILLQ" not in screen.equity, "absent from the tradable-assets response -- must drop it"
 
 
 async def test_keeps_real_tradable_fractionable_names_in_activity_order() -> None:
-    equity, _options = await screen_universe(api_key="k", secret_key="s")
-    assert equity == ["NVDA", "AAPL", "TSLA"], (
+    screen = await screen_universe(api_key="k", secret_key="s")
+    assert screen.equity == ["NVDA", "AAPL", "TSLA"], (
         "must preserve the activity-ranked order and include every tradable+fractionable survivor"
     )
 
 
 async def test_options_list_is_the_has_options_subset_only() -> None:
-    _equity, options = await screen_universe(api_key="k", secret_key="s")
-    assert options == ["NVDA", "AAPL"], "TSLA is tradable but not options-eligible"
+    screen = await screen_universe(api_key="k", secret_key="s")
+    assert screen.options == ["NVDA", "AAPL"], "TSLA is tradable but not options-eligible"
 
 
 async def test_max_equity_and_max_options_caps_are_independent() -> None:
-    equity, options = await screen_universe(
+    screen = await screen_universe(
         api_key="k", secret_key="s", max_equity=1, max_options=1
     )
-    assert equity == ["NVDA"]
-    assert options == ["NVDA"]
+    assert screen.equity == ["NVDA"]
+    assert screen.options == ["NVDA"]
 
 
 async def test_empty_activity_pool_yields_empty_candidates() -> None:
-    equity, options = await screen_universe(api_key="k", secret_key="s", activity_pool=0)
-    assert equity == []
-    assert options == []
+    screen = await screen_universe(api_key="k", secret_key="s", activity_pool=0)
+    assert screen.equity == []
+    assert screen.options == []
+
+
+async def test_eligible_count_is_tradable_and_fractionable_and_has_options_only() -> None:
+    """Tier 0 of the scan funnel -- independent of any cap or the
+    activity pool. Of the 5 fixture assets: NVDA and AAPL are the only
+    ones that are tradable AND fractionable AND has_options (PENNY fails
+    fractionable, HALTD fails tradable, TSLA fails has_options)."""
+    screen = await screen_universe(api_key="k", secret_key="s")
+    assert screen.eligible_count == 2
+
+
+async def test_examined_count_is_the_raw_activity_pool_size() -> None:
+    """Tier 1 -- BEFORE the tradable/fractionable/has_options filter or
+    either cap. All 6 of the fake screener's symbols, including PENNY,
+    HALTD and ILLQ (which never survive to `equity`/`options`)."""
+    screen = await screen_universe(api_key="k", secret_key="s")
+    assert screen.examined_count == 6
+
+    empty = await screen_universe(api_key="k", secret_key="s", activity_pool=0)
+    assert empty.examined_count == 0

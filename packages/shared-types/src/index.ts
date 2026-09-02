@@ -605,6 +605,65 @@ export interface FunnelResponse {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// /api/v1/insights/scan-funnel — the SYMBOL-scan funnel, a different
+// question from the contract funnel above: "how many symbols does the
+// scanner even look at, and how many of those ever reach a paid LLM
+// pass at all" (eligible universe -> active this sweep -> cleared the
+// deterministic math -> admitted to the LLM), not "which contract did
+// select_contract choose for one symbol that already reached a pass".
+// ─────────────────────────────────────────────────────────────────────
+
+export interface ScanFunnelUniverseDto {
+  /** Tier 0 — tradable AND fractionable AND has_options, over Alpaca's
+   * full tradable universe. Null until UNIVERSE_REFRESH_ENABLED=1 has
+   * fired at least once, or if the last refresh was skipped/failed —
+   * never a fabricated zero. */
+  eligibleCount: number | null;
+  /** Tier 1 — the deduplicated most-active pool size that refresh
+   * examined, BEFORE the tradable/fractionable/has_options filter. */
+  examinedCount: number | null;
+  /** ISO 8601 string, or null alongside the two counts above. */
+  refreshedAt: string | null;
+}
+
+export interface ScanFunnelSweepDto {
+  /** A triggered loop's watchlist is tiny (1-3 symbols) by design — this
+   * tells it apart from a full baseline sweep rather than letting a
+   * narrow triggered sample look like a broken baseline one. */
+  kind: 'baseline' | 'triggered' | null;
+  /** Tier 1 as "examined THIS sweep" specifically. */
+  watchlistSize: number;
+  /** Tier 2a — cleared MIN_FIT_TO_TRADE. */
+  clearedMath: number;
+  /** Tier 2b / Tier 4's input — symbols that actually reached a paid LLM
+   * pass. */
+  admittedToLlm: number;
+  /** skip_reason -> count, for every candidate that cleared the math but
+   * didn't reach the LLM. Keys are raw data strings (e.g.
+   * "llm_daily_symbol_cap_reached"), not camelCased — this is not a
+   * closed set. */
+  cappedBreakdown: Record<string, number>;
+  /** ISO 8601 string. */
+  generatedAt: string;
+}
+
+export interface ScanFunnelPreflightDto {
+  /** Tier 3 — NOT YET BUILT. Reserved shape; always absent (the whole
+   * `chainPreflight` field is null) until a real "examined vs. survived"
+   * aggregate exists for the options chain pre-flight. */
+  examinedCount: number;
+  survivedCount: number;
+}
+
+export interface ScanFunnelResponse {
+  universe: ScanFunnelUniverseDto;
+  sweep: ScanFunnelSweepDto | null;
+  chainPreflight: ScanFunnelPreflightDto | null;
+  /** ISO 8601 string. */
+  generatedAt: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // /api/v1/review/scorecard — calibration scorecard
 // ─────────────────────────────────────────────────────────────────────
 

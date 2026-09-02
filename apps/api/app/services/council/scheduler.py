@@ -74,10 +74,11 @@ import contextlib
 import logging
 import os
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from engine.scanner import ScanResult
+    from trading_agents.jobs.daily_cron import SweepTally
 
 logger = logging.getLogger("api.services.council.scheduler")
 
@@ -245,6 +246,24 @@ class CouncilScheduler:
         self.scanner_max_council_runs: int | None = None
         self.last_universe_refresh_at: datetime | None = None
         self.last_universe_refresh_result: dict[str, int] | str | None = None
+        # Tier 1/2 of the Insights "symbol scan funnel" — fed by
+        # daily_cron.main's optional on_sweep_scored recorder, one slot
+        # shared by both loops rather than two separate ones. A triggered
+        # sweep's watchlist is tiny (1-3 symbols, only what a technical
+        # rule flagged) — showing it next to a ~100-symbol baseline sweep
+        # with no context would read as a broken funnel, so `kind` lets
+        # the frontend caption the difference honestly instead of this
+        # scheduler silently preferring one loop's data over the other's.
+        self.last_sweep_tally: SweepTally | None = None
+        self.last_sweep_kind: Literal["baseline", "triggered"] | None = None
+        self.last_sweep_tally_at: datetime | None = None
+
+    def _record_sweep_tally(
+        self, tally: SweepTally, *, kind: Literal["baseline", "triggered"]
+    ) -> None:
+        self.last_sweep_tally = tally
+        self.last_sweep_kind = kind
+        self.last_sweep_tally_at = tally.generated_at
 
     def start(self) -> None:
         if self._tasks:
@@ -460,6 +479,7 @@ class CouncilScheduler:
             skip_reflect=True,
             scan_context=scan_context,
             instrument_by_symbol=instruments,
+            on_sweep_scored=lambda t: self._record_sweep_tally(t, kind="triggered"),
         )
         self.last_run_at = started
         self.last_result = {"exit_code": code, "symbols": len(selected), "triggered": 1}
@@ -479,7 +499,8 @@ class CouncilScheduler:
         logger.info("council scan starting — %d symbols", len(watchlist))
         started = datetime.now(UTC)
         code = await cron_main(
-            user_id, watchlist, force=False, instrument_by_symbol=instruments
+            user_id, watchlist, force=False, instrument_by_symbol=instruments,
+            on_sweep_scored=lambda t: self._record_sweep_tally(t, kind="baseline"),
         )
         self.last_run_at = started
         self.last_result = {"exit_code": code, "symbols": len(watchlist)}

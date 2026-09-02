@@ -551,3 +551,99 @@ async def test_a_malformed_min_llm_score_does_not_silently_filter_everything(
     assert _min_llm_score() == 0.0
     monkeypatch.setenv("MIN_LLM_SCORE", "5.0")  # out of the 0..1 range
     assert _min_llm_score() == 0.0
+
+
+# ── on_sweep_scored — the Insights "symbol scan funnel" feed ─────────
+#
+# Feeds CouncilScheduler.last_sweep_tally (apps/api/app/services/council/
+# scheduler.py), which powers a new Insights card. Optional and additive
+# on main() — every test above omits it and stays green, proving the
+# no-op default path.
+
+
+async def test_on_sweep_scored_fires_with_the_correct_tally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FREE never touched the LLM cap at all (score=None); PAID1/PAID2
+    cleared the math and were admitted; CAPPED cleared the math too but
+    lost the single admitted slot — a real, named skip_reason, not an
+    absence."""
+    from trading_agents.jobs.daily_cron import SweepTally
+
+    scores = {"FREE": None, "PAID1": 0.9, "PAID2": 0.8, "CAPPED": 0.7}
+    tallies: list[SweepTally] = []
+    _patch_scoring(monkeypatch, scores)
+    monkeypatch.setenv("MAX_LLM_SYMBOLS_PER_SWEEP", "2")
+
+    from trading_agents.jobs import daily_cron
+
+    async def fake_run_council(**kwargs):
+        return {
+            "final_action": "HOLD", "selected_strategy": None,
+            "selector_confidence": 0.0, "decision_id": f"dec-{kwargs['symbol']}",
+        }
+
+    monkeypatch.setattr(daily_cron, "run_council", fake_run_council)
+
+    await daily_cron.main(
+        _USER, ["FREE", "PAID1", "PAID2", "CAPPED"], force=False,
+        on_sweep_scored=tallies.append,
+    )
+
+    assert len(tallies) == 1
+    tally = tallies[0]
+    assert tally.watchlist_size == 4
+    assert tally.cleared_math == 3, "FREE (score=None) never clears the math"
+    assert tally.admitted_to_llm == 2
+    assert tally.capped_breakdown == {"llm_symbol_cap_reached": 1}
+
+
+async def test_on_sweep_scored_does_not_fire_on_the_calendar_gate_short_circuit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No sweep happened at all — there is no tally to report, and firing
+    one anyway (even an all-zero one) would be indistinguishable from a
+    real, empty sweep on the Insights card."""
+    import engine.features
+
+    monkeypatch.setattr(engine.features, "is_us_trading_day", lambda _d: False)
+    _patch_scoring(monkeypatch, {"AAPL": 0.9})
+    tallies: list = []
+
+    from trading_agents.jobs import daily_cron
+
+    await daily_cron.main(
+        _USER, ["AAPL"], force=False, on_sweep_scored=tallies.append
+    )
+
+    assert tallies == []
+
+
+async def test_on_sweep_scored_recorder_raising_does_not_fail_the_cron(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same fail-silent contract as every other end-of-sweep follow-up in
+    main() (push notifications, ghost eval, reflection, trace flush) — a
+    broken recorder must never take the cron down with it."""
+    scores = {"AAPL": 0.9}
+    _patch_scoring(monkeypatch, scores)
+
+    from trading_agents.jobs import daily_cron
+
+    async def fake_run_council(**kwargs):
+        return {
+            "final_action": "HOLD", "selected_strategy": None,
+            "selector_confidence": 0.0, "decision_id": "dec-AAPL",
+        }
+
+    monkeypatch.setattr(daily_cron, "run_council", fake_run_council)
+
+    def _boom(_tally: object) -> None:
+        raise RuntimeError("recorder is broken")
+
+    rc = await daily_cron.main(
+        _USER, ["AAPL"], force=False, skip_ghost_eval=True,
+        on_sweep_scored=_boom,
+    )
+
+    assert rc == 0

@@ -10,11 +10,19 @@ GET /api/v1/risk/vetoes?windowDays=30
 GET /api/v1/insights/funnel?windowDays=30&limit=20
     The contract funnel — how many candidates survived each selection
     stage, aggregated across the window plus the most recent runs.
+
+GET /api/v1/insights/scan-funnel
+    The SYMBOL-scan funnel — a different question from the one above:
+    how many symbols does the scanner even look at, and how many of
+    those ever reach a paid LLM pass at all (eligible universe -> active
+    this sweep -> cleared the deterministic math -> admitted to the
+    LLM). Reads the in-memory CouncilScheduler singleton, not the DB —
+    does not require USE_POSTGRES.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import Field
@@ -27,6 +35,7 @@ from app.services.council.ghost_service import (
     build_veto_exemplar,
     build_veto_ledger,
 )
+from app.services.council.scan_funnel_service import build_scan_funnel_report_for_scheduler
 from engine.env import env_flag
 
 router = APIRouter(tags=["insights"])
@@ -306,4 +315,89 @@ async def funnel(
             )
             for r in report.recent
         ],
+    )
+
+
+# ── /insights/scan-funnel — the SYMBOL-scan funnel, not the contract one ──
+
+
+class ScanFunnelUniverseDto(CamelCaseModel):
+    """Tier 0 + Tier 1, from the once-daily universe refresh. All fields
+    ``None`` until ``UNIVERSE_REFRESH_ENABLED=1`` has fired at least once."""
+
+    eligible_count: int | None = None
+    examined_count: int | None = None
+    refreshed_at: str | None = None
+
+
+class ScanFunnelSweepDto(CamelCaseModel):
+    """Tier 2 (+ Tier 4's input), from whichever loop most recently called
+    ``daily_cron.main``. ``None`` — the whole field, not just its
+    contents — until at least one sweep has run."""
+
+    kind: Literal["baseline", "triggered"] | None = None
+    watchlist_size: int
+    cleared_math: int
+    admitted_to_llm: int
+    capped_breakdown: dict[str, int] = Field(default_factory=dict)
+    generated_at: str
+
+
+class ScanFunnelPreflightDto(CamelCaseModel):
+    """Tier 3 — NOT YET BUILT. No aggregate "examined vs. survived" count
+    exists for the options chain pre-flight today; this shape is reserved
+    so a future addition doesn't need a wire-contract change. Always
+    absent for now — never fabricate a count here."""
+
+    examined_count: int
+    survived_count: int
+
+
+class ScanFunnelResponse(CamelCaseModel):
+    universe: ScanFunnelUniverseDto
+    sweep: ScanFunnelSweepDto | None = None
+    chain_preflight: ScanFunnelPreflightDto | None = None
+    generated_at: str
+
+
+@router.get(
+    "/insights/scan-funnel", response_model=ScanFunnelResponse, response_model_by_alias=True
+)
+async def scan_funnel(
+    user: AuthedUser = Depends(get_current_user),
+) -> ScanFunnelResponse:
+    """Deliberately no ``_require_postgres()`` call — this reads the
+    in-memory ``CouncilScheduler`` singleton, same as ``/scanner/status``,
+    not the DB. ``user`` is accepted (matching every other route in this
+    file) but unused: the scheduler holds one process-wide state, not
+    per-tenant state, same as ``/scanner/status``."""
+    report = await build_scan_funnel_report_for_scheduler()
+    return ScanFunnelResponse(
+        universe=ScanFunnelUniverseDto(
+            eligible_count=report.universe.eligible_count,
+            examined_count=report.universe.examined_count,
+            refreshed_at=(
+                report.universe.refreshed_at.isoformat()
+                if report.universe.refreshed_at is not None
+                else None
+            ),
+        ),
+        sweep=(
+            ScanFunnelSweepDto(
+                kind=report.sweep.kind,  # type: ignore[arg-type]
+                watchlist_size=report.sweep.watchlist_size,
+                cleared_math=report.sweep.cleared_math,
+                admitted_to_llm=report.sweep.admitted_to_llm,
+                capped_breakdown=report.sweep.capped_breakdown,
+                generated_at=(
+                    report.sweep.generated_at.isoformat()
+                    if report.sweep.generated_at is not None
+                    else ""
+                ),
+            )
+            if report.sweep is not None
+            else None
+        ),
+        chain_preflight=None,
+        generated_at=report.generated_at.isoformat(),
     )

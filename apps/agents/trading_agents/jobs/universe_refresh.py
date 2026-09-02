@@ -45,8 +45,33 @@ import asyncio
 import logging
 import os
 import uuid as _uuid
+from dataclasses import dataclass
 
 log = logging.getLogger("agents.jobs.universe_refresh")
+
+
+@dataclass(frozen=True)
+class UniverseScreen:
+    """``screen_universe``'s result, plus the two counts Tier 0/1 of
+    ``docs/PLAN_1000_SYMBOL_SCAN.md``'s funnel need for the Insights
+    "symbol scan funnel" view — both free, computed from responses this
+    function already fetches in full; neither costs an extra API call.
+    """
+
+    equity: list[str]
+    options: list[str]
+    eligible_count: int
+    """Tier 0 — ``tradable AND fractionable AND has_options`` over the
+    FULL ``list_tradable_assets`` response (~13.4k rows), independent of
+    ``max_equity``/``max_options``/``activity_pool``. This is Alpaca's
+    "eligible universe" (~1,000 per the 1000-symbol plan), not the
+    (smaller, activity-ranked, post-cap) ``equity``/``options`` lists
+    above — those answer "what did we KEEP", this answers "what COULD we
+    have kept"."""
+    examined_count: int
+    """Tier 1 — ``len(active_symbols)``, the deduplicated most-active pool
+    size BEFORE the tradable/fractionable/has_options filter or either
+    cap — "what did this sweep actually look at"."""
 
 DEFAULT_EQUITY_CANDIDATES = 100
 """Auto-discovered equity symbols kept per refresh. Roughly doubles the
@@ -79,14 +104,15 @@ async def screen_universe(
     max_equity: int = DEFAULT_EQUITY_CANDIDATES,
     max_options: int = DEFAULT_OPTIONS_CANDIDATES,
     activity_pool: int = DEFAULT_ACTIVITY_POOL,
-) -> tuple[list[str], list[str]]:
-    """Returns ``(equity_symbols, options_symbols)`` — both real,
-    broker-verified tradable names, both already ranked by real trading
-    activity (Alpaca's own ranking, not recomputed here). An options
-    symbol is also included in ``equity_symbols`` only if it independently
-    ranks within ``max_equity`` — the two lists are not required to be
-    disjoint, and the caller (``refresh_watchlist``) is responsible for
-    not writing a duplicate row for a symbol that lands in both.
+) -> UniverseScreen:
+    """Screens Alpaca's real tradable universe down to a ranked, capped
+    candidate set. ``equity``/``options`` are both real, broker-verified
+    tradable names, both already ranked by real trading activity (Alpaca's
+    own ranking, not recomputed here). An options symbol is also included
+    in ``equity`` only if it independently ranks within ``max_equity`` —
+    the two lists are not required to be disjoint, and the caller
+    (``refresh_watchlist``) is responsible for not writing a duplicate row
+    for a symbol that lands in both.
     """
     from broker.alpaca import list_most_active_symbols, list_tradable_assets
 
@@ -95,6 +121,7 @@ async def screen_universe(
     )
     tradable = await list_tradable_assets(api_key=api_key, secret_key=secret_key)
     by_symbol = {a.symbol: a for a in tradable}
+    eligible_count = sum(1 for a in tradable if a.tradable and a.fractionable and a.has_options)
 
     equity: list[str] = []
     options: list[str] = []
@@ -109,7 +136,12 @@ async def screen_universe(
         if len(equity) >= max_equity and len(options) >= max_options:
             break
 
-    return equity, options
+    return UniverseScreen(
+        equity=equity,
+        options=options,
+        eligible_count=eligible_count,
+        examined_count=len(active_symbols),
+    )
 
 
 async def refresh_watchlist(
@@ -126,12 +158,13 @@ async def refresh_watchlist(
     wins, and a symbol can't have two rows under the same (user_id, symbol)
     unique constraint regardless of source.
     """
-    equity, options = await screen_universe(
+    screen = await screen_universe(
         api_key=api_key,
         secret_key=secret_key,
         max_equity=max_equity,
         max_options=max_options,
     )
+    equity, options = screen.equity, screen.options
 
     from sqlalchemy import delete, select
 
@@ -188,7 +221,16 @@ async def refresh_watchlist(
         n_options_written,
         len({*equity, *options}) - len(candidates),
     )
-    return {"equity": len(rows) - n_options_written, "options": n_options_written}
+    return {
+        "equity": len(rows) - n_options_written,
+        "options": n_options_written,
+        # Tier 0/1 of the Insights "symbol scan funnel" — see UniverseScreen.
+        # Additive keys: any older reader of this dict that only looks at
+        # "equity"/"options" (e.g. CouncilScheduler.last_universe_refresh_
+        # result's existing typing) is unaffected.
+        "eligible_universe": screen.eligible_count,
+        "examined": screen.examined_count,
+    }
 
 
 def cli() -> int:

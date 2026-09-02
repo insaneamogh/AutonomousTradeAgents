@@ -40,7 +40,8 @@ import inspect
 import logging
 import os
 import sys
-from collections.abc import Mapping
+from collections import Counter
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from typing import Any
@@ -79,6 +80,35 @@ class SymbolScanContext:
 
     signals: tuple[ScanSignal, ...] = ()
     relative_strength_rank: float | None = None
+
+
+@dataclass(frozen=True)
+class SweepTally:
+    """What one call to ``main()`` did with its watchlist — Tier 1/2 of
+    ``docs/PLAN_1000_SYMBOL_SCAN.md``'s funnel (universe -> active ->
+    deterministic math -> the LLM). Handed to an optional recorder so a
+    caller (``CouncilScheduler``) can retain it for the Insights "symbol
+    scan funnel" view; ``main()`` itself keeps no state of its own.
+    """
+
+    watchlist_size: int
+    """``len(watchlist)`` — Tier 1, "examined this call to main()"."""
+    cleared_math: int
+    """Symbols with a real (non-None) ``_score_candidates_for_sweep``
+    score — cleared ``MIN_FIT_TO_TRADE`` — Tier 2a. Computed BEFORE the
+    ``MIN_LLM_SCORE`` floor removes any of them; that floor is itself one
+    of the ``capped_breakdown`` reasons below, not a second math stage."""
+    admitted_to_llm: int
+    """Symbols that actually reached a paid ``_run_one`` call — Tier 2b /
+    Tier 4's input. Strictly <= ``cleared_math``."""
+    capped_breakdown: dict[str, int]
+    """``skip_reason`` -> count, for every candidate that cleared the math
+    but did not reach the LLM (``below_min_llm_score``,
+    ``llm_symbol_cap_reached``, ``llm_daily_symbol_cap_reached``,
+    ``llm_hourly_symbol_cap_reached``, ``llm_daily_budget_exhausted`` as of
+    this writing — not a closed set, a future cap adds its own reason
+    here for free)."""
+    generated_at: datetime
 
 
 def _with_scan_context(
@@ -605,8 +635,20 @@ async def main(
     skip_reflect: bool = False,
     scan_context: Mapping[str, SymbolScanContext] | None = None,
     instrument_by_symbol: Mapping[str, str] | None = None,
+    on_sweep_scored: Callable[[SweepTally], None] | None = None,
 ) -> int:
     """Run the council across ``watchlist``. Returns a process exit code.
+
+    ``on_sweep_scored``, like ``scan_context``/``instrument_by_symbol``
+    above, is optional and additive — every existing caller that omits it
+    keeps working untouched. When given, it is called at most once, after
+    a real sweep actually ran (never on the calendar-gate or
+    REQUIRE-flag early returns, since there is no tally yet at either),
+    with a ``SweepTally`` the caller can retain — ``CouncilScheduler``
+    uses this to power the Insights "symbol scan funnel" view. Wrapped in
+    try/except here so a broken recorder can never fail the cron, the
+    same convention this function already uses for ``_notify_proposal``/
+    the ghost-eval pass/the reflection pass/the trace flush below.
 
     ``scan_context`` is set by the continuous scanner: a triggered pass
     covers only the symbols that tripped a deterministic rule and forwards
@@ -801,6 +843,7 @@ async def main(
         )
         runs_this_hour = 0
 
+    admitted_to_llm_count = 0
     push_tasks: list = []
     rolled_up: list[dict] = []
     # Sequential — Anthropic prompt-caching benefits from steady cadence
@@ -887,6 +930,7 @@ async def main(
                 # it consumed real model calls either way.
                 runs_today += 1
                 runs_this_hour += 1
+                admitted_to_llm_count += 1
             rolled_up.append(
                 await _run_one(
                     user_id, symbol, llm,
@@ -921,6 +965,23 @@ async def main(
         "(budget_capped=%d symbol_capped=%d)",
         processed, skipped, failed, budget_capped, symbol_capped,
     )
+
+    if on_sweep_scored is not None:
+        try:
+            capped_breakdown = dict(
+                Counter(r["skip_reason"] for r in rolled_up if r.get("skip_reason"))
+            )
+            on_sweep_scored(
+                SweepTally(
+                    watchlist_size=len(watchlist),
+                    cleared_math=sum(1 for v in scores.values() if v is not None),
+                    admitted_to_llm=admitted_to_llm_count,
+                    capped_breakdown=capped_breakdown,
+                    generated_at=datetime.now(UTC),
+                )
+            )
+        except Exception:
+            log.warning("sweep-tally recorder failed — continuing", exc_info=True)
 
     # Ghost P&L pass — marks vetoed/declined picks against daily closes.
     # Postgres only (the ghost_outcomes table); failure never fails cron.

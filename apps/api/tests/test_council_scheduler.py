@@ -104,6 +104,7 @@ async def test_scan_once_records_metadata_and_calls_cron_with_exact_kwargs(
     assert captured["kwargs"]["skip_calendar_gate"] is True
     assert captured["kwargs"]["skip_ghost_eval"] is True
     assert captured["kwargs"]["skip_reflect"] is True
+    assert callable(captured["kwargs"]["on_sweep_scored"])
 
 
 async def test_scan_once_market_closed_updates_metadata_but_skips_cron(
@@ -207,6 +208,90 @@ async def test_scan_once_caps_selected_symbols_at_max_runs(
     assert captured["symbols"] == ["AAA", "BBB"]
     assert scheduler.last_council_run_symbols == ("AAA", "BBB")
     assert scheduler.last_triggered == ("AAA", "BBB", "CCC", "DDD")
+
+
+# ── _run_once — the baseline sweep ───────────────────────────────────
+
+
+async def test_run_once_calls_cron_with_a_callable_recorder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same tripwire shape as the trigger loop's exact-kwargs test above,
+    for the baseline sweep's own call site."""
+    from app.services.council.scheduler import CouncilScheduler
+    from trading_agents.jobs import daily_cron
+
+    captured: dict = {}
+
+    async def fake_cron_main(user_id, symbols, **kwargs):
+        captured["user_id"] = user_id
+        captured["symbols"] = list(symbols)
+        captured["kwargs"] = kwargs
+        return 0
+
+    monkeypatch.setattr(daily_cron, "main", fake_cron_main)
+
+    scheduler = CouncilScheduler()
+    await scheduler._run_once()
+
+    assert captured["symbols"] == ["AAA", "BBB", "CCC", "DDD"]
+    assert captured["kwargs"]["force"] is False
+    assert callable(captured["kwargs"]["on_sweep_scored"])
+
+
+async def test_run_once_end_to_end_populates_last_sweep_tally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real wiring, not a mocked daily_cron.main: fakes only scoring and
+    run_council (same technique test_llm_budget_gate.py uses), so this
+    proves _run_once -> daily_cron.main -> on_sweep_scored ->
+    CouncilScheduler._record_sweep_tally is actually connected end to end,
+    not just that the right kwarg gets passed."""
+    from types import SimpleNamespace
+
+    import engine.features
+    from app.services.council.scheduler import CouncilScheduler
+    from trading_agents.jobs import daily_cron
+
+    monkeypatch.setattr(engine.features, "is_us_trading_day", lambda _d: True)
+
+    scores = {"AAA": 0.9, "BBB": None, "CCC": 0.8, "DDD": 0.7}
+
+    def _fake_provider(symbol: str, horizon: str = "short"):
+        return {"symbol": symbol}
+
+    def _fake_best_strategy(features, *, priors=None, allow_shorts=False):
+        score = scores.get(features["symbol"])
+        if score is None:
+            return None, []
+        winner = SimpleNamespace(score=score, strategy_id="fake", direction="long")
+        return winner, [winner]
+
+    import trading_agents.strategies as strategies_mod
+
+    monkeypatch.setattr(strategies_mod, "best_strategy", _fake_best_strategy)
+    monkeypatch.setattr(daily_cron, "resolve_feature_provider", lambda **_kw: _fake_provider)
+    monkeypatch.setenv("MAX_LLM_SYMBOLS_PER_SWEEP", "2")
+
+    async def fake_run_council(**kwargs):
+        return {
+            "final_action": "HOLD", "selected_strategy": None,
+            "selector_confidence": 0.0, "decision_id": f"dec-{kwargs['symbol']}",
+        }
+
+    monkeypatch.setattr(daily_cron, "run_council", fake_run_council)
+
+    scheduler = CouncilScheduler()
+    await scheduler._run_once()
+
+    assert scheduler.last_sweep_kind == "baseline"
+    assert scheduler.last_sweep_tally_at is not None
+    tally = scheduler.last_sweep_tally
+    assert tally is not None
+    assert tally.watchlist_size == 4
+    assert tally.cleared_math == 3, "BBB (score=None) never clears the math"
+    assert tally.admitted_to_llm == 2, "MAX_LLM_SYMBOLS_PER_SWEEP=2 admits the top 2 by score"
+    assert tally.capped_breakdown == {"llm_symbol_cap_reached": 1}
 
 
 # ── Universe refresh loop ────────────────────────────────────────────

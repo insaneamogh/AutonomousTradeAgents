@@ -355,6 +355,93 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 # Build log
 
+### 2026-09-02 — the symbol-scan funnel: universe → sweep → math → LLM, on the Insights screen
+
+Operator's second ask, same conversation as the preflight-visibility fix
+below: *"I should have some sort of tab which shows me 5k stocks/options
+scanned ... 100 sent to python pure maths ... 20 sent to LLM"* —
+`docs/PLAN_1000_SYMBOL_SCAN.md`'s tiered shape, previously ephemeral
+(log lines only, nothing retained).
+
+**Backend — retaining data that used to be thrown away after logging
+it.** `daily_cron.main()` gains an optional, additive
+`on_sweep_scored: Callable[[SweepTally], None] | None = None` param
+(same precedent as the existing `scan_context`/`instrument_by_symbol`
+params — every current caller untouched). `SweepTally` carries
+`watchlist_size`/`cleared_math`/`admitted_to_llm`/`capped_breakdown`,
+fired once at the end of a real sweep, never on the calendar-gate or
+REQUIRE-flag early returns. `universe_refresh.screen_universe()`'s bare
+2-tuple return becomes a `UniverseScreen` dataclass adding
+`eligible_count` (tradable ∩ fractionable ∩ has_options over the full
+Alpaca universe) and `examined_count` (the deduplicated active-pool
+size) — both free, computed from data the function already fetched.
+`CouncilScheduler` retains the latest tally plus which loop produced it
+(`last_sweep_kind: "baseline" | "triggered"`) — tagged, not two separate
+slots, so a triggered loop's tiny watchlist never gets displayed as if
+it were a broken baseline sweep. New `GET /api/v1/insights/scan-funnel`
+(`scan_funnel_service.py`, no Postgres dependency — reads the in-memory
+scheduler singleton, same as `/scanner/status`) reports plain named
+counts, deliberately NOT forced into `FunnelStageDto[]`'s shape: that
+shape's `dropped` field only makes sense for one filter pass over one
+instantaneous set, and Tiers 0-2 here come from different cadences
+(once-daily universe refresh vs. most recent sweep) — forcing a
+`dropped` field on them would fabricate precision the data doesn't have.
+Same "absent, never fabricated zero" rule as `funnel_service.py`
+throughout: a universe-refresh string sentinel or a stale pre-migration
+2-key dict reads as `None`, never `0`.
+
+**Frontend.** Extracted the generic stepped-bar pieces
+(`fmtInt`/`barWidthPct`/`firstZeroStageKey`/the row renderer, now
+`FunnelBarRow`) out of `ContractFunnel.tsx` into a new sibling
+`FunnelBar.tsx`, so the new `ScanFunnel.tsx` reuses the same bar math
+and row rendering instead of a second copy — `ContractFunnel.tsx`'s own
+exported props/behavior stay byte-identical (its test file needed zero
+changes and is the regression bar for the extraction, see Verified
+below). `ScanFunnel.tsx` renders 4 tiers (eligible universe → examined
+this sweep → cleared the math → admitted to the LLM), `dropped` computed
+client-side (`max(0, prev - current)`, since the wire DTO doesn't carry
+it), with `capped_breakdown` as a reason→count list underneath (a
+label map for the known `skip_reason` values, raw string fallback for
+any future one — not a closed set). Handles a case the plan didn't
+spell out but the "absent, never fabricated zero" rule already implies:
+`UNIVERSE_REFRESH_ENABLED=0` while sweeps keep running means
+`eligibleCount` can be `null` even with a populated sweep — that tier is
+simply omitted from the bars (not rendered as a fake zero-width one),
+and `examined_this_sweep` becomes the funnel's own base instead. Wired
+into `Insights.tsx` as a second always-visible card above the existing
+Contract Funnel card. `packages/shared-types/src/index.ts` gets the 4
+matching DTOs; `useScanFunnel.ts` mirrors `useFunnel.ts` exactly.
+
+**Verified**: `pnpm -s exec tsc --noEmit -p apps/mobile/tsconfig.json` —
+clean. Full mobile Jest suite: 118/118 passing across all 13 suites,
+including `ContractFunnel.test.tsx` passing **unmodified** (proves the
+`FunnelBar.tsx` extraction didn't change its behavior) and a new
+`ScanFunnel.test.tsx` (13 tests: tier ordering/dropped-count math, the
+capped-breakdown list with both a known and an unmapped reason, the
+triggered-vs-baseline caption, the never-fabricate-a-zero-universe-bar
+case, the no-sweep-yet empty state, and the loading skeleton) plus 2 new
+assertions in `Insights.test.tsx` (both card titles render distinctly).
+Backend: full suite `.venv/bin/python -m pytest apps/agents apps/api
+packages/ -q` — 1502 passed, 11 skipped, 1 failed
+(`test_tenant_isolation.py::test_agreement_and_scorecard_count_only_own_reviews`).
+Checked the baseline per CLAUDE.md §4.1 before assuming it was mine: ran
+that file alone — 10/10 passed. Pre-existing test-order/shared-state
+pollution from the full 1500+-test run, nothing to do with anything
+touched in this entry (nowhere near `review.py`/tenant isolation), not
+introduced by this change.
+
+**Still open**: a live check against a real sweep (per the approved
+plan) — deferred, not forgotten, because the Anthropic key on Railway is
+currently rejected outright (`401 - API key is invalid`, a live,
+separate production issue reported to the operator this same
+conversation). That does NOT block this feature from reporting real
+numbers, though: Tiers 0-2 (eligible universe, examined this sweep,
+cleared the math) and the `admitted_to_llm` count are 100% deterministic
+or counted-before-the-call, so they populate correctly regardless of key
+validity — only the resulting decisions/proposals depend on a working
+key. Live-verify once either a sweep has run under the current code or a
+new key is in place, whichever comes first.
+
 ### 2026-09-02 — preflight refusals were invisible to the veto ledger and funnel report
 
 Operator: *"why do I not see any options make into my deterministic

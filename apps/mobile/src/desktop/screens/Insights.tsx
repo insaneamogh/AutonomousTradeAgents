@@ -9,8 +9,10 @@ import type { VetoRuleDto } from '@app/shared-types';
 import { useCalibrationScorecard } from '@/hooks/useCalibration';
 import { useFunnel } from '@/hooks/useFunnel';
 import { useGhostSummary, useVetoLedger } from '@/hooks/useInsights';
+import { useScanFunnel } from '@/hooks/useScanFunnel';
 
 import { ContractFunnel } from '../components/ContractFunnel';
+import { ScanFunnel } from '../components/ScanFunnel';
 import { ExemplarCard } from '../ExemplarCard';
 import {
   ago,
@@ -87,6 +89,7 @@ export function InsightsScreen() {
   const ghost = useGhostSummary(30);
   const scorecard = useCalibrationScorecard(180);
   const funnel = useFunnel(FUNNEL_WINDOW_DAYS);
+  const scanFunnel = useScanFunnel();
 
   return (
     <>
@@ -109,6 +112,29 @@ export function InsightsScreen() {
           </Row>
         }
       />
+
+      {scanFunnel.isError ? (
+        <div className="pg-grid pg-fade-up">
+          <Cell span={12}>
+            <DataStreamInterrupted
+              code="SCAN_FUNNEL_READ_FAILED"
+              node="api · /v1/insights/scan-funnel"
+              onRetry={() => void scanFunnel.refetch()}
+              compact
+            />
+          </Cell>
+        </div>
+      ) : (
+        <div className="pg-grid pg-fade-up">
+          <Cell span={12}>
+            <ScanFunnel
+              universe={scanFunnel.data?.universe ?? { eligibleCount: null, examinedCount: null, refreshedAt: null }}
+              sweep={scanFunnel.data?.sweep ?? null}
+              loading={scanFunnel.isLoading}
+            />
+          </Cell>
+        </div>
+      )}
 
       {funnel.isError ? (
         <div className="pg-grid pg-fade-up">

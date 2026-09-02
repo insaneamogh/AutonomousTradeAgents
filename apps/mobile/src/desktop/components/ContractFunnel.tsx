@@ -18,8 +18,8 @@ import { useState } from 'react';
 import type { FunnelStageDto } from '@app/shared-types';
 
 import { Card, CardHead, Pill, Row, SkelRows, Stack } from '../primitives';
-
-type Scale = 'linear' | 'log';
+import { firstZeroStageKey, fmtInt, FunnelBarRow } from './FunnelBar';
+import type { FunnelScale as Scale } from './FunnelBar';
 
 export interface ContractFunnelProps {
   /** Fixed order — matches `_STAGE_REJECTION_REASONS`'s insertion order.
@@ -67,10 +67,6 @@ const REJECTION_SENTENCE: Record<string, (prevSurvivors: number) => string> = {
     `${fmtInt(n)} contracts had IV reported; none fell inside a plausible band versus realized volatility.`,
 };
 
-function fmtInt(n: number): string {
-  return n.toLocaleString('en-US');
-}
-
 function rejectionSentence(reason: string, stages: FunnelStageDto[]): string {
   if (reason === 'no_candidates') {
     return 'The options chain fetch returned no candidates at all — nothing reached the first filter.';
@@ -82,22 +78,6 @@ function rejectionSentence(reason: string, stages: FunnelStageDto[]): string {
     return 'No contract cleared every filter this pass.';
   }
   return build(stage.dropped);
-}
-
-function firstZeroStageKey(stages: FunnelStageDto[]): string | null {
-  for (const s of stages) {
-    if (s.survivors === 0) return s.key;
-  }
-  return null;
-}
-
-function barWidthPct(survivors: number, base: number, scale: Scale): number {
-  if (base <= 0 || survivors <= 0) return 0;
-  if (scale === 'log') {
-    const denom = Math.log(base + 1);
-    return denom > 0 ? Math.min(100, (Math.log(survivors + 1) / denom) * 100) : 0;
-  }
-  return Math.min(100, (survivors / base) * 100);
 }
 
 export function ContractFunnel({
@@ -146,7 +126,7 @@ export function ContractFunnel({
 
           <Stack gap={10}>
             {stages.map((s, i) => (
-              <FunnelRow key={s.key} stage={s} index={i} base={base} scale={scale} isZero={s.key === zeroKey} />
+              <FunnelBarRow key={s.key} stage={s} index={i} base={base} scale={scale} isZero={s.key === zeroKey} />
             ))}
           </Stack>
 
@@ -164,57 +144,6 @@ export function ContractFunnel({
         </Stack>
       )}
     </Card>
-  );
-}
-
-function FunnelRow({
-  stage,
-  index,
-  base,
-  scale,
-  isZero,
-}: {
-  stage: FunnelStageDto;
-  index: number;
-  base: number;
-  scale: Scale;
-  isZero: boolean;
-}) {
-  const pct = barWidthPct(stage.survivors, base, scale);
-  const textColor = isZero ? 'var(--pg-bear-text)' : undefined;
-  const fillColor = isZero ? 'var(--pg-bear)' : 'var(--pg-primary)';
-
-  return (
-    <div
-      style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}
-      aria-label={`${stage.label}: ${fmtInt(stage.survivors)} of ${fmtInt(base)}${
-        index === 0 ? '' : `, ${fmtInt(stage.dropped)} dropped`
-      }`}
-    >
-      <span
-        className="pg-caption pg-truncate"
-        title={stage.label}
-        style={{ width: 150, flex: 'none', color: textColor }}
-      >
-        {stage.label}
-      </span>
-      <div className="pg-bar" style={{ flex: 1, height: 16 }} role="presentation" aria-hidden="true">
-        <i
-          data-stage={stage.key}
-          style={{
-            width: `${pct}%`,
-            minWidth: stage.survivors > 0 ? 2 : 0,
-            backgroundColor: fillColor,
-          }}
-        />
-      </div>
-      <span className="pg-num-right pg-num" style={{ width: 68, flex: 'none', color: textColor }}>
-        {fmtInt(stage.survivors)}
-      </span>
-      <span className="pg-num-right pg-num pg-dim" style={{ width: 80, flex: 'none' }}>
-        {index === 0 ? '' : `−${fmtInt(stage.dropped)}`}
-      </span>
-    </div>
   );
 }
 

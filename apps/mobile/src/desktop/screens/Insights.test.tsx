@@ -19,6 +19,7 @@ import type { GhostSummaryResponse, VetoLedgerResponse } from '@app/shared-types
 import { useCalibrationScorecard } from '@/hooks/useCalibration';
 import { useFunnel } from '@/hooks/useFunnel';
 import { useGhostSummary, useVetoLedger } from '@/hooks/useInsights';
+import { useScanFunnel } from '@/hooks/useScanFunnel';
 
 import { Pill } from '../primitives';
 import { InsightsScreen } from './Insights';
@@ -26,6 +27,7 @@ import { InsightsScreen } from './Insights';
 jest.mock('@/hooks/useInsights');
 jest.mock('@/hooks/useCalibration');
 jest.mock('@/hooks/useFunnel');
+jest.mock('@/hooks/useScanFunnel');
 jest.mock('../ExemplarCard', () => ({
   ExemplarCard: ({ rule }: { rule: string }) => `exemplar:${rule}`,
 }));
@@ -38,6 +40,8 @@ const mockUseCalibrationScorecard = useCalibrationScorecard as jest.Mock;
 // honesty-rule tests are about — an empty, loaded result keeps it out of
 // their way without asserting anything about it.
 const mockUseFunnel = useFunnel as jest.Mock;
+// Same treatment as mockUseFunnel above, for the sibling scan-funnel card.
+const mockUseScanFunnel = useScanFunnel as jest.Mock;
 
 const GHOST_SUMMARY: GhostSummaryResponse = {
   windowDays: 30,
@@ -130,6 +134,17 @@ describe('InsightsScreen — veto ledger honesty rules', () => {
     });
     mockUseFunnel.mockReturnValue({
       data: { windowDays: 30, aggregate: { stages: [], runs: 0, bought: 0, topRejectionReasons: [] }, recent: [] },
+      isLoading: false,
+      isError: false,
+      refetch: jest.fn(),
+    });
+    mockUseScanFunnel.mockReturnValue({
+      data: {
+        universe: { eligibleCount: null, examinedCount: null, refreshedAt: null },
+        sweep: null,
+        chainPreflight: null,
+        generatedAt: '2026-08-31T00:00:00Z',
+      },
       isLoading: false,
       isError: false,
       refetch: jest.fn(),
@@ -248,5 +263,17 @@ describe('InsightsScreen — veto ledger honesty rules', () => {
     // Reading `count` as the finalised subset is what rendered "6
     // finalised · 6 still marking" live for a bucket where nothing had.
     expect(json).toContain('8 finalised · 2 still marking — finalizes in 3 trading days');
+  });
+
+  it('renders the scan funnel and contract funnel cards with distinct titles', () => {
+    const tree = renderScreen();
+    const json = JSON.stringify(tree.toJSON());
+
+    // The scan funnel answers "how many symbols reach the LLM at all";
+    // the contract funnel (aggregate mode, since this screen passes
+    // windowDays) answers "which contract survived for one that did" —
+    // distinct strings so a reader never mistakes one for the other.
+    expect(json).toContain('Symbol scan funnel');
+    expect(json).toContain('Contracts considered');
   });
 });
