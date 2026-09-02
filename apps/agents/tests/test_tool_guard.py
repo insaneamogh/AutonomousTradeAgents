@@ -1377,3 +1377,126 @@ async def test_persist_placed_order_sell_to_close_side() -> None:
     assert params["side"] == "SELL"
     assert params["option_action"] == "sell_to_close"
     assert params["filled_qty"] == 4
+
+
+# ─────────────────────────────────────────────────────────────────────
+# preflight_can_open — the zero-LLM account-level gate
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _preflight_caps(**kw: Any) -> RiskCaps:
+    kw.setdefault("options_disabled", False)
+    return RiskCaps.aggressive_paper(**kw)
+
+
+async def test_preflight_blocks_when_the_book_alone_already_meets_the_premium_cap() -> None:
+    """The measured waste this exists for: 2026-09-01, the options book hit
+    `max_total_premium_pct` at 15:00 UTC and stayed there, and every options
+    pass for the next three hours still paid ~3 Sonnet calls to be told a
+    portfolio-level fact that had nothing to do with the symbol. 48 runs."""
+    caps = _preflight_caps()
+    at_cap = PortfolioPosition(
+        symbol="NVDA260918C00225000",
+        qty=1,
+        avg_entry_price=75.0,
+        # caps.options_max_total_premium_pct is 7.5 -> 7.5% of $100k.
+        market_value=caps.options_max_total_premium_pct / 100.0 * 100_000.0,
+        is_option=True,
+        multiplier=100,
+    )
+    guard = _guard(
+        context_provider=MockRiskContextProvider(
+            account_equity=100_000.0, open_positions=(at_cap,)
+        )
+    )
+
+    verdict = await guard.preflight_can_open(user_id=str(uuid.uuid4()), caps=caps)
+
+    assert verdict.allow is False
+    assert verdict.reason == "max_total_premium_pct"
+
+
+async def test_preflight_never_blocks_a_book_that_is_still_under_the_cap() -> None:
+    """The load-bearing guarantee. A false negative here is a LOST TRADE —
+    strictly worse than the wasted spend this is saving. A book under the
+    cap must always go on to the real per-contract check."""
+    caps = _preflight_caps()
+    under = PortfolioPosition(
+        symbol="NVDA260918C00225000",
+        qty=1,
+        avg_entry_price=1.0,
+        # A hair under the cap — still room for a new entry.
+        market_value=(caps.options_max_total_premium_pct - 0.01) / 100.0 * 100_000.0,
+        is_option=True,
+        multiplier=100,
+    )
+    guard = _guard(
+        context_provider=MockRiskContextProvider(
+            account_equity=100_000.0, open_positions=(under,)
+        )
+    )
+
+    verdict = await guard.preflight_can_open(user_id=str(uuid.uuid4()), caps=caps)
+
+    assert verdict.allow is True
+
+
+async def test_preflight_ignores_equity_positions_when_summing_option_premium() -> None:
+    """`max_total_premium_pct` sums OPTION market value only. Counting a
+    large equity holding would block the options leg on an account that has
+    no option exposure at all."""
+    caps = _preflight_caps()
+    equity_only = PortfolioPosition(
+        symbol="CVX", qty=1_000, avg_entry_price=200.0,
+        market_value=200_000.0, is_option=False, multiplier=1,
+    )
+    guard = _guard(
+        context_provider=MockRiskContextProvider(
+            account_equity=100_000.0, open_positions=(equity_only,)
+        )
+    )
+
+    verdict = await guard.preflight_can_open(user_id=str(uuid.uuid4()), caps=caps)
+
+    assert verdict.allow is True
+
+
+async def test_preflight_blocks_below_the_broker_options_level() -> None:
+    caps = _preflight_caps()
+    guard = _guard(
+        context_provider=MockRiskContextProvider(
+            account_equity=100_000.0, options_trading_level=1
+        )
+    )
+
+    verdict = await guard.preflight_can_open(user_id=str(uuid.uuid4()), caps=caps)
+
+    assert verdict.allow is False
+    assert verdict.reason == "options_level_insufficient"
+
+
+async def test_preflight_blocks_when_the_market_is_closed() -> None:
+    caps = _preflight_caps()
+    guard = _guard(clock=lambda: datetime(2026, 9, 2, 2, 0, tzinfo=UTC))
+
+    verdict = await guard.preflight_can_open(user_id=str(uuid.uuid4()), caps=caps)
+
+    assert verdict.allow is False
+    assert verdict.reason == "market_closed"
+
+
+async def test_preflight_fails_open_when_the_context_provider_raises() -> None:
+    """A pre-flight is an OPTIMISATION. A broken one must degrade to
+    running the normal paid path, never to a silent HOLD that quietly stops
+    the desk trading."""
+    caps = _preflight_caps()
+
+    class _Boom:
+        async def fetch(self, *, user_id: str | None = None) -> Any:
+            raise RuntimeError("postgres down")
+
+    guard = _guard(context_provider=_Boom())
+
+    verdict = await guard.preflight_can_open(user_id=str(uuid.uuid4()), caps=caps)
+
+    assert verdict.allow is True

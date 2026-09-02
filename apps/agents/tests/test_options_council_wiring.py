@@ -136,15 +136,41 @@ class _Result:
         self.trade_response, self.tool_transcript = None, transcript
 
 
-def _patch(monkeypatch: pytest.MonkeyPatch, result: Any) -> None:
+class _FakeVerdict:
+    def __init__(self, allow: bool, reason: str | None = None) -> None:
+        self.allow, self.reason, self.payload = allow, reason, None
+
+
+class _FakeGuard:
+    """Stands in for ToolGuard. `preflight_allow=False` simulates the
+    account-level pre-flight refusing before any model call."""
+
+    def __init__(self, preflight_allow: bool = True, reason: str | None = None) -> None:
+        self._allow, self._reason = preflight_allow, reason
+
+    async def preflight_can_open(self, **_: Any) -> _FakeVerdict:
+        return _FakeVerdict(self._allow, self._reason)
+
+
+def _patch(
+    monkeypatch: pytest.MonkeyPatch,
+    result: Any,
+    *,
+    guard: Any = None,
+    calls: list | None = None,
+) -> None:
     import trading_agents.options.agents as agents_mod
     import trading_agents.options.tools.guard as guard_mod
 
     async def _fake(*a: Any, **k: Any) -> Any:
+        if calls is not None:
+            calls.append(1)
         return result
 
     monkeypatch.setattr(agents_mod, "run_options_agents", _fake)
-    monkeypatch.setattr(guard_mod, "ToolGuard", lambda *a, **k: object())
+    monkeypatch.setattr(
+        guard_mod, "ToolGuard", lambda *a, **k: (guard if guard is not None else _FakeGuard())
+    )
 
 
 async def test_a_successful_trade_marks_the_row_already_written(
@@ -300,3 +326,58 @@ async def test_runtime_still_writes_on_a_normal_pass(
     monkeypatch.setattr(rt, "run_graph", _fake_graph)
     await rt.run_council(symbol="NVDA", llm=rt.LLM(api_key=None), decision_log=_Log())
     assert len(recorded) == 1
+
+
+async def test_preflight_refusal_spends_zero_llm_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The whole point of the pre-flight: when an ACCOUNT-level gate
+    already makes a trade impossible, `run_options_agents` — and therefore
+    both Sonnet debate calls and the trade hop — must never run at all.
+
+    Measured 2026-09-01: 48 of 293 options runs were refused
+    `max_total_premium_pct`, a portfolio-level fact independent of the
+    symbol, each after ~3 paid Sonnet calls."""
+    calls: list = []
+    _patch(
+        monkeypatch,
+        _Result(proceed=True),
+        guard=_FakeGuard(preflight_allow=False, reason="max_total_premium_pct"),
+        calls=calls,
+    )
+
+    out = await options_council_node(_state(), llm=object())
+
+    assert calls == [], "run_options_agents must not run after a pre-flight refusal"
+    assert out["final_action"] == "HOLD"
+    assert out["tool_denials"] == ["preflight:max_total_premium_pct"]
+    assert "max_total_premium_pct" in out["drafter_rationale"]
+
+
+async def test_preflight_allowing_still_runs_the_normal_paid_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A book under the cap must be unaffected — the pre-flight is a
+    short-circuit, never a new refusal reason of its own."""
+    calls: list = []
+    _patch(monkeypatch, _Result(proceed=True), guard=_FakeGuard(True), calls=calls)
+
+    out = await options_council_node(_state(), llm=object())
+
+    assert calls == [1]
+    assert out["final_action"] == "HOLD"  # no trade in the transcript
+    assert out.get("tool_denials") == []
+
+
+async def test_a_guard_without_a_preflight_degrades_to_the_normal_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fail-open, at the node boundary too: an old/stubbed guard with no
+    `preflight_can_open` must not stop the desk trading."""
+    calls: list = []
+    _patch(monkeypatch, _Result(proceed=True), guard=object(), calls=calls)
+
+    out = await options_council_node(_state(), llm=object())
+
+    assert calls == [1]
+    assert out["final_action"] == "HOLD"

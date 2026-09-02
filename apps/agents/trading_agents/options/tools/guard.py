@@ -479,6 +479,83 @@ class ToolGuard:
 
     # ── before() ─────────────────────────────────────────────────────
 
+    async def preflight_can_open(
+        self, *, user_id: str, caps: RiskCaps
+    ) -> GuardVerdict:
+        """Can ANY new long-option entry clear the account-level gates right
+        now? Answered with ZERO LLM calls, before the debate is paid for.
+
+        The problem this exists for, measured 2026-09-01: every
+        deterministic options gate lived inside ``_before_open_option_trade``,
+        which only runs from the tool loop — i.e. AFTER
+        ``run_bull_and_bear``'s two Sonnet calls and the trade hop's third.
+        So a symbol that could not possibly trade still cost a full paid
+        debate to discover that. Of 293 options council runs that day, 7
+        traded (2.4%) and 48 were refused ``max_total_premium_pct`` — a
+        PORTFOLIO-level fact that does not depend on the symbol, the
+        direction, or anything either agent had to say. Once the book hit
+        the cap at 15:00 UTC it stayed there, and every options pass for
+        the next three hours paid ~$0.025 to be told the same thing.
+
+        Deliberately only the checks that are TRUE OR FALSE FOR THE WHOLE
+        ACCOUNT, independent of which symbol is being considered:
+
+          * the operator/mode switches and the market clock — identical
+            inputs to ``_before_open_option_trade``'s steps 1-3;
+          * ``options_level_insufficient`` — an account-level broker fact;
+          * ``max_total_premium_pct``, but asked in its symbol-independent
+            form (below).
+
+        Per-symbol gates (``select_contract``'s six-stage funnel,
+        ``size_rounds_to_zero``) are NOT here: they need a chain fetch and
+        the resolved direction/conviction, and rejecting on a *guessed*
+        conviction could refuse a contract the real call would have taken.
+        That is a false negative — a lost trade — which is strictly worse
+        than the wasted spend this method is saving. See
+        docs/PLAN_OPTIONS_PREFLIGHT.md for how to move those safely.
+
+        **Never returns False for something that could still have traded.**
+        The premium check asks whether the ALREADY-HELD book alone meets
+        the cap. ``max_total_premium_pct`` vetoes on
+        ``existing + this_premium > cap``, and ``this_premium`` is always
+        strictly positive (qty >= 1 at a positive ask), so
+        ``existing >= cap`` implies every possible new entry is already
+        doomed. A book UNDER the cap is never blocked here — it goes on to
+        the debate and the real per-contract check, exactly as before.
+
+        Fails OPEN on any infrastructure error (context provider down,
+        etc.): a pre-flight is an optimisation, and a broken one must
+        degrade to "run the normal path", never to a silent HOLD.
+        """
+        if not env_flag("AUTO_TRADE_ENABLED"):
+            return GuardVerdict(False, "auto_trade_disabled")
+        if not _is_paper_and_safe():
+            return GuardVerdict(False, "live_mode_refused")
+        if not is_us_market_open(self._clock()):
+            return GuardVerdict(False, "market_closed")
+
+        try:
+            context = await self._resolve_context_provider().fetch(user_id=user_id)
+        except Exception:
+            logger.exception(
+                "guard: preflight context fetch failed for %s — allowing the "
+                "normal path to run and make the real decision", user_id,
+            )
+            return GuardVerdict(True, None)
+
+        level = context.options_trading_level
+        if level is None or level < caps.options_min_trading_level:
+            return GuardVerdict(False, "options_level_insufficient")
+
+        if context.account_equity <= 0:
+            return GuardVerdict(False, "max_total_premium_pct")
+        existing = sum(p.market_value for p in context.open_positions if p.is_option)
+        existing_pct = (existing / context.account_equity) * 100.0
+        if existing_pct >= caps.options_max_total_premium_pct:
+            return GuardVerdict(False, "max_total_premium_pct")
+
+        return GuardVerdict(True, None)
+
     async def before(
         self, tool: str, args: Mapping[str, Any], ctx: GuardContext
     ) -> GuardVerdict:

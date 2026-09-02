@@ -145,12 +145,60 @@ async def options_council_node(
     from trading_agents.options.tools.guard import ToolGuard
 
     caps = risk_caps or RiskCaps.from_env()
+    # ToolGuard() with no arguments resolves its own production
+    # dependencies (Postgres risk context, the real decision log, a
+    # broker factory) — see its __init__. Tests inject fakes instead.
+    guard = ToolGuard()
+
+    # DETERMINISTIC PRE-FLIGHT, BEFORE ANY PAID CALL.
+    #
+    # Every account-level options gate used to run only inside
+    # `guard.before()`, which the tool loop reaches AFTER
+    # `run_bull_and_bear`'s two Sonnet calls and the trade hop's third. So
+    # a symbol that could not possibly trade still cost a full paid debate
+    # to find that out. Measured 2026-09-01: 293 options council runs, 7
+    # traded, 48 refused `max_total_premium_pct` — a portfolio-level fact
+    # that has nothing to do with the symbol or with anything either agent
+    # said. The book hit its cap at 15:00 UTC and stayed there; every
+    # options pass for the next three hours paid ~$0.025 to be told so.
+    #
+    # This asks the symbol-INDEPENDENT half of that question first, for
+    # free, and HOLDs with the same named rule the guard itself would have
+    # returned — so the audit row and the Refusal Ledger read identically
+    # whether the refusal came from here or from the real check.
+    # `preflight_can_open` fails OPEN on infrastructure trouble, so a
+    # broken pre-flight degrades to the normal paid path, never to a
+    # silent HOLD.
+    try:
+        preflight = await guard.preflight_can_open(
+            user_id=str(state.get("user_id") or ""), caps=caps
+        )
+    except Exception:
+        logger.exception(
+            "options preflight raised for %s — continuing to the normal path",
+            state.get("symbol"),
+        )
+        preflight = None
+
+    if preflight is not None and not preflight.allow:
+        reason = preflight.reason or "preflight_refused"
+        logger.info(
+            "options council SKIPPED for %s — %s (deterministic pre-flight, "
+            "0 LLM calls)", state.get("symbol"), reason,
+        )
+        return {
+            **state,
+            "final_action": "HOLD",
+            "proposal": None,
+            "tool_denials": [f"preflight:{reason}"],
+            "drafter_rationale": (
+                f"Refused before any model call by the deterministic "
+                f"pre-flight: {reason}."
+            ),
+        }
 
     try:
-        # ToolGuard() with no arguments resolves its own production
-        # dependencies (Postgres risk context, the real decision log, a
-        # broker factory) — see its __init__. Tests inject fakes instead.
-        result = await run_options_agents(state, llm, guard=ToolGuard(), caps=caps)
+        result = await run_options_agents(state, llm, guard=guard, caps=caps)
     except Exception:
         logger.exception("options council failed for %s — HOLDing", state.get("symbol"))
         return {
