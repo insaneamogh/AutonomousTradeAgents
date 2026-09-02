@@ -266,6 +266,39 @@ everything with maths, debate only the best handful.
 """
 
 
+_DEFAULT_MAX_LLM_SYMBOLS_PER_HOUR = 4
+"""Paces ``MAX_LLM_SYMBOLS_PER_DAY`` across the session instead of letting
+it burn at the open.
+
+A daily cap alone is first-come-first-served: the trigger loop runs every
+``SCANNER_INTERVAL_MINUTES``, so 20 paid passes would be spent within
+~15 minutes of the 13:30 UTC open and the desk would then HOLD everything
+uncosted for the remaining six hours. That is the same failure the daily
+cap was added to prevent, re-expressed in symbols instead of dollars — and
+it is worse than it sounds, because the best setups of a session are not
+reliably its first ones.
+
+4/hour x the ~6.5h US session is ~26, so the DAILY cap (20) stays the
+binding constraint over a full day while this one stops any single hour
+from consuming it. Both are enforced; neither replaces the other.
+"""
+
+
+def _max_llm_symbols_per_hour() -> int:
+    raw = os.environ.get("MAX_LLM_SYMBOLS_PER_HOUR", "").strip()
+    if not raw:
+        return _DEFAULT_MAX_LLM_SYMBOLS_PER_HOUR
+    try:
+        value = int(raw)
+    except ValueError:
+        log.warning(
+            "ignoring malformed MAX_LLM_SYMBOLS_PER_HOUR=%r — keeping %d",
+            raw, _DEFAULT_MAX_LLM_SYMBOLS_PER_HOUR,
+        )
+        return _DEFAULT_MAX_LLM_SYMBOLS_PER_HOUR
+    return value if value >= 1 else _DEFAULT_MAX_LLM_SYMBOLS_PER_HOUR
+
+
 def _max_llm_symbols_per_day() -> int:
     raw = os.environ.get("MAX_LLM_SYMBOLS_PER_DAY", "").strip()
     if not raw:
@@ -585,11 +618,13 @@ async def main(
 
     max_spend = _max_daily_llm_spend_usd()
     max_runs_per_day = _max_llm_symbols_per_day()
+    max_runs_per_hour = _max_llm_symbols_per_hour()
     from trading_agents.cost_ledger import get_cost_ledger
 
     ledger = get_cost_ledger()
     budget_tripped = False
     day_cap_tripped = False
+    hour_cap_tripped = False
     # Paid passes already spent TODAY, before this sweep adds any. Read
     # once here and incremented locally per admitted candidate rather than
     # re-queried every symbol: the ledger write for a pass lands during
@@ -610,6 +645,14 @@ async def main(
             "per-sweep cap of %d for this invocation", max_runs_per_day,
         )
         runs_today = 0
+    try:
+        runs_this_hour = await ledger.count_runs_since(timedelta(hours=1))
+    except Exception:
+        log.exception(
+            "count_runs_since(1h) failed — hourly pacing degrades to "
+            "per-sweep for this invocation"
+        )
+        runs_this_hour = 0
 
     push_tasks: list = []
     rolled_up: list[dict] = []
@@ -641,6 +684,20 @@ async def main(
                         "skip_reason": "llm_daily_symbol_cap_reached",
                     })
                     continue
+                if not hour_cap_tripped and runs_this_hour >= max_runs_per_hour:
+                    hour_cap_tripped = True
+                    log.info(
+                        "MAX_LLM_SYMBOLS_PER_HOUR=%d reached (%d paid passes in "
+                        "the last hour) at %s — pacing the daily budget; "
+                        "candidates resume next hour",
+                        max_runs_per_hour, runs_this_hour, symbol,
+                    )
+                if hour_cap_tripped:
+                    rolled_up.append({
+                        "symbol": symbol, "skipped": True,
+                        "skip_reason": "llm_hourly_symbol_cap_reached",
+                    })
+                    continue
                 if not budget_tripped:
                     spent, _ = await ledger.sum_cost_since(_seconds_since_midnight_utc())
                     if spent >= max_spend:
@@ -662,6 +719,7 @@ async def main(
                 # the await, not after, so a pass that raises still counts —
                 # it consumed real model calls either way.
                 runs_today += 1
+                runs_this_hour += 1
             rolled_up.append(
                 await _run_one(
                     user_id, symbol, llm,
