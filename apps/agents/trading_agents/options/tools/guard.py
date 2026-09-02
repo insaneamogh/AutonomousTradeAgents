@@ -556,6 +556,87 @@ class ToolGuard:
 
         return GuardVerdict(True, None)
 
+    async def preflight_chain_is_tradeable(
+        self, *, underlying: str, direction: str, caps: RiskCaps
+    ) -> GuardVerdict:
+        """Is this underlying's chain deep enough to trade AT ALL, before
+        the debate is paid for?
+
+        Answers the "why is a paid council pass first?" question for the
+        one refusal that does not depend on anything either agent says.
+        `select_contract` runs inside `_before_open_option_trade`, which the
+        tool loop only reaches after both debate calls and the trade hop —
+        so a symbol whose chain cannot produce a tradeable contract still
+        cost ~3 model calls to discover that. `CME261016P00270000` was
+        exactly this shape: 29 contracts in the delta band, 1 through
+        liquidity, and the resulting position gapped 26 points between
+        prints because the contract barely traded.
+
+        **Rigorous, not heuristic.** The blocker to moving the funnel
+        earlier is that its `delta_band` stage needs `conviction`, an LLM
+        output. But conviction selects between exactly TWO bands
+        (`_HIGH_CONVICTION_DELTA_BAND` / `_LOW_CONVICTION_DELTA_BAND`), so
+        running the real `select_contract` once per regime covers every
+        value conviction could take. Only when BOTH come back with a
+        chain-shaped refusal is the symbol untradeable no matter what the
+        agents decide. If either regime finds a contract, this returns
+        allow and the normal paid path runs and makes the real call — so a
+        false negative (a lost trade) is impossible by construction.
+
+        `direction` comes from `strategy_fit`'s `selected_direction`, which
+        is deterministic and already computed for free.
+
+        Only CHAIN-SHAPED reasons short-circuit. `no_delta_in_band`,
+        `no_iv` and the IV-band rejections are all conviction- or
+        market-data-sensitive in ways the real call may resolve differently;
+        treating those as fatal here would refuse trades the paid path
+        would have taken. Fails OPEN on any error, same contract as
+        `preflight_can_open`.
+        """
+        api_key, secret_key = _alpaca_credentials()
+        if not api_key or not secret_key:
+            return GuardVerdict(True, None)
+
+        now = self._clock()
+        try:
+            candidates = await fetch_option_candidates(
+                underlying, api_key=api_key, secret_key=secret_key, now=now, caps=caps
+            )
+        except Exception:
+            logger.exception(
+                "guard: preflight chain fetch failed for %s — allowing the "
+                "normal path to make the real decision", underlying,
+            )
+            return GuardVerdict(True, None)
+
+        if not candidates:
+            return GuardVerdict(False, "no_candidates")
+
+        # The two conviction regimes are the complete space of delta bands.
+        # 0.9 selects the high band, 0.1 the low one.
+        results = [
+            select_contract(
+                ContractSelectionInputs(
+                    underlying_symbol=underlying,
+                    direction=direction,  # type: ignore[arg-type]
+                    conviction=conviction,
+                    candidates=candidates,
+                    now=now,
+                )
+            )
+            for conviction in (0.9, 0.1)
+        ]
+        if any(r.selected is not None for r in results):
+            return GuardVerdict(True, None)
+
+        reasons = {r.rejection_reason for r in results}
+        chain_shaped = {"illiquid_chain", "no_liquid_contract", "no_candidates"}
+        if reasons and reasons <= chain_shaped:
+            # Deterministic across both regimes and about the CHAIN, not the
+            # thesis — no conviction the agents could reach changes it.
+            return GuardVerdict(False, next(iter(reasons)))
+        return GuardVerdict(True, None)
+
     async def before(
         self, tool: str, args: Mapping[str, Any], ctx: GuardContext
     ) -> GuardVerdict:

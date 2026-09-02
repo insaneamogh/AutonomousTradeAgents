@@ -1530,3 +1530,122 @@ async def test_preflight_fails_open_when_the_context_provider_raises() -> None:
     verdict = await guard.preflight_can_open(user_id=str(uuid.uuid4()), caps=caps)
 
     assert verdict.allow is True
+
+
+# ─────────────────────────────────────────────────────────────────────
+# preflight_chain_is_tradeable — the funnel, before the debate is paid for
+# ─────────────────────────────────────────────────────────────────────
+
+
+async def _thin_chain(*a: Any, **k: Any) -> tuple[ContractQuote, ...]:
+    """One liquid contract — the CME shape. Trips `illiquid_chain` in every
+    conviction regime."""
+    return (_quote(),)
+
+
+async def _empty_chain(*a: Any, **k: Any) -> tuple[ContractQuote, ...]:
+    return ()
+
+
+async def _no_delta_chain(*a: Any, **k: Any) -> tuple[ContractQuote, ...]:
+    """Deep and liquid, but every contract sits outside BOTH delta bands
+    (union [0.25, 0.75]) — a conviction/market-shaped refusal, not a
+    chain-shaped one."""
+    return tuple(
+        _quote(occ=f"NVDA260918C0{225 + i}000", strike=225.0 + i, delta=0.95)
+        for i in range(6)
+    )
+
+
+async def test_chain_preflight_refuses_a_one_contract_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CME case: refused for zero model calls instead of ~3."""
+    guard = _guard()
+    monkeypatch.setattr(
+        "trading_agents.options.tools.guard.fetch_option_candidates", _thin_chain
+    )
+    monkeypatch.setenv("ALPACA_API_KEY", "k")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "s")
+
+    verdict = await guard.preflight_chain_is_tradeable(
+        underlying="CME", direction="long", caps=RiskCaps.aggressive_paper()
+    )
+
+    assert verdict.allow is False
+    assert verdict.reason == "illiquid_chain"
+
+
+async def test_chain_preflight_allows_a_deep_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    guard = _guard()
+    monkeypatch.setattr(
+        "trading_agents.options.tools.guard.fetch_option_candidates", _fetch_ok
+    )
+    monkeypatch.setenv("ALPACA_API_KEY", "k")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "s")
+
+    verdict = await guard.preflight_chain_is_tradeable(
+        underlying="NVDA", direction="long", caps=RiskCaps.aggressive_paper()
+    )
+
+    assert verdict.allow is True
+
+
+async def test_chain_preflight_does_not_short_circuit_a_conviction_shaped_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`no_delta_in_band` depends on conviction and on live greeks. Treating
+    it as fatal here would refuse trades the paid path might have taken —
+    a false negative, the one thing this must never produce."""
+    guard = _guard()
+    monkeypatch.setattr(
+        "trading_agents.options.tools.guard.fetch_option_candidates", _no_delta_chain
+    )
+    monkeypatch.setenv("ALPACA_API_KEY", "k")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "s")
+
+    verdict = await guard.preflight_chain_is_tradeable(
+        underlying="NVDA", direction="long", caps=RiskCaps.aggressive_paper()
+    )
+
+    assert verdict.allow is True
+
+
+async def test_chain_preflight_fails_open_when_the_chain_fetch_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _boom(*a: Any, **k: Any) -> tuple[ContractQuote, ...]:
+        raise RuntimeError("alpaca down")
+
+    guard = _guard()
+    monkeypatch.setattr(
+        "trading_agents.options.tools.guard.fetch_option_candidates", _boom
+    )
+    monkeypatch.setenv("ALPACA_API_KEY", "k")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "s")
+
+    verdict = await guard.preflight_chain_is_tradeable(
+        underlying="NVDA", direction="long", caps=RiskCaps.aggressive_paper()
+    )
+
+    assert verdict.allow is True
+
+
+async def test_chain_preflight_refuses_an_empty_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    guard = _guard()
+    monkeypatch.setattr(
+        "trading_agents.options.tools.guard.fetch_option_candidates", _empty_chain
+    )
+    monkeypatch.setenv("ALPACA_API_KEY", "k")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "s")
+
+    verdict = await guard.preflight_chain_is_tradeable(
+        underlying="NVDA", direction="long", caps=RiskCaps.aggressive_paper()
+    )
+
+    assert verdict.allow is False
+    assert verdict.reason == "no_candidates"

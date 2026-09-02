@@ -180,6 +180,28 @@ async def options_council_node(
         )
         preflight = None
 
+    # Second pre-flight: the CHAIN itself, still before any paid call.
+    # `select_contract` normally runs inside the tool guard — i.e. after
+    # both debate calls and the trade hop — so an untradeable chain cost
+    # ~3 model calls to discover. Conviction picks between exactly two
+    # delta bands, so testing both covers every value the agents could
+    # reach; see `preflight_chain_is_tradeable`. Only runs when the
+    # account-level pre-flight already passed, so a halted/closed/capped
+    # account never pays for a chain fetch either.
+    if preflight is not None and preflight.allow:
+        direction = str(state.get("selected_direction") or "")
+        underlying = str(state.get("symbol") or "")
+        if direction in ("long", "short") and underlying:
+            try:
+                preflight = await guard.preflight_chain_is_tradeable(
+                    underlying=underlying, direction=direction, caps=caps
+                )
+            except Exception:
+                logger.exception(
+                    "options chain preflight raised for %s — continuing to the "
+                    "normal path", underlying,
+                )
+
     if preflight is not None and not preflight.allow:
         reason = preflight.reason or "preflight_refused"
         logger.info(

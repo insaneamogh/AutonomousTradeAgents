@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -47,6 +48,39 @@ from trading_agents.options.tools.schemas import OPEN_OPTION_TRADE, READ_ONLY_TO
 from trading_agents.state import CouncilState
 
 logger = logging.getLogger("agents.options.agents")
+
+
+def _options_model() -> str:
+    """Which model the two options agents run on.
+
+    Defaults to HAIKU. The options council was 84% of a $10 credit balance
+    burned in one afternoon (2026-09-01: `options_bull` 500 calls $4.54 +
+    `options_bear` 241 calls $1.27, against $6.50 total), and Haiku is
+    roughly an order of magnitude cheaper per token.
+
+    Safe to downgrade HERE specifically because of this repo's core rule —
+    agents propose, deterministic code disposes. Neither agent can place a
+    trade: `ToolGuard.before()` re-runs the entire risk stack (contract
+    selection, liquidity, chain depth, premium caps, sizing, level checks)
+    on every tool call regardless of which model asked. A weaker model
+    yields worse SELECTION, never weaker RISK CONTROL.
+
+    `OPTIONS_AGENT_MODEL` overrides it — set to `sonnet` to revert
+    instantly with no deploy if debate quality or tool-calling degrades.
+    Unrecognised values keep the default rather than passing an invalid
+    model id to the API.
+    """
+    raw = os.environ.get("OPTIONS_AGENT_MODEL", "").strip().lower()
+    if raw in ("sonnet", "claude-sonnet-4-6"):
+        return Model.SONNET
+    if raw in ("opus", "claude-opus-4-7"):
+        return Model.OPUS
+    if raw and raw not in ("haiku", Model.HAIKU):
+        logger.warning(
+            "ignoring unknown OPTIONS_AGENT_MODEL=%r — keeping haiku", raw
+        )
+    return Model.HAIKU
+
 
 __all__ = [
     "OptionsAgentsResult",
@@ -275,7 +309,7 @@ async def _run_view(*, role: str, system: str, state: CouncilState, llm: LLM) ->
         llm,
         system=system,
         user=user,
-        model=Model.SONNET,
+        model=_options_model(),
         max_tokens=_VIEW_MAX_TOKENS,
         council_run_id=state.get("council_run_id"),
         user_id=state.get("user_id"),
@@ -413,7 +447,7 @@ async def run_options_agents(
         user=_trade_hop_user_message(state, bull=bull, resolution=resolution),
         tools=list(_BULL_TRADE_TOOLS),
         dispatch=_dispatch,
-        model=Model.SONNET,
+        model=_options_model(),
         max_rounds=max_rounds,
         max_tokens=_TRADE_MAX_TOKENS,
         council_run_id=state.get("council_run_id"),

@@ -143,13 +143,25 @@ class _FakeVerdict:
 
 class _FakeGuard:
     """Stands in for ToolGuard. `preflight_allow=False` simulates the
-    account-level pre-flight refusing before any model call."""
+    account-level pre-flight refusing before any model call;
+    `chain_allow=False` simulates the CHAIN pre-flight doing the same."""
 
-    def __init__(self, preflight_allow: bool = True, reason: str | None = None) -> None:
+    def __init__(
+        self,
+        preflight_allow: bool = True,
+        reason: str | None = None,
+        *,
+        chain_allow: bool = True,
+        chain_reason: str | None = None,
+    ) -> None:
         self._allow, self._reason = preflight_allow, reason
+        self._chain_allow, self._chain_reason = chain_allow, chain_reason
 
     async def preflight_can_open(self, **_: Any) -> _FakeVerdict:
         return _FakeVerdict(self._allow, self._reason)
+
+    async def preflight_chain_is_tradeable(self, **_: Any) -> _FakeVerdict:
+        return _FakeVerdict(self._chain_allow, self._chain_reason)
 
 
 def _patch(
@@ -381,3 +393,68 @@ async def test_a_guard_without_a_preflight_degrades_to_the_normal_path(
 
     assert calls == [1]
     assert out["final_action"] == "HOLD"
+
+
+async def test_an_untradeable_chain_spends_zero_llm_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Answers "why is a paid council pass first?" — it no longer is.
+    `select_contract` normally runs inside the tool guard, after both debate
+    calls and the trade hop, so a chain that could never produce a tradeable
+    contract cost ~3 model calls to discover. CME261016P00270000 was exactly
+    that shape and cost $1,200."""
+    calls: list = []
+    _patch(
+        monkeypatch,
+        _Result(proceed=True),
+        guard=_FakeGuard(chain_allow=False, chain_reason="illiquid_chain"),
+        calls=calls,
+    )
+
+    out = await options_council_node(
+        _state(selected_direction="long"), llm=object()
+    )
+
+    assert calls == [], "run_options_agents must not run for an untradeable chain"
+    assert out["final_action"] == "HOLD"
+    assert out["tool_denials"] == ["preflight:illiquid_chain"]
+
+
+async def test_a_tradeable_chain_still_runs_the_paid_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list = []
+    _patch(
+        monkeypatch,
+        _Result(proceed=True),
+        guard=_FakeGuard(chain_allow=True),
+        calls=calls,
+    )
+
+    await options_council_node(_state(selected_direction="long"), llm=object())
+
+    assert calls == [1]
+
+
+def test_the_options_agents_default_to_haiku() -> None:
+    """The options council was 84% of a $10 balance burned in one afternoon.
+    Haiku is safe HERE specifically because the guard re-runs the entire
+    risk stack on every tool call regardless of which model asked — a weaker
+    model means worse SELECTION, never weaker RISK CONTROL."""
+    from trading_agents.llm import Model
+    from trading_agents.options.agents import _options_model
+
+    assert _options_model() == Model.HAIKU
+
+
+def test_the_options_model_is_revertible_without_a_deploy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from trading_agents.llm import Model
+    from trading_agents.options.agents import _options_model
+
+    monkeypatch.setenv("OPTIONS_AGENT_MODEL", "sonnet")
+    assert _options_model() == Model.SONNET
+
+    monkeypatch.setenv("OPTIONS_AGENT_MODEL", "nonsense")
+    assert _options_model() == Model.HAIKU, "an unknown value must not reach the API"
