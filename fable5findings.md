@@ -1,6 +1,31 @@
 # Fable 5 Findings — Agent System Audit
 
-**Date:** 2026-06-12
+> ## ⚠️ READ THIS FIRST — §1-§5 BELOW ARE A HISTORICAL SNAPSHOT
+>
+> **Everything from here to the `# Build log` heading was written on
+> 2026-06-12 and has NOT been maintained since.** Several of its
+> headline findings are now false. It is kept because the reasoning is
+> still useful and because deleting an audit to make the project look
+> better is the wrong instinct — but read it as history, not as status.
+>
+> Known to be out of date, verified against the code on 2026-09-02:
+>
+> | §3 "verified break" | Actual state today |
+> |---|---|
+> | Break 3 — "auto-approval doesn't exist; nothing executes server-side" | **Fixed.** Auto-approve shipped; the agent opens positions unattended. |
+> | Break 2 — "orders are never persisted on execution" | **Fixed.** `order_store.py` persists on submit and reconciles on fill. |
+> | Break 5 — "circuit breaker watches fake data, fixture user only" | **Fixed.** `ReconcilerFleet` ticks real broker connections every 30s. |
+> | "100% synthetic features, even in the production cron" | **Stale.** Live Alpaca bars/chains feed the council. |
+> | "Paper trading realism: in-memory book" | **Stale.** Real Alpaca paper fills; options fills are live. |
+>
+> Still true and still worth reading: §2 (architecture compliance),
+> §4 (the determinism tiers), and the framing of §4.1's "a test that
+> passes before your fix proves nothing".
+>
+> **For current status, read the newest entries under `# Build log`.**
+> That section IS maintained, newest first.
+
+**Date:** 2026-06-12 *(snapshot — see the banner above)*
 **Scope:** Full audit of the agent council, deterministic engine, broker layer, API, data provenance, and the end-to-end "connect broker → agent auto-trades" loop.
 **Method:** 3 parallel codebase exploration passes + direct line-level verification of every load-bearing claim. Everything in §3 (loop breaks) and §4 (determinism) was verified by reading the cited source directly, not just reported by exploration.
 
@@ -329,6 +354,90 @@ here once, in one place, instead of only as inline asides inside each entry.
 ---
 
 # Build log
+
+### 2026-09-02 — ada555fa — broker stops, liquidity sizing, wider book, Sonnet back
+
+Operator, after a review of the last 3 commits: fix the stop broker-side,
+fix sizing, widen the book but only call LLMs when data cannot decide,
+Haiku back to Sonnet with the malformed degrade fixed, fix the volume
+caps, fix this file. Plus: how do we stay under $10, and how is Alpaca's
+CLI/MCP actually used.
+
+**THE FINDING THAT MATTERS MOST IS NOT IN THE CODE.** The hackathon rules
+(fetched 2026-09-02) say: *"For your final submission, create a
+brand-new Alpaca paper trading account dedicated to this hackathon.
+Projects run on an existing or reused account will not be eligible for
+judging."* and *"Competition account starting balance must be set to
+$100,000."* The current account is a reused development account. Its
+-$800 is therefore **not the submission's P&L and never can be** — the
+submission runs on a fresh $100k account. Everything below is about
+making that one fresh session behave.
+
+**1. Broker-side option stop — the "structurally impossible" claim was
+half wrong.** A BRACKET is still impossible for a single-leg option
+(OrderClass simple/mleg only). But Alpaca's options docs state `type` may
+be `market|limit|stop|stop_limit`, with stop/stop_limit available for
+single-leg orders. So a STANDALONE resting stop-limit is placeable, and
+`option_stops.py` now places one on entry fill and re-tightens it to the
+ratchet's trail line on peak advancement.
+
+Say plainly what it does not do: it is **not** a gap fix. It elects on a
+print exactly as our poller does, so CME (-26% -> -52% in one print) fills
+the same either way. It covers what polling cannot — process down,
+redeploy, a broker read error that holds every option un-stopped for a
+tick, the 30s between ticks, overnight and weekends.
+
+The trap that would have made it a net loss: `_has_in_flight_close`
+matches ANY open order on a decision and skips the position. A resting
+stop is exactly that, so without the prefix exemption this would have
+silently disabled the time stop, the signal exit, the ratchet close and
+escalation on every option it "protected". Four exits for one. Pinned by
+a test on the compiled SQL.
+
+**2. Sizing had no liquidity dimension at all.** `options_position_size`
+was floor(budget/cost) — open interest was a pass/fail gate, so 167 OI
+and 28,000 OI sized identically. That is the whole reason CME was 5 lots.
+`options_max_pct_of_open_interest = 1.0`: CME sizes to 1 (-$240 not
+-$1,200), SPY at 2,841 sizes to 28 and never binds. Trims, never vetoes.
+
+**3. Book width 3 -> 5.** The aggregate 7.5% is pinned by the halt
+coupling and cannot rise, so per-position size is the only lever:
+`options_max_premium_pct` 2.5 -> 1.5. Aggregate risk unchanged; the same
+exposure spread over five theses. At three the desk demonstrably stopped
+trading (293 runs -> 7 trades, 48 refused on the aggregate cap).
+
+**4. Sonnet back, and the silent degrade named.** The Haiku argument
+(guard re-runs the risk stack, so a weak model costs selection not risk)
+was true and beside the point: a trade hop that never emits a valid
+`open_option_trade` produced no trade, no error, no ledger row — the same
+observable as a market with no setups. `_attempted_trade` now separates
+"chose not to open" from "never asked". Denials count as attempts.
+
+**5. The paid loop ran in WATCHLIST order.** `admitted` was ranked by
+score, but the loop walked the watchlist, so with 86 symbols and 4 paid
+passes an hour the alphabetically-early names got the money. Now ranked.
+`MIN_LLM_SCORE` added as a quality floor with its own audit reason,
+defaulting OFF because the live score distribution is unmeasured and a
+floor guessed too high trades nothing at all.
+
+Verified: 1439 passed, 11 skipped (was 1410). Ruff at baseline. All five
+revert-checked individually — the exact broken-state failures are listed
+in the commit body.
+
+**NOT verified, and it is the important gap:** no live fill. The resting
+stop order shape is built from the docs and has never been sent to
+Alpaca. The first option entry on the fresh account is what proves it.
+If Alpaca rejects the stop-limit, `_place` logs and returns None and the
+position keeps the software stop — it degrades, it does not break — but
+the feature would be silently inert. **Check the logs for
+`option_stops: resting stop-limit on ...` after the first fill.**
+
+**Still open** — see the session report: `USE_ALPACA_CLI` defaults OFF
+and could not be verified on the live deploy from here (the Railway token
+in this session sees two projects, neither the trading service); Alpaca's
+own MCP server is still NOT consumed anywhere (only documented in
+`apps/mcp_server/README.md`, which is our server, the opposite
+direction); and the fresh-account cutover is not done.
 
 ### 2026-09-02 — f6f9e94c — funnel before the debate + options agents on Haiku
 
