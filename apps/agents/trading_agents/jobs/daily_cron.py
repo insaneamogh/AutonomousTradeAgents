@@ -239,6 +239,48 @@ def _max_daily_llm_spend_usd() -> float:
     return value if value > 0 else _DEFAULT_MAX_DAILY_LLM_SPEND_USD
 
 
+_DEFAULT_MAX_LLM_SYMBOLS_PER_DAY = 20
+"""Ledger-backed hard cap on paid council passes per UTC DAY, across every
+caller — the ceiling ``MAX_LLM_SYMBOLS_PER_SWEEP`` cannot provide.
+
+The gap this closes, measured 2026-09-01: the per-SWEEP cap is re-armed on
+every call to ``main()``, and the trigger loop calls ``main()`` every
+``SCANNER_INTERVAL_MINUTES`` (2 at the time). So "15 per sweep" was really
+"15 every two minutes" — 450/hour of headroom — and the only thing
+actually standing between that and the credit balance was
+``MAX_DAILY_LLM_SPEND_USD``. The afternoon ran **267 paid council passes
+across 134 distinct symbols** before the balance hit zero.
+
+Counted in RUNS, not dollars, because that is the unit the operator
+reasons about ("debate at most 10-20 symbols a day") and because it holds
+even when the dollar ledger cannot be trusted — see
+``_DEFAULT_MAX_DAILY_LLM_SPEND_USD``'s note about the in-memory fallback
+resetting on redeploy. The two gates are deliberately independent: this
+one bounds VOLUME, that one bounds COST, and either alone stops a runaway.
+
+Deterministic work is unaffected. ``strategy_fit`` still scores every
+symbol on the watchlist for free, and a symbol that would HOLD anyway
+never counts against this budget — only passes that actually reach a paid
+model call do. That is the whole shape the operator asked for: screen
+everything with maths, debate only the best handful.
+"""
+
+
+def _max_llm_symbols_per_day() -> int:
+    raw = os.environ.get("MAX_LLM_SYMBOLS_PER_DAY", "").strip()
+    if not raw:
+        return _DEFAULT_MAX_LLM_SYMBOLS_PER_DAY
+    try:
+        value = int(raw)
+    except ValueError:
+        log.warning(
+            "ignoring malformed MAX_LLM_SYMBOLS_PER_DAY=%r — keeping %d",
+            raw, _DEFAULT_MAX_LLM_SYMBOLS_PER_DAY,
+        )
+        return _DEFAULT_MAX_LLM_SYMBOLS_PER_DAY
+    return value if value >= 1 else _DEFAULT_MAX_LLM_SYMBOLS_PER_DAY
+
+
 def _max_llm_symbols_per_sweep() -> int:
     raw = os.environ.get("MAX_LLM_SYMBOLS_PER_SWEEP", "").strip()
     if not raw:
@@ -542,10 +584,32 @@ async def main(
         )
 
     max_spend = _max_daily_llm_spend_usd()
+    max_runs_per_day = _max_llm_symbols_per_day()
     from trading_agents.cost_ledger import get_cost_ledger
 
     ledger = get_cost_ledger()
     budget_tripped = False
+    day_cap_tripped = False
+    # Paid passes already spent TODAY, before this sweep adds any. Read
+    # once here and incremented locally per admitted candidate rather than
+    # re-queried every symbol: the ledger write for a pass lands during
+    # that pass, so re-reading mid-loop would race its own writes and
+    # under-count. Re-read fresh on the NEXT call to main(), which is what
+    # makes this a real cross-invocation daily cap and not a per-sweep one.
+    try:
+        runs_today = await ledger.count_runs_since(_seconds_since_midnight_utc())
+    except Exception:
+        # Start from zero rather than bail. The local increment below still
+        # applies, so a ledger outage DEGRADES this from a per-day cap to a
+        # per-sweep one (bounded at max_runs_per_day for this invocation)
+        # instead of removing it — strictly safer than not enforcing, and
+        # honest about what it can still promise: across sweeps it is
+        # unenforceable without the ledger, within one it still holds.
+        log.exception(
+            "count_runs_since failed — MAX_LLM_SYMBOLS_PER_DAY degrades to a "
+            "per-sweep cap of %d for this invocation", max_runs_per_day,
+        )
+        runs_today = 0
 
     push_tasks: list = []
     rolled_up: list[dict] = []
@@ -563,6 +627,20 @@ async def main(
             if score is not None:
                 # Only an admitted, LLM-eligible symbol needs a live budget
                 # check — a free HOLD never reaches this branch at all.
+                if not day_cap_tripped and runs_today >= max_runs_per_day:
+                    day_cap_tripped = True
+                    log.warning(
+                        "MAX_LLM_SYMBOLS_PER_DAY=%d reached (%d paid council "
+                        "passes since midnight UTC) at %s — every remaining "
+                        "candidate HOLDs uncosted until tomorrow",
+                        max_runs_per_day, runs_today, symbol,
+                    )
+                if day_cap_tripped:
+                    rolled_up.append({
+                        "symbol": symbol, "skipped": True,
+                        "skip_reason": "llm_daily_symbol_cap_reached",
+                    })
+                    continue
                 if not budget_tripped:
                     spent, _ = await ledger.sum_cost_since(_seconds_since_midnight_utc())
                     if spent >= max_spend:
@@ -579,6 +657,11 @@ async def main(
                         "skip_reason": "llm_daily_budget_exhausted",
                     })
                     continue
+            if score is not None:
+                # Counts the pass we are ABOUT to spend. Incremented before
+                # the await, not after, so a pass that raises still counts —
+                # it consumed real model calls either way.
+                runs_today += 1
             rolled_up.append(
                 await _run_one(
                     user_id, symbol, llm,

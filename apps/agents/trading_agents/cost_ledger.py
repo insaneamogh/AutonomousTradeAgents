@@ -142,6 +142,22 @@ class CostLedger(Protocol):
     ) -> tuple[float, int]:
         """Returns (total_usd, call_count)."""
 
+    async def count_runs_since(
+        self, since: timedelta, *, exclude_mock: bool = True
+    ) -> int:
+        """Distinct ``council_run_id``s that reached a real LLM call.
+
+        The unit a per-DAY budget is actually spent in. ``sum_cost_since``
+        counts CALLS (one pass is 3-5 of them) and dollars; neither answers
+        "how many symbols have we paid to debate today", which is the
+        number an operator reasons about and the one
+        ``MAX_LLM_SYMBOLS_PER_DAY`` caps.
+
+        One council pass runs exactly one symbol, so distinct runs is the
+        paid-symbol count — and a symbol debated twice correctly counts
+        twice, because it was paid for twice.
+        """
+
     async def all(self) -> list[LedgerEntry]:
         """Debug / testing only."""
 
@@ -176,6 +192,17 @@ class InMemoryCostLedger:
             if r.called_at >= cutoff and (not exclude_mock or not r.is_mock)
         ]
         return (round(sum(r.cost_usd for r in rows), 6), len(rows))
+
+    async def count_runs_since(
+        self, since: timedelta, *, exclude_mock: bool = True
+    ) -> int:
+        cutoff = datetime.now(UTC) - since
+        return len({
+            r.council_run_id for r in self._rows
+            if r.called_at >= cutoff
+            and r.council_run_id
+            and (not exclude_mock or not r.is_mock)
+        })
 
     async def all(self) -> list[LedgerEntry]:
         return list(self._rows)

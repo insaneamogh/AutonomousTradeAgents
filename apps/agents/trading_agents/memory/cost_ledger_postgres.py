@@ -84,6 +84,22 @@ class PostgresCostLedger:
             total, count = (await session.execute(stmt)).one()
         return (round(float(total), 6), int(count))
 
+    async def count_runs_since(
+        self, since: timedelta, *, exclude_mock: bool = True
+    ) -> int:
+        """Distinct ``council_run_id``s that reached a real LLM call — the
+        paid-symbol count a per-day budget is spent in. See the protocol
+        docstring in ``trading_agents.cost_ledger``."""
+        cutoff = datetime.now(UTC) - since
+        stmt = select(func.count(func.distinct(LlmCall.council_run_id))).where(
+            LlmCall.called_at >= cutoff,
+            LlmCall.council_run_id.is_not(None),
+        )
+        if exclude_mock:
+            stmt = stmt.where(LlmCall.is_mock.is_(False))
+        async with self._session_factory() as session:
+            return int((await session.execute(stmt)).scalar_one() or 0)
+
     async def all(self) -> list[LedgerEntry]:
         """Debug / testing only — unbounded scan, never on a hot path."""
         stmt = select(LlmCall).order_by(LlmCall.called_at.desc())

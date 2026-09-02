@@ -271,3 +271,134 @@ def test_max_llm_symbols_per_sweep_defaults_and_rejects_garbage(
 
     monkeypatch.setenv("MAX_LLM_SYMBOLS_PER_SWEEP", "0")
     assert cron._max_llm_symbols_per_sweep() == 15
+
+
+# ── Per-DAY paid-pass ceiling (across sweeps, not within one) ────────
+
+
+async def test_daily_symbol_cap_stops_a_sweep_once_the_day_is_spent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The measured gap: MAX_LLM_SYMBOLS_PER_SWEEP is re-armed on every
+    call to main(), and the trigger loop calls main() every
+    SCANNER_INTERVAL_MINUTES. "15 per sweep" was really "15 every two
+    minutes". 2026-09-01 ran 267 paid passes across 134 distinct symbols
+    before the credit balance hit zero."""
+    from trading_agents.cost_ledger import LedgerEntry, get_cost_ledger
+
+    ledger = get_cost_ledger()
+    for i in range(3):
+        await ledger.record(
+            LedgerEntry(cost_usd=0.01, model="x", role="technical",
+                        council_run_id=f"run-{i}")
+        )
+
+    scores = {"AAA": 0.9, "BBB": 0.8}
+    calls = await _run_main(
+        monkeypatch, ["AAA", "BBB"], scores,
+        MAX_LLM_SYMBOLS_PER_DAY="3",
+        MAX_DAILY_LLM_SPEND_USD="999",
+    )
+
+    assert calls == [], (
+        "3 paid passes already ran today against a cap of 3 — no further "
+        "candidate should reach a model call"
+    )
+
+
+async def test_daily_symbol_cap_trips_partway_and_survives_into_the_next_sweep(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two things at once: it trips mid-sweep, AND the count carries into
+    the next call to main() — which is the whole point (a per-sweep cap
+    resets; this one must not)."""
+    from trading_agents.cost_ledger import LedgerEntry, get_cost_ledger
+
+    ledger = get_cost_ledger()
+
+    async def _spend_a_run(symbol: str) -> None:
+        await ledger.record(
+            LedgerEntry(cost_usd=0.01, model="x", role="technical",
+                        council_run_id=f"run-{symbol}")
+        )
+
+    scores = {"AAA": 0.9, "BBB": 0.8, "CCC": 0.7}
+    first = await _run_main(
+        monkeypatch, ["AAA", "BBB", "CCC"], scores,
+        on_run_council=_spend_a_run,
+        MAX_LLM_SYMBOLS_PER_DAY="2",
+        MAX_DAILY_LLM_SPEND_USD="999",
+    )
+    assert first == ["AAA", "BBB"], "third candidate must be capped"
+
+    # A SECOND sweep — the per-sweep cap would be fully re-armed here.
+    second = await _run_main(
+        monkeypatch, ["AAA", "BBB", "CCC"], scores,
+        on_run_council=_spend_a_run,
+        MAX_LLM_SYMBOLS_PER_DAY="2",
+        MAX_DAILY_LLM_SPEND_USD="999",
+    )
+    assert second == [], (
+        "the day's 2 paid passes were already spent in the first sweep — a "
+        "per-DAY cap must not re-arm on the next call to main()"
+    )
+
+
+async def test_free_holds_never_count_against_the_daily_symbol_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Deterministic screening stays unlimited. A symbol scoring None would
+    HOLD at strategy_fit without any model call, so it must not consume a
+    slot — screen everything with maths, debate only the best handful."""
+    from trading_agents.cost_ledger import LedgerEntry, get_cost_ledger
+
+    ledger = get_cost_ledger()
+
+    async def _spend_a_run(symbol: str) -> None:
+        await ledger.record(
+            LedgerEntry(cost_usd=0.01, model="x", role="technical",
+                        council_run_id=f"run-{symbol}")
+        )
+
+    scores: dict[str, float | None] = {
+        "FREE1": None, "FREE2": None, "PAID1": 0.9, "PAID2": 0.8,
+    }
+    calls = await _run_main(
+        monkeypatch, ["FREE1", "PAID1", "FREE2", "PAID2"], scores,
+        on_run_council=_spend_a_run,
+        MAX_LLM_SYMBOLS_PER_DAY="2",
+        MAX_DAILY_LLM_SPEND_USD="999",
+    )
+
+    assert calls == ["FREE1", "PAID1", "FREE2", "PAID2"], (
+        "both free HOLDs must still run, and both paid passes fit the cap of 2"
+    )
+
+
+async def test_a_ledger_outage_degrades_the_daily_cap_to_a_per_sweep_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ledger outage must not stop the desk trading OUTRIGHT, but it must
+    not silently remove the ceiling either. Starting the count at zero and
+    still incrementing locally means the cap degrades to per-sweep
+    enforcement — bounded within this invocation, unenforceable across
+    invocations until the ledger returns. That is the honest middle."""
+    from trading_agents.cost_ledger import get_cost_ledger
+
+    ledger = get_cost_ledger()
+
+    async def _boom(*a: object, **k: object) -> int:
+        raise RuntimeError("ledger down")
+
+    monkeypatch.setattr(ledger, "count_runs_since", _boom)
+
+    scores = {"AAA": 0.9, "BBB": 0.8}
+    calls = await _run_main(
+        monkeypatch, ["AAA", "BBB"], scores,
+        MAX_LLM_SYMBOLS_PER_DAY="1",
+        MAX_DAILY_LLM_SPEND_USD="999",
+    )
+
+    # Trading continues (AAA runs) but the ceiling still bites inside the
+    # sweep (BBB capped) — neither fatal nor silently unbounded.
+    assert calls == ["AAA"]
