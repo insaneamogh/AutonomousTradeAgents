@@ -58,10 +58,31 @@ def _decision(**overrides: object) -> SimpleNamespace:
 def test_equity_unrealized_pnl_unaffected_by_absent_multiplier() -> None:
     decision = _decision(symbol="NVDA", fill_qty=10, fill_avg_price=100.0)
     marks = {"NVDA": 104.25}
-    dto = _from_decision(decision, marks, status="open")
+    dto = _from_decision(decision, marks, {}, status="open")
     assert dto.last_price == 104.25
     # (104.25 - 100.00) * 10 = 42.50
     assert dto.unrealized_pnl == 42.50
+
+
+def test_brokers_own_unrealized_pl_is_preferred_over_the_derived_one() -> None:
+    """Live 2026-09-03: a short equity position (BA) derived to exactly
+    $0 unrealized (the snapshot's own market_value happened to equal
+    qty * entry, likely a stale/pre-market mark), while Alpaca's own
+    dashboard reported a real -$22 for the same position the whole time.
+    ``marks`` here is deliberately set so the OLD derivation would produce
+    $0 -- proving the broker's own number wins, not that both happen to
+    agree."""
+    decision = _decision(
+        symbol="BA",
+        proposal={"side": "SELL", "direction": "short"},
+        fill_qty=97,
+        fill_avg_price=209.10,
+    )
+    marks = {"BA": 209.10}  # last == entry -> the derivation alone gives $0
+    broker_pnl = {"BA": -22.0}
+    dto = _from_decision(decision, marks, broker_pnl, status="open")
+    assert dto.last_price == 209.10
+    assert dto.unrealized_pnl == -22.0
 
 
 def test_option_unrealized_pnl_scaled_by_multiplier() -> None:
@@ -77,7 +98,7 @@ def test_option_unrealized_pnl_scaled_by_multiplier() -> None:
         fill_avg_price=2.50,
     )
     marks = {"AAPL260828C00250000": 300.0}
-    dto = _from_decision(decision, marks, status="open")
+    dto = _from_decision(decision, marks, {}, status="open")
     assert dto.last_price == 3.00
     assert dto.unrealized_pnl == 50.00
 
@@ -92,7 +113,7 @@ def test_option_short_direction_unrealized_pnl_scaled_by_multiplier() -> None:
         fill_avg_price=3.00,
     )
     marks = {"AAPL260828C00250000": 250.0}  # raw mv/qty for a $2.50 mark
-    dto = _from_decision(decision, marks, status="open")
+    dto = _from_decision(decision, marks, {}, status="open")
     assert dto.last_price == 2.50
     # Short gains as price falls: (3.00 - 2.50) * 1 * 100 = 50.00
     assert dto.unrealized_pnl == 50.00
@@ -120,7 +141,7 @@ def test_a_long_put_is_not_flipped_by_its_bearish_thesis() -> None:
         fill_avg_price=20.55,
     )
     marks = {"META260918P00585000": 1860.0}  # raw mv/qty for an $18.60 mark
-    dto = _from_decision(decision, marks, status="open")
+    dto = _from_decision(decision, marks, {}, status="open")
     assert dto.direction == "short"
     assert dto.last_price == 18.60
     # A real loss: (18.60 - 20.55) * 1 * 100 = -195.00, NOT +195.00.
@@ -138,7 +159,7 @@ def test_a_long_call_with_bullish_thesis_is_unaffected() -> None:
         fill_avg_price=2.50,
     )
     marks = {"AAPL260828C00250000": 300.0}
-    dto = _from_decision(decision, marks, status="open")
+    dto = _from_decision(decision, marks, {}, status="open")
     assert dto.unrealized_pnl == 50.00
 
 
@@ -173,7 +194,7 @@ def test_open_option_position_gets_a_live_mark_via_occ_symbol_not_underlying() -
         fill_avg_price=2.50,
     )
     marks = {"AAPL260828C00250000": 300.0}  # NOT keyed by "AAPL"
-    dto = _from_decision(decision, marks, status="open")
+    dto = _from_decision(decision, marks, {}, status="open")
     assert dto.symbol == "AAPL"  # display field stays the underlying
     assert dto.last_price == 3.00
     assert dto.unrealized_pnl == 50.00
@@ -187,7 +208,7 @@ def test_open_option_position_gets_a_live_mark_via_occ_symbol_not_underlying() -
 
 def test_equity_position_never_flagged_as_option() -> None:
     decision = _decision(symbol="NVDA", proposal={"side": "BUY"})
-    dto = _from_decision(decision, marks={"NVDA": 104.25}, status="open")
+    dto = _from_decision(decision, marks={"NVDA": 104.25}, broker_pnl={}, status="open")
     assert dto.is_option is False
     assert dto.occ_symbol is None
     assert dto.contract_type is None
@@ -202,7 +223,7 @@ def test_pending_fill_option_reports_proposal_qty_and_no_mark() -> None:
         fill_avg_price=None,
     )
     marks = {"AAPL260828C00250000": 300.0}
-    dto = _from_decision(decision, marks, status="pending_fill")
+    dto = _from_decision(decision, marks, {}, status="pending_fill")
     assert dto.last_price is None
     assert dto.unrealized_pnl is None
     assert dto.qty == 2
@@ -248,6 +269,28 @@ def test_unmanaged_equity_position_unaffected_by_absent_multiplier() -> None:
     dto = out[0]
     assert dto.last_price == 105.0
     assert dto.unrealized_pnl == 50.0
+
+
+def test_unmanaged_brokers_own_unrealized_pl_is_preferred_over_the_derived_one() -> None:
+    """Same preference as _from_decision's equivalent test: the snapshot's
+    own market_value can derive to $0 (or anything else) while the broker's
+    own unrealized_pl, carried on the same position dict, is the real
+    number — must win."""
+    broker_positions = {
+        "BA": {
+            "symbol": "BA",
+            "qty": -97,
+            "avg_entry_price": 209.10,
+            "market_value": -20282.70,  # 97 * 209.10 -> derives to $0
+            "unrealized_pl": -22.0,
+        }
+    }
+    snapshot = SimpleNamespace(captured_at=datetime(2026, 1, 5, tzinfo=UTC))
+    out = _unmanaged(broker_positions, covered=set(), snapshot=snapshot)
+
+    dto = out[0]
+    assert dto.last_price == 209.10
+    assert dto.unrealized_pnl == -22.0
 
 
 def test_unmanaged_short_option_position_scales_by_multiplier() -> None:

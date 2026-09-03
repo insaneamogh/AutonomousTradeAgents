@@ -36,10 +36,12 @@ class _FakeBroker:
             SimpleNamespace(
                 symbol="NVDA260918C00250000", qty=4, avg_entry_price=2.17,
                 market_value=868.0, is_option=True, multiplier=100,
+                unrealized_pl=20.0,
             ),
             SimpleNamespace(
                 symbol="AAPL", qty=10, avg_entry_price=200.0,
                 market_value=2000.0, is_option=False, multiplier=1,
+                unrealized_pl=-5.0,
             ),
         ]
 

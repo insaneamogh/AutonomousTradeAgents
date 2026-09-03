@@ -111,6 +111,12 @@ async def list_open_positions(user_id: str) -> list[OpenPositionDto]:
         snapshot = (await session.execute(snap_stmt)).scalar_one_or_none()
 
     marks: dict[str, float] = {}
+    # The broker's OWN unrealized P&L per symbol — already correctly scaled
+    # and signed, straight off PortfolioPosition.unrealized_pl (see its own
+    # docstring). Kept separate from `marks` because `last` (a per-share/
+    # per-contract-unit PRICE) is still needed for display even when we
+    # have the broker's own dollar P&L.
+    broker_pnl: dict[str, float] = {}
     broker_positions: dict[str, dict[str, Any]] = {}
     if snapshot is not None:
         for pos in snapshot.open_positions or []:
@@ -126,12 +132,15 @@ async def list_open_positions(user_id: str) -> list[OpenPositionDto]:
             # dropping every short position from ever getting a live mark.
             if mv != 0:
                 marks[sym] = round(abs(mv) / abs(qty), 4)
+            upl = pos.get("unrealized_pl")
+            if upl is not None:
+                broker_pnl[sym] = float(upl)
 
     out: list[OpenPositionDto] = []
     for d in filled:
-        out.append(_from_decision(d, marks, status="open"))
+        out.append(_from_decision(d, marks, broker_pnl, status="open"))
     for d in awaiting:
-        out.append(_from_decision(d, marks, status="pending_fill"))
+        out.append(_from_decision(d, marks, broker_pnl, status="pending_fill"))
 
     # The key the BROKER uses for each of OUR managed positions — never
     # OpenPositionDto.symbol (see _broker_key_for_decision: that field is
@@ -188,7 +197,7 @@ def _coerce_expiry_date(value: object) -> _date | None:
 
 
 def _from_decision(
-    d: object, marks: dict[str, float], *, status: str
+    d: object, marks: dict[str, float], broker_pnl: dict[str, float], *, status: str
 ) -> OpenPositionDto:
     proposal = d.proposal or {}  # type: ignore[attr-defined]
     # The entry proposal's own direction, falling back to side == "SELL"
@@ -236,7 +245,8 @@ def _from_decision(
     # PositionsSnapshot.open_positions (see _broker_key_for_decision) — using
     # d.symbol (the underlying) here always missed for options, so every
     # OPEN option position showed last_price=None / unrealized_pnl=None.
-    raw_last = marks.get(_broker_key_for_decision(d)) if status == "open" else None
+    broker_key = _broker_key_for_decision(d)
+    raw_last = marks.get(broker_key) if status == "open" else None
     last = raw_last / multiplier if raw_last is not None else None
     qty = int(d.fill_qty) if d.fill_qty is not None else int(proposal.get("qty", 0) or 0)  # type: ignore[attr-defined]
     # fill_qty is always a non-negative share/contract COUNT (an order's
@@ -246,10 +256,23 @@ def _from_decision(
     # applies here too — ``last``/``entry`` are both per-contract-unit at
     # this point, so converting to a total dollar P&L needs qty x multiplier,
     # exactly like the equity case's implicit x1.
+    #
+    # Prefer the broker's OWN unrealized P&L over re-deriving one from
+    # `last`/`entry` — the broker's number is already correctly scaled and
+    # signed, and a re-derivation can drift from it (confirmed live
+    # 2026-09-03: a short equity position derived to exactly $0 here while
+    # Alpaca's own dashboard reported a real -$22 for the same position).
+    # Falls back to the derivation only when the broker didn't report one —
+    # a stale pre-migration snapshot row, or a non-Alpaca broker.
+    broker_upl = broker_pnl.get(broker_key) if status == "open" else None
     unrealized = (
-        round((-1.0 if is_short else 1.0) * (last - entry) * qty * multiplier, 2)
-        if (last is not None and entry is not None and qty)
-        else None
+        round(broker_upl, 2)
+        if broker_upl is not None
+        else (
+            round((-1.0 if is_short else 1.0) * (last - entry) * qty * multiplier, 2)
+            if (last is not None and entry is not None and qty)
+            else None
+        )
     )
 
     # Options facts (Phase A) — schemas/positions.py's OpenPositionDto has
@@ -343,10 +366,17 @@ def _unmanaged(
         multiplier = int(pos.get("multiplier", 1) or 1)
         last = round(abs(mv) / (abs(qty) * multiplier), 4) if qty and mv else None
         entry_f = float(entry) if entry is not None else None
+        # Same preference as _from_decision above: trust the broker's own
+        # unrealized P&L over re-deriving one, when it reported one.
+        broker_upl = pos.get("unrealized_pl")
         unrealized = (
-            round((-1.0 if is_short else 1.0) * (last - entry_f) * abs(qty) * multiplier, 2)
-            if (last is not None and entry_f is not None)
-            else None
+            round(float(broker_upl), 2)
+            if broker_upl is not None
+            else (
+                round((-1.0 if is_short else 1.0) * (last - entry_f) * abs(qty) * multiplier, 2)
+                if (last is not None and entry_f is not None)
+                else None
+            )
         )
 
         # Options facts — see _from_decision's identical block for why this

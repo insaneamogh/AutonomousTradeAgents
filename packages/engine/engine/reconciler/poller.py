@@ -103,6 +103,7 @@ class AlpacaBrokerPoller:
                 sector=None,  # resolved in the risk rules via assets.sector_for
                 is_option=p.is_option,
                 multiplier=p.multiplier,
+                unrealized_pl=p.unrealized_pl,
             )
             for p in broker_positions
         )

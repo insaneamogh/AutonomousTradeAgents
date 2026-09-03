@@ -106,6 +106,12 @@ class UserBrokerPoller:
                     # silently stops binding.
                     is_option=p.is_option,
                     multiplier=p.multiplier,
+                    # Same omission, same cause, third time: without this
+                    # the positions API re-derives unrealized P&L from
+                    # market_value instead of trusting the broker's own
+                    # already-correct number — confirmed live 2026-09-03
+                    # drifting to $0 against a real -$22 for a short equity.
+                    unrealized_pl=p.unrealized_pl,
                 )
                 for p in broker_positions
             )

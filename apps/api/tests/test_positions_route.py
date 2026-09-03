@@ -229,6 +229,7 @@ def test_pending_fill_reports_the_proposal_qty_with_no_entry_or_mark() -> None:
             proposal={"side": "BUY", "qty": 55, "stopLoss": 87.04, "targetPrice": 97.72},
         ),
         marks={"KO": 89.5},  # even a known mark must not be used pre-fill
+        broker_pnl={},
         status="pending_fill",
     )
     assert dto.status == "pending_fill"
@@ -249,6 +250,7 @@ def test_open_position_uses_the_live_mark() -> None:
             fill_avg_price=87.5,
         ),
         marks={"KO": 90.0},
+        broker_pnl={},
         status="open",
     )
     assert dto.status == "open"

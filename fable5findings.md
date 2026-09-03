@@ -355,6 +355,50 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 # Build log
 
+### 2026-09-03 — position P&L was re-derived instead of trusting the broker's own number
+
+Operator, checking overnight results, found a short equity position (BA, 97 shares @
+$209.10) showing $0 unrealized in-app while Alpaca's own dashboard showed a real -$22 for
+the same position. Root cause, confirmed by reading the pipeline end to end:
+`broker.alpaca.Position` already carries Alpaca's own correctly-scaled-and-signed
+`unrealized_pl` — but `engine.risk.types.PortfolioPosition` (the internal type both
+reconcilers build) never carried that field, so `PositionsSnapshot.open_positions` never
+persisted it, and `positions_service.py`'s `_from_decision`/`_unmanaged` were forced to
+re-derive P&L from `market_value ÷ qty` instead — a derivation that can drift from Alpaca's
+own live mark (extended-hours quotes, timing between reads) for reasons the broker's own
+number already accounts for.
+
+Fix: added `unrealized_pl: float | None = None` to `PortfolioPosition` (additive, defaults
+preserve every existing construction site); threaded `p.unrealized_pl` through both
+`reconciler_fleet.UserBrokerPoller` (the real production poller — confirmed via its own
+docstring: "this class — not that one") and the sibling `engine.reconciler.poller.
+AlpacaBrokerPoller`, for consistency; persisted it into the snapshot JSON
+(`engine/reconciler/snapshot.py`); `positions_service.py` now prefers the broker's own
+number when present, falling back to the old derivation only when absent (a stale
+pre-migration snapshot row, or a non-Alpaca broker) — never a fabricated zero either way.
+
+Also investigated the same session: the account-level "-$282 vs Alpaca shows a profit"
+report. Traced `today_pnl` to `PositionsSnapshot.daily_pnl`
+(`engine/reconciler/snapshot.py::_daily_pnl`), which prefers the broker's own
+`prior_close_equity` (`account.last_equity`) specifically to avoid the documented
+overnight-gap bug — confirmed this IS correctly wired in the real poller
+(`reconciler_fleet.UserBrokerPoller.get_account_state`), and no
+"get_prior_close_equity failed" error appears in the logs. Could not find a code bug
+behind this specific number in the time available — most likely a real move (pre-market,
+before the market's official reopen) or a methodology difference against whatever
+reference Alpaca's own app is showing. Left open; flagged to the operator rather than
+guessed.
+
+Verified: 2 new tests (`test_brokers_own_unrealized_pl_is_preferred_over_the_derived_one`,
+its `_unmanaged` twin) reproduce the exact BA scenario (`marks` derives to $0, `broker_pnl`
+carries the real -22.0) and assert the broker's number wins. Revert-checked per CLAUDE.md
+4.1: disabled the broker-preference branch in both functions, both new tests failed with
+the exact `-0.0` symptom from the live bug; restored, both pass. Fixed 3 pre-existing
+`test_reconciler_fleet_poller.py` fixtures that used bare `SimpleNamespace` positions
+without `unrealized_pl` (would have broken on the new attribute access regardless of this
+session's changes once the real code touched them). Full suite: 1507 passed, 11 skipped,
+zero failures (was 1502/11 before this session's frontend commit; +5 net new tests here).
+
 ### 2026-09-02 — the resting protective stop was silently broken from its first live fill
 
 Operator saw an open AAPL260918C00320000 position on the Positions screen and asked

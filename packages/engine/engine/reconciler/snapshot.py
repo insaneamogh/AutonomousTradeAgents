@@ -57,6 +57,7 @@ async def write_snapshot(
                 "sector": p.sector,
                 "is_option": p.is_option,
                 "multiplier": p.multiplier,
+                "unrealized_pl": p.unrealized_pl,
             }
             for p in state.open_positions
         ],

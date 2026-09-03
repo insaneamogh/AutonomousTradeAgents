@@ -688,6 +688,17 @@ class PortfolioPosition:
     """1 for equities, 100 for standard US equity options. ``market_value``
     is already correctly scaled — this is for callers that need to convert
     ``avg_entry_price`` into a notional themselves."""
+    unrealized_pl: float | None = None
+    """The broker's OWN unrealized P&L for this position, already correctly
+    scaled and signed (a loss is negative for either a long or a short) —
+    see ``broker.types.Position.unrealized_pl``. ``None`` when the broker
+    didn't report one (a non-Alpaca broker, or a stale pre-migration
+    snapshot row) — callers must fall back to deriving it from
+    ``market_value``/``avg_entry_price`` themselves in that case, never
+    fabricate a zero. Prefer this over re-deriving P&L from ``market_value``
+    whenever it is present: a re-derivation can drift from the broker's own
+    live mark (confirmed live 2026-09-03 — a short equity position showed
+    $0 here-derived against a real -$22 on the broker's own dashboard)."""
 
 
 @dataclass(frozen=True)
