@@ -21,190 +21,171 @@ Two more, if you want the evidence behind it:
 | [`docs/OPTIONS_PLAYBOOK.md`](docs/OPTIONS_PLAYBOOK.md) | The authoritative options rule set, derived from the code |
 
 **The 20-second version.** An LLM is never in an execution or risk path. Two agents
-(Bull and Bear) argue a thesis and call a guarded tool; the guard re-runs 42 named
-deterministic risk rules on every call, and first veto wins. Every trade the engine
-*refuses* is then marked to market against real Alpaca option quotes — which is how we
-caught one of our own risk rules costing $6,030 while another saved $9,956.
+(Bull and Bear) argue a thesis and call a guarded tool; the guard re-runs every
+named deterministic risk rule on the path (18 equity, 16 options) and first veto
+wins. Every trade the engine *refuses* is then marked to market against real Alpaca
+option quotes — which is how we caught one of our own risk rules costing $6,030 while
+another saved $9,956.
 
 ---
 
-## This changed during the build — background, not required reading
+## What it does
 
-This system started as a self-approval product: the agent proposed, and a human
-always tapped the button before anything reached the broker. **That is no longer
-the whole story.** Unattended entries are live in production now, through two
-separate mechanisms described in full below — both off by default, both hard-coded
-to paper trading, and both bounded by a second, independent gate beyond the
-operator's own switch (an explicit owner consent toggle for one, two agents having
-to independently agree for the other). If you have read an older
-version of this file, or anything in this repo that describes every trade as
-human-approved with no further qualification, that description is now wrong. This
-section, and the one right after it, are the correction.
+An autonomous agent that trades **US equity and options** on Alpaca paper, and
+measures — in dollars — every trade it **refused** to make.
 
----
+Every trading agent can show you what it bought. This one marks each refusal to
+market against real Alpaca option quotes, so the risk engine's value is a number
+you can audit instead of an assertion in a README.
 
-## The claim
+> `max_total_premium_pct` fired 51 times. Click one: the exact contract it refused,
+> the thesis behind it, the named rule that stopped it, and what it would have made
+> or lost.
 
-Every trading agent can show you what it bought. This one also shows you **what it
-refused** — equity and options alike — and marks every refusal against real forward
-prices, so the risk engine's value is a number on a screen instead of an assertion
-in a README.
-
-> `max_total_premium_pct` fired 4 times this week. Click one: here is the exact NVDA
-> call it refused, the thesis behind it, the named rule that stopped it, and the
-> **$340 it would have lost.**
-
-That is the product. Everything below exists to make that number trustworthy — and
-now to make sure it catches a refusal whether it came from a human who was asked, or
-an agent that never had to ask.
+**That measurement caught one of our own risk rules costing $6,030 while another
+saved $9,956.** We could not have learned that from P&L.
 
 ---
 
-## How autonomous is "autonomous," right now
+## The strategy — testable, and tested
 
-There are **two separate unattended-execution paths**, each with its own master
-switch, neither on by default, and neither a variant of the other. Read both — they
-do not work the same way.
+Five strategies score every symbol in **both directions** (long and short) as pure
+Python, with no model involved. Each returns named components with weights, so a score
+is always decomposable into *why*.
 
-### 1. Equity entries — the auto-approve sweeper
+| Strategy | Thesis | Primary signals |
+|---|---|---|
+| `sma_crossover` | Trend continuation | price vs 20/50-DMA, trend regime, not-overextended |
+| `rsi_mean_reversion` | Counter-trend snapback | RSI-14 extremes, price z-score, reversal candle |
+| `momentum` | 12-1 relative strength | trailing return, Sharpe, trend alignment |
+| `breakout` | Donchian channel break | channel position, ATR expansion, volume confirmation |
+| `vol_regime_switch` | Compression → expansion | ATR z-score, realized vol, NR7 / inside-bar patterns |
 
-The agent has always been able to *draft* a trade. Until this changed, a human tap
-was the only way one ever reached the broker. Now
-[`apps/api/app/services/orders/auto_approver.py`](apps/api/app/services/orders/auto_approver.py)
-can do it instead, subject to **eight gates, every one of them, or nothing
-executes**:
+A strategy must clear `MIN_FIT_TO_TRADE` to trade at all. The floor has a **hard
+lower bound of 0.41**, enforced by test: below that, `vol_regime_switch` would clear on
+direction-blind checks alone, meaning a "long" and a "short" setup would score
+identically. That invariant is the difference between a strategy and a coin flip.
 
-1. `AUTO_APPROVE_ENABLED` — the operator's env-level master switch. **Off by
-   default.**
-2. **Hard-coded paper-only.** Written as a literal boolean expression
-   (`trading_mode() == "paper" and not LIVE_TRADING_ENABLED`), never a config
-   lookup — deliberately, so it can never be "generalised" into something that also
-   reaches a live account.
-3. This specific Alpaca connection's own `auto_approve_consent` flag — set from
-   *inside the app*, by the account owner, not the operator. The env switch alone
-   changes nothing; both keys must be on at once.
-4. The regular US market session must be open right now.
-5. The proposal must be fresh — younger than `AUTO_APPROVE_MAX_AGE_MIN` (default 60
-   minutes). A stale thesis does not get executed blind.
-6. No more than `AUTO_APPROVE_MAX_PER_DAY` (default 5) auto-approvals for this user,
-   this UTC day.
-7. No more than **one** per reconciler tick (~30 seconds) — a bug that mis-reads the
-   pending queue places one wrong order, not the whole inbox, and there are 30
-   seconds to notice.
-8. The account's drawdown circuit breaker must not be tripped.
+**Testable offline** — no keys, no network, under a second:
 
-Clearing all eight does not skip risk management — it calls the exact same
-`execute_proposal()` a human's tap would call, which re-runs the **full**
-deterministic risk gate against live broker state. This module adds zero new risk
-rules; it only decides *when* to ask the gate that already exists to try.
-
-### 2. Options entries — the live Bull/Bear council
-
-A different mechanism, not a variant of the first — there is no pending-approval
-step here to auto-approve. When the options path is live (`USE_OPTIONS_AGENT=1` in
-production), a trade is attempted, or it isn't, inside a single council pass:
-
-- Two independent agents, **Bull** and **Bear**, read the identical evidence and
-  each form a view — direction, strategy, conviction, thesis — in parallel, blind to
-  each other's answer. A trade is even considered only if they **independently
-  agree** on direction, and it is sized on whichever of the two was **less
-  confident**.
-- Only then does the winning agent get to call `open_option_trade` — and even that
-  call never reaches the broker directly.
-  [`ToolGuard`](apps/agents/trading_agents/options/tools/guard.py) runs a fixed
-  12-step gate first: the same hard-coded paper-only check as above, market hours,
-  one attempt per pass, a thesis that names an actual timeframe, a direction that
-  matches what the two agents actually resolved to — and, as its last step, the
-  **same risk engine** (13 named options-specific rules — see
-  [`docs/OPTIONS_PLAYBOOK.md`](docs/OPTIONS_PLAYBOOK.md)) that every other order in
-  this system runs through.
-- Its own master switch, `AUTO_TRADE_ENABLED`, is independent of
-  `AUTO_APPROVE_ENABLED` above — flipping one does not flip the other.
-
-Once a position is open, it is managed unattended too: a deterministic trailing
-ratchet checks every open option position on every reconciler tick (stop-loss,
-take-profit backstop, trailing stop, time stop, expiry sweep) with no LLM in the
-loop at all, and — only as a secondary, later check, on top of a ratchet that keeps
-running regardless — a single monotone LLM may tighten a stop, raise a take-profit,
-close early, or scale in through the same guard, capped at one such consult per
-~30-second fleet tick, across the whole fleet rather than per position, and can
-never loosen anything. See
-[`docs/OPTIONS_PLAYBOOK.md`](docs/OPTIONS_PLAYBOOK.md) §3 for the exit order and the
-exact trigger conditions.
-
-**What every one of these paths shares:** paper-only is hard-coded, not a flag, in
-every one of them; every one re-runs the full, unmodified risk engine before
-anything reaches Alpaca; every one is off unless explicitly turned on; none can
-place a trade outside regular market hours; and no LLM output ever substitutes for
-the risk engine's own judgement — an agent can request a trade or an adjustment,
-never approve one against the risk gate.
-
-**What "risky" actually means here:** the risk is that an order reaches Alpaca with
-no human confirming *that specific trade* in the moment — that part is real, and is
-exactly what "unattended" means. It is not that the loss is unbounded: a long
-option's maximum loss is its own premium, capped per-position and across the whole
-book (below); an equity order still sizes through the same position/sector/
-correlation caps a manual trade would; and every path above only ever reaches an
-Alpaca **paper** account, by a check written so an environment variable cannot talk
-it into a live one.
-
----
-
-## How it works
-
-```
-                        ┌─ deterministic, zero LLM ─┐
-watchlist → strategy_fit ─→ router → 3 analysts → drafter → contract selection → risk engine (17 rules) ─┬─→ pending → human OR auto-approve sweeper → broker
-              │                (Haiku)   (Haiku/Sonnet)  (Sonnet)   (6 named stages)                      └─→ Refusal Ledger
-              │
-              └─ options-eligible → Bull ⇄ Bear (parallel, blind) → resolve() → ToolGuard (12 steps) → risk engine (13 rules) ─┬─→ broker, no human step
-                                     agree on direction, size = min conviction                                                 └─→ Refusal Ledger
+```bash
+.venv/bin/python -m pytest apps/agents/tests/eval -q               # 13 assertions
+cd apps/agents && ../../.venv/bin/python -m tests.eval.run_eval    # 100-case scorecard
 ```
 
-**Every gate that can say no is LLM-free**, on both branches. The model proposes;
-named Python rules dispose. It cannot be argued out of a limit, because the limit is
-not in a prompt.
+The scorecard runs a **100-case golden dataset of labelled archetypes** through the
+real funnel and prints where each one died:
 
-- **`strategy_fit`** scores five strategies' preconditions and holds before spending
-  a single token when nothing fits.
-- **Contract selection** filters the option chain through six fixed stages, each
-  recording why it rejected what it rejected — *4,128 contracts → 2,064 calls → 1
-  bought* — and that funnel is persisted to the audit row on every options pass, not
-  just the ones that reach a human.
-- **The risk engine** runs 17 named equity rules or, once a proposal is an option, a
-  parallel 13-rule options sequence — first-veto-wins, every rule that *passed*
-  recorded too, not just the one that blocked. A bearish options thesis is expressed
-  by **buying a put**, never by selling a call, so a losing options position can
-  never lose more than the premium paid, on either side of the book.
-- **Ghost P&L** then marks everything that got refused — equity or option, human
-  path or agent path — against real forward prices. That is the Refusal Ledger.
-  Until this week the entire options half of this was structurally invisible to it;
-  it is not anymore.
+```
+scanned          100
+refused free      40   ← 40% rejected for ZERO LLM calls
+reach an LLM      60
 
-The exact rules the options side plays by — every threshold, every veto, every
-exit, with the reasoning: **[`docs/OPTIONS_PLAYBOOK.md`](docs/OPTIONS_PLAYBOOK.md)**
+REFUSALS BY NAMED REASON (zero LLM calls spent)
+  below_fit_floor_or_thin_evidence   30
+  illiquid_chain                      8
+  no_liquid_contract                  2
 
-Full architecture, module map, environment variables, and setup:
-**[`docs/README.md`](docs/README.md)**
+BY ARCHETYPE                    ->LLM  refused
+  clean_uptrend                    10        0
+  clean_downtrend                   0       10
+  choppy_nothing                    0       10
+```
+
+It admits clean trends, refuses chop, names every refusal, and rejects 40% of the
+universe for zero cost. **To be clear about what this is not:** these are labelled
+archetypes, not historical bars. It proves the funnel's *logic* narrows correctly —
+it says nothing about whether the strategy makes money. The scorecard prints that
+same disclaimer itself.
 
 ---
 
-## What's actually on screen
+## How the agent runs, end to end
 
-- **Picks / Review** — proposals waiting on a human. A row can now disappear from
-  here because the auto-approve sweeper took it first, not only because someone
-  tapped it — check the `AUTO` pill on Decisions to tell which one happened.
-- **Decisions** — every council decision, approved, held, or vetoed, with an `AUTO`
-  pill on any row a sweeper or an agent executed with nobody watching.
-- **Positions — Open and Closed.** Open positions show live unrealized P&L. Closed
-  positions are a full history — entry, exit, realized P&L, who closed it (agent
-  ratchet, agent signal, expiry sweep, the user, or a close made directly at Alpaca)
-  — with an honest **"(est.)"** marker on the handful of rows where the exit price
-  is back-solved from realized P&L rather than read off a real fill, so an estimate
-  is never presented as a broker fact.
-- **Insights** — the veto ledger (named rule, times fired, dollars blocked), the
-  contract funnel, and ghost P&L, all now covering options passes as well as equity
-  ones.
+**1. Identifies opportunities.** A deterministic scanner sweeps the watchlist every
+2 minutes against **10 named triggers** — `donchian_20_breakout_up`,
+`atr_expansion_1_5x`, `zscore_stretch_up`, `gap_up_2pct`, `dma50_cross_down`,
+`rsi_enter_overbought` and others. No LLM, no cost. A symbol that fires nothing is
+never looked at again that cycle. Alpaca's screener API widens the universe beyond the
+static watchlist.
+
+**2. Makes decisions.** Triggered symbols go to `strategy_fit` (still free). Only a
+real setup reaches the Bull/Bear council, which argues the thesis and calls a guarded
+tool. The guard re-derives contract selection, sizing and every risk rule before
+anything reaches Alpaca. **Every decision is persisted with its reasoning** — the
+strategy that fit, the components that scored, the funnel counts, the rule that
+vetoed — so a HOLD is as auditable as a fill.
+
+**3. Manages positions.** Three independent exit layers, all deterministic:
+- **Trailing ratchet** — arms at +35%, gives back 30% of peak, hard stop at −40%,
+  ceiling at +150%. Proportional, so a bigger winner gets a wider leash.
+- **Broker-side resting STOP_LIMIT** — placed at Alpaca after fill, GTC. Survives an
+  overnight gap *and* our own downtime. One fired this session, correctly.
+- **DTE≤2 expiry sweep** — unconditional, because we do not handle assignment.
+
+Position sizing is ATR-based and vol-targeted; the options book is additionally
+bounded by a per-position and a portfolio premium cap.
+
+**4. Performance.** Measured live and reported without varnish in
+[`docs/SUBMISSION_FINDINGS.md`](docs/SUBMISSION_FINDINGS.md): P&L, every closed trade
+with the rule that closed it, and the refusal ledger. Two sessions of live P&L is a
+sample size of one — we say so there rather than dress it up.
+
+---
+
+## Architecture — an LLM is never in an execution or risk path
+
+```
+Scanner (10 named triggers, 2-min sweep)          deterministic · free
+   ↓  only symbols that fire
+strategy_fit (5 strategies × long/short)          deterministic · free · most die here
+   ↓  only symbols with a real setup
+Bull agent  ⇄  Bear agent                         2 LLM calls · argue independently
+   ↓  only on deterministic agreement
+Tool call → ToolGuard → risk engine → Alpaca      guard re-runs every rule
+   └─────────────────→ Refusal Ledger             whatever it blocked, priced
+```
+
+**Screening is unlimited; thinking is rationed.** Every symbol is scored in Python
+for free. Only survivors reach a paid model call, hard-capped at **20/day, 4/hour,
+$3.00/day**. A full session costs about **$9.42**.
+
+**The agents cannot place an order.** They emit a tool call; `ToolGuard.before()`
+intercepts *every* one and re-derives the whole risk decision from scratch. A refusal
+returns a **named rule** the model may adjust against once, bounded at 3 rounds. That
+is why the agents can run on Haiku: a weaker model degrades *selection*, never *risk
+control*.
+
+**Two-agent council.** Bull and Bear read the same feature dict independently. A
+deterministic resolver takes the **minimum** conviction, never the mean; disagreement
+or abstention ends the pass with no trade.
+
+---
+
+## Risk gates — 18 equity + 16 options named rules, first veto wins
+
+Every veto is a named, testable Python function. Never a model output.
+
+`drawdown_halt` · `pdt_block` · `single_name_concentration` · `correlation_cap` ·
+`position_size_cap` · `sector_concentration` · `shortable_check` ·
+`short_requires_stop` · `short_unbounded_loss_cap` · `wash_sale` ·
+`options_level_insufficient` · `naked_short_forbidden` · `illiquid_contract` ·
+`max_premium_pct` · `max_total_premium_pct` · `min_dte` / `max_dte` · `iv_unavailable`
+
+- **Six-stage contract funnel** narrows a full chain to one contract
+  (`contract_type → dte_window → delta_band → liquidity → iv_present → iv_realized_band`).
+  Every stage count is persisted, so a HOLD explains itself instead of going silent.
+- **Chain-depth gate.** A chain yielding <5 liquid contracts is refused outright,
+  added after a stop failed on a contract whose mark sat frozen 2h16m then gapped 26
+  points in one print: *a price stop cannot work on a mark that does not print.*
+- **Halt coupling, enforced by test.** `book size × stop ≤ declared tolerance`. The
+  −3% daily halt blocks new entries but closes nothing, so it never bounded the
+  book's worst session. A profile taking a wider tail must now **declare** it.
+- **Three exit layers:** trailing ratchet · broker-side resting STOP_LIMIT (survives
+  an overnight gap even if our server is down) · DTE≤2 expiry sweep.
+- **Long-only on the option itself.** A bearish thesis is a **long put** — loss
+  bounded by the premium. Writing options is deliberately out of scope: unbounded
+  loss with no assignment handling.
 
 ---
 
@@ -212,46 +193,59 @@ Full architecture, module map, environment variables, and setup:
 
 | Surface | Use |
 |---|---|
-| **Trading API** | Orders, positions, account, options trading level |
-| **Market Data API** | Daily/intraday bars, option chain snapshots with Greeks + IV, `/v2/options/contracts` for open interest |
-| **Alpaca CLI** | **Live**, not a demo prop — `alpaca clock` (`packages/engine/engine/features/alpaca_cli.py`) is wired directly into the scanner's market-open gate (`engine.scanner.engine.Scanner`), and every scan result records which clock source actually answered. What is still missing is a dedicated on-screen indicator that makes this visible to a judge without reading code — that is the open item, not the integration itself. |
-| **Alpaca's own MCP server** | Not yet integrated. The eligibility spec has been fetched and quoted (`docs/PLAN_ALPACA_MCP.md` §0), but no code in this repo calls `alpaca-mcp-server` yet. The Alpaca CLI usage above is what currently satisfies this hackathon's "Alpaca's own MCP server **or** CLI" requirement. |
-| **Our own MCP server** | Shipped — `apps/mcp_server/` exposes this council's read/propose-only surface to Claude Desktop, Cursor, or any MCP client. A genuine bonus ("our agent is itself MCP-addressable"); it does not, on its own, satisfy the requirement above. See [`apps/mcp_server/README.md`](apps/mcp_server/README.md). |
+| **Trading API** | Bracketed equity orders (incl. shorts), options `buy_to_open`, resting `STOP_LIMIT` GTC exits, positions, account, options trading level |
+| **`/v2/options/contracts`** | Chain metadata + open interest. **Paginated** — unpaged returns 100 of 4,674 rows, which silently emptied the liquidity gate on every symbol until fixed |
+| **`/v1beta1/options/snapshots`** | Live bid/ask/IV/greeks, merged with OI to build candidates |
+| **Market Data API** | Daily/intraday bars, `/v1beta1/news`, `/v1beta1/screener` for universe screening |
+| **Alpaca CLI** | **Live, not a prop.** `alpaca clock` runs before every sweep to catch early closes and unscheduled halts a hardcoded calendar misses. `create_subprocess_exec` with an argv list (never a shell string), killed on timeout, `None` on any failure. First link in a **CLI → REST → local-calendar** chain, each reporting its own source. |
+| **Our own MCP server** | `apps/mcp_server/` exposes this council read-only *to* Claude Desktop / Cursor. A genuine bonus; the CLI above is what satisfies the hackathon requirement. |
+
+A **30-second reconciler fleet** converges broker truth into Postgres: fills,
+external closes, the drawdown breaker, and **account-switch detection** — swapping API
+keys retires the previous account's state instead of silently inheriting its halt and
+open positions.
+
+---
+
+## What measuring actually bought us
+
+| Found by instrumenting | Fix |
+|---|---|
+| A stop that could not fire — mark frozen 2h16m, then a 26-point gap | Chain-depth gate, refused for 0 model calls |
+| Options council was 84% of a $10 credit burn | Deterministic pre-flights moved *before* the paid debate |
+| "15 symbols per sweep" was really 15 every 2 minutes | Hard per-day and per-hour caps |
+| A long put's real −$195 loss displayed as **+$195** | P&L sign keyed to broker side, not to the thesis |
+| The −3% halt blocks entries but closes nothing | Halt-coupling invariant, enforced by test |
+
+Every one was found by measuring the system's own behaviour, not by reading it.
 
 ---
 
 ## Honest limitations
 
-Stated plainly, because a risk system — and a README describing one — that oversells
-itself is not a risk system.
+Stated plainly, because a risk system that oversells itself is not a risk system.
 
-- **Paper trading only, everywhere, hard-coded.** No path in this repo, including
-  either unattended path above, can reach a live account by setting an environment
-  variable. Hypothetical results; no real capital, no real fills.
-- **Unattended still depends on the process being alive.** The trailing ratchet, the
-  escalation agent, and the auto-approve sweeper all run inside one API process on a
-  timer. A stop the loop never gets to check is a stop that does not fire — unlike
-  an equity bracket order, which sits at the broker and survives this app's own
-  downtime.
-- **Market data is a 15-minute-delayed indicative feed** (Alpaca's free tier), not
+- **P&L is currently slightly negative and the sample is two sessions.** That is
+  noise, not a result, and we do not present it as one. The ledger is the
+  contribution; the return is a sample size of one.
+- **Ghost marks are mid-flight, not settled.** Real Alpaca prices, but a ghost
+  finalizes only after 5 trading days — these are labelled "so far" wherever shown.
+- **Paper trading only, everywhere, hard-coded.** No path in this repo can reach a
+  live account by setting an environment variable.
+- **Market data is a 15-minute-delayed indicative feed** (Alpaca free tier), not
   consolidated OPRA. Adequate for daily-bar decisions; not a basis for any claim
   about execution quality.
 - **`earnings_blackout` is wired and permanently inert.** Alpaca publishes no
-  earnings calendar, so the rule has no data source. It is named and disclosed
-  rather than quietly dropped, and rather than filled with a fabricated date.
-- **No auto-exercise or assignment handling.** A sweep force-closes any option
-  position within 2 days of expiry, unconditionally — that sweep, not exercise
-  handling, is what keeps an in-the-money long option from becoming a share position
-  this account cannot carry.
-- **One operator Alpaca paper account, not one per user.** A past version of this
-  app silently attached every new signup to the operator's own Alpaca connection
-  with write access — that has been fixed (an explicit allowlist now gates it, and
-  anyone not on it correctly sees an honest empty/disconnected state instead of a
-  fake portfolio) but genuine per-user "bring your own Alpaca account" linking is
-  still not built. Every judge looking at this demo is looking at the same account.
-- **P&L over a several-session contest window is dominated by variance, not skill.**
-  The ledger — what the agent refused, and what that refusal was worth — is the
-  actual contribution; the return is a sample size of one.
+  earnings calendar. Named and disclosed rather than quietly dropped, or filled with
+  a fabricated date.
+- **No auto-exercise or assignment handling.** A DTE≤2 sweep force-closes any option
+  position unconditionally; that sweep, not exercise handling, is what stops an
+  in-the-money long option becoming a share position this account cannot carry.
+- **Unattended execution depends on the process being alive.** The ratchet and
+  sweeper run on a timer inside one API process. The broker-side resting stop is the
+  exception — it lives at Alpaca and survives our downtime.
+- **One operator Alpaca paper account, not one per user.** Every judge viewing the
+  demo sees the same account; per-user broker linking is not built.
 
 ---
 
@@ -268,10 +262,9 @@ uv sync --all-packages
 uv run pytest apps/agents apps/api packages/ -q
 ```
 
-Verified live against this checkout, today: **1308 passed, 11 skipped**
-(`apps/agents apps/api packages/`); **1319 passed, 11 skipped** including
-`apps/mcp_server` (`apps/ packages/` — that package needs the `uv sync
---all-packages` above first, or it fails collection).
+Verified against this checkout: **1511 passed, 11 skipped**
+(`apps/agents apps/api packages/`). `apps/mcp_server` needs the `uv sync
+--all-packages` above first, or it fails collection.
 
 Run the council headlessly against the live chain:
 
@@ -281,6 +274,21 @@ ALLOW_OPTIONS=1 uv run --package agents python -m trading_agents.jobs.daily_cron
 
 Environment variables, deployment, and the full module map:
 **[`docs/README.md`](docs/README.md)**
+
+---
+
+## Build history — context, not required reading
+
+This system started as a self-approval product: the agent proposed, and a human
+always tapped the button before anything reached the broker. **That is no longer
+the whole story.** Unattended entries are live in production now, through two
+separate mechanisms described in full below — both off by default, both hard-coded
+to paper trading, and both bounded by a second, independent gate beyond the
+operator's own switch (an explicit owner consent toggle for one, two agents having
+to independently agree for the other). If you have read an older
+version of this file, or anything in this repo that describes every trade as
+human-approved with no further qualification, that description is now wrong. This
+section, and the one right after it, are the correction.
 
 ---
 

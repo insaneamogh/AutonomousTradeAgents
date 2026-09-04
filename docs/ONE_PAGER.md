@@ -38,7 +38,7 @@ entire risk decision from scratch. A refusal returns a **named rule** the model 
 adjust against once — the loop is bounded at 3 rounds. This is why the agents run on
 Haiku: a weaker model degrades *selection*, never *risk control*.
 
-## 2. Risk gates — 31 equity + 11 options named rules, first veto wins
+## 2. Risk gates — 18 equity + 16 options named rules, first veto wins
 
 Every veto is a named, testable Python function, never a model output.
 `forbid_short_phase_0` · `shortable_check` · `short_requires_stop` · `pdt_block` ·
