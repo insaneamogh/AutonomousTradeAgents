@@ -9,7 +9,26 @@ Runs on Alpaca **paper trading only**. No real capital, anywhere in this system,
 
 ---
 
-## This changed in the last 24 hours — read this before anything else
+## 📋 Judges start here
+
+**→ [`docs/ONE_PAGER.md`](docs/ONE_PAGER.md) — one page: AI logic, risk gates, Alpaca infrastructure.**
+
+Two more, if you want the evidence behind it:
+
+| | |
+|---|---|
+| [`docs/SUBMISSION_FINDINGS.md`](docs/SUBMISSION_FINDINGS.md) | Every figure measured live from production, with the caveats stated plainly |
+| [`docs/OPTIONS_PLAYBOOK.md`](docs/OPTIONS_PLAYBOOK.md) | The authoritative options rule set, derived from the code |
+
+**The 20-second version.** An LLM is never in an execution or risk path. Two agents
+(Bull and Bear) argue a thesis and call a guarded tool; the guard re-runs 42 named
+deterministic risk rules on every call, and first veto wins. Every trade the engine
+*refuses* is then marked to market against real Alpaca option quotes — which is how we
+caught one of our own risk rules costing $6,030 while another saved $9,956.
+
+---
+
+## This changed during the build — background, not required reading
 
 This system started as a self-approval product: the agent proposed, and a human
 always tapped the button before anything reached the broker. **That is no longer
