@@ -472,12 +472,41 @@ async def list_closed_positions(
     filters = [
         AgentDecision.user_id == uid,
         AgentDecision.closed_at.is_not(None),
+        # A retirement is not a close. `account_switch` rows were stamped by
+        # `reconcile_account_identity` when the broker keys changed — the
+        # position was never exited, it stopped being ours. They carry no
+        # realized P&L and rendering them as history put nine "—" rows in
+        # the ledger for trades that did not happen on this account.
+        AgentDecision.close_reason.is_distinct_from("account_switch"),
     ]
     if symbol:
         filters.append(AgentDecision.symbol == symbol.upper())
 
     factory = async_session_factory()
     async with factory() as session:
+        # Everything closed at or before the most recent account switch
+        # belongs to a PREVIOUS Alpaca account. `agent_decisions` is scoped
+        # to `user_id`, not to an account, and this operator ran three paper
+        # accounts through the same user during the contest — so without
+        # this boundary the history mixed all three.
+        #
+        # Observed 2026-09-04, on submission day: a -$1,200 CME stop-out
+        # from 09-01 and a +$325 AAPL close from 09-02 were both rendered
+        # against account PA3JDGMXSHYK, which was not created until 09-03
+        # and never held either position. The switch timestamp is the only
+        # account boundary this schema records; when no switch has ever
+        # happened there is no boundary and nothing is filtered.
+        switch_boundary = (
+            await session.execute(
+                select(func.max(AgentDecision.closed_at)).where(
+                    AgentDecision.user_id == uid,
+                    AgentDecision.close_reason == "account_switch",
+                )
+            )
+        ).scalar_one_or_none()
+        if switch_boundary is not None:
+            filters.append(AgentDecision.closed_at > switch_boundary)
+
         total = (
             await session.execute(
                 select(func.count()).select_from(AgentDecision).where(*filters)

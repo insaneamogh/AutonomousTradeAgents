@@ -48,32 +48,42 @@ building this instrumentation.
 ## 2. P&L, and why it is what it is
 
 ```
-equity          $99,150.86      -$849.14   (-0.85%) from $100,000
-realized              ~$0       essentially no completed round trips
-unrealized       -$848.00       six open option positions
-premium           $7,150        7.21% of equity, against the cap
+equity           $99,188.76     -$811.24 from $100,000
+realized        -$1,146.00      two stop-outs, both on THIS account
+unrealized         +$97.00      six open positions, net positive
 ```
+
+Realized breaks down as two protective stops firing exactly as designed:
+`AAPL260918C00340000` −$536 and `XLE261016C00067000` −$610.
 
 Five facts, no speculation:
 
-1. **One session of exposure.** The account was created Sep 3 and all six
-   positions were opened Sep 3. This is a single day of marks, not a record.
-2. **All six are long options.** Long premium pays theta every day. NVDA expires
-   in 10 days, AAPL and TQQQ in 14. Decay is a headwind on every position.
-3. **Directionally concentrated** — five calls and one put, effectively a
-   long-beta book that needs the market to go up.
-4. **The book was at its cap**, so it could not rotate into anything better.
-5. **Almost no completed trades.** The −0.85% is open marks that can still move
-   either way.
+1. **Two sessions of exposure.** The account was created Sep 3. This is not a
+   track record.
+2. **Mostly long options.** Long premium pays theta every day, so a position
+   that does not move enough, fast enough, loses by standing still.
+3. **The book was at its premium cap** most of the window, so it could not
+   rotate into anything better.
+4. **Only two completed round trips**, both stops. Everything else is still
+   open and can move either way.
+5. **The winner is real and is being let run** — NVDA 225C at +47% (+$650)
+   under a resting broker-side stop that ratchets up behind it.
 
-**−0.85% over one session on a six-position long-options book is noise.** It is
-not evidence that the system is broken, and it should not be presented as a
-result. The honest statement is that we have ~1 session of live P&L and 3
-sessions of decision data, and only the second is large enough to say anything.
+**Scope note.** Three different Alpaca paper accounts were used during the
+contest, and `agent_decisions` is scoped to a user, not to an account. Earlier
+figures — including a −$1,200 CME stop-out — belong to accounts that are NOT
+being submitted. The closed-position history is now bounded at the last
+account switch so only this account's trades appear. The −$1,200 is discussed
+in §3 because of what it taught us, not because it is in this P&L.
 
-An earlier **−$1,200** loss (CME long put) occurred on a **different, now-retired
-account** and is not in these figures. It is still worth presenting, because it
-produced the chain-depth fix below.
+**−0.8% over two sessions is noise.** It is not evidence that the system is
+broken, and it should not be presented as a result. The honest statement is
+that we have ~2 sessions of live P&L and 3 sessions of decision data, and only
+the second is large enough to say anything.
+
+An earlier **−$1,200** loss (CME long put) occurred on a **different,
+now-retired account** and is not in these figures. It is still worth
+presenting, because it produced the chain-depth fix below.
 
 ---
 
@@ -129,15 +139,22 @@ reasoning about it.
 
 ## 5. Honest limitations
 
-- **~1 session of live P&L.** Far too short to claim an edge in either direction.
+- **~2 sessions of live P&L.** Far too short to claim an edge in either direction.
 - **101 ghost marks, all `partial`.** Real prices, mid-flight, not settled.
+- **Three paper accounts were used across the contest.** `agent_decisions` is
+  scoped to a user, not an account, so history had to be bounded at the last
+  account switch. The ghost/veto figures in §1 deliberately span all three:
+  they measure the RULES, which did not change between accounts, not any one
+  account's P&L.
 - **The premium cap was raised 7.5% → 11.0% on submission day** so the book could
   trade in the final session. This deliberately exceeds the −3% daily halt
   (11.0 × 40% = 4.4% reachable before a stop fires). It is declared in
   `RiskCaps.max_tolerated_book_drawdown_pct` rather than hidden by loosening the
   invariant test — `exceeds_halt_ceiling` reports it as True.
-- **Equity shorts have never executed.** They are correctly generated and gated
-  only by the specialist-score floor; long puts carry all bearish exposure.
+- **Equity shorts now execute** — `HD`, 6 shares short @ $318.09 on 2026-09-04,
+  with a bracketed protective buy-stop above and a target below. This was the
+  first one ever, on the final session; before today bearish exposure came only
+  from long puts. One fill is not a validated short book.
 - **Writing/selling options is deliberately out of scope** (unbounded loss, no
   assignment handling).
 
@@ -145,7 +162,7 @@ reasoning about it.
 
 ## 6. The claim we are actually making
 
-Not "our agent makes money" — one session cannot support that.
+Not "our agent makes money" — two sessions cannot support that.
 
 **"Our agent can tell you, in dollars, which of its own risk rules are earning
 their keep and which are costing money — and it caught one of its own rules
