@@ -23,6 +23,8 @@ import {
   signedUsd,
   stillMarkingCaption,
   tone,
+  emptyBucketCaption,
+  ghostSideUsd,
   usd,
 } from '../format';
 import {
@@ -56,18 +58,32 @@ function wouldHaveLabel(ghostPnl: number | null | undefined): string {
   return 'even';
 }
 
-/** The per-rule "would have" cell — §4.1/§4.3 of the doc: a `null` ghost
- * renders the literal word "pending", never `$0`; a positive ghost (money
- * the veto cost, not saved) renders amber "missed" rather than being
- * hidden next to the wins. */
+/** The per-rule "would have" cell — §4.1/§4.3 of the doc: a ghost with no
+ * mark at all renders the literal word "pending", never `$0`; a positive
+ * ghost (money the veto COST, not saved) renders amber "missed" rather than
+ * being hidden next to the wins.
+ *
+ * Falls back to `markedPnl` when `ghostPnl` is null, labelled "so far". A
+ * ghost finalizes only after `horizonDays` TRADING days, so on 2026-09-04
+ * all 101 marked refusals were still `partial` and every row here rendered
+ * "pending" — while the table already held real counterfactuals priced
+ * against live Alpaca option quotes. Showing nothing was strictly less
+ * honest than showing a provisional number that says it is provisional. */
 function WouldHaveCell({ rule }: { rule: VetoRuleDto }) {
-  if (rule.ghostPnl == null) {
+  const settled = rule.ghostPnl;
+  const provisional = settled == null ? rule.markedPnl : null;
+  const value = settled ?? provisional;
+
+  if (value == null) {
     return <span className="pg-caption pg-dim">pending</span>;
   }
   return (
     <Row gap={6} style={{ justifyContent: 'flex-end' }}>
-      <span className="pg-num">{signedUsd(rule.ghostPnl)}</span>
-      <Pill tone={wouldHaveTone(rule.ghostPnl)}>{wouldHaveLabel(rule.ghostPnl)}</Pill>
+      <span className="pg-num">{signedUsd(value)}</span>
+      <Pill tone={wouldHaveTone(value)}>{wouldHaveLabel(value)}</Pill>
+      {provisional != null ? (
+        <span className="pg-caption pg-dim">so far</span>
+      ) : null}
     </Row>
   );
 }
@@ -302,16 +318,25 @@ export function InsightsScreen() {
               <StatTile
                 label="Loss avoided"
                 value={
-                  ghost.data ? pendingAwareUsd(ghost.data.savedUsd, ghost.data.vetoed.pendingCount, ghost.data.savedSoFarUsd) : '—'
+                  ghost.data
+                    ? ghostSideUsd(ghost.data.savedUsd, ghost.data.vetoed.lossAvoidedUsd) ??
+                      pendingAwareUsd(
+                        ghost.data.savedUsd,
+                        ghost.data.vetoed.pendingCount,
+                        ghost.data.savedSoFarUsd,
+                      )
+                    : '—'
                 }
                 caption={
                   ghost.data
-                    ? pendingAwareCaption(
-                        'What vetoed picks would have lost',
-                        ghost.data.savedUsd,
-                        ghost.data.vetoed.pendingCount,
-                        ghost.data.vetoed.oldestPendingRemainingTradingDays,
-                      )
+                    ? ghost.data.vetoed.upsideBlockedUsd
+                      ? `vs ${usd(ghost.data.vetoed.upsideBlockedUsd)} of upside these vetoes also blocked`
+                      : pendingAwareCaption(
+                          'What vetoed picks would have lost',
+                          ghost.data.savedUsd,
+                          ghost.data.vetoed.pendingCount,
+                          ghost.data.vetoed.oldestPendingRemainingTradingDays,
+                        )
                     : 'What vetoed picks would have lost'
                 }
                 tone="bull"
@@ -322,11 +347,27 @@ export function InsightsScreen() {
               <StatTile
                 label="Upside missed"
                 value={
-                  ghost.data ? pendingAwareUsd(ghost.data.missedUsd, ghost.data.declined.pendingCount, ghost.data.missedSoFarUsd) : '—'
+                  ghost.data
+                    ? ghost.data.declined.count === 0
+                      ? '—'
+                      : ghostSideUsd(
+                          ghost.data.missedUsd,
+                          ghost.data.declined.upsideBlockedUsd,
+                        ) ??
+                        pendingAwareUsd(
+                          ghost.data.missedUsd,
+                          ghost.data.declined.pendingCount,
+                          ghost.data.missedSoFarUsd,
+                        )
+                    : '—'
                 }
                 caption={
                   ghost.data
-                    ? pendingAwareCaption(
+                    ? emptyBucketCaption(
+                        ghost.data.declined.count,
+                        'No picks declined by hand — auto-approve is on',
+                      ) ??
+                      pendingAwareCaption(
                         'What declined picks would have made',
                         ghost.data.missedUsd,
                         ghost.data.declined.pendingCount,

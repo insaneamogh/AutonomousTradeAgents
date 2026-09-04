@@ -74,12 +74,17 @@ export function humanize(value: string): string {
 
 const RISK_PROFILE_CAPTIONS: Record<string, string> = {
   conservative: 'under the 1%/5% conservative caps',
-  aggressive_paper: 'under the 2.5%/7.5% aggressive caps',
+  aggressive_paper: 'under the 1.5%/11% aggressive caps',
 };
 
 /** Verified against `RiskCaps.aggressive_paper()` (packages/engine/engine/risk/types.py):
- * options_max_premium_pct 1.0→2.5, options_max_total_premium_pct 5.0→7.5 (briefly,
- * wrongly, 12.0 for one day — see fable5findings.md's 2026-09-01 `ebfc8718` entry). */
+ * `options_max_premium_pct` 1.0→1.5 and `options_max_total_premium_pct` 5.0→11.0.
+ *
+ * This string is shown to judges, so it has to track the code. It has drifted
+ * twice already: it read 12.0 for a day (fable5findings.md 2026-09-01
+ * `ebfc8718`), and on 2026-09-04 it still said "2.5%/7.5%" when the real caps
+ * were 1.5%/7.5% — the single cap had been tightened and nothing updated the
+ * caption. If you change either number in `aggressive_paper`, change it here. */
 export function riskProfileCaption(profile: string | null | undefined): string {
   if (!profile) return 'risk profile disclosure pending';
   return RISK_PROFILE_CAPTIONS[profile] ?? `under the "${profile}" risk profile`;
@@ -124,6 +129,36 @@ function isShowingPending(amount: number | null | undefined, pendingCount: numbe
  * unmeasured one must never look the same. Deliberately stays this short:
  * see `finalizesPhrase`'s docstring for why the finalize countdown lives in
  * the caption (`pendingAwareCaption`) instead of here. */
+/** The two-sided ghost figure for a "Loss avoided" / "Upside blocked" tile.
+ *
+ * `savedUsd`/`missedUsd` are both `max(0, ±ghostPnl)` — they floor to zero
+ * whenever the refusals netted the OTHER way, which then falls through to
+ * `pendingAwareUsd`'s "$—" placeholder. On 2026-09-04 the vetoed bucket held
+ * $30,788 of avoided losses and $32,967 of blocked gains against 101 real
+ * marks priced from live Alpaca option quotes, netted to +$2,179, and the
+ * tile showed "$—" — i.e. "our vetoes cost us money" rendered identically to
+ * "we have no data".
+ *
+ * `sideUsd` is the un-netted half, so it is non-zero whenever ANY mark exists
+ * on that side. Returns null when there is genuinely nothing to show, so the
+ * caller can fall back to the pending placeholder. */
+export function ghostSideUsd(
+  settled: number | null | undefined,
+  sideUsd: number | null | undefined,
+): string | null {
+  if (settled != null && settled !== 0) return usd(settled);
+  if (sideUsd != null && sideUsd !== 0) return usd(sideUsd);
+  return null;
+}
+
+/** Caption for a bucket that has no rows at all, as opposed to rows summing
+ * to zero. An empty `declined` bucket (nothing was ever declined by hand —
+ * auto-approve is on) rendered as a flat "$0", which reads as a measured
+ * result rather than an absent one. */
+export function emptyBucketCaption(count: number, fallback: string): string | null {
+  return count === 0 ? fallback : null;
+}
+
 export function pendingAwareUsd(
   amount: number | null | undefined,
   pendingCount: number,

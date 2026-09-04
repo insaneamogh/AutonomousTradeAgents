@@ -261,6 +261,22 @@ class RiskCaps:
     the broker-side target that protects every equity entry does not
     exist here)."""
 
+    max_tolerated_book_drawdown_pct: float | None = None
+    """The single-session options-book loss this profile ACCEPTS, in percent
+    of equity. ``None`` means "no more than the daily halt allows" —
+    ``abs(daily_drawdown_halt_pct)``.
+
+    Exists so a profile that deliberately takes a wider tail has to SAY SO,
+    as a reviewed number in git, instead of the invariant test being deleted
+    or quietly loosened. ``respects_halt_coupling`` compares against this,
+    not against the halt directly.
+
+    Leave it ``None`` unless there is a dated, specific reason recorded in
+    the profile's own docstring. A profile that sets it above
+    ``abs(daily_drawdown_halt_pct)`` is stating that the halt no longer
+    bounds its worst session — which is true of any options book, but should
+    never be true by accident."""
+
     options_stop_loss_pct: float = 50.0
     """Close a long option once its PREMIUM has lost this much (positive
     magnitude: 50.0 means "down 50%").
@@ -460,7 +476,36 @@ class RiskCaps:
             land nearer the strategy's expected value, so a book that is
             RIGHT wins less on its best name than three would have.
 
-          - ``options_max_total_premium_pct`` 5.0 -> 7.5, which is
+          - ``options_max_total_premium_pct`` 5.0 -> 11.0, with
+            ``max_tolerated_book_drawdown_pct`` declared at 4.4.
+
+            **2026-09-04, submission day, operator decision.** Raised from
+            7.5 to 11.0 so the book could open positions during the final
+            90-minute session: it sat at 7.21% of a 7.5% cap, ~$286 of
+            headroom — not one contract. 11.0% frees ~$3,750, about three
+            positions.
+
+            This DELIBERATELY exceeds the halt ceiling. 11.0 x 40% = 4.40%
+            of equity is reachable before a single stop fires, against a
+            -3.00% daily halt, so the halt no longer bounds the worst
+            session (``exceeds_halt_ceiling`` is True for this profile and
+            False for conservative). The tail is declared as a reviewed
+            number rather than the invariant being deleted — I advised
+            against the widening, the operator confirmed it knowing the
+            trade-off, and this records what was accepted.
+
+            ``options_stop_loss_pct`` stays 40: below ~35 it fires on quote
+            noise against a 12%-spread delayed mark, which is exactly how
+            the CME position behaved on 2026-09-01 (mark frozen 2h16m, then
+            a 26-point gap in one print). Tightening the stop to "pay for"
+            the wider cap would have traded a known tail for a known
+            failure mode.
+
+            **Revert to 7.5 and drop ``max_tolerated_book_drawdown_pct``**
+            to restore the original halt-bounded invariant exactly.
+
+            The pre-2026-09-04 derivation, which still holds for any profile
+            that does NOT declare a wider tail:
             ``|daily_drawdown_halt_pct| / (options_stop_loss_pct/100)``
             and NOT a number chosen for appetite. See
             ``max_options_book_drawdown_pct`` for the invariant and
@@ -528,7 +573,8 @@ class RiskCaps:
         # keyword argument.
         values: dict[str, object] = {
             "options_max_premium_pct": 1.5,
-            "options_max_total_premium_pct": 7.5,
+            "options_max_total_premium_pct": 11.0,
+            "max_tolerated_book_drawdown_pct": 4.4,
             "min_council_confidence": 0.42,
             "min_specialist_avg_score": 40.0,
             "options_stop_loss_pct": 40.0,
@@ -655,10 +701,38 @@ class RiskCaps:
         return self.options_max_total_premium_pct * self.options_stop_loss_pct / 100.0
 
     @property
+    def tolerated_book_drawdown_pct(self) -> float:
+        """The single-session options-book loss this profile accepts.
+
+        Defaults to ``abs(daily_drawdown_halt_pct)`` — i.e. "the halt is the
+        ceiling" — unless the profile explicitly declares a wider tail via
+        ``max_tolerated_book_drawdown_pct``."""
+        if self.max_tolerated_book_drawdown_pct is not None:
+            return self.max_tolerated_book_drawdown_pct
+        return abs(self.daily_drawdown_halt_pct)
+
+    @property
     def respects_halt_coupling(self) -> bool:
-        """Whether this profile's options book can lose more in one session
-        than its own daily halt allows. False is a misconfiguration."""
-        return self.max_options_book_drawdown_pct <= abs(self.daily_drawdown_halt_pct)
+        """Whether this profile's options book stays inside the tail it
+        DECLARED. False is a misconfiguration.
+
+        Compares against ``tolerated_book_drawdown_pct``, not the halt
+        directly, so a profile that knowingly accepts a wider tail records
+        that as a reviewed number rather than by weakening this check. Use
+        ``exceeds_halt_ceiling`` to ask the separate question of whether the
+        halt still bounds the worst session at all."""
+        return self.max_options_book_drawdown_pct <= self.tolerated_book_drawdown_pct
+
+    @property
+    def exceeds_halt_ceiling(self) -> bool:
+        """True when this profile's own declared tail is wider than the
+        daily halt — i.e. the halt no longer bounds its worst session.
+
+        Deliberately separate from ``respects_halt_coupling``: a profile can
+        be correctly configured (inside its declared tail) AND still be
+        taking more single-session risk than the halt would stop. Both facts
+        are worth being able to state."""
+        return self.tolerated_book_drawdown_pct > abs(self.daily_drawdown_halt_pct)
 
     @property
     def shorts_enabled(self) -> bool:

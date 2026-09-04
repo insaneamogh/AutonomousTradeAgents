@@ -28,6 +28,8 @@ import type { ScanSignalDto } from '@/hooks/useScannerStatus';
 import {
   ago,
   pendingAwareCaption,
+  emptyBucketCaption,
+  ghostSideUsd,
   pendingAwareUsd,
   ruleLabel,
   signedPct,
@@ -190,18 +192,33 @@ export function DashboardScreen() {
         <Cell span={3}>
           <StatTile
             label="Risk saved"
-            value={ghost.data ? pendingAwareUsd(ghost.data.savedUsd, ghost.data.vetoed.pendingCount, ghost.data.savedSoFarUsd) : '—'}
-            caption={
+            value={
               ghost.data
-                ? pendingAwareCaption(
-                    'Losses avoided by vetoes · 30d',
+                ? ghostSideUsd(ghost.data.savedUsd, ghost.data.vetoed.lossAvoidedUsd) ??
+                  pendingAwareUsd(
                     ghost.data.savedUsd,
                     ghost.data.vetoed.pendingCount,
-                    ghost.data.vetoed.oldestPendingRemainingTradingDays,
+                    ghost.data.savedSoFarUsd,
                   )
+                : '—'
+            }
+            caption={
+              ghost.data
+                ? ghost.data.vetoed.upsideBlockedUsd
+                  ? `vs ${usd(ghost.data.vetoed.upsideBlockedUsd)} upside also blocked · 30d`
+                  : pendingAwareCaption(
+                      'Losses avoided by vetoes · 30d',
+                      ghost.data.savedUsd,
+                      ghost.data.vetoed.pendingCount,
+                      ghost.data.vetoed.oldestPendingRemainingTradingDays,
+                    )
                 : 'Losses avoided by vetoes · 30d'
             }
-            tone={ghost.data && ghost.data.savedUsd > 0 ? 'bull' : 'neutral'}
+            tone={
+              ghost.data && (ghost.data.savedUsd > 0 || (ghost.data.vetoed.lossAvoidedUsd ?? 0) > 0)
+                ? 'bull'
+                : 'neutral'
+            }
             loading={ghost.isLoading}
           />
         </Cell>
@@ -209,11 +226,24 @@ export function DashboardScreen() {
           <StatTile
             label="Regret"
             value={
-              ghost.data ? pendingAwareUsd(ghost.data.missedUsd, ghost.data.declined.pendingCount, ghost.data.missedSoFarUsd) : '—'
+              ghost.data
+                ? ghost.data.declined.count === 0
+                  ? '—'
+                  : ghostSideUsd(ghost.data.missedUsd, ghost.data.declined.upsideBlockedUsd) ??
+                    pendingAwareUsd(
+                      ghost.data.missedUsd,
+                      ghost.data.declined.pendingCount,
+                      ghost.data.missedSoFarUsd,
+                    )
+                : '—'
             }
             caption={
               ghost.data
-                ? pendingAwareCaption(
+                ? emptyBucketCaption(
+                    ghost.data.declined.count,
+                    'Nothing declined by hand · auto-approve on',
+                  ) ??
+                  pendingAwareCaption(
                     'Missed on declined picks · 30d',
                     ghost.data.missedUsd,
                     ghost.data.declined.pendingCount,

@@ -472,6 +472,14 @@ export interface GhostBucketDto {
   markedPnl?: number;
   /** How many rows contribute to `markedPnl` (finals + marked partials). */
   markedCount?: number;
+  /** Sum of the NEGATIVE marks, as a positive number — what these refusals
+   * would have LOST. Split from `upsideBlockedUsd` because `savedUsd` is
+   * `max(0, -ghostPnl)`, which floors to 0 whenever the refusals were net
+   * profitable — rendering "our vetoes cost us money" identically to
+   * "no data". */
+  lossAvoidedUsd?: number;
+  /** Sum of the POSITIVE marks — what these refusals would have MADE. */
+  upsideBlockedUsd?: number;
 }
 
 export interface GhostSummaryResponse {
@@ -494,9 +502,22 @@ export interface VetoRuleDto {
   rule: string;
   count: number;
   blockedNotional: number;
+  /** FINALS ONLY — the number the product stands behind. Null until a ghost
+   * under this rule reaches its full `horizonDays` TRADING-day horizon. */
   ghostPnl?: number | null;
   preventedLossUsd?: number | null;
   lastAt?: string | null;
+  /** `ghostPnl` plus every still-`partial` mark. PROVISIONAL — render as
+   * "so far", never as the settled number. Exists because for the first week
+   * of an account's life every ghost is `partial` and `ghostPnl` is null
+   * while real marked counterfactuals already sit in the table. */
+  markedPnl?: number | null;
+  markedCount?: number | null;
+  /** The two-sided split of `markedPnl`. A rule can block real losses AND
+   * real gains; only the net used to survive, which is what made the tiles
+   * read as broken. */
+  lossAvoidedUsd?: number | null;
+  upsideBlockedUsd?: number | null;
 }
 
 /** A rule that resized a trade rather than blocking it — kept separate

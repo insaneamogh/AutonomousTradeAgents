@@ -469,3 +469,78 @@ def test_ledger_reports_risk_profile_even_for_an_unknown_tenant(
     ledger = anyio.run(lambda: ghost_service.build_veto_ledger(30, user_id="not-a-real-user"))
     assert ledger.risk_profile == "aggressive_paper"
     assert ledger.total_vetoes == 0
+
+
+# ── marked (partial-inclusive) per-rule numbers ────────────────────────
+
+
+def test_partial_marks_populate_marked_pnl_without_touching_ghost_pnl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The live 2026-09-04 case. A ghost finalizes only after
+    `horizon_days` TRADING days, so on submission day all 101 marked
+    refusals were still `partial` and every per-rule "would have" cell
+    rendered "pending" — while the table already held real
+    marked-to-market counterfactuals priced from live Alpaca option quotes.
+
+    `ghost_pnl` stays FINALS ONLY (that is the number the product stands
+    behind); `marked_pnl` carries the provisional one alongside it. Break
+    this by restoring `status == "final"` on the marked branch."""
+    dec = _decision(proposal={"estimatedNotional": 5000.0})
+    partial = _ghost(status="partial", ghost_pnl=-250.0)
+    session = _QueueSession([[(dec, partial)], []])
+    _patch(monkeypatch, session)
+
+    row = anyio.run(lambda: ghost_service.build_veto_ledger(30, user_id=USER_ID)).rules[0]
+
+    assert row.ghost_pnl is None, "a partial must never become the settled number"
+    assert row.prevented_loss_usd is None
+    assert row.marked_pnl == pytest.approx(-250.0)
+    assert row.marked_count == 1
+
+
+def test_marked_split_reports_both_sides_not_just_the_net(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rule can block real losses AND real gains. Netting them is what
+    made the tiles read as broken: 2026-09-04's vetoed bucket held $30,788
+    avoided and $32,967 blocked, netting +$2,179, and `max(0, -2179)`
+    floored the tile to "$—" — rendering "our vetoes cost us money"
+    identically to "no data"."""
+    winner = _decision(proposal={"estimatedNotional": 1000.0})
+    loser = _decision(proposal={"estimatedNotional": 1000.0})
+    session = _QueueSession(
+        [
+            [
+                (winner, _ghost(status="partial", ghost_pnl=900.0)),
+                (loser, _ghost(status="partial", ghost_pnl=-400.0)),
+            ],
+            [],
+        ]
+    )
+    _patch(monkeypatch, session)
+
+    row = anyio.run(lambda: ghost_service.build_veto_ledger(30, user_id=USER_ID)).rules[0]
+
+    assert row.marked_pnl == pytest.approx(500.0)      # the net, which hides both
+    assert row.loss_avoided_usd == pytest.approx(-400.0)
+    assert row.upside_blocked_usd == pytest.approx(900.0)
+    assert row.marked_count == 2
+
+
+def test_a_rule_with_no_marks_at_all_stays_null_not_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`pending` with no mark is absent data. It must stay null so the UI
+    keeps rendering the literal word "pending" rather than a $0 that reads
+    as a measured result."""
+    dec = _decision(proposal={"estimatedNotional": 5000.0})
+    session = _QueueSession([[(dec, _ghost(status="pending", ghost_pnl=None))], []])
+    _patch(monkeypatch, session)
+
+    row = anyio.run(lambda: ghost_service.build_veto_ledger(30, user_id=USER_ID)).rules[0]
+
+    assert row.marked_pnl is None
+    assert row.marked_count is None
+    assert row.loss_avoided_usd is None
+    assert row.upside_blocked_usd is None

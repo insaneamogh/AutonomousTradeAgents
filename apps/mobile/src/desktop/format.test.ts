@@ -15,6 +15,8 @@
  * has no truncation rule the way a caption's `.pg-truncate` does.
  */
 import {
+  emptyBucketCaption,
+  ghostSideUsd,
   pendingAwareCaption,
   pendingAwareUsd,
   riskProfileCaption,
@@ -143,7 +145,7 @@ describe('riskProfileCaption', () => {
   // caption text itself still said "12%" a full day after the real cap
   // dropped to 7.5% — this test would have caught either regression.
   it('names the real caps for the aggressive profile', () => {
-    expect(riskProfileCaption('aggressive_paper')).toBe('under the 2.5%/7.5% aggressive caps');
+    expect(riskProfileCaption('aggressive_paper')).toBe('under the 1.5%/11% aggressive caps');
   });
 
   it('names the real caps for the conservative profile', () => {
@@ -157,5 +159,39 @@ describe('riskProfileCaption', () => {
 
   it('names an unrecognised profile literally rather than silently hiding it', () => {
     expect(riskProfileCaption('some_future_profile')).toBe('under the "some_future_profile" risk profile');
+  });
+});
+
+describe('ghostSideUsd', () => {
+  it('shows the un-netted side when the settled figure floored to zero', () => {
+    // The live 2026-09-04 case: 101 real marks priced from Alpaca option
+    // quotes held $30,788 of avoided losses AND $32,967 of blocked gains,
+    // netting +$2,179. `savedUsd = max(0, -2179) = 0` floored the tile to
+    // "$—" — rendering "our vetoes cost us money" identically to "no data".
+    expect(ghostSideUsd(0, 30788)).toBe(usd(30788));
+  });
+
+  it('prefers the settled figure when there is one', () => {
+    expect(ghostSideUsd(1234, 9999)).toBe(usd(1234));
+  });
+
+  it('returns null when there is genuinely nothing on either side', () => {
+    expect(ghostSideUsd(0, 0)).toBeNull();
+    expect(ghostSideUsd(null, null)).toBeNull();
+    expect(ghostSideUsd(undefined, undefined)).toBeNull();
+  });
+});
+
+describe('emptyBucketCaption', () => {
+  it('names an empty bucket rather than letting it read as a measured zero', () => {
+    // `declined` has zero rows because auto-approve is on and nothing is
+    // ever declined by hand — that is absent data, not a $0 result.
+    expect(emptyBucketCaption(0, 'Nothing declined by hand')).toBe(
+      'Nothing declined by hand',
+    );
+  });
+
+  it('defers to the normal caption once the bucket has rows', () => {
+    expect(emptyBucketCaption(4, 'Nothing declined by hand')).toBeNull();
   });
 });

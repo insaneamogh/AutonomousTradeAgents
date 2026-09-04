@@ -65,6 +65,11 @@ class GhostBucketDto(CamelCaseModel):
     # already sit in the table. Render as "so far", never as the claim.
     marked_pnl: float = 0.0
     marked_count: int = 0
+    # The two-sided split. `savedUsd` is `max(0, -ghostPnl)`, which floors
+    # to 0 whenever the refusals were net PROFITABLE — making "our vetoes
+    # cost us money" render identically to "no data".
+    loss_avoided_usd: float = 0.0
+    upside_blocked_usd: float = 0.0
 
 
 class GhostSummaryResponse(CamelCaseModel):
@@ -84,8 +89,21 @@ class VetoRuleDto(CamelCaseModel):
     count: int
     blocked_notional: float
     ghost_pnl: float | None = None
+    """FINALS ONLY — the number the product stands behind."""
     prevented_loss_usd: float | None = None
     last_at: str | None = None
+    # Marks-so-far, including still-`partial` ghosts. PROVISIONAL: a ghost
+    # finalizes only after `horizonDays` TRADING days, so for the first week
+    # of an account's life every one of these is `partial` and `ghostPnl` is
+    # null while the table already holds real marked counterfactuals. Render
+    # as "so far", never as the settled number.
+    marked_pnl: float | None = None
+    marked_count: int | None = None
+    # The two-sided split. Collapsing these into one signed total is what
+    # made the summary tiles read as broken — a rule can block real losses
+    # AND real gains, and only the net survived.
+    loss_avoided_usd: float | None = None
+    upside_blocked_usd: float | None = None
 
 
 class TrimRuleDto(CamelCaseModel):
@@ -153,6 +171,8 @@ async def ghost_summary(
             oldest_pending_remaining_trading_days=s.vetoed.oldest_pending_remaining_trading_days,
             marked_pnl=s.vetoed.marked_pnl,
             marked_count=s.vetoed.marked_count,
+            loss_avoided_usd=s.vetoed.loss_avoided_usd,
+            upside_blocked_usd=s.vetoed.upside_blocked_usd,
         ),
         declined=GhostBucketDto(
             count=s.declined.count,
@@ -166,6 +186,8 @@ async def ghost_summary(
             oldest_pending_remaining_trading_days=s.declined.oldest_pending_remaining_trading_days,
             marked_pnl=s.declined.marked_pnl,
             marked_count=s.declined.marked_count,
+            loss_avoided_usd=s.declined.loss_avoided_usd,
+            upside_blocked_usd=s.declined.upside_blocked_usd,
         ),
         saved_usd=s.saved_usd,
         missed_usd=s.missed_usd,
@@ -194,6 +216,10 @@ async def veto_ledger(
                 ghost_pnl=r.ghost_pnl,
                 prevented_loss_usd=r.prevented_loss_usd,
                 last_at=r.last_at.isoformat() if r.last_at else None,
+                marked_pnl=r.marked_pnl,
+                marked_count=r.marked_count,
+                loss_avoided_usd=r.loss_avoided_usd,
+                upside_blocked_usd=r.upside_blocked_usd,
             )
             for r in ledger.rules
         ],

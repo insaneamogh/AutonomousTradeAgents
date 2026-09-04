@@ -82,6 +82,18 @@ class GhostBucket:
     """How many rows contribute to ``marked_pnl`` (finals + marked
     partials). Strictly ``>= count - pending_count``; the difference is
     the partials."""
+    loss_avoided_usd: float = 0.0
+    """Sum of the NEGATIVE marks, as a positive number — what these
+    refusals would have LOST.
+
+    Split from ``upside_blocked_usd`` because ``saved_usd`` collapses a
+    two-sided distribution into one non-negative number: on 2026-09-04 the
+    vetoed bucket held $30,788 of avoided losses AND $32,967 of blocked
+    gains, netting +$2,179, and ``max(0.0, -2179)`` floored the tile to
+    ``$0`` — rendering "our vetoes cost us money" identically to "no data".
+    Both halves are the interesting part and neither survives a net."""
+    upside_blocked_usd: float = 0.0
+    """Sum of the POSITIVE marks — what these refusals would have MADE."""
 
 
 @dataclass
@@ -107,8 +119,30 @@ class VetoRuleRow:
     count: int
     blocked_notional: float
     ghost_pnl: float | None
+    """FINALS ONLY — the number the product stands behind. ``None`` until a
+    ghost under this rule reaches its full horizon."""
     prevented_loss_usd: float | None
     last_at: datetime | None
+    marked_pnl: float | None = None
+    """``ghost_pnl`` plus every still-``partial`` mark under this rule.
+
+    PROVISIONAL — a partial can still move. Exists because a ghost finalizes
+    only after ``horizon_days`` TRADING days: on 2026-09-04 all 101 marked
+    refusals were `partial` and the earliest could not finalize until ~Sep 8,
+    so every per-rule cell rendered "pending" while the table already held
+    real marked-to-market counterfactuals priced against live Alpaca option
+    quotes. Render it labelled "so far", never as the settled number."""
+    marked_count: int | None = None
+    """How many ghosts contribute to ``marked_pnl`` (finals + marked partials)."""
+    loss_avoided_usd: float | None = None
+    """Sum of the NEGATIVE marks — what this rule's refusals would have lost.
+
+    Split from ``upside_blocked_usd`` because collapsing a two-sided
+    distribution into one signed total is what made the summary tiles read
+    as broken: a rule can block $19,537 of losses AND $12,135 of gains, and
+    only the net survived. Both halves are the interesting part."""
+    upside_blocked_usd: float | None = None
+    """Sum of the POSITIVE marks — what this rule's refusals would have made."""
 
 
 @dataclass
@@ -203,6 +237,12 @@ def _bucket_from_rows(
         oldest_pending_remaining_trading_days=oldest_pending_remaining_trading_days,
         marked_pnl=round(sum(float(g.ghost_pnl) for g in marked), 2),
         marked_count=len(marked),
+        loss_avoided_usd=round(
+            -sum(float(g.ghost_pnl) for g in marked if float(g.ghost_pnl) < 0), 2
+        ),
+        upside_blocked_usd=round(
+            sum(float(g.ghost_pnl) for g in marked if float(g.ghost_pnl) > 0), 2
+        ),
     )
 
 
@@ -302,14 +342,21 @@ async def build_veto_ledger(window_days: int = 30, *, user_id: str) -> VetoLedge
     for rule, pairs in by_rule.items():
         notional = 0.0
         ghost_finals: list[float] = []
+        # Every mark this rule has, final or not. `evaluate_ghosts` writes
+        # `ghost_pnl` on each pass, so a `partial` row's value is a real
+        # mark against a real price — just not the one at the horizon yet.
+        ghost_marks: list[float] = []
         last_at: datetime | None = None
         for dec, ghost in pairs:
             p = dec.proposal or {}
             n = p.get("estimatedNotional", p.get("estimated_notional"))
             if isinstance(n, (int, float)):
                 notional += float(n)
-            if ghost is not None and ghost.status == "final" and ghost.ghost_pnl is not None:
-                ghost_finals.append(float(ghost.ghost_pnl))
+            if ghost is not None and ghost.ghost_pnl is not None:
+                value = float(ghost.ghost_pnl)
+                ghost_marks.append(value)
+                if ghost.status == "final":
+                    ghost_finals.append(value)
             if last_at is None or (dec.triggered_at and dec.triggered_at > last_at):
                 last_at = dec.triggered_at
         ghost_pnl = round(sum(ghost_finals), 2) if ghost_finals else None
@@ -321,6 +368,14 @@ async def build_veto_ledger(window_days: int = 30, *, user_id: str) -> VetoLedge
                 ghost_pnl=ghost_pnl,
                 prevented_loss_usd=round(max(0.0, -ghost_pnl), 2) if ghost_pnl is not None else None,
                 last_at=last_at,
+                marked_pnl=round(sum(ghost_marks), 2) if ghost_marks else None,
+                marked_count=len(ghost_marks) or None,
+                loss_avoided_usd=(
+                    round(sum(v for v in ghost_marks if v < 0), 2) if ghost_marks else None
+                ),
+                upside_blocked_usd=(
+                    round(sum(v for v in ghost_marks if v > 0), 2) if ghost_marks else None
+                ),
             )
         )
         total_notional += notional
