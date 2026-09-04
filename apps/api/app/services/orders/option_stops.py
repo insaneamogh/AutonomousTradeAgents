@@ -58,7 +58,10 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import select
 
 from app.services.broker.broker_use import with_broker_client
-from app.services.orders.order_store import persist_linked_order_submit
+from app.services.orders.order_store import (
+    persist_linked_order_submit,
+    persist_order_result,
+)
 from engine.options.protective_stop import (
     ProtectiveStopLevels,
     protective_stop_levels,
@@ -278,7 +281,7 @@ async def _place(
         return None
 
     try:
-        await persist_linked_order_submit(
+        order_row_id = await persist_linked_order_submit(
             user_id=user_id,
             broker_connection_id=str(conn.id),
             decision_id=decision.id if isinstance(decision.id, uuid.UUID)
@@ -296,6 +299,24 @@ async def _place(
             limit_price=levels.limit_price,
             time_in_force="GTC",
         )
+        # Stamp the broker's acknowledgement onto the row we just wrote.
+        #
+        # Without this the row stays `pending` with a NULL `broker_order_id`
+        # forever, and TWO separate readers key off exactly that:
+        #
+        #   1. `order_sync._sync_open_orders` filters
+        #      `broker_order_id IS NOT NULL`, so it never polls the row —
+        #      a stop that FILLS at the broker is never seen locally.
+        #   2. `_detect_external_closes` treats a `pending` SELL as "an exit
+        #      is already in flight" and skips the symbol — so the vanished
+        #      position is never closed in our DB either.
+        #
+        # Both fired together on 2026-09-04: AAPL260918C00340000's resting
+        # stop filled at the broker at 13:35:12 for -$536, and the decision
+        # still read OPEN with realized P&L understated by that amount. The
+        # broker-side stop DID its job; only its audit row was orphaned.
+        if order_row_id is not None:
+            await persist_order_result(order_row_id=order_row_id, broker_order=order)
     except Exception:
         logger.exception(
             "option_stops: placed broker order %s for %s but could not persist "
