@@ -2,7 +2,95 @@
 
 > ## ⚠️ READ THIS FIRST — §1-§5 BELOW ARE A HISTORICAL SNAPSHOT
 >
-> **Everything from here to the `# Build log` heading was written on
+> **Everything from here to the `# Build log
+
+### 2026-09-04 — 5c4e49d8 — submission day: the ledger shows its numbers
+
+Operator: "why are we still not profitable... if we can add or display values
+for veto ledger that would be great."
+
+**Corrected my own false alarm first.** My local Alpaca keys were stale and
+pointed at `PA31OTNBGE9I`; an early reading showed "META at -70% unmanaged" and
+7 positions the DB thought closed. That was a DEAD account — the
+`account_switch` retirement had been correct. The live submission account is
+`PA3JDGMXSHYK` (created Sep 3), reachable only with the Railway keys. Verified
+before drawing any conclusion.
+
+**Why not profitable — five measured facts, no speculation.** Equity
+$99,150.86 (-$849.14, -0.85%). Realized ~$0. All -0.85% is unrealized on six
+long-option positions opened Sep 3 — ONE session. All six long premium (theta
+headwind), five calls + one put (long-beta), book at 7.21% of a 7.5% cap so it
+could not rotate. **-0.85% over one session is noise, not a broken system.**
+The earlier -$1,200 CME loss was on a different, retired account and is not in
+the submission P&L.
+
+**The finding.** 101 refusals marked against REAL Alpaca option quotes
+(`price_source = alpaca_option`, avg 1.9 marks each), decomposed by rule:
+
+```
+min_council_confidence   59   -$7,402   earned its keep
+max_total_premium_pct    51   +$9,581   cost money
+size_rounds_to_zero       8   unmarked
+net                           +$2,179   vetoes net HARMFUL
+```
+
+49 would have won, 51 lost — a coin flip in direction. The DECOMPOSITION is the
+story: the confidence floor blocks real losers; the premium cap is outcome-blind
+and refuses good trades purely because the book is full.
+
+**Why the UI showed "$—" — two causes, both one filter deep.**
+1. `build_veto_ledger` summed only `status == "final"`. All 101 marks are
+   `partial` (5 TRADING-day horizon from Sep 1-3 → finalizes ~Sep 8, four days
+   AFTER submission). Every per-rule cell rendered "pending" forever. Fixed:
+   `ghost_pnl` stays finals-only (the number the product stands behind),
+   `marked_pnl` carries the provisional one, `WouldHaveCell` falls back to it
+   labelled "so far". **The UI column was already built and correct — starved.**
+2. `saved_usd = max(0, -ghost_pnl)` floored +$2,179 to 0 → "$—". A two-sided
+   distribution collapsed to one non-negative number, so "our vetoes cost us
+   money" rendered identically to "no data". The bucket holds $30,788 avoided
+   AND $32,967 blocked; both now carried and shown.
+   Regret tile read "$0" for an EMPTY bucket (auto-approve means nothing is ever
+   declined by hand) — absent data now says so.
+
+Also fixed a stale number facing judges: the profile caption claimed
+"2.5%/7.5%" when the single cap had been tightened to 1.5%. It has drifted
+twice now; the comment says plainly that changing a cap means changing it here.
+
+**`options_max_total_premium_pct` 7.5 -> 11.0 — operator decision.** The book
+sat at 7.21% of a 7.5% cap (~$286 headroom, not one contract) so nothing could
+open in the final 90-minute session. I advised against it; the operator
+confirmed knowing the trade-off. Done HONESTLY rather than by bumping a number:
+this exceeds the halt ceiling (11.0 x 40% = 4.40% reachable vs a -3.00% halt),
+so `RiskCaps` gained `max_tolerated_book_drawdown_pct` — a profile taking a
+wider tail must DECLARE it. `respects_halt_coupling` compares against the
+declared tolerance; new `exceeds_halt_ceiling` states separately whether the
+halt still bounds the worst session (True aggressive / False conservative). A
+test pins conservative declaring no tail, so this can never leak into the
+profile that runs when RISK_PROFILE is unset or typo'd. Stop stays 40 (below
+~35 fires on quote noise — exactly the CME failure mode). Halt untouched at -3.
+
+**Verified live against production data after deploy** — not just in tests:
+```
+min_council_confidence  n=59  marked=-7402  avoided=-19537  blocked=12135
+max_total_premium_pct   n=51  marked=+9581  avoided=-11251  blocked=20832
+tiles: lossAvoided=30788  upsideBlocked=32967  declined.count=0
+```
+
+1511 passed / 11 skipped, 13-case eval green, 123 jest, tsc + ruff clean (5
+B008 in insights.py are the pre-existing baseline). All four changes
+revert-checked individually.
+
+`docs/SUBMISSION_FINDINGS.md` written for the presentation — the per-rule
+table, the five profitability facts, the CME post-mortem, and the limitations
+stated plainly (partial not final, n=101, one session of P&L, the declared
+submission-day tail).
+
+**Left open:** revert `options_max_total_premium_pct` to 7.5 and drop
+`max_tolerated_book_drawdown_pct` after submission to restore the original
+halt-bounded invariant. The thin names from the Sep 1 bulk watchlist add are
+still present — the chain-depth gate refuses them for free at selection, but
+they still consume scanner attention.
+` heading was written on
 > 2026-06-12 and has NOT been maintained since.** Several of its
 > headline findings are now false. It is kept because the reasoning is
 > still useful and because deleting an audit to make the project look
