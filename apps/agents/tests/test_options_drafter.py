@@ -444,8 +444,11 @@ async def test_options_drafter_produces_long_call_with_is_option_true(
     # reach Alpaca as an invalid order — this regression-guards exactly
     # that bug.
     assert p["order_type"] == "LIMIT"
-    assert p["limit_price"] == p["ask"]
     assert p["limit_price"] is not None
+    # Marketable, but NOT the full ask. Paying the ask while Alpaca marks a
+    # long option near the bid opened every position already down the whole
+    # spread, with the -40% premium stop measuring from that impaired mark.
+    assert p["bid"] < p["limit_price"] <= p["ask"]
     # Alpaca has no options bracket — must not promise an exit plan it
     # cannot keep.
     assert p["stop_loss"] is None
@@ -726,7 +729,7 @@ async def test_drafter_options_path_end_to_end_through_real_alpaca_shapes(
     assert p["strike"] == 250.0
     assert p["bid"] == 3.10
     assert p["ask"] == 3.30
-    assert p["limit_price"] == 3.30
+    assert p["limit_price"] == 3.21  # mid 3.20 + one tick, not the 3.30 ask
     assert p["implied_volatility"] == 0.28
     assert p["open_interest"] == 500
     assert p["volume"] == 25

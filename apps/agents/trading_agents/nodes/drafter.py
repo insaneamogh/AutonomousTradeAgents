@@ -90,6 +90,7 @@ from engine.options.selection import (
     ContractSelectionResult,
     select_contract,
 )
+from engine.options.entry_price import entry_limit_price
 from engine.options.sizing import OptionsSizingInputs, options_position_size
 from engine.risk import RiskCaps
 from engine.sizing import SizingInputs, atr_position_size
@@ -439,6 +440,8 @@ async def _draft_option_proposal(
             budget_usd=budget_usd,
             ask=float(leg.ask) if leg.ask is not None else 0.0,
             multiplier=leg.multiplier,
+            conviction=confidence,
+            conviction_floor=caps.min_council_confidence,
         )
     )
 
@@ -495,7 +498,7 @@ async def _draft_option_proposal(
             # limit order with no limit, which fails outright. `ask` is
             # the quoted premium this contract was selected/sized against.
             "order_type": "LIMIT",
-            "limit_price": ask,
+            "limit_price": entry_limit_price(leg.bid, ask),
             "estimated_notional": estimated_notional,
             # Alpaca has no bracket for options (docs/OPTIONS_PLAN.md §3) —
             # populating either would promise an exit plan this order type

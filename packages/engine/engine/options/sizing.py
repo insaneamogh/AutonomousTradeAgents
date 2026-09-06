@@ -59,6 +59,19 @@ class OptionsSizingInputs:
     """``RiskCaps.options_max_pct_of_open_interest``. 0 disables the trim,
     matching how the other options caps document "0 turns this side off"."""
 
+    conviction: float | None = None
+    """The council's resolved conviction for this trade, 0-1. ``None`` (the
+    default) skips conviction scaling entirely, so every existing caller
+    and test keeps its exact previous behaviour — opt-in by passing real
+    data, exactly like ``open_interest`` above."""
+
+    conviction_floor: float | None = None
+    """``RiskCaps.min_council_confidence`` — the conviction at which a
+    trade is only just allowed to exist. Scaling is measured FROM this,
+    not from zero: a trade at the floor is the least-convinced trade the
+    system will take, and should be the smallest, not merely proportional
+    to an absolute number that never approaches 1.0 in practice."""
+
 
 @dataclass(frozen=True)
 class OptionsSizingDecision:
@@ -68,6 +81,47 @@ class OptionsSizingDecision:
     notes: str
     """E.g. "1 contract at $3.20 ask x100 = $320 premium, within $500
     budget" — or, on a zero result, why."""
+
+
+_CONVICTION_MIN_FRACTION = 0.5
+"""A floor-conviction trade gets this fraction of the full budget. Not 0 —
+a trade that clears every deterministic gate is allowed to exist, and
+sizing it to nothing would be a veto wearing a sizer's clothing (the
+system already has named vetoes for that, and they are auditable)."""
+
+_CONVICTION_CEILING = 0.62
+"""Conviction at which a trade earns the FULL budget.
+
+Deliberately not 1.0. The two-agent council resolves by taking the MINIMUM
+of the bull and bear conviction, which compresses its output hard toward
+the middle: across 151 real option decisions the entire observed range was
+0.28-0.62 and the highest value ever produced was 0.62. Scaling against a
+1.0 ceiling would mean no trade in the system's history ever earned more
+than ~62% of its budget — the scale would be measuring a range the council
+cannot reach."""
+
+
+def _conviction_scaled_budget(inputs: OptionsSizingInputs) -> float:
+    """Shrink the premium budget toward ``_CONVICTION_MIN_FRACTION`` as
+    conviction approaches the floor.
+
+    Returns ``budget_usd`` unchanged when either conviction input is
+    absent, so this is inert for every caller that does not opt in.
+    """
+    conviction = inputs.conviction
+    floor = inputs.conviction_floor
+    if conviction is None or floor is None:
+        return inputs.budget_usd
+    span = _CONVICTION_CEILING - floor
+    if span <= 0:
+        # A floor at or above the observed ceiling leaves no range to scale
+        # across. Do not silently divide by ~0 and do not invent a value:
+        # fall back to full budget and let the risk rules do the refusing.
+        return inputs.budget_usd
+    above = (conviction - floor) / span
+    above = min(1.0, max(0.0, above))
+    fraction = _CONVICTION_MIN_FRACTION + (1.0 - _CONVICTION_MIN_FRACTION) * above
+    return inputs.budget_usd * fraction
 
 
 def options_position_size(inputs: OptionsSizingInputs) -> OptionsSizingDecision:
@@ -91,8 +145,9 @@ def options_position_size(inputs: OptionsSizingInputs) -> OptionsSizingDecision:
             notes=f"budget ${inputs.budget_usd:.2f} is non-positive — no premium available to risk",
         )
 
+    budget_usd = _conviction_scaled_budget(inputs)
     cost_per_contract = inputs.ask * inputs.multiplier
-    qty = math.floor(inputs.budget_usd / cost_per_contract)
+    qty = math.floor(budget_usd / cost_per_contract)
 
     if qty < 1:
         return OptionsSizingDecision(

@@ -38,6 +38,7 @@ from engine.options.contracts import (
     fetch_option_candidates,
     to_risk_proposal,
 )
+from engine.options.entry_price import entry_limit_price
 from engine.options.expiry import dte, is_expiry_day
 from engine.options.risk import evaluate_option
 from engine.options.selection import (
@@ -62,6 +63,7 @@ __all__ = [
     "OptionsSizingInputs",
     "contract_type_of",
     "dte",
+    "entry_limit_price",
     "evaluate_option",
     "fetch_option_candidates",
     "funnel_block",

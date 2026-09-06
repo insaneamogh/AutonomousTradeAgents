@@ -79,6 +79,7 @@ from engine.options import (
     ContractSelectionInputs,
     ContractSelectionResult,
     OptionsSizingInputs,
+    entry_limit_price,
     fetch_option_candidates,
     funnel_block,
     options_position_size,
@@ -419,7 +420,11 @@ class ToolGuard:
                 # (OPTIONS_PLAYBOOK.md §5.2). 0.0 when the refusal WAS that
                 # there is no usable ask, which makes estimatedNotional 0.0
                 # and is the honest answer: nothing priceable was blocked.
-                limit_price=float(ask or 0.0),
+                # Same pricer as the real order below — a ghost priced at
+                # the ask while the live path pays mid+tick would make
+                # every refusal look systematically worse than the trade
+                # it stands in for.
+                limit_price=float(entry_limit_price(option.bid, ask) or 0.0),
                 conviction=conviction,
                 thesis=thesis,
             )
@@ -832,6 +837,11 @@ class ToolGuard:
         # says what we can afford to lose, open interest says whether we
         # can get back out. Passing both is what stopped a 167-OI contract
         # sizing to 5 lots purely because the budget allowed it.
+        # conviction/conviction_floor scale the budget between half and
+        # full size. Before this, a 0.42 idea and a 0.62 idea drew the
+        # identical premium budget — the council's confidence informed
+        # WHETHER to trade and never HOW MUCH, so the least-convinced
+        # trade the system would take was also a maximum-size one.
         budget_usd = context.account_equity * caps.options_max_premium_pct / 100.0
         sizing = options_position_size(
             OptionsSizingInputs(
@@ -840,6 +850,8 @@ class ToolGuard:
                 multiplier=option.multiplier,
                 open_interest=option.open_interest,
                 max_pct_of_open_interest=caps.options_max_pct_of_open_interest,
+                conviction=conviction,
+                conviction_floor=caps.min_council_confidence,
             )
         )
         if sizing.qty < 1:
@@ -904,7 +916,7 @@ class ToolGuard:
             "stop_loss_pct": stop_loss_pct,
             "option": option,
             "qty": final_qty,
-            "limit_price": ask,
+            "limit_price": entry_limit_price(option.bid, ask),
             # Persisted on the SUCCESS path too — mirrors nodes/drafter.py's
             # own "we looked at 4,128 contracts and bought this one" note.
             # `trade.py`'s open_option_trade handler folds this into the

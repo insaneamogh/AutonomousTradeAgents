@@ -227,3 +227,68 @@ def test_omitting_open_interest_leaves_sizing_exactly_as_it_was() -> None:
         )
     )
     assert disabled.qty == 5
+
+
+# ── conviction-scaled budget ──────────────────────────────────────────
+#
+# Before this, the council's confidence decided WHETHER to trade and never
+# HOW MUCH: a 0.42 idea and a 0.62 idea drew the identical premium budget,
+# so the least-convinced trade the system would take was also a maximum-
+# size one. Measured over 151 real option decisions the modal FILLED
+# conviction was the floor itself.
+
+
+def _conv(budget: float, ask: float, conviction: float | None,
+          floor: float | None = 0.48) -> int:
+    return options_position_size(
+        OptionsSizingInputs(
+            budget_usd=budget, ask=ask, multiplier=100,
+            conviction=conviction, conviction_floor=floor,
+        )
+    ).qty
+
+
+def test_conviction_scaling_is_inert_unless_both_inputs_are_given() -> None:
+    """Opt-in by passing real data — the same contract ``open_interest``
+    already has. Every pre-existing caller must be unaffected."""
+    full = _conv(1_500.0, 1.00, conviction=None, floor=None)
+    assert full == 15
+    assert _conv(1_500.0, 1.00, conviction=0.48, floor=None) == full
+    assert _conv(1_500.0, 1.00, conviction=None, floor=0.48) == full
+
+
+def test_floor_conviction_gets_about_half_size() -> None:
+    assert _conv(1_500.0, 1.00, conviction=0.48) == 7  # floor(1500*0.5/100)
+
+
+def test_ceiling_conviction_gets_full_size() -> None:
+    assert _conv(1_500.0, 1.00, conviction=0.62) == 15
+
+
+def test_size_increases_monotonically_with_conviction() -> None:
+    sizes = [_conv(1_500.0, 1.00, conviction=c)
+             for c in (0.48, 0.52, 0.55, 0.58, 0.62)]
+    assert sizes == sorted(sizes)
+    assert sizes[0] < sizes[-1], "conviction must actually move the size"
+
+
+def test_conviction_above_the_observed_ceiling_does_not_oversize() -> None:
+    """0.62 is the highest the two-agent council has ever produced (it
+    resolves on the MINIMUM of bull and bear). A hypothetical 0.9 must
+    clamp to full budget, never exceed it."""
+    assert _conv(1_500.0, 1.00, conviction=0.90) == _conv(1_500.0, 1.00, conviction=0.62)
+
+
+def test_conviction_below_the_floor_never_goes_below_half() -> None:
+    """Sizing is not a veto. A sub-floor conviction should not reach here
+    at all (min_council_confidence refuses it by name), but if it does the
+    sizer must clamp rather than produce a negative or zero budget."""
+    assert _conv(1_500.0, 1.00, conviction=0.10) == 7
+
+
+def test_a_floor_at_or_above_the_ceiling_falls_back_to_full_budget() -> None:
+    """Guard against a divide-by-~zero if the floor is ever configured at
+    or above the observed ceiling: fall back to full budget and let the
+    named risk rules do the refusing, rather than inventing a number."""
+    assert _conv(1_500.0, 1.00, conviction=0.62, floor=0.62) == 15
+    assert _conv(1_500.0, 1.00, conviction=0.62, floor=0.80) == 15
