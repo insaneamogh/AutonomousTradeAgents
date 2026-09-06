@@ -349,6 +349,7 @@ class ToolGuard:
         ask: float | None,
         qty: int,
         selection: ContractSelectionResult,
+        strategy: str | None = None,
         risk_reason: str | None = None,
         checks_passed: list[str] | None = None,
     ) -> GuardVerdict:
@@ -436,6 +437,11 @@ class ToolGuard:
                 # gives a refused contract the same 5-trading-day horizon it
                 # would have given the trade had it been allowed.
                 horizon="short",
+                # Without this, a refusal is unattributable: `strategy_
+                # confidence` can never learn that a strategy's ideas are
+                # the ones being refused. Every options row in production
+                # had this NULL — see the module note in trade.py.
+                selected_strategy=strategy or None,
                 final_action="VETOED",
                 risk_approved=False,
                 risk_veto_rule=reason,
@@ -815,7 +821,7 @@ class ToolGuard:
                 "naked_short_forbidden",
                 ctx=ctx, underlying=underlying, direction=direction,
                 conviction=conviction, thesis=thesis, option=option,
-                ask=option.ask, qty=0, selection=selection,
+                ask=option.ask, qty=0, selection=selection, strategy=strategy,
             )
         ask = option.ask
         if ask is None or ask <= 0:
@@ -823,7 +829,7 @@ class ToolGuard:
                 "no_liquid_contract",
                 ctx=ctx, underlying=underlying, direction=direction,
                 conviction=conviction, thesis=thesis, option=option,
-                ask=None, qty=0, selection=selection,
+                ask=None, qty=0, selection=selection, strategy=strategy,
             )
 
         try:
@@ -859,7 +865,7 @@ class ToolGuard:
                 "size_rounds_to_zero",
                 ctx=ctx, underlying=underlying, direction=direction,
                 conviction=conviction, thesis=thesis, option=option,
-                ask=ask, qty=0, selection=selection,
+                ask=ask, qty=0, selection=selection, strategy=strategy,
             )
 
         proposal = to_risk_proposal(
@@ -899,7 +905,7 @@ class ToolGuard:
                 decision.veto_rule or "risk_vetoed",
                 ctx=ctx, underlying=underlying, direction=direction,
                 conviction=conviction, thesis=thesis, option=option,
-                ask=ask, qty=sizing.qty, selection=selection,
+                ask=ask, qty=sizing.qty, selection=selection, strategy=strategy,
                 risk_reason=decision.reason,
                 checks_passed=list(decision.checks_passed),
             )

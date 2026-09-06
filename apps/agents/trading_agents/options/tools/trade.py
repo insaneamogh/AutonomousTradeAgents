@@ -163,6 +163,18 @@ async def open_option_trade(
         user_id=ctx.user_id,
         symbol=guard_payload["underlying"],
         horizon="short",
+        # The strategy that produced this trade. Until 2026-09-05 this was
+        # never set on the options path, and the consequence was that the
+        # ONLY decisions carrying realised P&L were also the only ones with
+        # no strategy attached: `selected_strategy` was populated for 298
+        # sma_crossover / 118 momentum equity decisions that almost never
+        # filled (6 fills, 0 closes), while every closed, P&L-bearing
+        # decision — all options — had it NULL. Reflection could therefore
+        # never attribute an outcome, and all five `strategy_confidence`
+        # rows sat at their seed (0.500, wins 0, losses 0) after 742
+        # decisions. Without this field the system cannot learn which of
+        # its strategies makes money.
+        selected_strategy=guard_payload.get("strategy") or None,
         final_action="BUY",
         risk_approved=True,
         risk_veto_rule=None,
