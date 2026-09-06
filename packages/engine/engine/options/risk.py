@@ -25,6 +25,8 @@ Runs its OWN sequence:
     max_open_positions            ← reused, unmodified
     max_premium_pct               ← may TRIM
     max_total_premium_pct         ← post-trim
+    options_single_underlying_cap ← post-trim, groups by UNDERLYING not OCC
+    options_direction_cap         ← post-trim, calls-vs-puts balance
     wash_sale                     ← reused, unmodified, INFORMATIONAL only
 
 The reused rules need zero modification to be CORRECT here: each already
@@ -56,8 +58,10 @@ from engine.options.rules import (
     max_total_premium_pct,
     min_dte,
     naked_short_forbidden,
+    options_direction_cap,
     options_disabled,
     options_level_insufficient,
+    options_single_underlying_cap,
 )
 from engine.risk.rules import (
     max_open_positions,
@@ -216,7 +220,22 @@ def evaluate_option(
         return d
     _note_if_entry(working, passed, "max_total_premium_pct")
 
-    # ── 16. Wash-sale (reused, unmodified — INFORMATIONAL only) ──────
+    # ── 16. Single-underlying premium (post-trim; entry-only) ────────
+    # Runs AFTER the aggregate cap deliberately: both read the same
+    # post-trim qty, and a book that is already full should report the
+    # book-level reason rather than a name-level one.
+    d = options_single_underlying_cap(working, context, caps)
+    if d is not None and not d.approved:
+        return d
+    _note_if_entry(working, passed, "options_single_underlying_cap")
+
+    # ── 17. Direction balance (post-trim; entry-only) ────────────────
+    d = options_direction_cap(working, context, caps)
+    if d is not None and not d.approved:
+        return d
+    _note_if_entry(working, passed, "options_direction_cap")
+
+    # ── 18. Wash-sale (reused, unmodified — INFORMATIONAL only) ──────
     ws = wash_sale(working, context, caps)
     if ws is not None and ws.informational_flags:
         informational.extend(ws.informational_flags)

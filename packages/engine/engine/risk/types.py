@@ -243,6 +243,38 @@ class RiskCaps:
     why it is 12 rather than 8: the quoted book reads wider than the one an
     order would actually fill against."""
 
+    options_max_single_underlying_pct: float = 2.0
+    """Total open option premium on ONE underlying, as a percent of equity —
+    read by ``options_single_underlying_cap``.
+
+    Grouped by the UNDERLYING, never by the OCC symbol. That distinction is
+    the whole rule: on 2026-09-04 the book held four separate NVDA calls
+    (230C/235C/245C across three expiries, $4,840 = 5.0% of equity) plus two
+    GILD calls, because four different OCC strings read as four different
+    names to every check that existed. ``max_total_premium_pct`` bounds the
+    book; nothing bounded a single name inside it.
+
+    At 2.0 with ``options_max_premium_pct`` at 1.5, one full-size position
+    per underlying fits and a second does not — the book is forced to
+    diversify by name rather than stack strikes on one conviction. Replayed
+    against that real book it refuses the 3rd and 4th NVDA call and the 2nd
+    GILD call."""
+
+    options_max_direction_pct: float = 65.0
+    """Ceiling on how much of the open option book may sit on ONE side —
+    all calls or all puts — as a percent of total open option premium. Read
+    by ``options_direction_cap``.
+
+    A book of long calls is one bet expressed many times: on 2026-09-04 it
+    was $10,060 of calls against $2,513 of puts (80%), so every position
+    needed the same market to be right. Long-only premium already means
+    direction and timing must BOTH land; this stops the book from also
+    being undiversified across direction.
+
+    Deliberately not 50: forcing a balanced book would mean opening puts we
+    have no thesis for, which is worse. 65 leaves a clear directional lean
+    available and refuses only a corner."""
+
     options_earnings_blackout_days: int = 2
     """No new options entry within this many days of the underlying's next
     earnings — IV crush around a known event."""
@@ -566,7 +598,26 @@ class RiskCaps:
         ratchet replacing the fixed +60%) is deliberately NOT here — that
         is ``docs/PLAN_EXIT_AGENT.md``'s ratchet knobs, a separate
         workstream landing its own fields on this class.
-        """
+
+        ``min_council_confidence`` was 0.42 through 2026-09-05 and is now
+        0.48. It was not a considered number at 0.42 — it sat exactly at
+        the mode of the council's own output, so it admitted essentially
+        everything the council produced. Measured over 151 option
+        decisions::
+
+            0.38 x51 | 0.41 x4 | 0.42 x36 | 0.45 x16 | 0.48 x4 | 0.52 x26
+                                  ^ floor          highest ever seen: 0.62
+
+        Every filled position sat at 0.42-0.52, and the modal fill was the
+        floor itself. Meanwhile the Refusal Ledger scores this rule as the
+        one that EARNS its keep: 63 refusals, -$11,903 of loss avoided.
+        A gate that is paying for itself while set at the mode of the
+        distribution is a gate set too low, not a gate doing its job.
+
+        0.48 admits 32 of those 151 rather than substantially all of them.
+        The number is deliberately inside the observed distribution rather
+        than above it — a floor above 0.55 would refuse all but two
+        decisions ever recorded and stop the desk entirely."""
         # Merged as a dict (not passed as sibling keyword args) so an
         # explicit override of one of THESE SAME six fields replaces the
         # profile's value instead of colliding with it as a duplicate
@@ -575,7 +626,7 @@ class RiskCaps:
             "options_max_premium_pct": 1.5,
             "options_max_total_premium_pct": 11.0,
             "max_tolerated_book_drawdown_pct": 4.4,
-            "min_council_confidence": 0.42,
+            "min_council_confidence": 0.48,
             "min_specialist_avg_score": 40.0,
             "options_stop_loss_pct": 40.0,
             "max_correlation_cluster": 4,

@@ -49,8 +49,25 @@ def test_aggressive_profile_holds_at_least_five_concurrent_option_positions() ->
 
 def test_aggressive_profile_widens_the_confidence_floors() -> None:
     caps = RiskCaps.aggressive_paper()
-    assert caps.min_council_confidence == pytest.approx(0.42)
+    assert caps.min_council_confidence == pytest.approx(0.48)
     assert caps.min_specialist_avg_score == pytest.approx(40.0)
+
+
+def test_confidence_floor_sits_above_the_councils_modal_output() -> None:
+    """0.42 was not a chosen number — it was the MODE of the council's own
+    conviction distribution, so it admitted essentially everything the
+    council produced. Measured over 151 real option decisions the modal
+    filled conviction was 0.42, the floor itself.
+
+    This pins the floor above that mode. It is deliberately not a wider
+    assertion (">= 0.5" say): the highest conviction ever observed was
+    0.62, so a floor much above 0.5 stops the desk entirely.
+    """
+    caps = RiskCaps.aggressive_paper()
+    observed_mode_of_filled_trades = 0.42
+    highest_conviction_ever_observed = 0.62
+    assert caps.min_council_confidence > observed_mode_of_filled_trades
+    assert caps.min_council_confidence < highest_conviction_ever_observed
 
 
 def test_aggressive_profile_tightens_the_options_stop_loss() -> None:
@@ -102,7 +119,7 @@ def test_risk_profile_env_selects_the_profile(monkeypatch: pytest.MonkeyPatch) -
     caps = RiskCaps.from_env()
     assert caps.options_max_premium_pct == pytest.approx(1.5)
     assert caps.options_max_total_premium_pct == pytest.approx(11.0)
-    assert caps.min_council_confidence == pytest.approx(0.42)
+    assert caps.min_council_confidence == pytest.approx(0.48)
     # The coupled invariant must hold via from_env() too, not just the
     # bare classmethod.
     assert caps.daily_drawdown_halt_pct == pytest.approx(-3.0)

@@ -15,6 +15,12 @@ throughout ``engine.risk.rules`` (e.g. ``forbid_short_phase_0``'s "a SELL
 that closes a held long is always allowed" carve-out).
 """
 
+from engine.options.rules.concentration import (
+    occ_contract_type,
+    occ_root,
+    options_direction_cap,
+    options_single_underlying_cap,
+)
 from engine.options.rules.earnings_blackout import earnings_blackout
 from engine.options.rules.expiry_day_entry import expiry_day_entry
 from engine.options.rules.illiquid_contract import illiquid_contract
@@ -37,6 +43,10 @@ __all__ = [
     "max_total_premium_pct",
     "min_dte",
     "naked_short_forbidden",
+    "occ_contract_type",
+    "occ_root",
+    "options_direction_cap",
     "options_disabled",
     "options_level_insufficient",
+    "options_single_underlying_cap",
 ]
