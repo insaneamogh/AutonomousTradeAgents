@@ -4,6 +4,77 @@
 >
 > **Everything from here to the `# Build log
 
+### 2026-09-06 — 0bc1fa3..d4d36bd Phase 1: why the book had to lose money
+
+Operator was down ~$2.3k and asked when the risk system had ever protected
+capital. The complaint was correct and the cause was architectural.
+
+**The core contradiction.** The exit ladder needs a 62% win rate
+(-40% stop vs a +24.5% minimum trailed win = 1.63:1 against). The council
+has never produced a conviction above 0.62, and the modal FILLED trade sat
+at 0.42 — the floor itself. Negative expectancy by construction; no signal
+tuning fixes it.
+
+**Verified findings (all from live DB/account, not reasoning):**
+1. payoff geometry needs 62% win rate
+2. `min_council_confidence` 0.42 == the mode of the council's own output
+3. options path had ZERO concentration control — 15 rules, none single-name.
+   Real book: 4 NVDA calls ($4,840 = 5% eq) + 2 GILD calls
+4. 80% of open premium was long calls, no direction cap
+5. every entry paid the full ask; Alpaca marks near the bid
+6. sizing ignored conviction entirely
+7. `strategy_confidence` inert after 742 decisions (seed 0.500/0/0)
+8. attribution severed exactly where money is made: equity decisions had
+   `selected_strategy` but 0 closes; every closed P&L-bearing (options)
+   decision had it NULL
+
+**NOT broken, checked so we did not fix the wrong thing:** entry spreads
+were 0.1-5.9%, inside the 12% cap — the liquidity gate works. My first
+hypothesis (buying 30%-spread contracts) was WRONG; those wide quotes were
+Saturday-close artifacts. Vetoes are net saving ~$11,987. Both stops fired
+at exactly their configured level.
+
+**Loss is also smaller than the screen showed:** -$1,672 unrealised at the
+Saturday bid vs -$952 at mid. ~$720 of the displayed loss is spread artifact.
+
+**Shipped (Phase 1 — entries only, nothing touches an open position, an
+exit, or the halt):**
+- `options_single_underlying_cap` (2.0% eq) + `options_direction_cap` (65%),
+  with `occ_root` as the ONE place an OCC is parsed. Grouping by underlying
+  not OCC is the whole point — `single_name_concentration` compares
+  `p.symbol == proposal.symbol` and on this path symbol IS the OCC, so it
+  could never have fired at any threshold.
+- `min_council_confidence` 0.42 -> 0.48 (admits 32 of 151, not ~all)
+- conviction-scaled sizing, half size at the floor to full at 0.62
+- `entry_limit_price` = mid+tick, shared by the real order AND the ghost
+- `selected_strategy` finally stamped on options decisions
+
+**Bug I shipped and caught in replay:** the direction cap first applied from
+the very first trade, where one position is 100% of its own side — it
+refused 100% of proposals (replay admitted 0 of 11). Now gated on 3 open
+option positions, with a named regression test.
+
+**Replay of the real 2026-09-04 book through the new rules:** admitted 5/11,
+premium $5,368 (was $12,573), calls 53% (was 80%), one position per name.
+
+VERIFIED: 1549 passed, 11 skipped. Ruff at the 8-error baseline (I added one
+I001 and fixed it in 71a6cd02). Every fix revert-checked per CLAUDE.md 4.1.
+
+STILL OPEN (Phase 2, deliberately not started — operator chose to ship the
+safe subset before Tue Sep 8 and leave the ladder alone until measured):
+- `positions_snapshot` holds 21,218 rows at 30s resolution Sep 1-5, each
+  carrying per-contract `avg_entry_price`/`market_value`. That is a real
+  price path for every position ever held — build `exit_replay.py` on it
+  and derive the stop/trail geometry instead of guessing. Acceptance test:
+  it must reproduce the 3 real closes (-536, -610, +590).
+- THEN re-cut the ladder (hypothesis: stop -30, arm +50, giveback 25,
+  TP +100 => breakeven 44.4%). Do not ship the hypothesis unmeasured.
+- Schedule the Reflection pass and make wins/losses deterministic, not
+  LLM-derived (it becomes a risk path once it gates sizing — CLAUDE.md 3).
+- Existing 13 positions were deliberately left alone; new rules bind new
+  entries only.
+
+
 ### 2026-09-04 — 5c4e49d8 — submission day: the ledger shows its numbers
 
 Operator: "why are we still not profitable... if we can add or display values
