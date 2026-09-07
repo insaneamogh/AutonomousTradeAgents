@@ -20,7 +20,10 @@ each run so timing survives. 21,218 rows -> 8,080 distinct price points.
 Committed output means `exit_replay` runs offline with no keys, like the
 rest of `tests/eval`.
 """
-import json, os, sys, subprocess
+import json
+import os
+import subprocess
+import sys
 
 PGURL = os.environ["PGURL"]
 SQL = r"""
@@ -66,7 +69,7 @@ for rec in paths.values():
         kept.append(s[-1])
     rec["samples"] = kept
 
-json.dump({"paths": sorted(paths.values(), key=lambda r: r["occ"])},
-          open(sys.argv[1], "w"), indent=1)
+with open(sys.argv[1], "w") as fh:
+    json.dump({"paths": sorted(paths.values(), key=lambda r: r["occ"])}, fh, indent=1)
 tot = sum(len(r["samples"]) for r in paths.values())
 print(f"{len(paths)} contracts, {tot} price samples -> {sys.argv[1]}")

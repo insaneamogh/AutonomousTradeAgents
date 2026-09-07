@@ -62,6 +62,7 @@ from app.services.orders.order_store import (
     persist_linked_order_submit,
     persist_order_result,
 )
+from engine.options.exits import effective_stop_loss_pct
 from engine.options.protective_stop import (
     ProtectiveStopLevels,
     protective_stop_levels,
@@ -179,9 +180,18 @@ async def sync_protective_stop(
     if occ is None or qty <= 0 or not entry_premium or float(entry_premium) <= 0:
         return None
 
+    # Same resolution as the ratchet: the agent's per-position stop may
+    # tighten this level, never widen it, and is re-validated here rather
+    # than trusted from the row. Both exit mechanisms must agree on the
+    # level or the resting broker order and the local ladder would protect
+    # the same position at two different prices.
+    _exit_state = (getattr(decision, "reasoning", None) or {}).get("option_exit") or {}
     levels = protective_stop_levels(
         entry_premium=float(entry_premium),
-        stop_loss_pct=caps.options_stop_loss_pct,
+        stop_loss_pct=effective_stop_loss_pct(
+            decision_stop_pct=_exit_state.get("stop_loss_pct"),
+            cap_stop_pct=caps.options_stop_loss_pct,
+        ),
         slippage_pct=caps.options_stop_limit_slippage_pct,
         trail_line_pct=trail_line_pct,
     )

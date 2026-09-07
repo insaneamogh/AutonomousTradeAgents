@@ -186,10 +186,17 @@ class RatchetOutcome:
     trail on a position that has only ever lost money.
     """
 
-    action: Literal["CLOSE", "HOLD"]
+    action: Literal["CLOSE", "SCALE_OUT", "HOLD"]
+    """``SCALE_OUT`` closes only ``scale_out_frac`` of the position and
+    leaves the rest running. It is deliberately the WEAKEST action: every
+    full-close rule is evaluated before it, so a tick that satisfies both
+    the trail and the scale-out closes the whole position rather than
+    banking a fraction of it."""
+
     reason: str | None
     """``option_stop_loss`` | ``option_take_profit`` | ``option_trail_stop``
-    when ``action == "CLOSE"``; ``None`` on a HOLD."""
+    when ``action == "CLOSE"``; ``option_scale_out`` on a SCALE_OUT;
+    ``None`` on a HOLD."""
 
     detail: str
     """Human-readable arithmetic, for the notification and the audit row."""
@@ -221,6 +228,58 @@ class RatchetOutcome:
     this is true — at a 30s tick cadence across a whole session that is
     the difference between roughly 10 writes and roughly 800."""
 
+    scale_out_frac: float | None = None
+    """Fraction of the CURRENT position to close, set only on a
+    ``SCALE_OUT``. The caller converts it to a whole number of contracts
+    and — critically — persists ``scaled_out`` so it cannot fire twice.
+    This function is pure and remembers nothing between ticks; without
+    that flag written back, a position sitting above the target would
+    bank a fraction on every 30-second tick until it was gone."""
+
+
+_STOP_LOSS_BAND = (25.0, 50.0)
+"""Mirrors ``options.tools.guard._STOP_LOSS_BAND`` — the range the agent is
+allowed to pick a per-position stop from. Duplicated deliberately rather
+than imported: ``packages/engine`` must not depend on ``apps/agents``, and
+this is the layer that has to re-validate the value anyway (see
+``effective_stop_loss_pct``). If the guard's band ever moves, the test
+``test_bands_match_the_guard`` fails."""
+
+
+def effective_stop_loss_pct(
+    *, decision_stop_pct: object, cap_stop_pct: float
+) -> float:
+    """The stop actually enforced for one position.
+
+    The agent chooses a per-position stop and it is persisted to
+    ``agent_decisions.reasoning.option_exit.stop_loss_pct``. Until now
+    nothing read it back — neither the ratchet nor the resting broker stop
+    — so the stated exit plan was audit metadata rather than behaviour.
+    This is the one place that resolves it, under two hard rules:
+
+    **1. It may only TIGHTEN.** The result is never wider than
+    ``cap_stop_pct``. A per-position value is permission to protect a
+    position more, never less. Without this an agent emitting 50 would
+    silently disable the 40 the risk profile guarantees — an LLM number
+    quietly widening a risk limit is exactly what CLAUDE.md §3 forbids.
+
+    **2. It is re-validated HERE, at read time.** The guard clamps on the
+    way in, but this function does not trust that: the value survives in
+    the database across deploys and band changes, and a row written under
+    an older band would otherwise be honoured unchecked. Anything absent,
+    unparseable, non-positive or outside the band falls back to the cap.
+    """
+    try:
+        raw = float(decision_stop_pct)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return cap_stop_pct
+    if raw != raw or raw <= 0:  # NaN or non-positive
+        return cap_stop_pct
+    lo, hi = _STOP_LOSS_BAND
+    if not (lo <= raw <= hi):
+        return cap_stop_pct
+    return min(raw, cap_stop_pct)
+
 
 def option_ratchet_signal(
     *,
@@ -230,6 +289,9 @@ def option_ratchet_signal(
     giveback_frac: float,
     hard_take_profit_pct: float,
     stop_loss_pct: float,
+    scale_out_at_pct: float = 0.0,
+    scale_out_frac: float = 0.0,
+    already_scaled_out: bool = False,
 ) -> RatchetOutcome:
     """The trailing-ratchet state machine for one open long option, one tick.
 
@@ -242,6 +304,25 @@ def option_ratchet_signal(
     yet (a fresh position). ``giveback_frac`` is a FRACTION (0.30), not a
     percent — the caller converts ``RiskCaps.options_trail_giveback_pct``
     (30.0) before calling this.
+
+    ``scale_out_at_pct`` banks ``scale_out_frac`` of the position the first
+    time premium touches that gain, leaving the rest on the trail. Both
+    default to 0 — which disables it, matching how every other optional
+    side in this module documents "0 turns this off" — so existing callers
+    are bit-for-bit unchanged. ``already_scaled_out`` is the caller's
+    persisted flag; this function is pure and cannot remember that it
+    already fired.
+
+    Why it exists, measured on 21 recorded positions: the trail arms at
+    +35% and **exactly one position ever reached it**, so twenty of them
+    had no profit protection at all and rode the full round trip. The
+    median MFE capture ratio was **-86%** against an industry benchmark
+    where anything under +40% already counts as noise-driven exits. But
+    simply lowering the arm is not the fix — at +5% it converted the only
+    two real winners into scratches (+43.4% -> +8.8%, +22.3% -> +1.8%),
+    lifting the win rate to 88% while leaving expectancy negative. Banking
+    a fraction early and letting the remainder run is what protects the
+    common small gain without cutting the tail that pays for everything.
 
     ``stop_loss_pct`` and ``hard_take_profit_pct`` follow
     ``option_exit_signal``'s own sign convention for continuity: the stop is
@@ -333,7 +414,34 @@ def option_ratchet_signal(
             peak_advanced=peak_advanced,
         )
 
-    # Rules 4/5 — hold. ``may_consult`` is True only once armed; the exit
+    # Rule 4 — partial profit-taking. LAST of the acting rules on purpose:
+    # every full-close rule above supersedes it, so a tick that satisfies
+    # both the trail and this one closes the whole position rather than
+    # banking a fraction of a position that is already leaving.
+    if (
+        not already_scaled_out
+        and scale_out_at_pct > 0
+        and 0.0 < scale_out_frac < 1.0
+        and pl >= scale_out_at_pct
+    ):
+        return RatchetOutcome(
+            action="SCALE_OUT",
+            reason="option_scale_out",
+            detail=(
+                f"premium +{pl:.1f}% reached the +{scale_out_at_pct:.1f}% "
+                f"first target — banking {scale_out_frac * 100:.0f}%, "
+                "the rest stays on the trail"
+            ),
+            pnl_pct=round(pl, 2),
+            peak_pl_pct=round(peak, 2),
+            trail_line_pct=round(trail_line, 2) if trail_line is not None else None,
+            armed=armed,
+            may_consult=False,
+            peak_advanced=peak_advanced,
+            scale_out_frac=scale_out_frac,
+        )
+
+    # Rules 5/6 — hold. ``may_consult`` is True only once armed; the exit
     # agent has nothing useful to reason about on a position that has
     # never reached the arm threshold.
     detail = f"premium +{pl:.1f}%, peak +{peak:.1f}%"

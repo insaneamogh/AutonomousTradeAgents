@@ -63,12 +63,17 @@ class Ladder:
     trail_arm_pct: float
     trail_giveback_pct: float
     take_profit_pct: float
+    scale_out_at_pct: float = 0.0
+    scale_out_frac: float = 0.0
 
     def __str__(self) -> str:
-        return (
+        base = (
             f"stop -{self.stop_loss_pct:g} arm +{self.trail_arm_pct:g} "
             f"give {self.trail_giveback_pct:g}% tp +{self.take_profit_pct:g}"
         )
+        if self.scale_out_at_pct > 0 and self.scale_out_frac > 0:
+            base += f" | bank {self.scale_out_frac * 100:g}% at +{self.scale_out_at_pct:g}"
+        return base
 
     @property
     def min_trailed_win_pct(self) -> float:
@@ -152,8 +157,18 @@ def load_paths(fixture: Path = _FIXTURE) -> list[ContractPath]:
 
 def replay(path: ContractPath, ladder: Ladder) -> ReplayResult:
     """Drive the production ratchet over one recorded path, one sample at a
-    time, exactly as the position manager drives it tick by tick."""
+    time, exactly as the position manager drives it tick by tick.
+
+    A SCALE_OUT banks its fraction and the remainder keeps running, so the
+    reported ``pl_pct`` is the BLENDED outcome — the banked leg at its
+    target plus the runner at wherever it finally exits. A path that scales
+    out and is then censored is still censored: the runner's fate is
+    unknown, and pretending otherwise is the bias this module exists to
+    avoid.
+    """
     peak: float | None = None
+    banked_pl = 0.0
+    banked_frac = 0.0
     for _ts, price in path.samples:
         pl = path.pl_pct_at(price)
         out = option_ratchet_signal(
@@ -163,11 +178,20 @@ def replay(path: ContractPath, ladder: Ladder) -> ReplayResult:
             giveback_frac=ladder.trail_giveback_pct / 100.0,
             hard_take_profit_pct=ladder.take_profit_pct,
             stop_loss_pct=ladder.stop_loss_pct,
+            scale_out_at_pct=ladder.scale_out_at_pct,
+            scale_out_frac=ladder.scale_out_frac,
+            already_scaled_out=banked_frac > 0.0,
         )
+        if out.action == "SCALE_OUT":
+            banked_frac = out.scale_out_frac or 0.0
+            banked_pl = pl * banked_frac
+            peak = out.peak_pl_pct
+            continue
         if out.action == "CLOSE":
+            blended = banked_pl + pl * (1.0 - banked_frac)
             return ReplayResult(
-                occ=path.occ, exited=True, reason=out.reason, pl_pct=pl,
-                pnl_usd=(price - path.entry) * path.qty * path.multiplier,
+                occ=path.occ, exited=True, reason=out.reason, pl_pct=blended,
+                pnl_usd=blended / 100.0 * path.entry * path.qty * path.multiplier,
                 peak_pl_pct=out.peak_pl_pct or 0.0, n_samples=len(path.samples),
             )
         peak = out.peak_pl_pct
@@ -286,6 +310,10 @@ def mark_to_last(results: list[ReplayResult], paths: list[ContractPath],
         if path is None or not path.samples:
             continue
         vals.append(path.pl_pct_at(path.samples[-1][1]))
+    # NOTE: a censored path that scaled out is marked at its LAST price for
+    # the whole position, ignoring the banked leg. That is deliberately the
+    # pessimistic reading — it never lets scale-out flatter itself on a
+    # position whose runner has not resolved.
     return (sum(vals) / len(vals)) if vals else None
 
 

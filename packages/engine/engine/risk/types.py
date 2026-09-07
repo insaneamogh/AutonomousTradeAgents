@@ -327,6 +327,64 @@ class RiskCaps:
     ``docs/PLAN_EXIT_AGENT.md`` §2 for why the whole feature is designed
     to be a single-flag revert."""
 
+    options_scale_out_at_pct: float = 0.0
+    """Bank ``options_scale_out_frac`` of a long option the first time its
+    premium reaches this gain. **0, i.e. OFF, until partial-close execution
+    lands — see the blocker at the end of this docstring.** The measured
+    value to switch it on with is 5.0.
+
+    Measured on 21 recorded positions: the trail arms at +35% and exactly
+    ONE ever reached it, so twenty had no profit protection and rode the
+    full round trip. Median MFE capture ratio was -86%, against a benchmark
+    where under +40% already counts as noise-driven exits.
+
+    Why 5 and not 10. Replayed across the whole recorded book, the target
+    has a plateau and then a cliff::
+
+        +3%  -16.5%     +7%  -27.4%   <- worse than the live ladder
+        +4%  -15.7%     +8%  -27.4%
+        +5%  -15.4%     +9%  -27.1%
+        +6%  -15.4%    +10%  -27.1%
+                    (live baseline -23.0%)
+
+    The cliff sits exactly where AAPL260918C00340000 (peaked +6.2%) and
+    XLE261016C00067000 (peaked +6.8%) fall out of reach — both then
+    collapsed past -41%, so catching half of each is most of the benefit.
+    5 is the middle of a four-wide plateau rather than a fitted optimum,
+    and it sits above the ~3% median round-trip spread on our entries, so
+    it is banking a real gain rather than quote noise.
+
+    **This still rests on 4 completed round trips.** The MFE literature
+    asks for ~30 before a histogram is signal. Treat 5 as "a value that
+    demonstrably does not make things worse", not as tuned. Re-derive once
+    there are enough completed trades — and note that a target ABOVE 6
+    made things actively worse here, so this is not a knob to raise
+    casually.
+
+    **Why this ships at 0.** ``option_ratchet_signal`` emits ``SCALE_OUT``
+    correctly and is tested, but NOTHING EXECUTES IT YET: every close path
+    in ``position_manager`` sells the full ``qty``, and there is no partial
+    position accounting. Turning this on before that exists would be
+    actively dangerous, not merely inert — a partial SELL left pending
+    makes ``_has_in_flight_close`` true, and the manager then SKIPS the
+    position on every later tick, disabling the stop for the half still
+    open. That is the same failure shape as the resting stop that recorded
+    no ``broker_order_id``. Before raising this above 0, partial closes
+    need: sub-qty order placement, ``fill_qty`` accounting for a position
+    that closes in pieces, a resized resting stop, and an
+    ``_has_in_flight_close`` that can tell a partial bank from a full
+    exit."""
+
+    options_scale_out_frac: float = 0.5
+    """Fraction of the position banked at ``options_scale_out_at_pct``.
+
+    Half, because both failure modes are real on our own data. Taking
+    nothing early left AMD at -10.1% after peaking +11.8%, and NVDA-1016 at
+    -13.4% after peaking +11.4%. Taking everything early is worse: an arm
+    at +5% turned the only two winners into scratches (+43.4% -> +8.8%,
+    +22.3% -> +1.8%) and still had negative expectancy behind an 88% win
+    rate. The runner is what pays for the losers, so it has to survive."""
+
     options_trail_arm_pct: float = 35.0
     """The trail arms once the position's peak premium gain reaches this
     percent. Below this, only the hard stop/take-profit can close the

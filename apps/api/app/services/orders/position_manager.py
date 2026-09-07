@@ -79,7 +79,12 @@ from app.services.orders.order_store import (
     persist_order_result,
     persist_unlinked_order_submit,
 )
-from engine.options.exits import RatchetOutcome, option_exit_signal, option_ratchet_signal
+from engine.options.exits import (
+    RatchetOutcome,
+    effective_stop_loss_pct,
+    option_exit_signal,
+    option_ratchet_signal,
+)
 from engine.options.expiry import dte
 from engine.risk import RiskCaps
 
@@ -357,7 +362,16 @@ def _ratchet_outcome_for(
         # function wants a FRACTION (0.30) — see its own docstring.
         giveback_frac=caps.options_trail_giveback_pct / 100.0,
         hard_take_profit_pct=caps.options_hard_take_profit_pct,
-        stop_loss_pct=caps.options_stop_loss_pct,
+        # The agent's own per-position stop, which nothing read back until
+        # 2026-09-07 — it may only TIGHTEN the cap, and is re-validated at
+        # read time rather than trusted because the guard clamped it once.
+        stop_loss_pct=effective_stop_loss_pct(
+            decision_stop_pct=existing_state.get("stop_loss_pct"),
+            cap_stop_pct=caps.options_stop_loss_pct,
+        ),
+        scale_out_at_pct=caps.options_scale_out_at_pct,
+        scale_out_frac=caps.options_scale_out_frac,
+        already_scaled_out=bool(existing_state.get("scaled_out", False)),
     )
 
 
