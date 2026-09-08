@@ -533,6 +533,7 @@ def select_contract(inputs: ContractSelectionInputs) -> ContractSelectionResult:
         bid=winner.bid,
         ask=winner.ask,
         implied_volatility=winner.implied_volatility,
+        delta=winner.delta,
         days_to_earnings=inputs.days_to_earnings,
     )
     return ContractSelectionResult(selected=selected, rejection_reason=None, funnel_counts=funnel)

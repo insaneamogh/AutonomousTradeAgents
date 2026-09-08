@@ -966,6 +966,33 @@ class OptionLegDetails:
     bid: float | None = None
     ask: float | None = None
     implied_volatility: float | None = None
+
+    delta: float | None = None
+    """The contract's delta at selection time, |0-1|.
+
+    Read from the chain quote during `select_contract`'s `delta_band` stage
+    and, until 2026-09-08, thrown away there — so nothing downstream could
+    reason about the position's leverage. It is carried now because
+    leverage is the variable that best separates our winners from our
+    losers.
+
+    Effective leverage is `delta * spot / premium`: how many percent the
+    OPTION moves per percent of the UNDERLYING. Measured across 12 real
+    positions the median was 17.7x, ranging 6.7x to 111.9x, and sorting by
+    it splits the book cleanly — the four worst losses all sat above 20x
+    (AAPL 31.3x/-41.9%, XLF 51.4x/-28.8%, GILD155 111.9x/-23.5%, GILD150
+    21.6x/-13.8%) while both winners sat below (NVDA 16.3x/+43.4%, CDNS
+    6.8x/+22.3%).
+
+    It is also why a structural stop cannot work on a long option: at 17.7x
+    the -40% premium stop is a ~2.3% adverse move in the underlying, and
+    the structural levels for those same names sat 3.2%-4.3% away, so the
+    premium stop always fires first. See
+    `engine/features/invalidation.py`.
+
+    `None` when the feed did not supply one — every consumer must treat
+    that as "cannot assess leverage", never as zero."""
+
     days_to_earnings: int | None = None
     """Computed once by the ``options_context`` feature block and copied
     here at Drafter-time, so ``earnings_blackout`` can re-check it at
