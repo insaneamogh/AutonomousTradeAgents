@@ -565,6 +565,26 @@ class ToolGuard:
             )
             return GuardVerdict(True, None)
 
+        # The circuit breaker, checked BEFORE any paid model call.
+        #
+        # `drawdown_halt_active` lives in the risk engine, which runs AFTER
+        # the Bull/Bear council — so a halted account still paid for a full
+        # debate on every symbol, every sweep, and was then refused every
+        # time. Measured: the breaker tripped 2026-09-08 14:37 at -3.01%
+        # against a -3.00% threshold and latches until the user
+        # acknowledges it (by design, PLAN.md §12). Over the two days that
+        # followed, $2.89 of model spend bought passes that could not
+        # possibly have traded — ~27% of this account's lifetime LLM cost.
+        #
+        # Same class of bug as the account-level pre-flights already here:
+        # a portfolio fact that does not depend on the symbol has no
+        # business being discovered after the expensive part.
+        if context.drawdown_halted:
+            return GuardVerdict(
+                False, "drawdown_halt_active",
+                payload={"risk_veto_rule": "drawdown_halt_active"},
+            )
+
         level = context.options_trading_level
         if level is None or level < caps.options_min_trading_level:
             return GuardVerdict(
@@ -1528,7 +1548,7 @@ async def persist_placed_order(
             )
             await session.execute(stmt)
             await session.commit()
-    except Exception:  # noqa: BLE001 — order already placed; see docstring
+    except Exception:
         logger.exception(
             "persist_placed_order: failed to write orders row for "
             "client_order_id=%s (decision=%s) — the broker order is real; "
