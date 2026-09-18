@@ -51,6 +51,7 @@ from dataclasses import replace
 from engine.options.rules import (
     earnings_blackout,
     expiry_day_entry,
+    horizon_exceeds_contract,
     illiquid_contract,
     iv_unavailable,
     max_dte,
@@ -146,6 +147,15 @@ def evaluate_option(
     if d is not None and not d.approved:
         return d
     _note_if_entry(working, passed, "max_dte")
+
+    # ── 6b. Thesis horizon vs contract life (entry-only) ─────────────
+    # Sits with the DTE rules because it is the same question asked from
+    # the other end: min_dte/max_dte bound the CONTRACT, this bounds the
+    # contract against the THESIS that justified it.
+    d = horizon_exceeds_contract(working, context, caps)
+    if d is not None and not d.approved:
+        return d
+    _note_if_entry(working, passed, "horizon_exceeds_contract")
 
     # ── 7. Liquidity floor (entry-only) ──────────────────────────────
     d = illiquid_contract(working, context, caps)

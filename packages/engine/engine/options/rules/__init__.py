@@ -23,6 +23,7 @@ from engine.options.rules.concentration import (
 )
 from engine.options.rules.earnings_blackout import earnings_blackout
 from engine.options.rules.expiry_day_entry import expiry_day_entry
+from engine.options.rules.horizon_exceeds_contract import horizon_exceeds_contract
 from engine.options.rules.illiquid_contract import illiquid_contract
 from engine.options.rules.iv_unavailable import iv_unavailable
 from engine.options.rules.max_dte import max_dte
@@ -36,6 +37,7 @@ from engine.options.rules.options_level_insufficient import options_level_insuff
 __all__ = [
     "earnings_blackout",
     "expiry_day_entry",
+    "horizon_exceeds_contract",
     "illiquid_contract",
     "iv_unavailable",
     "max_dte",

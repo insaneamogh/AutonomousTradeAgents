@@ -1028,6 +1028,20 @@ class RiskProposal:
 
     Never substitute a proxy here. Pass the real number or pass None."""
 
+    strategy_id: str | None = None
+    """Which strategy produced this proposal — `momentum`, `sma_crossover`,
+    `rsi_mean_reversion`, ...
+
+    Carried so the risk engine can reason about the THESIS and not only the
+    contract. The first thing needing it is horizon consistency: a strategy
+    built on 252-day trailing returns cannot resolve inside a 30-day
+    option, and nothing in the system could previously tell those two facts
+    apart. Measured across 1,427 selections, the signals predicted months
+    and the positions were held 2.1 days.
+
+    `None` means unattributed — every rule reading it must treat that as
+    "cannot assess", never as a default strategy."""
+
     # ── Options inputs ───────────────────────────────────────────────
     is_option: bool = False
     option: OptionLegDetails | None = None
