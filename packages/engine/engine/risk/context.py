@@ -8,6 +8,8 @@ Alpaca state.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -39,6 +41,27 @@ class MockRiskContextProvider:
     daily_pnl_pct: float = 0.0
     drawdown_halted: bool = False
     drawdown_halt_reason: str | None = None
+    now_utc: datetime | None = None
+    """The clock every time-dependent risk rule should read.
+
+    `RiskContext.now_utc` has existed since the risk engine was written and
+    NOTHING outside tests ever populated it, so `expiry_day_entry`,
+    `min_dte`, `max_dte` and `mis_square_off_block` all silently fell
+    through their `context.now_utc or datetime.now(UTC)` guard to the
+    process wall clock.
+
+    That left the system reading two different clocks: the market-open gate
+    goes through the resolved `alpaca clock` -> REST -> local-calendar
+    chain, while the DTE rules used whatever the container thought the time
+    was. Usually the same answer, which is why it never surfaced as a
+    production bug — but it also made time-dependent behaviour untestable,
+    and that is how 14 tests came to hard-code an expiry date that
+    eventually arrived (2026-09-18) and started tripping
+    `expiry_day_entry`.
+
+    `None` keeps the previous behaviour exactly (the rules fall back to the
+    wall clock), so nothing changes for a caller that does not set it."""
+
     options_trading_level: int | None = 3
     """Defaults to 3 (Alpaca's own "spreads + long/short singles" tier —
     see docs/OPTIONS_PLAN.md's live-account check), not None, so
@@ -58,4 +81,5 @@ class MockRiskContextProvider:
             drawdown_halted=self.drawdown_halted,
             drawdown_halt_reason=self.drawdown_halt_reason,
             options_trading_level=self.options_trading_level,
+            now_utc=self.now_utc,
         )

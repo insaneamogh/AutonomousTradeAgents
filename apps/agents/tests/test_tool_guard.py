@@ -227,7 +227,15 @@ class _ScalarResult:
 
 
 def _guard(**kwargs: Any) -> ToolGuard:
-    kwargs.setdefault("context_provider", MockRiskContextProvider())
+    # The context clock must match the guard's market clock. Without it
+    # `RiskContext.now_utc` is None and every time-dependent risk rule
+    # (`expiry_day_entry`, `min_dte`, `max_dte`) falls through to the real
+    # wall clock — which is how these fixtures' hard-coded 2026-09-18
+    # expiry started tripping `expiry_day_entry` the day the calendar
+    # reached it.
+    kwargs.setdefault(
+        "context_provider", MockRiskContextProvider(now_utc=MARKET_OPEN_NOW)
+    )
     kwargs.setdefault("decision_log", InMemoryDecisionLog())
     kwargs.setdefault("session_factory", None)
     kwargs.setdefault("broker_factory", lambda: FakeBroker())
@@ -1027,6 +1035,7 @@ async def test_scale_in_counts_against_total_premium() -> None:
         multiplier=100,
     )
     context_provider = MockRiskContextProvider(
+        now_utc=MARKET_OPEN_NOW,
         account_equity=100_000.0, open_positions=(existing_position,)
     )
     guard = _guard(session_factory=session_factory, context_provider=context_provider)
@@ -1436,6 +1445,7 @@ async def test_preflight_blocks_when_the_book_alone_already_meets_the_premium_ca
     )
     guard = _guard(
         context_provider=MockRiskContextProvider(
+            now_utc=MARKET_OPEN_NOW,
             account_equity=100_000.0, open_positions=(at_cap,)
         )
     )
@@ -1462,6 +1472,7 @@ async def test_preflight_never_blocks_a_book_that_is_still_under_the_cap() -> No
     )
     guard = _guard(
         context_provider=MockRiskContextProvider(
+            now_utc=MARKET_OPEN_NOW,
             account_equity=100_000.0, open_positions=(under,)
         )
     )
@@ -1482,6 +1493,7 @@ async def test_preflight_ignores_equity_positions_when_summing_option_premium() 
     )
     guard = _guard(
         context_provider=MockRiskContextProvider(
+            now_utc=MARKET_OPEN_NOW,
             account_equity=100_000.0, open_positions=(equity_only,)
         )
     )
@@ -1495,6 +1507,7 @@ async def test_preflight_blocks_below_the_broker_options_level() -> None:
     caps = _preflight_caps()
     guard = _guard(
         context_provider=MockRiskContextProvider(
+            now_utc=MARKET_OPEN_NOW,
             account_equity=100_000.0, options_trading_level=1
         )
     )
@@ -1533,6 +1546,7 @@ async def test_preflight_names_the_veto_rule_for_max_total_premium_pct() -> None
     )
     guard = _guard(
         context_provider=MockRiskContextProvider(
+            now_utc=MARKET_OPEN_NOW,
             account_equity=100_000.0, open_positions=(at_cap,)
         )
     )
@@ -1546,6 +1560,7 @@ async def test_preflight_names_the_veto_rule_for_options_level_insufficient() ->
     caps = _preflight_caps()
     guard = _guard(
         context_provider=MockRiskContextProvider(
+            now_utc=MARKET_OPEN_NOW,
             account_equity=100_000.0, options_trading_level=1
         )
     )

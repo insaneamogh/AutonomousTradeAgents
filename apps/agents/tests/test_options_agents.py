@@ -888,7 +888,15 @@ async def test_by_id_handler_never_raises_on_a_real_unmocked_db_failure(name: st
 
 
 def _guard(**kwargs: Any) -> ToolGuard:
-    kwargs.setdefault("context_provider", MockRiskContextProvider())
+    # The context clock must match the guard's market clock. Without it
+    # `RiskContext.now_utc` is None and every time-dependent risk rule
+    # (`expiry_day_entry`, `min_dte`, `max_dte`) falls through to the real
+    # wall clock — which is how these fixtures' hard-coded 2026-09-18
+    # expiry started tripping `expiry_day_entry` the day the calendar
+    # reached it.
+    kwargs.setdefault(
+        "context_provider", MockRiskContextProvider(now_utc=MARKET_OPEN_NOW)
+    )
     kwargs.setdefault("decision_log", InMemoryDecisionLog())
     kwargs.setdefault("session_factory", None)
     kwargs.setdefault("broker_factory", lambda: FakeBroker())
