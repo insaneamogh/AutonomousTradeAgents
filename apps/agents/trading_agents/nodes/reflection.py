@@ -120,10 +120,31 @@ async def reflection_agent_run(
                 continue
 
         delta = float(data.get("confidence_delta", 0.0) or 0.0)
-        wins = int(data.get("wins", 0) or 0)
-        losses = int(data.get("losses", 0) or 0)
         lessons = list(data.get("lessons") or [])
         notes = str(data.get("notes", "")).strip()
+
+        # Wins and losses are COUNTED, not asked for.
+        #
+        # These used to come straight out of the model's JSON
+        # (`data.get("wins")`). They are not judgements — `realized_pnl > 0`
+        # is a fact sitting on the very rows being graded, and the model was
+        # being asked to re-derive it from a prompt summarising them. Two
+        # problems with that:
+        #
+        #   1. It can be wrong, and nothing downstream could tell. A
+        #      miscounted record silently biases the prior that gates
+        #      future sizing.
+        #   2. Once `confidence` influences position size it IS a risk
+        #      path, and CLAUDE.md section 3 is explicit that LLM output
+        #      never belongs in one. The model keeps the qualitative half —
+        #      `notes` and `lessons` — which is what it is actually for.
+        #
+        # This also means the win/loss record keeps updating correctly even
+        # when the model is unavailable, which is not hypothetical: the
+        # operator removed the API key on 2026-09-11 and the council has
+        # been in mock mode since.
+        wins = sum(1 for t in trades if (t.realized_pnl or 0.0) > 0)
+        losses = sum(1 for t in trades if (t.realized_pnl or 0.0) < 0)
 
         # Apply (store clamps the delta + abs bounds).
         updated = await confidence_store.apply_delta(

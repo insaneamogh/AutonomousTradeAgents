@@ -314,3 +314,69 @@ async def test_priors_reach_the_fit_node_through_the_runtime() -> None:
 
     applied = result["strategy_fit"]["priors_applied"]
     assert applied["momentum"] == pytest.approx(0.58)
+
+
+# ── wins/losses are counted, never asked for ──────────────────────────
+#
+# They used to come straight out of the model's JSON (`data.get("wins")`).
+# `realized_pnl > 0` is a fact on the very rows being graded, and once
+# `confidence` gates position size it is a risk path — CLAUDE.md section 3
+# says LLM output never belongs in one. It also has to keep working with no
+# model at all, which is the live situation: the API key was removed on
+# 2026-09-11 and the council has run in mock mode since.
+
+
+async def test_wins_and_losses_are_counted_from_realized_pnl() -> None:
+    """Two profitable closes, three losing ones — whatever the model says."""
+    decision_log = InMemoryDecisionLog()
+    confidence_store = InMemoryStrategyConfidenceStore()
+    for pnl in (250.0, 400.0, -100.0, -50.0, -600.0):
+        await decision_log.record(_completed_decision(pnl=pnl))
+
+    await reflection_agent_run(
+        llm=LLM(api_key=None),
+        decision_log=decision_log,
+        confidence_store=confidence_store,
+    )
+
+    row = await confidence_store.get("momentum")
+    assert row.wins == 2
+    assert row.losses == 3
+
+
+async def test_a_breakeven_close_counts_as_neither() -> None:
+    """Exactly zero is not a win. Counting it as one inflates the prior
+    that gates sizing."""
+    decision_log = InMemoryDecisionLog()
+    confidence_store = InMemoryStrategyConfidenceStore()
+    await decision_log.record(_completed_decision(pnl=0.0))
+    await decision_log.record(_completed_decision(pnl=100.0))
+
+    await reflection_agent_run(
+        llm=LLM(api_key=None),
+        decision_log=decision_log,
+        confidence_store=confidence_store,
+    )
+
+    row = await confidence_store.get("momentum")
+    assert (row.wins, row.losses) == (1, 0)
+
+
+async def test_the_record_is_per_strategy() -> None:
+    """Attribution is the whole point — a loss on one strategy must not
+    move another strategy's prior."""
+    decision_log = InMemoryDecisionLog()
+    confidence_store = InMemoryStrategyConfidenceStore()
+    await decision_log.record(_completed_decision(strategy="momentum", pnl=300.0))
+    await decision_log.record(_completed_decision(strategy="breakout", pnl=-300.0))
+
+    await reflection_agent_run(
+        llm=LLM(api_key=None),
+        decision_log=decision_log,
+        confidence_store=confidence_store,
+    )
+
+    assert (await confidence_store.get("momentum")).wins == 1
+    assert (await confidence_store.get("momentum")).losses == 0
+    assert (await confidence_store.get("breakout")).losses == 1
+    assert (await confidence_store.get("breakout")).wins == 0
