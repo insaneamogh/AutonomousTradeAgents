@@ -57,6 +57,30 @@ _PRICES: dict[str, ModelPrice] = {
         cache_read_per_million=0.30,
         cache_creation_per_million=3.75,
     ),
+    # GLM 4.6 (Z.ai, Anthropic-compatible endpoint). Roughly 7x cheaper in
+    # and 8.6x cheaper out than Sonnet — the reason the provider option
+    # exists at all. Without these rows `_FALLBACK_PRICE` would bill GLM at
+    # Sonnet rates and the ledger would report a saving that never happened,
+    # which is worse than no saving: the whole point is to MEASURE whether
+    # the cheaper model is worth its quality cost.
+    #
+    # Z.ai does not publish Anthropic-style cache pricing; the cache rows
+    # mirror the Anthropic ratios (10% read, 125% creation) so a cache hit
+    # is never counted as free. If that is wrong it over-states GLM's cost,
+    # which is the safe direction for a cost-control feature.
+    "glm-4.6": ModelPrice(
+        input_per_million=0.43,
+        output_per_million=1.74,
+        cache_read_per_million=0.043,
+        cache_creation_per_million=0.54,
+    ),
+    # GLM 4.5 Air — the small tier, standing in for Haiku.
+    "glm-4.5-air": ModelPrice(
+        input_per_million=0.20,
+        output_per_million=1.10,
+        cache_read_per_million=0.02,
+        cache_creation_per_million=0.25,
+    ),
     # Opus 4.7
     "claude-opus-4-7": ModelPrice(
         input_per_million=15.00,

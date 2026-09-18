@@ -30,6 +30,56 @@ class Model:
     HAIKU = "claude-haiku-4-5-20251001"
 
 
+# ── Provider routing ──────────────────────────────────────────────────
+#
+# The council's Sonnet calls were 88% of this account's LLM spend ($9.49
+# of $10.74), which is what made the operator pull the API key and stop
+# the desk. Z.ai serves an ANTHROPIC-COMPATIBLE endpoint, so GLM is a
+# base-URL swap rather than a second client: the SDK, the tool-calling
+# shape and every caller stay exactly as they are.
+#
+# Deliberately opt-in and deliberately per-tier. The council's job is
+# judgement, and a cheaper model that abstains more or reasons worse
+# costs far more in bad trades than it saves in tokens — so this exists
+# to be A/B'd against the metrics we now have (abstain rate, directional
+# accuracy, MFE), not to be flipped on and forgotten.
+
+_GLM_BASE_URL = "https://api.z.ai/api/anthropic"
+
+_GLM_MODEL_MAP: dict[str, str] = {
+    Model.OPUS: "glm-4.6",
+    Model.SONNET: "glm-4.6",
+    Model.HAIKU: "glm-4.5-air",
+}
+"""Claude tier -> GLM model. Mapped by TIER, not by name, so a caller
+asking for `Model.SONNET` keeps asking for "the reasoning tier" and this
+table decides what serves it."""
+
+
+def active_provider() -> str:
+    """`"glm"` or `"anthropic"` (the default). Anything unrecognised falls
+    back to anthropic rather than erroring — a typo in an env var must not
+    take the desk down."""
+    raw = os.environ.get("LLM_PROVIDER", "").strip().lower()
+    if raw == "glm":
+        return "glm"
+    if raw and raw != "anthropic":
+        logger.warning(
+            "ignoring unknown LLM_PROVIDER=%r — using anthropic", raw
+        )
+    return "anthropic"
+
+
+def resolve_model(model: str, *, provider: str | None = None) -> str:
+    """The model id to actually send, for the active provider.
+
+    An unmapped model passes through unchanged: better to send a name the
+    provider may accept than to silently substitute a different one."""
+    if (provider or active_provider()) != "glm":
+        return model
+    return _GLM_MODEL_MAP.get(model, model)
+
+
 @dataclass(frozen=True)
 class ToolCall:
     """One `tool_use` block the model emitted."""
@@ -83,16 +133,27 @@ class LLM:
     _PLACEHOLDER_KEYS = frozenset({"replace_me", "changeme", "change_me", "placeholder", "todo", "xxx"})
 
     def __init__(self, api_key: str | None = None) -> None:
-        env_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        self._provider = active_provider()
+        # GLM reads its own key, so pointing LLM_PROVIDER at it cannot
+        # accidentally spend an Anthropic key, and removing the Anthropic
+        # key does not disable GLM. The two are independent on purpose:
+        # the operator pulled ANTHROPIC_API_KEY to stop the spend, and the
+        # cheaper provider has to be reachable without putting it back.
+        env_key = (
+            os.environ.get("GLM_API_KEY", "").strip()
+            or os.environ.get("ZAI_API_KEY", "").strip()
+            if self._provider == "glm"
+            else os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        )
         self._api_key = api_key or (env_key or None)
         self._client: Any = None
         # Empty string or missing → mock. Treat whitespace-only the same way so
         # an accidentally-blanked-out export doesn't crash on the first call.
         if self._api_key and self._api_key.lower() in self._PLACEHOLDER_KEYS:
             logger.warning(
-                "ANTHROPIC_API_KEY is the placeholder %r — treating as unset (MOCK mode). "
+                "%s is the placeholder %r — treating as unset (MOCK mode). "
                 "Set a real key to enable live council reasoning.",
-                self._api_key,
+                self._key_env_name, self._api_key,
             )
             self._api_key = None
         self._mock = not self._api_key
@@ -108,25 +169,45 @@ class LLM:
             if env_flag("AGENTS_REQUIRE_REAL_LLM"):
                 raise RuntimeError(
                     "AGENTS_REQUIRE_REAL_LLM=1 but the LLM resolved to MOCK mode "
-                    "(ANTHROPIC_API_KEY missing/blank or SDK not installed). "
+                    f"({self._key_env_name} missing/blank or SDK not installed). "
                     "Refusing to run the council on canned responses."
                 )
-            logger.warning("LLM in MOCK mode (no ANTHROPIC_API_KEY)")
+            logger.warning(
+                "LLM in MOCK mode (no %s)", self._key_env_name
+            )
+
+    @property
+    def _key_env_name(self) -> str:
+        return "GLM_API_KEY" if self._provider == "glm" else "ANTHROPIC_API_KEY"
 
     @property
     def mock(self) -> bool:
         return self._mock
+
+    @property
+    def provider(self) -> str:
+        return self._provider
 
     def _get_client(self) -> Any:
         if self._client is None:
             from anthropic import AsyncAnthropic
             # Explicit timeout: a hung API call must never hang the council.
             # The SDK retries transient failures itself (max_retries).
-            self._client = AsyncAnthropic(
-                api_key=self._api_key,
-                timeout=float(os.environ.get("LLM_TIMEOUT_SECONDS", "60")),
-                max_retries=2,
-            )
+            # `base_url` is the whole GLM integration: Z.ai speaks the
+            # Anthropic wire protocol, so the SDK, the tool-calling shape
+            # and every caller are untouched.
+            kwargs: dict[str, Any] = {
+                "api_key": self._api_key,
+                # Explicit timeout: a hung API call must never hang the
+                # council. The SDK retries transient failures itself.
+                "timeout": float(os.environ.get("LLM_TIMEOUT_SECONDS", "60")),
+                "max_retries": 2,
+            }
+            if self._provider == "glm":
+                kwargs["base_url"] = os.environ.get(
+                    "GLM_BASE_URL", _GLM_BASE_URL
+                ).strip() or _GLM_BASE_URL
+            self._client = AsyncAnthropic(**kwargs)
         return self._client
 
     async def complete(
@@ -170,8 +251,11 @@ class LLM:
         if cache_system:
             system_blocks[0]["cache_control"] = {"type": "ephemeral"}
 
+        # The wire model is provider-specific; `resp.model` below keeps the
+        # RESOLVED id so the cost ledger prices what was actually billed.
+        wire_model = resolve_model(model, provider=self._provider)
         msg = await client.messages.create(
-            model=model,
+            model=wire_model,
             max_tokens=max_tokens,
             system=system_blocks,
             messages=[{"role": "user", "content": user}],
@@ -185,7 +269,7 @@ class LLM:
         usage = getattr(msg, "usage", None)
         resp = LLMResponse(
             text=text,
-            model=model,
+            model=wire_model,
             input_tokens=getattr(usage, "input_tokens", 0) if usage else 0,
             output_tokens=getattr(usage, "output_tokens", 0) if usage else 0,
             cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) if usage else 0,
@@ -247,8 +331,9 @@ class LLM:
         if cache_system:
             system_blocks[0]["cache_control"] = {"type": "ephemeral"}
 
+        wire_model = resolve_model(model, provider=self._provider)
         kwargs: dict[str, Any] = {
-            "model": model,
+            "model": wire_model,
             "max_tokens": max_tokens,
             "system": system_blocks,
             "messages": messages,
@@ -263,7 +348,7 @@ class LLM:
         usage = getattr(msg, "usage", None)
         resp = LLMResponse(
             text=text,
-            model=model,
+            model=wire_model,
             input_tokens=getattr(usage, "input_tokens", 0) if usage else 0,
             output_tokens=getattr(usage, "output_tokens", 0) if usage else 0,
             cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) if usage else 0,
