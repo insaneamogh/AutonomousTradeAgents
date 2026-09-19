@@ -31,7 +31,7 @@ from trading_agents.memory.postgres import PostgresDecisionLog
 class _FakeResult:
     """Mimics the ``Result`` shape ``list_pending_reflection`` consumes."""
 
-    def scalars(self) -> "_FakeResult":
+    def scalars(self) -> _FakeResult:
         return self
 
     def all(self) -> list[Any]:
@@ -42,7 +42,7 @@ class _FakeSession:
     def __init__(self, capture: dict[str, Any]) -> None:
         self._capture = capture
 
-    async def __aenter__(self) -> "_FakeSession":
+    async def __aenter__(self) -> _FakeSession:
         return self
 
     async def __aexit__(self, *exc: object) -> bool:

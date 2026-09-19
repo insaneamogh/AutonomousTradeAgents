@@ -1367,7 +1367,7 @@ async def test_persist_placed_order_never_raises_on_a_db_failure() -> None:
     Simulated here with a session whose execute() raises outright."""
 
     class _ExplodingSession:
-        async def __aenter__(self) -> "_ExplodingSession":
+        async def __aenter__(self) -> _ExplodingSession:
             return self
 
         async def __aexit__(self, *exc: Any) -> bool:

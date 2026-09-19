@@ -115,4 +115,4 @@ def test_conviction_does_not_change_what_is_tradable() -> None:
         prior_multiplier=1.0, score=0.9, reason="", summary="",
         conviction=0.0,
     )
-    assert fit.tradable is (0.9 >= MIN_FIT_TO_TRADE)
+    assert fit.tradable is (MIN_FIT_TO_TRADE <= 0.9)

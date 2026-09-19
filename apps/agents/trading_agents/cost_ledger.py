@@ -81,6 +81,21 @@ _PRICES: dict[str, ModelPrice] = {
         cache_read_per_million=0.02,
         cache_creation_per_million=0.25,
     ),
+    # TypeSafe Jev — a structured-decision model. Output is GENUINELY FREE:
+    # it returns a typed choice/score, so there is no generated text to
+    # bill for. That is a real pricing model, not a missing row.
+    #
+    # The zeros below are load-bearing. If a future cleanup decides "0 must
+    # mean unpriced" and routes this to `_FALLBACK_PRICE`, Jev silently
+    # starts being billed at Sonnet's $15/M output — a 100%-fictional cost
+    # on the cheapest thing we have. `test_jev_output_is_free_not_unpriced`
+    # guards it.
+    "jev-1.13": ModelPrice(
+        input_per_million=0.042,
+        output_per_million=0.0,
+        cache_read_per_million=0.0042,
+        cache_creation_per_million=0.0525,
+    ),
     # Opus 4.7
     "claude-opus-4-7": ModelPrice(
         input_per_million=15.00,

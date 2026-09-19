@@ -45,7 +45,7 @@ def test_the_conservative_profiles_floor_reaches_the_prompt() -> None:
 def test_no_caps_falls_back_to_the_stricter_floor_not_the_looser_one() -> None:
     """Failing toward MORE refusal is the direction that cannot lose money
     by accident — the same fail-closed contract `env_flag` uses."""
-    assert DEFAULT_MIN_SPECIALIST_AVG_SCORE == pytest.approx(45.0)
+    assert pytest.approx(45.0) == DEFAULT_MIN_SPECIALIST_AVG_SCORE
     assert "score < 45 " in drafter_prompt(None)
 
 

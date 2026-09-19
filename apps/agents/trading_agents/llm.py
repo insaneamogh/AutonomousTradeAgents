@@ -46,6 +46,13 @@ class Model:
 
 _GLM_BASE_URL = "https://api.z.ai/api/anthropic"
 
+_JEV_MODEL = "jev-1.13"
+"""TypeSafe Jev. **Not a chat model** — it answers typed questions and
+returns typed answers, and generates no prose at all. It therefore cannot
+serve `complete()` or `complete_with_tools()`, only the structured
+`decide()` path (see `trading_agents.jev`). Routing to it for a prose or
+tool call falls back to mock rather than silently returning nothing."""
+
 _GLM_MODEL_MAP: dict[str, str] = {
     Model.OPUS: "glm-4.6",
     Model.SONNET: "glm-4.6",
@@ -56,13 +63,34 @@ asking for `Model.SONNET` keeps asking for "the reasoning tier" and this
 table decides what serves it."""
 
 
+_KEY_ENV = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "glm": "GLM_API_KEY",
+    "jev": "TYPESAFE_API_KEY",
+}
+"""Each provider reads its OWN key. Two reasons, both load-bearing:
+selecting a provider must never spend a different provider's key, and the
+cheaper providers must be reachable WITHOUT restoring the Anthropic key —
+which is the situation we are actually in, since it was removed on
+2026-09-11 to stop the spend."""
+
+
+def _key_for_provider(provider: str) -> str:
+    if provider == "glm":
+        return (
+            os.environ.get("GLM_API_KEY", "").strip()
+            or os.environ.get("ZAI_API_KEY", "").strip()
+        )
+    return os.environ.get(_KEY_ENV.get(provider, "ANTHROPIC_API_KEY"), "").strip()
+
+
 def active_provider() -> str:
-    """`"glm"` or `"anthropic"` (the default). Anything unrecognised falls
-    back to anthropic rather than erroring — a typo in an env var must not
-    take the desk down."""
+    """`"glm"`, `"jev"`, or `"anthropic"` (the default). Anything
+    unrecognised falls back to anthropic rather than erroring — a typo in
+    an env var must not take the desk down."""
     raw = os.environ.get("LLM_PROVIDER", "").strip().lower()
-    if raw == "glm":
-        return "glm"
+    if raw in ("glm", "jev"):
+        return raw
     if raw and raw != "anthropic":
         logger.warning(
             "ignoring unknown LLM_PROVIDER=%r — using anthropic", raw
@@ -75,7 +103,11 @@ def resolve_model(model: str, *, provider: str | None = None) -> str:
 
     An unmapped model passes through unchanged: better to send a name the
     provider may accept than to silently substitute a different one."""
-    if (provider or active_provider()) != "glm":
+    p = provider or active_provider()
+    if p == "jev":
+        # Jev has one model and one shape; tiers are meaningless to it.
+        return _JEV_MODEL
+    if p != "glm":
         return model
     return _GLM_MODEL_MAP.get(model, model)
 
@@ -139,12 +171,7 @@ class LLM:
         # key does not disable GLM. The two are independent on purpose:
         # the operator pulled ANTHROPIC_API_KEY to stop the spend, and the
         # cheaper provider has to be reachable without putting it back.
-        env_key = (
-            os.environ.get("GLM_API_KEY", "").strip()
-            or os.environ.get("ZAI_API_KEY", "").strip()
-            if self._provider == "glm"
-            else os.environ.get("ANTHROPIC_API_KEY", "").strip()
-        )
+        env_key = _key_for_provider(self._provider)
         self._api_key = api_key or (env_key or None)
         self._client: Any = None
         # Empty string or missing → mock. Treat whitespace-only the same way so
@@ -178,7 +205,7 @@ class LLM:
 
     @property
     def _key_env_name(self) -> str:
-        return "GLM_API_KEY" if self._provider == "glm" else "ANTHROPIC_API_KEY"
+        return _KEY_ENV[self._provider]
 
     @property
     def mock(self) -> bool:

@@ -11,10 +11,10 @@ from trading_agents.prompts.technical_analyst import TECHNICAL_ANALYST
 
 __all__ = [
     "DRAFTER",
-    "drafter_prompt",
     "FUNDAMENTAL_ANALYST",
     "MACRO_ANALYST",
     "REFLECTION",
     "ROUTER",
     "TECHNICAL_ANALYST",
+    "drafter_prompt",
 ]
