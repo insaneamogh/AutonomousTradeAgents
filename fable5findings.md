@@ -4,6 +4,28 @@
 >
 > **Everything from here to the `# Build log
 
+### 2026-09-21 — 718a8fbc5 feat(eval): measure the cache opportunity — refuted, twice over
+- PLAN §B: measure before building an LLM result cache. Read-only script over
+  the live Postgres (`railway run`), 1903 decisions / 221 symbols / Sep 1-21.
+- **The first number was FAKE.** Reported 48.6% redundant calls, 99.8% of
+  multi-call symbol-days fully cacheable. Artefact: `fundamental` populated on
+  0/1903 rows, `macro` on 4, and 1675 rows carry an EMPTY `{}` snapshot. Empty
+  rows hash alike — they collide by ABSENCE, not content.
+- Excluding them: **1.00 calls per symbol-day, 0 repeats, 0% redundancy.** The
+  "5.9 decisions per symbol" that motivated this counted a symbol across the
+  whole period, not within a day.
+- **And 0% still answers the wrong question.** `technical` stores
+  `{score, thesis, confidence, citations}` — the analyst's OUTPUT. The input
+  feature snapshot is persisted NOWHERE. Hashing outputs to find repeated
+  questions is circular.
+- Verdict: unmeasurable retrospectively; the hash column is required not
+  optional; it collects nothing while the breaker is latched. **Cache not
+  built and should not be.** Seventh hypothesis refuted by measurement.
+- Gotcha for next time: `railway run` injects the INTERNAL DATABASE_URL
+  (*.railway.internal), which does not resolve off-network. Script falls back
+  to DATABASE_PUBLIC_URL.
+
+
 ### 2026-09-21 — 92d973ca5 feat(llm): wire the Jev transport and the Z.ai endpoint end to end
 - Jev shipped last commit as a contract with NO transport, while its docstring
   claimed otherwise (§4.2). Added the real one: one POST, one retry on
