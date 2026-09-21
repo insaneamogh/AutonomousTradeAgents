@@ -20,12 +20,15 @@ revs prices. Cache reads are charged at 10% of input.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Protocol, runtime_checkable
 
 from engine.env import env_flag
+
+logger = logging.getLogger("agents.cost")
 
 # ─────────────────────────────────────────────────────────────────────
 # Pricing table
@@ -90,7 +93,7 @@ _PRICES: dict[str, ModelPrice] = {
     # starts being billed at Sonnet's $15/M output — a 100%-fictional cost
     # on the cheapest thing we have. `test_jev_output_is_free_not_unpriced`
     # guards it.
-    "jev-1.13": ModelPrice(
+    "jev-1.13.0": ModelPrice(
         input_per_million=0.042,
         output_per_million=0.0,
         cache_read_per_million=0.0042,
@@ -108,6 +111,23 @@ _PRICES: dict[str, ModelPrice] = {
 # Fallback for unknown models — assume Sonnet-tier. Logged at WARNING
 # so we notice when a new model slipped in without a price row.
 _FALLBACK_PRICE = _PRICES["claude-sonnet-4-6"]
+
+_warned_unpriced: set[str] = set()
+
+
+def _warn_unpriced(model: str) -> None:
+    """Once per process per model — this is called on every LLM call and a
+    per-call warning would bury the log it is meant to surface in."""
+    if model in _warned_unpriced:
+        return
+    _warned_unpriced.add(model)
+    logger.warning(
+        "no price row for model %r — billing it at %s rates in the cost "
+        "ledger. Add a row to _PRICES; every figure reported for this model "
+        "until then is WRONG.",
+        model,
+        "claude-sonnet-4-6",
+    )
 
 
 def compute_cost_usd(
@@ -132,7 +152,19 @@ def compute_cost_usd(
 
     # Strip mock suffix that ``llm._mock_response`` adds.
     base_model = model.split("+", 1)[0]
-    price = _PRICES.get(base_model, _FALLBACK_PRICE)
+    price = _PRICES.get(base_model)
+    if price is None:
+        # Loudly, and once per model. A missing row used to fall through to
+        # Sonnet in silence, which is the worst possible direction for the
+        # error: every provider we add is added BECAUSE it is cheaper, so an
+        # unpriced cheap model reports ~7x (GLM) to ~140x (Jev) its real cost
+        # and the ledger says the migration saved nothing. It bit Jev, whose
+        # id is `jev-1.13.0` while the row said `jev-1.13`.
+        #
+        # Warn rather than raise: a pricing gap is an accounting bug, and an
+        # accounting bug must never halt a live council mid-pass.
+        _warn_unpriced(base_model)
+        price = _FALLBACK_PRICE
 
     cost = (
         max(0, input_tokens) * price.input_per_million

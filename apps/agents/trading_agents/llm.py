@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 from dataclasses import dataclass
 from typing import Any
 
 from engine.env import env_flag
+from trading_agents import jev
 
 logger = logging.getLogger("agents.llm")
 
@@ -46,8 +48,13 @@ class Model:
 
 _GLM_BASE_URL = "https://api.z.ai/api/anthropic"
 
-_JEV_MODEL = "jev-1.13"
-"""TypeSafe Jev. **Not a chat model** — it answers typed questions and
+_JEV_MODEL = jev.MODEL
+"""TypeSafe Jev, imported rather than restated — the first version of
+this file hardcoded "jev-1.13" while the real id is "jev-1.13.0", so the
+cost ledger had no price row for it and would have billed Jev at
+Sonnet's rate (CLAUDE.md §4.4 — the same number in two places).
+
+**Not a chat model** — it answers typed questions and
 returns typed answers, and generates no prose at all. It therefore cannot
 serve `complete()` or `complete_with_tools()`, only the structured
 `decide()` path (see `trading_agents.jev`). Routing to it for a prose or
@@ -60,7 +67,21 @@ _GLM_MODEL_MAP: dict[str, str] = {
 }
 """Claude tier -> GLM model. Mapped by TIER, not by name, so a caller
 asking for `Model.SONNET` keeps asking for "the reasoning tier" and this
-table decides what serves it."""
+table decides what serves it.
+
+These are DEFAULTS, overridable per tier from the environment (below).
+Z.ai revs GLM faster than we deploy — their docs already advertise GLM-5.3
+while this table pins 4.6 — and a model id going stale must be a Railway
+variable change, not a code change and a redeploy. The defaults stay at
+4.6/4.5-air because those are the ids `cost_ledger` actually has price rows
+for; point a tier at a newer model and the ledger will warn that it is
+billing it at Sonnet rates until a row is added."""
+
+_GLM_TIER_ENV = {
+    Model.OPUS: "GLM_MODEL_OPUS",
+    Model.SONNET: "GLM_MODEL_SONNET",
+    Model.HAIKU: "GLM_MODEL_HAIKU",
+}
 
 
 _KEY_ENV = {
@@ -109,7 +130,85 @@ def resolve_model(model: str, *, provider: str | None = None) -> str:
         return _JEV_MODEL
     if p != "glm":
         return model
-    return _GLM_MODEL_MAP.get(model, model)
+    override = os.environ.get(_GLM_TIER_ENV.get(model, ""), "").strip()
+    return override or _GLM_MODEL_MAP.get(model, model)
+
+
+_JEV_NO_THESIS = "Typed assessment (Jev). No written thesis generated."
+
+_DECISION_CONTRACT = """
+
+Reply with ONLY a JSON object, no prose and no code fence:
+{"direction": "bullish"|"bearish"|"neutral",
+ "conviction": <0.0-1.0, how strongly the evidence supports the case>,
+ "confidence": <0.0-1.0, how certain you are of the direction>,
+ "thesis": "<one or two sentences>"}
+Judge only from the supplied evidence. `conviction` is the strength of the
+case, NOT your certainty and NOT the probability of profit."""
+"""Appended to the system prompt on the prose providers so their answer has
+the same shape as Jev's typed one. Kept as a suffix rather than a rewrite:
+the caller's own prompt still governs WHAT is judged, this governs only how
+the judgement comes back."""
+
+
+def _unit(value: object) -> float:
+    """Clamp to [0, 1]. A model that returns 85 when asked for 0-1 means 0.85
+    often enough to be worth handling, and a model that returns nonsense must
+    become 0.0 rather than an exception inside a scoring path."""
+    try:
+        f = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(f):
+        return 0.0
+    if 1.0 < f <= 100.0:
+        f /= 100.0
+    return min(1.0, max(0.0, f))
+
+
+@dataclass(frozen=True)
+class Decision:
+    """One directional judgement, identical in shape across every provider.
+
+    The A/B unit. Jev, GLM and Sonnet all produce this, so `abstained` rate,
+    directional accuracy and realised MFE are comparable between them
+    without a per-provider adapter in the measurement code.
+    """
+
+    direction: str
+    """bullish | bearish | neutral."""
+
+    conviction: float
+    """0-1, strength of the case. Forced to 0.0 when neutral by
+    `__post_init__` — a neutral read with high conviction is not a thing,
+    and letting one through is how a "no view" gets sized like a view."""
+
+    confidence: float
+    """0-1, the model's certainty in `direction`. Kept separate from
+    `conviction` on purpose; collapsing them is how a confident read of a
+    weak setup becomes a large position."""
+
+    thesis: str
+    provider: str
+    model: str
+
+    abstained: bool = False
+    """True when the model could not be reached or its answer did not parse.
+    A caller MUST treat this differently from a genuine neutral: one is "the
+    evidence says nothing", the other is "we never got an answer"."""
+
+    def __post_init__(self) -> None:
+        """The neutral-means-zero rule, enforced in exactly ONE place.
+
+        It used to live in three — `jev.parse_response`, `conviction_0_1`
+        and the prose branch of `decide()` — which is the CLAUDE.md §4.4
+        trap: with three copies, breaking any one of them leaves the others
+        covering, so no test could prove any of them worked. Enforcing it on
+        the type makes an unsized neutral structurally unconstructible, and
+        makes a single test meaningful.
+        """
+        if self.direction == "neutral" and self.conviction != 0.0:
+            object.__setattr__(self, "conviction", 0.0)
 
 
 @dataclass(frozen=True)
@@ -392,6 +491,143 @@ class LLM:
             user_id=user_id,
         )
         return resp
+
+    async def decide(
+        self,
+        *,
+        system: str,
+        user: str,
+        model: str = Model.SONNET,
+        max_tokens: int = 600,
+        council_run_id: str | None = None,
+        agent_decision_id: str | None = None,
+        user_id: str | None = None,
+    ) -> Decision:
+        """One structured directional judgement, on whichever provider is active.
+
+        This is the seam that makes Jev usable at all. Jev cannot serve
+        `complete()` — it generates no prose — so a provider flag alone
+        could never route the council to it. What every provider CAN do is
+        answer "which way, and how strongly", and that is the only part of
+        an agent's output that survives into a position anyway: the thesis
+        is audit trail, the direction and conviction are the trade.
+
+        On Jev this is one native typed call. On Anthropic and GLM it is a
+        JSON completion shaped to the same contract, so an A/B compares
+        like with like rather than comparing two different questions.
+
+        **Failure contract, adopted deliberately (see PLAN §2.3):** a model
+        call or parse failure ABSTAINS — `Decision.abstained` is True and
+        the direction is neutral. It never raises. A *data* failure, by
+        contrast, must propagate from the caller's feature layer and never
+        reach here, because a broken snapshot silently becoming "no view"
+        is how a bug turns into a quiet, permanent HOLD.
+        """
+        if self._mock:
+            resp = _mock_response(system=system, user=user, model=model)
+            await _record_to_ledger(
+                system, resp, is_mock=True,
+                council_run_id=council_run_id,
+                agent_decision_id=agent_decision_id,
+                user_id=user_id,
+            )
+            return Decision(
+                direction="neutral", conviction=0.0, confidence=0.0,
+                thesis="MOCK: no provider key configured.",
+                provider=self._provider, model=resp.model, abstained=True,
+            )
+
+        if self._provider == "jev":
+            return await self._decide_jev(
+                system=system, user=user,
+                council_run_id=council_run_id,
+                agent_decision_id=agent_decision_id,
+                user_id=user_id,
+            )
+
+        try:
+            resp = await self.complete(
+                system=system + _DECISION_CONTRACT,
+                user=user,
+                model=model,
+                max_tokens=max_tokens,
+                council_run_id=council_run_id,
+                agent_decision_id=agent_decision_id,
+                user_id=user_id,
+            )
+            raw = self.parse_json(resp.text)
+            direction = str(raw["direction"]).strip().lower()
+            if direction not in jev.DIRECTIONS:
+                raise ValueError(f"direction {direction!r} not in {jev.DIRECTIONS}")
+            return Decision(
+                direction=direction,
+                conviction=_unit(raw.get("conviction")),  # zeroed if neutral by __post_init__
+                confidence=_unit(raw.get("confidence")),
+                thesis=str(raw.get("thesis", "")).strip(),
+                provider=self._provider,
+                model=resp.model,
+            )
+        except Exception as exc:
+            logger.warning("%s decide() failed — abstaining: %s", self._provider, exc)
+            return Decision(
+                direction="neutral", conviction=0.0, confidence=0.0,
+                thesis="", provider=self._provider,
+                model=resolve_model(model, provider=self._provider), abstained=True,
+            )
+
+    async def _decide_jev(
+        self, *, system: str, user: str,
+        council_run_id: str | None, agent_decision_id: str | None,
+        user_id: str | None,
+    ) -> Decision:
+        request = jev.build_request(system=system, user=user, model=_JEV_MODEL)
+        # Billed on what we SENT, not on what came back: Jev returns no usage
+        # block (see jev._CHARS_PER_TOKEN). Recorded before the parse so a
+        # malformed answer is still a call we paid for — an abstain that costs
+        # nothing in the ledger is an abstain nobody investigates.
+        resp = LLMResponse(
+            text="",
+            model=_JEV_MODEL,
+            input_tokens=jev.estimate_input_tokens(request),
+            output_tokens=0,
+        )
+        try:
+            body = await jev.call(
+                request,
+                api_key=self._api_key or "",
+                endpoint=os.environ.get("JEV_ENDPOINT", jev.ENDPOINT).strip() or jev.ENDPOINT,
+                timeout=float(os.environ.get("LLM_TIMEOUT_SECONDS", "60")),
+            )
+        except jev.JevTransportError as exc:
+            logger.warning("jev transport failed — abstaining: %s", exc)
+            return Decision(
+                direction="neutral", conviction=0.0, confidence=0.0, thesis="",
+                provider="jev", model=_JEV_MODEL, abstained=True,
+            )
+        await _record_to_ledger(
+            system, resp, is_mock=False,
+            council_run_id=council_run_id,
+            agent_decision_id=agent_decision_id,
+            user_id=user_id,
+        )
+        try:
+            d = jev.parse_response(body)
+        except jev.JevContractError as exc:
+            logger.warning("jev contract violation — abstaining: %s", exc)
+            return Decision(
+                direction="neutral", conviction=0.0, confidence=0.0, thesis="",
+                provider="jev", model=_JEV_MODEL, abstained=True,
+            )
+        return Decision(
+            direction=d.direction,
+            conviction=d.conviction_0_1,
+            confidence=d.confidence,
+            # Jev generates no prose. Say so rather than leaving it blank —
+            # a blank thesis in the approval inbox reads as a bug.
+            thesis=_JEV_NO_THESIS,
+            provider="jev",
+            model=_JEV_MODEL,
+        )
 
     @staticmethod
     def parse_json(text: str) -> dict[str, Any]:

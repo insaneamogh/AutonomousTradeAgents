@@ -123,7 +123,7 @@ def test_jev_is_opt_in_and_a_typo_cannot_break_the_desk(
     assert active_provider() == "anthropic"
     monkeypatch.setenv("LLM_PROVIDER", "jev")
     assert active_provider() == "jev"
-    assert resolve_model(Model.SONNET) == "jev-1.13"
+    assert resolve_model(Model.SONNET) == "jev-1.13.0"
     monkeypatch.setenv("LLM_PROVIDER", "jevv")
     assert active_provider() == "anthropic"
 
@@ -150,9 +150,9 @@ def test_jev_output_is_free_not_unpriced() -> None:
     """The zeros in the price row are load-bearing. If a future cleanup
     decides "0 must mean unpriced" and falls back to Sonnet's rates, Jev
     silently starts being billed $15/M on output it does not charge for."""
-    in_only = compute_cost_usd(model="jev-1.13", input_tokens=1_000_000, output_tokens=0)
+    in_only = compute_cost_usd(model="jev-1.13.0", input_tokens=1_000_000, output_tokens=0)
     huge_out = compute_cost_usd(
-        model="jev-1.13", input_tokens=1_000_000, output_tokens=5_000_000
+        model="jev-1.13.0", input_tokens=1_000_000, output_tokens=5_000_000
     )
     assert in_only == huge_out
     assert in_only == pytest.approx(0.042, rel=1e-6)
@@ -160,6 +160,6 @@ def test_jev_output_is_free_not_unpriced() -> None:
 
 def test_jev_is_far_cheaper_than_the_alternatives() -> None:
     a = dict(input_tokens=1_000_000, output_tokens=200_000)
-    jev = compute_cost_usd(model="jev-1.13", **a)
+    jev = compute_cost_usd(model="jev-1.13.0", **a)
     assert jev < compute_cost_usd(model="glm-4.6", **a) / 10
     assert jev < compute_cost_usd(model=Model.SONNET, **a) / 100

@@ -12,6 +12,8 @@ trades than it saves in tokens.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from trading_agents.cost_ledger import compute_cost_usd
@@ -100,3 +102,53 @@ def test_a_cache_hit_on_glm_is_not_free() -> None:
         model="glm-4.6", input_tokens=0, output_tokens=0,
         cache_read_tokens=1_000_000,
     ) > 0
+
+
+def test_a_glm_tier_can_be_repointed_without_a_deploy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Z.ai revs GLM faster than we ship. Their docs already advertise
+    GLM-5.3 while our table pins 4.6, so a stale id must be a Railway
+    variable change rather than a code change."""
+    monkeypatch.setenv("LLM_PROVIDER", "glm")
+    monkeypatch.setenv("GLM_MODEL_SONNET", "glm-5.3")
+    assert resolve_model(Model.SONNET) == "glm-5.3"
+    assert resolve_model(Model.HAIKU) == "glm-4.5-air", "other tiers untouched"
+
+
+def test_an_override_does_not_leak_into_anthropic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.setenv("GLM_MODEL_SONNET", "glm-5.3")
+    assert resolve_model(Model.SONNET) == Model.SONNET
+
+
+def test_an_unpriced_model_warns_instead_of_silently_billing_as_sonnet(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The failure this guards was real: the Jev row was keyed `jev-1.13`
+    while the model id is `jev-1.13.0`, so every Jev call would have been
+    priced at Sonnet's $3/$15 — on the provider chosen precisely BECAUSE it
+    is ~140x cheaper. Silent fallback makes a cost migration unmeasurable."""
+    from trading_agents.cost_ledger import _warned_unpriced, compute_cost_usd
+
+    _warned_unpriced.discard("not-a-real-model")
+    with caplog.at_level(logging.WARNING, logger="agents.cost"):
+        compute_cost_usd(model="not-a-real-model", input_tokens=1000, output_tokens=10)
+    assert any("no price row" in r.getMessage() for r in caplog.records)
+
+
+def test_the_unpriced_warning_does_not_repeat_per_call(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """It is on the hot path of every LLM call; a per-call warning buries the
+    signal it exists to raise."""
+    from trading_agents.cost_ledger import _warned_unpriced, compute_cost_usd
+
+    _warned_unpriced.discard("noisy-model")
+    with caplog.at_level(logging.WARNING, logger="agents.cost"):
+        for _ in range(5):
+            compute_cost_usd(model="noisy-model", input_tokens=1000, output_tokens=10)
+    hits = [r for r in caplog.records if "no price row" in (r.getMessage())]
+    assert len(hits) == 1
