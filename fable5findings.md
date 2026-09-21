@@ -4,6 +4,52 @@
 >
 > **Everything from here to the `# Build log
 
+### 2026-09-21 — 92d973ca5 feat(llm): wire the Jev transport and the Z.ai endpoint end to end
+- Jev shipped last commit as a contract with NO transport, while its docstring
+  claimed otherwise (§4.2). Added the real one: one POST, one retry on
+  {429,500,502,503,504,529} honouring Retry-After, `follow_redirects=False`
+  (httpx forwards Authorization across redirects), and redaction of echoed
+  keys before anything reaches a log or exception.
+- `LLM.decide()` is the new seam. Jev cannot serve `complete()` — no prose —
+  so a provider flag alone could never route to it. All three providers now
+  return the same `Decision(direction, conviction, confidence, thesis,
+  provider, model, abstained)`.
+- Z.ai base URL verified correct; their docs now advertise GLM-5.3 vs our
+  pinned 4.6, so tiers are overridable via GLM_MODEL_{OPUS,SONNET,HAIKU}.
+- `provider_check` CLI added for when keys land on Railway:
+  `railway run -s AutonomousTradeAgents python -m trading_agents.provider_check --live`
+
+**Three bugs found by reading the reference impl instead of guessing:**
+1. Model id is `jev-1.13.0`, not `jev-1.13`. Ledger row keyed the short form
+   and `_PRICES.get(..., _FALLBACK_PRICE)` falls back to SONNET SILENTLY —
+   every Jev call would have billed at $3/$15 per M. Id now single-sourced.
+2. Jev returns NO usage block. Input is estimated (~4 chars/token from the
+   serialised request); output is genuinely 0. **Jev ledger rows are
+   estimates, not receipts.** Every other provider's are exact.
+3. Score rubric was five adjectives; reference uses criteria sentences.
+
+**VERIFIED:** 1681 passed / 11 skipped (was 1657). ruff on apps/agents +
+packages = 1, unchanged baseline (run_eval.py RUF046), confirmed via stash.
+Five revert-checks each confirmed to fail when the fix is undone.
+
+**NOT VERIFIED — the important one:** no live round trip against either
+endpoint. No GLM_API_KEY or TYPESAFE_API_KEY on this machine. `provider_check
+--live` exists to close that gap and has never been run against a real key.
+Jev is 4 days into early access.
+
+**Worth knowing for whoever picks this up:** the revert-check caught that
+neutral-means-zero-conviction existed in THREE places, so breaking any one
+left the others covering and no test could prove any of them worked. Now one
+`Decision.__post_init__`. Also: unpriced models now warn once per process
+instead of silently billing as Sonnet — if you repoint a GLM tier, ADD A
+PRICE ROW.
+
+**Still open:** plan items B (measure the cache opportunity — count same-day
+identical feature-snapshot hashes before building anything) and C (the
+`AlphaModel`/`Signal` seam). Branch is `posthackathon`; `main` untouched at
+74abbd0c0 per the operator's instruction while grading is pending.
+
+
 ### 2026-09-06 — 0bc1fa3..d4d36bd Phase 1: why the book had to lose money
 
 Operator was down ~$2.3k and asked when the risk system had ever protected
