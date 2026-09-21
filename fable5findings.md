@@ -4,6 +4,26 @@
 >
 > **Everything from here to the `# Build log
 
+### 2026-09-21 — f3ecd79a3 feat(alpha): the AlphaModel/Signal seam
+- PLAN §C. `AlphaModel` protocol + `Signal` in `packages/engine/engine/alpha/`;
+  `StrategyFitAlpha` adapter in `apps/agents/trading_agents/strategies/alpha.py`.
+  `signal_backtest.run()` now takes `model=` (defaults to the shipped one).
+- **`abstained` is NOT `value == 0.0`.** Flat = "looked, nothing there" and is
+  SCORED. Abstain = "never formed a view" and is DROPPED — counting silent
+  failures as flat calls drags hit rate toward 50% and hides a broken model.
+  `best_strategy`'s two None cases map onto this (thin features -> abstain;
+  nothing cleared the floor -> flat).
+- **Known limitation, documented in code:** one `value` carries both direction
+  and magnitude, so a fit clearing the floor with zero conviction reads as
+  "flat". Test `meta["strategy_id"]` for "was a call made?", never `value != 0`.
+- **VERIFIED:** refactored backtest reproduces the prior run BYTE-IDENTICALLY
+  (diff clean) — the "no edge" conclusion rests on that output. 1691 passed /
+  11 skipped. ruff baseline 1 unchanged. Three revert-checks each confirmed to
+  fail. A foreign model (`AlwaysLong`) drives the real harness.
+- Not doing: the ai-hedge-fund investor personas. Unvalidated candidates added
+  to a system with no edge is a more expensive coin flip.
+
+
 ### 2026-09-21 — 718a8fbc5 feat(eval): measure the cache opportunity — refuted, twice over
 - PLAN §B: measure before building an LLM result cache. Read-only script over
   the live Postgres (`railway run`), 1903 decisions / 221 symbols / Sep 1-21.
