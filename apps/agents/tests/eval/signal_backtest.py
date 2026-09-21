@@ -41,9 +41,10 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+from engine.alpha import AlphaModel
 from engine.features.quant import compute_quant
 from engine.features.technicals import DailyBar, compute_technicals
-from trading_agents.strategies.fit import best_strategy
+from trading_agents.strategies.alpha import StrategyFitAlpha
 from trading_agents.strategies.horizon import strategy_horizon_days
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "bars.json.gz"
@@ -101,14 +102,26 @@ def _features(bars: list[DailyBar], bench: list[DailyBar] | None) -> dict:
     }
 
 
-def run(*, step: int = 5, allow_shorts: bool = True) -> list[Signal]:
+def run(
+    *,
+    step: int = 5,
+    allow_shorts: bool = True,
+    model: AlphaModel | None = None,
+) -> list[Signal]:
     """Walk every symbol forward, `step` days at a time.
 
     `step` is a sampling stride, not a holding rule: adjacent days produce
     near-identical features, so scoring all of them would inflate the count
     without adding information and make overlapping windows look like
     independent observations.
+
+    `model` is any `AlphaModel`, defaulting to the shipped `strategy_fit`.
+    This is the point of the seam: a new candidate signal is measured by
+    passing it here, not by writing a second harness. Nothing reaches the
+    live path without first clearing the measurement that refuted the
+    incumbent.
     """
+    model = model or StrategyFitAlpha(allow_shorts=allow_shorts)
     data = _load()
     bench = data.get("SPY")
     signals: list[Signal] = []
@@ -122,17 +135,23 @@ def run(*, step: int = 5, allow_shorts: bool = True) -> list[Signal]:
             bench_window = (
                 [b for b in bench if b.day <= bars[t].day] if bench else None
             )
-            fit, _ = best_strategy(
-                _features(window, bench_window), allow_shorts=allow_shorts
-            )
-            if fit is None:
+            sig = model.evaluate(_features(window, bench_window), symbol=sym)
+            # "Was a call made?" is `strategy_id`, NOT `value != 0`: a
+            # strategy can clear the fit floor with zero conviction, which
+            # makes `value` 0.0 for a genuine directional call. Abstentions
+            # are dropped rather than scored as flat — counting a model that
+            # never formed a view as a 50/50 call is how a broken signal
+            # reads as merely mediocre.
+            if sig.abstained or not sig.meta.get("strategy_id"):
                 continue
             entry = bars[t].close
-            sign = 1.0 if fit.direction == "long" else -1.0
+            sign = 1.0 if sig.meta["direction"] == "long" else -1.0
             signals.append(
                 Signal(
-                    symbol=sym, day=bars[t].day, strategy=fit.strategy_id,
-                    direction=fit.direction, score=fit.score,
+                    symbol=sym, day=bars[t].day,
+                    strategy=sig.meta["strategy_id"],
+                    direction=sig.meta["direction"],
+                    score=sig.meta["score"],
                     fwd={
                         h: sign * (bars[t + h].close - entry) / entry * 100.0
                         for h in HORIZONS
