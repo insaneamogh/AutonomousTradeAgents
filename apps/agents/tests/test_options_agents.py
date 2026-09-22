@@ -2220,3 +2220,35 @@ def test_build_position_brief_reads_entry_premium_and_thesis() -> None:
     rendered = _render_escalation_brief(brief)
     assert str(decision.id) in rendered
     assert "ratchet_armed" in rendered
+
+
+async def test_the_trade_hop_hands_the_guard_realized_vol_from_the_features(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End to end through `run_options_agents`: the feature dict's realized
+    vol must reach `select_contract` on the live agent path, as it always
+    has on the Drafter path. The chain's IV is 30%; a name realizing 5% puts
+    it at 6x, past the 3x band, so the open is denied. Revert check: drop
+    `realized_vol_pct=` from the GuardContext built in `_dispatch` and the
+    open goes through instead."""
+    _enable_auto_trade(monkeypatch, need_broker_creds=True)
+    fake = _ScriptedLLM(
+        bull_view={
+            "direction": "long", "strategy": "momentum", "conviction": 0.6,
+            "thesis": "NVDA breaks 190 within 3 weeks.",
+        },
+        bear_view={
+            "direction": "long", "strategy": "momentum", "conviction": 0.55,
+            "thesis": "NVDA holds support within 3 weeks.",
+        },
+        trade_responses=[_tool_call_response("open_option_trade", dict(OPEN_ARGS))],
+    )
+    state = _state(context={"quant": {"realized_vol_pct": 5.0}})
+    with patch("trading_agents.options.tools.guard.fetch_option_candidates", _fetch_ok):
+        result = await run_options_agents(
+            state, fake, guard=_guard(), caps=RiskCaps(options_disabled=False)
+        )
+    opens = [c for c in result.tool_transcript if c["tool"] == "open_option_trade"]
+    assert len(opens) == 1
+    assert opens[0]["output"]["is_error"] is True
+    assert opens[0]["output"]["content"]["denied"] == "iv_outside_plausible_band"

@@ -1775,3 +1775,49 @@ async def test_chain_preflight_reports_a_zero_total_funnel_for_no_candidates(
             "selected_occ": None,
         }
     }
+
+
+# ─────────────────────────────────────────────────────────────────────
+# The live Bull/Bear path now judges IV the same way the Drafter path does
+# ─────────────────────────────────────────────────────────────────────
+
+
+async def test_guard_applies_the_iv_vs_realized_band_when_it_has_realized_vol() -> None:
+    """The chain's IV is 30%. Against a name realizing 5% that is 6x, past
+    the 3x plausibility band (a stale or broken quote, or a contract priced
+    for an event the stock is not having). The Drafter path always passed
+    realized vol; the guard did not, so on the live agent path this check
+    was silently skipped."""
+    guard = _guard()
+    with patch("trading_agents.options.tools.guard.fetch_option_candidates", _fetch_ok):
+        verdict = await guard.before(
+            "open_option_trade", OPEN_ARGS, _ctx(realized_vol_pct=5.0)
+        )
+    assert not verdict.allow
+    assert verdict.payload is not None
+    assert verdict.payload["contract_funnel"]["counts"]["iv_realized_vol_band"] == 0
+
+
+async def test_guard_admits_the_same_chain_when_iv_is_plausible() -> None:
+    guard = _guard()
+    with patch("trading_agents.options.tools.guard.fetch_option_candidates", _fetch_ok):
+        verdict = await guard.before(
+            "open_option_trade", OPEN_ARGS, _ctx(realized_vol_pct=25.0)
+        )
+    assert verdict.allow, verdict.reason
+
+
+async def test_guard_carries_days_to_earnings_onto_the_selected_leg() -> None:
+    """The earnings_blackout rule reads it off the leg. Still None in
+    production until an earnings source lands, but the plumbing must exist
+    on BOTH paths, or the day it lands only the Drafter path is protected.
+    30 days out is well clear of the 2-day blackout, so the trade is allowed
+    and the value survives onto the leg."""
+    guard = _guard()
+    with patch("trading_agents.options.tools.guard.fetch_option_candidates", _fetch_ok):
+        verdict = await guard.before(
+            "open_option_trade", OPEN_ARGS, _ctx(days_to_earnings=30)
+        )
+    assert verdict.allow, verdict.reason
+    assert verdict.payload is not None
+    assert verdict.payload["option"].days_to_earnings == 30

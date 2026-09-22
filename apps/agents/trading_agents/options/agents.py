@@ -94,6 +94,17 @@ def _options_model() -> str:
     return Model.SONNET
 
 
+def _as_optional_float(value: Any) -> float | None:
+    """A feature value as a float, or None when it is absent or not numeric.
+    A malformed feature must degrade to "unknown", never raise mid-pass."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 __all__ = [
     "OptionsAgentsResult",
     "run_bear",
@@ -437,6 +448,14 @@ async def run_options_agents(
     # OPEN_OPTION_TRADE description), so a denied first attempt must not
     # burn the pass's one-open budget — only an actual fill should.
     calls_this_pass = 0
+    # The same two feature inputs the Drafter path hands `select_contract`
+    # (nodes/drafter.py). Without them the guard's selection skipped the
+    # IV-vs-realized band and could not carry days_to_earnings to the
+    # blackout rule, so the two paths judged the same contract differently.
+    features: dict[str, Any] = state.get("context") or {}
+    realized_vol_pct = _as_optional_float((features.get("quant") or {}).get("realized_vol_pct"))
+    raw_dte = _as_optional_float((features.get("options_context") or {}).get("days_to_earnings"))
+    days_to_earnings = int(raw_dte) if raw_dte is not None else None
 
     async def _dispatch(call: ToolCall) -> dict[str, Any]:
         nonlocal calls_this_pass
@@ -447,6 +466,8 @@ async def run_options_agents(
             resolved_conviction=resolution.conviction,
             calls_this_pass=calls_this_pass,
             caps=caps,
+            realized_vol_pct=realized_vol_pct,
+            days_to_earnings=days_to_earnings,
         )
         result = await dispatch_tool_call(call, ctx, guard=guard, registry=REGISTRY)
         if call.name == "open_option_trade" and not result.get("is_error"):

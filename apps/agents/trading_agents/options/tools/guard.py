@@ -271,6 +271,17 @@ class GuardContext:
     resolved_conviction: float | None
     calls_this_pass: int
     caps: RiskCaps
+    realized_vol_pct: float | None = None
+    """``context["quant"]["realized_vol_pct"]`` for the underlying. Feeds
+    ``select_contract``'s IV-vs-realized band, the check that refuses a
+    contract whose IV is implausible (a stale or broken quote) against how
+    the stock actually moves. Until 2026-09-23 only the Drafter path passed
+    it, so on the live Bull/Bear path the band was silently skipped."""
+    days_to_earnings: int | None = None
+    """``context["options_context"]["days_to_earnings"]``. Copied onto the
+    selected leg for ``earnings_blackout`` to re-check. Still None in
+    production until an earnings source is wired (PLAN_PLATFORM §D P0), but
+    carried now so the blackout works the day that lands, on both paths."""
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -812,6 +823,8 @@ class ToolGuard:
                 conviction=conviction,
                 candidates=candidates,
                 now=now,
+                days_to_earnings=ctx.days_to_earnings,
+                realized_vol_pct=ctx.realized_vol_pct,
             )
         )
         if selection.selected is None:
