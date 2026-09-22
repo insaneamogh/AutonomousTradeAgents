@@ -1,30 +1,44 @@
 # Agent Collaboration Guide — Autonomous Trading App
 
-**Read this fully before writing any code. Then read [`docs/HACKATHON.md`](docs/HACKATHON.md).
+**Read this fully before writing any code. Then read [`docs/PLAN_PLATFORM.md`](docs/PLAN_PLATFORM.md).
 If you are touching anything options-related, also read
 [`docs/OPTIONS_PLAYBOOK.md`](docs/OPTIONS_PLAYBOOK.md) — it is the authoritative
 rule set, derived from the code, and §5 lists the traps that have already bitten.**
 
 **Work queued for you, in priority order.**
 
-> ## 🔴 READ FIRST — the submission runs on an account that does not exist yet
+> ## 🔴 READ FIRST — [`docs/PLAN_PLATFORM.md`](docs/PLAN_PLATFORM.md) is the work queue
 >
-> The hackathon rules (fetched 2026-09-02) require a **brand-new Alpaca
-> paper account at $100,000** for judging, and state that a project run
-> on a reused account **is not eligible**. The account in use is a reused
-> development one, so its P&L — including the ~-$800 currently showing —
-> **cannot be submitted and does not matter.**
+> The hackathon ended 2026-09-04. The operator approved a new plan on
+> 2026-09-23, and it supersedes everything below where they disagree.
 >
-> Nothing else in this file is worth doing before that account exists.
-> Full checklist: [`docs/RAILWAY_CHECKS.md`](docs/RAILWAY_CHECKS.md).
+> **What changed:** a 6-year backtest of the production `best_strategy`
+> (13,403 signals, `tests/eval/signal_backtest.py`) found **no edge at any
+> horizon**: hit rate 49.3-50.9%, every |z| < 1. Exit replay over the 21
+> real option paths shows every exit ladder losing money. The book lost
+> money because it had no edge and paid theta and spread anyway.
+> Tuning exits, thresholds or the LLM cannot fix that. **Nothing new trades
+> until it passes the backtest acceptance bar** (plan Phase 3).
+>
+> **Operator decisions recorded in the plan:** trade each thesis in the
+> instrument that matches its horizon (equity for momentum/trend, long
+> options only past an expected-move gate, debit spreads preferred);
+> ~$100/mo for real-time SIP+OPRA data; the LLM becomes an event
+> interpreter plus veto (it no longer picks direction); LLM moves to z.ai
+> GLM via `LLM_PROVIDER=glm` (see `docs/PROVIDERS.md`).
+>
+> **Live state:** the drawdown breaker latched 2026-09-08 (-3.01%), and the
+> Anthropic key was removed 2026-09-11. The desk has been 100% HOLD since.
 
-**Current state, 2026-09-02.** Read these three before starting:
+**Hackathon-era docs, kept for reference.** Where one disagrees with the
+plan above, the plan wins:
 
 | Doc | What it is |
 |---|---|
-| [`docs/RAILWAY_CHECKS.md`](docs/RAILWAY_CHECKS.md) | Every deployment check, ranked by consequence. §1 and §2 are eligibility gates. |
+| [`docs/RAILWAY_CHECKS.md`](docs/RAILWAY_CHECKS.md) | Every deployment check, ranked by consequence. §1 and §2 were eligibility gates. |
 | [`docs/AGENT_SCORING_AND_TOOLS.md`](docs/AGENT_SCORING_AND_TOOLS.md) | The two scoring numbers, the funnel, and what the guard re-derives on every tool call. |
 | [`docs/PLAN_1000_SYMBOL_SCAN.md`](docs/PLAN_1000_SYMBOL_SCAN.md) | Tiered scan to ~1000 symbols, with the one number in the original ask that cannot work and why. |
+| [`docs/PLAN_ENTRY_EDGE.md`](docs/PLAN_ENTRY_EDGE.md) | Why the book loses (entry quality), and the `expected_move_below_breakeven` gate. Plan Phase 4. |
 
 **Verification that runs offline, in under a second, with no keys:**
 

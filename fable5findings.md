@@ -4,6 +4,52 @@
 >
 > **Everything from here to the `# Build log
 
+### 2026-09-23 — 0281274d4 fix(risk): revert the submission-day premium cap; Phase 0 of PLAN_PLATFORM
+- Operator asked for a whole-repo analysis: why paper trading lost, how far
+  we are from a real autonomous platform, which data sources to add, a less
+  defensive LLM, and a move to z.ai. The answer is `docs/PLAN_PLATFORM.md`,
+  approved the same day. It is now the work queue, and CLAUDE.md points at it.
+- **Headline, measured rather than argued:** the loss is an EDGE problem.
+  17e9296f4's backtest found no edge at any horizon, so tuning exits,
+  thresholds or the LLM cannot fix it. Nothing new trades until a signal
+  passes the Phase 3 acceptance bar.
+- **Operator decisions:** trade each thesis in the instrument that matches
+  its horizon; ~$100/mo for SIP+OPRA real-time data; the LLM becomes an
+  event interpreter plus veto; `posthackathon` fast-forwarded into `main`.
+- **`posthackathon` had never been pushed.** 18 commits (every Sep 7-21
+  finding, the GLM provider, the backtests) lived only on this laptop. They
+  are now on origin, and `main` = a0ad3917f fast-forward.
+- Phase 0 items:
+  - **Date-bomb fixtures:** already fixed by 9120fc854 (clock injection).
+    Full suite on the merged main: 1691 passed / 11 skipped / 0 failed.
+  - **Premium cap 11.0 -> 7.5:** the submission-day widening flagged "revert
+    after" on Sep 4, which nothing reverted for 19 days. Now 7.5 x 40% = 3.00%,
+    exactly the halt, with no declared tail. The desktop caption goes
+    "1.5%/11%" -> "1.5%/7.5%".
+- **Found in the analysis, queued in the plan and NOT fixed yet** (Phase 2 unless noted):
+  - Technical/macro analysts are never told the direction being scored, so a
+    correct bearish read depresses the specialist average on puts.
+  - The macro prompt's "DXY > 105" rule is applied to FRED DTWEXBGS, a
+    different index that sits around 120, so "strong dollar" is always on.
+    NOT checked against live FRED values in this session.
+  - The day/hour LLM caps count before the duplicate skip, and escalation
+    consumes symbol slots.
+  - The guard's `select_contract` omits `realized_vol_pct`/`days_to_earnings`.
+  - `ret_252d_pct` needs 253 bars but ~220 are fetched, so momentum's
+    12-month leg is always neutral (Phase 1 data).
+- **VERIFIED:**
+  - test_risk_profiles 19/19.
+  - Revert-check: with 11.0 restored and no declared tail, 4 tests fail,
+    including the halt-coupling invariant. Restored: all pass.
+  - Full suite 1691/11 skipped. Jest 123/123. tsc clean.
+- **NOT verified:** anything live. The Railway token in this session still
+  sees only two unrelated projects, so the deployed service, its env and the
+  breaker state were not inspected. The cap revert takes effect on the next
+  deploy.
+- **Next:** Phase 1, the z.ai cutover (glm-5.3 / glm-5.3-flash price rows,
+  hardcoded model id, auth header, JSON extraction, input-snapshot hash).
+
+
 ### 2026-09-21 — f3ecd79a3 feat(alpha): the AlphaModel/Signal seam
 - PLAN §C. `AlphaModel` protocol + `Signal` in `packages/engine/engine/alpha/`;
   `StrategyFitAlpha` adapter in `apps/agents/trading_agents/strategies/alpha.py`.
