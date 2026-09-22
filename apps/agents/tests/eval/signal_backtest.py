@@ -225,6 +225,16 @@ def report(signals: list[Signal], *, by_strategy: bool = False) -> None:
     print("  |z| < 1.96 means not distinguishable from a coin flip, and five")
     print("  horizons are tested — one crossing by chance would be unremarkable.")
 
+    # The verdict, drawn by code rather than by reading the table above.
+    # Equity costs (10 bps round trip); an options candidate must also pass
+    # tests.eval.option_backtest, which charges spread and theta.
+    from tests.eval.acceptance import Observation, evaluate
+
+    print("\n  acceptance bar (net of 10 bps, Bonferroni over the horizons):\n")
+    for h in HORIZONS:
+        obs = [Observation(day=s.day, ret_pct=s.fwd[h]) for s in non_overlapping(signals, h)]
+        print(f"  {h:>3}d  {evaluate(obs, n_tests=len(HORIZONS)).line()}")
+
     if not by_strategy:
         return
     print("\n  by strategy, at each strategy's OWN horizon:\n")

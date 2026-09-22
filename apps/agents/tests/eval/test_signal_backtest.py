@@ -99,3 +99,15 @@ def test_the_two_day_hold_is_not_specially_bad(signals) -> None:
         "2d and 60d now differ materially — the horizon hypothesis would be "
         "back on the table and worth re-testing properly"
     )
+
+
+def test_the_shipped_signal_fails_the_acceptance_bar_at_every_horizon(signals) -> None:
+    """The "no edge" finding, re-stated through the bar every future
+    candidate must clear. If this ever passes, something changed in the
+    signal or the bar, and either change needs a build-log entry."""
+    from tests.eval.acceptance import Observation, evaluate
+
+    for h in HORIZONS:
+        obs = [Observation(day=s.day, ret_pct=s.fwd[h]) for s in non_overlapping(signals, h)]
+        verdict = evaluate(obs, n_tests=len(HORIZONS))
+        assert not verdict.passed, f"{h}d unexpectedly passed: {verdict.line()}"
