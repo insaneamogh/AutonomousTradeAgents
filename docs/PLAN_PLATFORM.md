@@ -14,7 +14,15 @@
 >   `LLM_PROVIDER=glm`.
 > - Phase 2 is DONE (5f1b81342, dfa802d60, 0b485faf7, f35909465). The
 >   per-position TP was deliberately left unhonoured (see the build log).
-> - Next is Phase 3.
+> - Phase 3 is BUILT (9b1893398, 67ab2110d, a99b4704f, and the candidates
+>   commit). Its findings: the shipped signal loses 5-8% of premium per
+>   trade, while a perfect-direction oracle keeps +37-43%, so the vehicle
+>   is fine and the signal is the loss. Two pre-registered price-only
+>   candidates also fail. §D P0 data and Phase 5b are now the critical
+>   path. **Shadow mode until a candidate clears the bar.**
+> - The forecast scorecard is written but has NOT yet been run on
+>   production. That needs the operator (`railway run`).
+> - Next is Phase 4.
 
 
 ## Context

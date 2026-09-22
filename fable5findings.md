@@ -4,6 +4,45 @@
 >
 > **Everything from here to the `# Build log
 
+### 2026-09-23 — 9b1893398..(this) — PLAN_PLATFORM Phase 3: the research harness, and what it says
+- **Acceptance bar (9b1893398).** Pure code, drawn before looking:
+  independent observations, net of costs, t of the MEAN (not the hit
+  rate), Bonferroni, stable halves, and >= 4 years of signal span. The 4
+  was lowered from 5 after the first run; the docstring records why, and
+  no verdict changed.
+  - Finding: at the 2-day hold the live desk used, the shipped signal is
+    significantly NEGATIVE after 10 bps (t = -4.60).
+- **Forecast scorecard (67ab2110d).** Retroactive, needs no migration. It
+  scores every strategy_fit, Bull, Bear and council view on the
+  underlying, with calibration by conviction and Bull-vs-Bear on the
+  disagreements. **NOT yet run on production** (the DB is unreachable
+  from here). This run decides whether Bull/Bear direction-picking earns
+  its cost:
+  `railway run -s AutonomousTradeAgents python -m tests.eval.forecast_scorecard`
+- **Option-premium backtest + BS pricing (a99b4704f).** Shipped signal:
+  -5 to -8% of premium per trade at every horizon (t down to -12.4).
+  Perfect-direction ORACLE: +37 to +43%. **The option vehicle is fine; the
+  signal is the loss.** IV proxy vs IV actually paid: median 1.00 (n=3,
+  a sanity check only).
+- **Candidates (this commit).** Short-term reversal (5d) and 12-1 momentum
+  (60d, equity) were pre-registered from the literature and run once.
+  Both FAIL (t -0.72 and +0.66). That makes three price-only signals with
+  no edge on 58 large caps.
+- **What it means for the plan:**
+  - §D P0 data (earnings calendar, estimate revisions) and Phase 5b
+    (event interpreter) are now the critical path. Edge has to come from
+    information the bars don't already hold.
+  - **Recommend shadow mode.** Keep `AUTO_TRADE_ENABLED` off. Once a
+    provider key is set, let the council run so forecasts accumulate.
+    Trade nothing live until a candidate clears the bar.
+- **VERIFIED:** acceptance 7 tests plus the shipped-signal pin; scorecard
+  10 (2 revert-checks); pricing 11; option backtest 6 (2 revert-checks);
+  candidates 3. Full suite 1771+ passed / 11 skipped. ruff at baseline.
+- **Next:** Phase 4, the `expected_move_below_breakeven` gate (buildable
+  now on `engine.options.pricing`) and the regime gate. Then Phase 6 ops
+  (alerting, kill switch).
+
+
 ### 2026-09-23 — 5f1b81342 / dfa802d60 / 0b485faf7 / f35909465 — PLAN_PLATFORM Phase 2: the "too defensive" bugs
 - The operator's complaint was that the LLM pass is too defensive. Part of
   that is real and was bugs. Part is the confidence floor doing its job
