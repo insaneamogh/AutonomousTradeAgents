@@ -202,6 +202,19 @@ def compute_cost_usd(
 # ─────────────────────────────────────────────────────────────────────
 
 
+NON_ENTRY_ROLES: frozenset[str] = frozenset({"options_escalation", "reflection"})
+"""Roles whose calls are real SPEND but not a paid ENTRY pass.
+
+`count_runs_since` backs MAX_LLM_SYMBOLS_PER_DAY/HOUR, which ration how
+many symbols get debated for a possible entry. Escalation reviews an OPEN
+position and runs under that position's original `council_run_id`. On
+any day after entry, that id is outside the window, so each escalated
+position used to count as a fresh "symbol" and ate an entry slot, and
+escalation can fire on every 30s fleet tick. Reflection is a daily
+bookkeeping pass. Both still count in full toward MAX_DAILY_LLM_SPEND_USD
+through `sum_cost_since`, because dollars are dollars."""
+
+
 @dataclass
 class LedgerEntry:
     id: str = field(default_factory=lambda: f"llm-{uuid.uuid4().hex[:12]}")
@@ -294,6 +307,7 @@ class InMemoryCostLedger:
             r.council_run_id for r in self._rows
             if r.called_at >= cutoff
             and r.council_run_id
+            and r.role not in NON_ENTRY_ROLES
             and (not exclude_mock or not r.is_mock)
         })
 

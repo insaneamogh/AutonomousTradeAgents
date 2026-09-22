@@ -759,6 +759,27 @@ async def main(
         (sym for sym, score in scores.items() if score is not None),
         key=lambda sym: (-convictions.get(sym, 0.0), -scores[sym], sym),
     )
+    # Dedup BEFORE admission, not only inside `_run_one`. Admission is a
+    # deterministic top-N, so a name already decided today (or inside its
+    # options cooldown) ranked in the same slot on every sweep. It took an
+    # admission slot, bumped the day/hour counters below, and was then
+    # skipped by `_run_one` without making a single model call. With the
+    # 4-per-hour pacing cap that meant the SAME already-decided names could
+    # consume the hour's budget every sweep while fresh candidates were
+    # reported as "cap reached". `force` still bypasses dedup, as documented.
+    recently_decided: set[str] = set()
+    if not force:
+        for sym in candidates:
+            try:
+                if await _should_skip(
+                    user_id, sym, (instrument_by_symbol or {}).get(sym, "equity")
+                ):
+                    recently_decided.add(sym)
+            except Exception:
+                # Fail open to the old path: `_run_one` re-checks, so a DB
+                # hiccup here costs at most one mis-spent slot, never a pass.
+                log.warning("pre-admission dedup check failed for %s", sym, exc_info=True)
+        candidates = [s_ for s_ in candidates if s_ not in recently_decided]
     # Quality floor, applied BEFORE the per-sweep cap so a weak setup
     # cannot occupy a slot that the caps then deny to a better one later
     # in the session. A filtered symbol is treated exactly like a
@@ -860,6 +881,12 @@ async def main(
     for symbol in sweep_order:
         try:
             score = scores.get(symbol)
+            if symbol in recently_decided:
+                rolled_up.append({
+                    "symbol": symbol, "skipped": True,
+                    "skip_reason": "recently_decided",
+                })
+                continue
             if symbol in below_floor:
                 # Its own reason, not the cap's. "We ran out of budget" and
                 # "this setup was not good enough to pay for" are different

@@ -647,3 +647,41 @@ async def test_on_sweep_scored_recorder_raising_does_not_fail_the_cron(
     )
 
     assert rc == 0
+
+
+# ── Dedup before admission ───────────────────────────────────────────
+
+
+def _patch_recently_decided(monkeypatch: pytest.MonkeyPatch, decided: set[str]) -> None:
+    from trading_agents.jobs import daily_cron
+
+    async def _fake_should_skip(user_id: str, symbol: str, instrument: str) -> bool:
+        return symbol in decided
+
+    monkeypatch.setattr(daily_cron, "_should_skip", _fake_should_skip)
+
+
+async def test_an_already_decided_top_name_does_not_burn_the_hourly_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Admission is a deterministic top-N. The top name, decided earlier
+    today, used to take the slot, bump the hour counter, then be skipped by
+    `_run_one` without a model call. With 1/hour, the fresh second name
+    never ran, and the same thing repeated on every sweep."""
+    _patch_recently_decided(monkeypatch, {"AAA"})
+    calls = await _run_main(
+        monkeypatch, ["AAA", "BBB"], {"AAA": 0.9, "BBB": 0.8},
+        MAX_LLM_SYMBOLS_PER_HOUR="1", MAX_LLM_SYMBOLS_PER_SWEEP="15",
+    )
+    assert calls == ["BBB"]
+
+
+async def test_an_already_decided_top_name_does_not_take_the_sweep_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_recently_decided(monkeypatch, {"AAA"})
+    calls = await _run_main(
+        monkeypatch, ["AAA", "BBB"], {"AAA": 0.9, "BBB": 0.8},
+        MAX_LLM_SYMBOLS_PER_SWEEP="1",
+    )
+    assert calls == ["BBB"]

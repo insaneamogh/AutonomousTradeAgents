@@ -247,3 +247,68 @@ async def test_backfill_decision_id_never_clobbers_an_already_attributed_row() -
 
     rows = await ledger.all()
     assert rows[0].agent_decision_id == "dec-original"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# count_runs_since counts ENTRY passes, not every paid call
+# ─────────────────────────────────────────────────────────────────────
+
+
+async def test_escalation_and_reflection_do_not_consume_entry_symbol_slots() -> None:
+    """Escalation runs under the open position's ORIGINAL council_run_id.
+    On any day after entry that id is outside the window, so each escalated
+    position counted as a fresh paid "symbol" and ate an entry slot, and
+    escalation can fire on every 30s fleet tick. The dollars still count
+    toward the spend cap; only the entry-pass COUNT excludes them."""
+    ledger = InMemoryCostLedger()
+    await ledger.record(LedgerEntry(model="glm-5.3", role="options_bull",
+                                    council_run_id="entry-1", cost_usd=0.01))
+    await ledger.record(LedgerEntry(model="glm-5.3", role="options_escalation",
+                                    council_run_id="position-opened-last-week",
+                                    cost_usd=0.02))
+    await ledger.record(LedgerEntry(model="glm-5.3", role="reflection",
+                                    council_run_id="reflect-1", cost_usd=0.03))
+
+    assert await ledger.count_runs_since(timedelta(days=1)) == 1
+    total, n = await ledger.sum_cost_since(timedelta(days=1))
+    assert total == pytest.approx(0.06), "escalation/reflection spend still counts"
+    assert n == 3
+
+
+async def test_postgres_run_count_filters_the_same_roles() -> None:
+    """Same number in two places (CLAUDE.md 4.4): the Postgres ledger must
+    apply the SAME exclusion, or production and tests disagree. Asserted on
+    the SQL it actually executes, captured from a fake session, so no
+    database is needed."""
+    from sqlalchemy.dialects import postgresql
+
+    from trading_agents.memory.cost_ledger_postgres import PostgresCostLedger
+
+    captured: list[object] = []
+
+    class _Result:
+        def scalar_one(self) -> int:
+            return 0
+
+    class _Session:
+        async def __aenter__(self) -> _Session:
+            return self
+
+        async def __aexit__(self, *_exc: object) -> None:
+            return None
+
+        async def execute(self, stmt: object) -> _Result:
+            captured.append(stmt)
+            return _Result()
+
+    ledger = PostgresCostLedger.__new__(PostgresCostLedger)
+    ledger._session_factory = lambda: _Session()  # type: ignore[attr-defined]
+    await ledger.count_runs_since(timedelta(days=1))
+
+    sql = str(
+        captured[0].compile(  # type: ignore[attr-defined]
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
+    assert "role NOT IN" in sql
+    assert "'options_escalation'" in sql and "'reflection'" in sql

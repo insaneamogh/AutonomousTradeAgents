@@ -33,6 +33,7 @@ const CAPPED_REASON_LABEL: Record<string, string> = {
   llm_daily_symbol_cap_reached: 'Daily LLM symbol cap reached',
   llm_hourly_symbol_cap_reached: 'Hourly LLM symbol cap reached',
   llm_daily_budget_exhausted: 'Daily LLM budget exhausted',
+  recently_decided: 'Already decided today (or in options cooldown)',
 };
 
 function cappedReasonLabel(reason: string): string {

@@ -26,7 +26,7 @@ from sqlalchemy import func, select, update
 
 from engine.db import async_session_factory
 from engine.db.models import LlmCall
-from trading_agents.cost_ledger import LedgerEntry
+from trading_agents.cost_ledger import NON_ENTRY_ROLES, LedgerEntry
 
 logger = logging.getLogger("agents.cost.postgres")
 
@@ -94,6 +94,7 @@ class PostgresCostLedger:
         stmt = select(func.count(func.distinct(LlmCall.council_run_id))).where(
             LlmCall.called_at >= cutoff,
             LlmCall.council_run_id.is_not(None),
+            LlmCall.role.not_in(NON_ENTRY_ROLES),
         )
         if exclude_mock:
             stmt = stmt.where(LlmCall.is_mock.is_(False))
