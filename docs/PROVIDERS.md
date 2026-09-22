@@ -8,7 +8,7 @@ and stop the desk on 2026-09-11.
 | Provider | `LLM_PROVIDER` | Key | 1M in + 200k out |
 |---|---|---|---|
 | Anthropic | *(unset)* | `ANTHROPIC_API_KEY` | **$6.000** |
-| GLM (Z.ai) | `glm` | `GLM_API_KEY` *(or `ZAI_API_KEY`)* | **$0.778** |
+| GLM (Z.ai) | `glm` | `GLM_API_KEY` *(or `ZAI_API_KEY`)* | **$2.28** glm-5.3 · **$0.25** glm-5.3-flash |
 | TypeSafe Jev | `jev` | `TYPESAFE_API_KEY` | **$0.042** |
 
 **Read this before reading the table as a recommendation.** The 6-year
@@ -47,6 +47,22 @@ separates for you:
 - **`abstained True`** — the call or the parse failed. The snapshot is
   unambiguous, so "no view" here is a transport or contract fault, not a
   market read.
+- **`no tool_use block came back`** (added 2026-09-23) — a second live call
+  checks TOOL calling, which the options trade hop depends on. It prints
+  `stop_reason` and `output_tokens`: `max_tokens` with no block means a
+  reasoning model spent the budget thinking. If that happens, raise the
+  token budget or disable thinking. Do not ship it and read the HOLDs as
+  market judgement.
+
+**Auth.** Z.ai documents this endpoint with `ANTHROPIC_AUTH_TOKEN`
+(`Authorization: Bearer`). The client sends the GLM key as both
+`Authorization: Bearer` and `X-Api-Key`, so either scheme works, and it
+never falls back to an `ANTHROPIC_API_KEY` found in the environment.
+
+**Use a pay-as-you-go API key, not the GLM Coding Plan.** Z.ai's
+Claude-Code docs present this endpoint under the Coding Plan, which is
+sold for coding tools. Check Z.ai's current terms before running a trading
+desk on a Coding Plan key.
 
 ---
 
@@ -134,13 +150,17 @@ GLM tier with `GLM_MODEL_*`, add a price row for the new id.**
 
 ## Model ids drift
 
-Z.ai revs GLM faster than we deploy — their docs already advertise GLM-5.3
-while our defaults are `glm-4.6` / `glm-4.5-air`. The defaults stay where
-they are because those are the ids the cost ledger has price rows for.
-Repoint a tier from Railway rather than shipping a code change:
+Defaults as of 2026-09-23: reasoning tier (`Model.SONNET`/`Model.OPUS`) ->
+`glm-5.3` ($1.40/$4.40 per M), fast tier (`Model.HAIKU`) -> `glm-5.3-flash`
+($0.15/$0.50). Price rows exist for those and for `glm-4.7`, `glm-4.6`,
+`glm-4.5-air`, all at Z.ai's published list prices.
+`test_every_default_glm_tier_is_priced` fails if a default ever lacks a row.
+
+Z.ai revs GLM faster than we deploy. Repoint a tier from Railway rather
+than shipping a code change, and add a price row for any new id:
 
 ```bash
-railway variables --service AutonomousTradeAgents --set "GLM_MODEL_SONNET=glm-5.3"
+railway variables --service AutonomousTradeAgents --set "GLM_MODEL_SONNET=glm-4.7"
 ```
 
 Jev is four days into early access as of 2026-09-19. Its specs may move.
@@ -154,7 +174,9 @@ Jev is four days into early access as of 2026-09-19. Its specs may move.
 non-JSON handled, abstain on every failure path, pricing, and that Jev and
 the prose providers produce the same `Decision`.
 
-**NOT verified:** a live round trip against either endpoint. There is no
+**NOT verified:** a live round trip against either endpoint, including
+whether `glm-5.3`/`glm-5.3-flash` are served on the Anthropic-compatible
+path and whether GLM tool calling returns `tool_use` blocks. There is no
 `GLM_API_KEY` or `TYPESAFE_API_KEY` on this machine. `provider_check
 --live` is the thing that closes that gap, and it has never been run
 against a real key.

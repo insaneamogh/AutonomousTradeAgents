@@ -38,6 +38,24 @@ to prove the transport works, and a probe whose input changes every run
 cannot tell a provider outage from the market simply having moved."""
 
 
+_TOOL_ASK = "\n\nRecord your view by calling the report_direction tool."
+
+_PROBE_TOOL = {
+    "name": "report_direction",
+    "description": "Record a directional view on the instrument.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "direction": {"type": "string", "enum": ["long", "short", "neutral"]},
+            "conviction": {"type": "number", "minimum": 0, "maximum": 1},
+        },
+        "required": ["direction", "conviction"],
+    },
+}
+"""Shaped like the real `open_option_trade` call (enum + bounded number,
+both required) but with nothing that could be mistaken for an order."""
+
+
 def _mask(key: str) -> str:
     return f"present ({len(key)} chars)" if key else "MISSING"
 
@@ -111,6 +129,37 @@ async def main() -> int:
         # call or the parse broke. Check the log line above this output.
         print("\nFAIL: the provider abstained — transport or contract failure.")
         return 1
+
+    if provider != "jev":
+        # Tool calling is a separate contract from JSON-in-text, and the
+        # options trade hop depends on it: it must emit an
+        # `open_option_trade` tool_use block, and a provider that answers in
+        # prose instead produces a silent HOLD rather than an error. So it
+        # gets its own probe. `stop_reason` and output tokens are printed
+        # because a reasoning model that spends the budget thinking shows up
+        # here as `max_tokens` with no block.
+        print(f"\ntool call via {provider}...")
+        t0 = time.monotonic()
+        resp = await llm.complete_tools(
+            system=_SYSTEM,
+            messages=[{"role": "user", "content": _USER + _TOOL_ASK}],
+            tools=[_PROBE_TOOL],
+            model=Model.SONNET,
+            max_tokens=1024,
+        )
+        elapsed = time.monotonic() - t0
+        print(f"  elapsed         {elapsed:.2f}s")
+        print(f"  model           {resp.model}")
+        print(f"  stop_reason     {resp.stop_reason}")
+        print(f"  output_tokens   {resp.output_tokens}")
+        called = [c for c in resp.tool_calls if c.name == _PROBE_TOOL["name"]]
+        if not called:
+            print("\nFAIL: no tool_use block came back. The options trade hop")
+            print("      would HOLD on every pass with this provider.")
+            if resp.text:
+                print(f"      text instead: {resp.text[:160]!r}")
+            return 1
+        print(f"  tool input      {called[0].input}")
 
     per_pass = compute_cost_usd(model=d.model, input_tokens=4000, output_tokens=600)
     print(f"\nOK. A ~4k-in/600-out council call on {d.model} costs ${per_pass:.6f}")

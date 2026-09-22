@@ -60,29 +60,51 @@ _PRICES: dict[str, ModelPrice] = {
         cache_read_per_million=0.30,
         cache_creation_per_million=3.75,
     ),
-    # GLM 4.6 (Z.ai, Anthropic-compatible endpoint). Roughly 7x cheaper in
-    # and 8.6x cheaper out than Sonnet — the reason the provider option
-    # exists at all. Without these rows `_FALLBACK_PRICE` would bill GLM at
-    # Sonnet rates and the ledger would report a saving that never happened,
-    # which is worse than no saving: the whole point is to MEASURE whether
-    # the cheaper model is worth its quality cost.
+    # GLM (Z.ai, Anthropic-compatible endpoint). Without these rows
+    # `_FALLBACK_PRICE` would bill GLM at Sonnet rates and the ledger would
+    # report a saving that never happened. That is worse than no saving,
+    # because the whole point is to MEASURE whether the cheaper model is
+    # worth its quality cost, and it also trips MAX_DAILY_LLM_SPEND_USD on
+    # phantom spend.
     #
-    # Z.ai does not publish Anthropic-style cache pricing; the cache rows
-    # mirror the Anthropic ratios (10% read, 125% creation) so a cache hit
-    # is never counted as free. If that is wrong it over-states GLM's cost,
-    # which is the safe direction for a cost-control feature.
-    "glm-4.6": ModelPrice(
-        input_per_million=0.43,
-        output_per_million=1.74,
-        cache_read_per_million=0.043,
-        cache_creation_per_million=0.54,
+    # Numbers are Z.ai's published list prices, docs.z.ai pricing page,
+    # fetched 2026-09-23. Z.ai now publishes a cached-input price, and cache
+    # storage is listed as free, so cache CREATION is billed at the base
+    # input rate (no Anthropic-style 125% write premium). The old glm-4.6 row
+    # (0.43/1.74) had drifted below the published 0.60/2.20. It understated
+    # cost, the unsafe direction for a spend cap.
+    #
+    # Every id in llm._GLM_MODEL_MAP must have a row here, pinned by
+    # test_every_default_glm_tier_is_priced.
+    "glm-5.3": ModelPrice(  # reasoning tier default
+        input_per_million=1.40,
+        output_per_million=4.40,
+        cache_read_per_million=0.26,
+        cache_creation_per_million=1.40,
     ),
-    # GLM 4.5 Air — the small tier, standing in for Haiku.
-    "glm-4.5-air": ModelPrice(
+    "glm-5.3-flash": ModelPrice(  # fast tier default
+        input_per_million=0.15,
+        output_per_million=0.50,
+        cache_read_per_million=0.03,
+        cache_creation_per_million=0.15,
+    ),
+    "glm-4.7": ModelPrice(  # Z.ai's own Claude-Code default for the Sonnet tier
+        input_per_million=0.60,
+        output_per_million=2.20,
+        cache_read_per_million=0.11,
+        cache_creation_per_million=0.60,
+    ),
+    "glm-4.6": ModelPrice(  # the previous default; kept so old ledger rows re-price
+        input_per_million=0.60,
+        output_per_million=2.20,
+        cache_read_per_million=0.11,
+        cache_creation_per_million=0.60,
+    ),
+    "glm-4.5-air": ModelPrice(  # the previous fast-tier default
         input_per_million=0.20,
         output_per_million=1.10,
-        cache_read_per_million=0.02,
-        cache_creation_per_million=0.25,
+        cache_read_per_million=0.03,
+        cache_creation_per_million=0.20,
     ),
     # TypeSafe Jev — a structured-decision model. Output is GENUINELY FREE:
     # it returns a typed choice/score, so there is no generated text to

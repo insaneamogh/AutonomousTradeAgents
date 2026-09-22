@@ -61,21 +61,26 @@ serve `complete()` or `complete_with_tools()`, only the structured
 tool call falls back to mock rather than silently returning nothing."""
 
 _GLM_MODEL_MAP: dict[str, str] = {
-    Model.OPUS: "glm-4.6",
-    Model.SONNET: "glm-4.6",
-    Model.HAIKU: "glm-4.5-air",
+    Model.OPUS: "glm-5.3",
+    Model.SONNET: "glm-5.3",
+    Model.HAIKU: "glm-5.3-flash",
 }
 """Claude tier -> GLM model. Mapped by TIER, not by name, so a caller
 asking for `Model.SONNET` keeps asking for "the reasoning tier" and this
 table decides what serves it.
 
+Current Z.ai generation as of 2026-09-23 (docs.z.ai pricing): glm-5.3 at
+$1.40/$4.40 per M for reasoning, glm-5.3-flash at $0.15/$0.50 for the fast
+tier. Every default here MUST have a `cost_ledger._PRICES` row —
+`test_every_default_glm_tier_is_priced` fails otherwise, because an
+unpriced id is billed at Sonnet rates and the $3/day cap trips on spend
+that never happened.
+
 These are DEFAULTS, overridable per tier from the environment (below).
-Z.ai revs GLM faster than we deploy — their docs already advertise GLM-5.3
-while this table pins 4.6 — and a model id going stale must be a Railway
-variable change, not a code change and a redeploy. The defaults stay at
-4.6/4.5-air because those are the ids `cost_ledger` actually has price rows
-for; point a tier at a newer model and the ledger will warn that it is
-billing it at Sonnet rates until a row is added."""
+Z.ai revs GLM faster than we deploy, and a model id going stale must be a
+Railway variable change, not a code change and a redeploy. Point a tier at
+a model with no price row and the ledger warns that it is billing it at
+Sonnet rates until a row is added."""
 
 _GLM_TIER_ENV = {
     Model.OPUS: "GLM_MODEL_OPUS",
@@ -333,6 +338,15 @@ class LLM:
                 kwargs["base_url"] = os.environ.get(
                     "GLM_BASE_URL", _GLM_BASE_URL
                 ).strip() or _GLM_BASE_URL
+                # Z.ai documents its Anthropic-compatible endpoint with
+                # ANTHROPIC_AUTH_TOKEN, i.e. `Authorization: Bearer`, while
+                # `api_key` alone makes the SDK send only `X-Api-Key`. With
+                # both set the SDK sends both headers, and both carry the GLM
+                # key, so the endpoint authenticates whichever it reads.
+                # `api_key` stays explicitly set for a second reason: were it
+                # None, the SDK would fall back to ANTHROPIC_API_KEY from the
+                # environment and send an Anthropic key to Z.ai.
+                kwargs["auth_token"] = self._api_key
             self._client = AsyncAnthropic(**kwargs)
         return self._client
 
@@ -631,12 +645,49 @@ class LLM:
 
     @staticmethod
     def parse_json(text: str) -> dict[str, Any]:
-        """Lenient JSON parse — strips Markdown fences if the model wrapped its output."""
+        """Lenient JSON parse: fenced, bare, or embedded in prose.
+
+        Stripping a leading fence is enough for Claude, which returns the
+        object alone. GLM routinely wraps it: a sentence first, the object,
+        then a note. Before this, that shape raised, `complete_json`
+        re-asked (a second paid call), and a second prose reply degraded
+        the node to its neutral fallback. That made the cheaper provider
+        look MORE defensive for a formatting reason rather than a judgement
+        one. Every node's JSON goes through here, so this is the one fix.
+
+        When the reply holds several top-level objects, the LAST one wins.
+        Models that reason before answering put the answer last, and an
+        early `{...}` is far more often an example or a restated input than
+        the verdict.
+
+        Raises ``ValueError`` when no JSON object is present, so
+        ``complete_json``'s re-ask and degraded path is unchanged.
+        """
         cleaned = text.strip()
         if cleaned.startswith("```"):
             cleaned = re.sub(r"^```(json)?\n?", "", cleaned)
             cleaned = re.sub(r"\n?```$", "", cleaned)
-        return json.loads(cleaned.strip())
+        cleaned = cleaned.strip()
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            pass
+
+        decoder = json.JSONDecoder()
+        found: dict[str, Any] | None = None
+        i = cleaned.find("{")
+        while i != -1:
+            try:
+                obj, end = decoder.raw_decode(cleaned, i)
+            except json.JSONDecodeError:
+                i = cleaned.find("{", i + 1)
+                continue
+            if isinstance(obj, dict):
+                found = obj
+            i = cleaned.find("{", end)
+        if found is None:
+            raise ValueError("no JSON object found in model output")
+        return found
 
 
 

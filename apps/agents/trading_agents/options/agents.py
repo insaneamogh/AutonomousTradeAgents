@@ -85,7 +85,7 @@ def _options_model() -> str:
     raw = os.environ.get("OPTIONS_AGENT_MODEL", "").strip().lower()
     if raw in ("haiku", Model.HAIKU):
         return Model.HAIKU
-    if raw in ("opus", "claude-opus-4-7"):
+    if raw in ("opus", Model.OPUS):
         return Model.OPUS
     if raw and raw not in ("sonnet", Model.SONNET):
         logger.warning(
