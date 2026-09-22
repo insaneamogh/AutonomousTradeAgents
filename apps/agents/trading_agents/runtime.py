@@ -16,7 +16,9 @@ log instance (typically one-per-process in the API or one-per-CLI-invocation).
 
 from __future__ import annotations
 
+import hashlib
 import inspect
+import json
 import logging
 import os
 import uuid
@@ -310,7 +312,23 @@ def _to_proposal_dto(state: CouncilState) -> dict[str, Any] | None:
 # large and mostly redundant with the analyst theses; these four are the
 # ones the thesis view actually renders and the ones a post-mortem needs to
 # reconstruct what the machine was looking at.
-_SNAPSHOT_BLOCKS = ("technicals", "quant", "patterns", "news", "events", "liquidity", "asset")
+_SNAPSHOT_BLOCKS = (
+    "technicals",
+    "quant",
+    "patterns",
+    "news",
+    "events",
+    "liquidity",
+    "asset",
+    # Added 2026-09-23. All three reach a prompt (the macro analyst, the
+    # options agents' IV/earnings context, the fundamental analyst), so a
+    # decision cannot be replayed or re-scored without them. They were the
+    # gap behind the Sep 21 claim that inputs were "persisted nowhere": the
+    # other blocks WERE persisted, but these were not.
+    "macro",
+    "options_context",
+    "fundamentals",
+)
 
 
 def _reasoning_block(final: CouncilState) -> dict[str, Any]:
@@ -327,6 +345,7 @@ def _reasoning_block(final: CouncilState) -> dict[str, Any]:
     approved decisions a user asks about.
     """
     proposal = final.get("proposal") or {}
+    snapshot = _feature_snapshot(final.get("context") or {})
     return {
         "version": 1,
         "strategy_fit": final.get("strategy_fit"),
@@ -364,7 +383,8 @@ def _reasoning_block(final: CouncilState) -> dict[str, Any]:
         # in one line, and the only record of it outside the log.
         "tool_denials": list(final.get("tool_denials") or []) or None,
         "scan_triggers": (final.get("context") or {}).get("scan_triggers"),
-        "feature_snapshot": _feature_snapshot(final.get("context") or {}),
+        "feature_snapshot": snapshot,
+        "input_hash": _input_hash(snapshot),
         "degraded_nodes": list(final.get("degraded_nodes") or []),
     }
 
@@ -383,7 +403,28 @@ def _feature_snapshot(context: dict[str, Any]) -> dict[str, Any]:
         snap["last_price"] = context["last_price"]
     if context.get("portfolio_equity") is not None:
         snap["portfolio_equity"] = context["portfolio_equity"]
+    if isinstance(context.get("feature_source"), str):
+        # "alpaca" vs "synthetic". A synthetic snapshot must never be scored
+        # as if the market produced it.
+        snap["feature_source"] = context["feature_source"]
     return snap
+
+
+def _input_hash(snapshot: dict[str, Any]) -> str | None:
+    """Stable 16-hex digest of exactly what the council was shown.
+
+    Canonical JSON (sorted keys, no whitespace, `default=str` for dates) so
+    the same inputs hash the same across processes. This makes "same
+    inputs, different answer" (model variance) and "same inputs asked
+    twice" (cacheable spend) one GROUP BY instead of a JSONB diff, and it
+    is the key the Phase 5b event interpreter caches on. None for an empty
+    snapshot, because empty snapshots would all collide by absence, which
+    is exactly the artefact that faked 48.6% redundancy on 2026-09-21.
+    """
+    if not snapshot:
+        return None
+    canon = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canon.encode()).hexdigest()[:16]
 
 
 def _to_decision_entry(

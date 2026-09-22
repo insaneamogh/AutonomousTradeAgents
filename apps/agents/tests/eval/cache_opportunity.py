@@ -44,9 +44,17 @@ symbol-day and 0% redundancy** — no same-day repeat to cache at all. The
 whole period, not within a day.
 
 And even that 0% answers the wrong question: `technical` stores the
-analyst's OUTPUT, not the input features. Nothing persists the snapshot
-that produced a decision, so redundancy cannot be measured from history at
-all. Do not build the cache.
+analyst's OUTPUT, not the input features. Do not build the cache.
+
+**Correction, 2026-09-23.** The original line here said "nothing persists
+the snapshot that produced a decision". That was wrong. Since migration
+0012, `reasoning.feature_snapshot` has persisted the input blocks
+(technicals, quant, patterns, news, events, liquidity, asset, last_price).
+This script hashed the analyst-output columns instead. What really was
+missing was `macro`, `options_context` and `fundamentals`. Those are now
+persisted too, together with `reasoning.input_hash`, a canonical digest of
+the whole snapshot. A re-run should hash `reasoning->>'input_hash'`, not
+the output columns.
 """
 
 from __future__ import annotations
