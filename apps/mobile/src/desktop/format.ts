@@ -74,13 +74,13 @@ export function humanize(value: string): string {
 
 const RISK_PROFILE_CAPTIONS: Record<string, string> = {
   conservative: 'under the 1%/5% conservative caps',
-  aggressive_paper: 'under the 1.5%/11% aggressive caps',
+  aggressive_paper: 'under the 1.5%/7.5% aggressive caps',
 };
 
 /** Verified against `RiskCaps.aggressive_paper()` (packages/engine/engine/risk/types.py):
- * `options_max_premium_pct` 1.0→1.5 and `options_max_total_premium_pct` 5.0→11.0.
+ * `options_max_premium_pct` 1.0→1.5 and `options_max_total_premium_pct` 5.0→7.5 (it was 11.0 from 2026-09-04 to 2026-09-23).
  *
- * This string is shown to judges, so it has to track the code. It has drifted
+ * This string is shown to users, so it has to track the code. It has drifted
  * twice already: it read 12.0 for a day (fable5findings.md 2026-09-01
  * `ebfc8718`), and on 2026-09-04 it still said "2.5%/7.5%" when the real caps
  * were 1.5%/7.5% — the single cap had been tightened and nothing updated the

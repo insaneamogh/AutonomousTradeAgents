@@ -24,7 +24,7 @@ from engine.risk import RiskCaps
 def test_aggressive_profile_widens_the_options_premium_caps() -> None:
     caps = RiskCaps.aggressive_paper()
     assert caps.options_max_premium_pct == pytest.approx(1.5)
-    assert caps.options_max_total_premium_pct == pytest.approx(11.0)
+    assert caps.options_max_total_premium_pct == pytest.approx(7.5)
 
 
 def test_aggressive_profile_holds_at_least_five_concurrent_option_positions() -> None:
@@ -118,7 +118,7 @@ def test_risk_profile_env_selects_the_profile(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv("RISK_PROFILE", "aggressive_paper")
     caps = RiskCaps.from_env()
     assert caps.options_max_premium_pct == pytest.approx(1.5)
-    assert caps.options_max_total_premium_pct == pytest.approx(11.0)
+    assert caps.options_max_total_premium_pct == pytest.approx(7.5)
     assert caps.min_council_confidence == pytest.approx(0.48)
     # The coupled invariant must hold via from_env() too, not just the
     # bare classmethod.
@@ -228,28 +228,29 @@ def test_the_conservative_profile_never_exceeds_the_halt_ceiling() -> None:
     assert caps.exceeds_halt_ceiling is False
 
 
-def test_the_aggressive_profile_declares_the_tail_it_exceeds_the_halt_by() -> None:
-    """2026-09-04 submission-day widening, recorded rather than hidden.
+def test_the_aggressive_profile_is_back_under_the_halt_ceiling() -> None:
+    """The 2026-09-04 submission-day widening (11.0% x 40% = 4.40% against a
+    -3.00% halt, declared via `max_tolerated_book_drawdown_pct=4.4`) was meant
+    to be reverted after submission. It was reverted on 2026-09-23.
 
-    11.0% x 40% = 4.40% of equity is reachable before a stop fires, against
-    a -3.00% halt — so the halt no longer bounds this profile's worst
-    session, and `exceeds_halt_ceiling` says so out loud. The point of this
-    test is that the number is DECLARED and matches the arithmetic, not
-    that 4.4 is safe.
+    7.5% x 40% = 3.00%: the options book can lose no more than the halt
+    before a stop fires, and the profile declares no wider tail. If this
+    fails, someone has re-widened the book past the halt — do it by
+    declaring the tail as a reviewed number, never by editing this test.
     """
     caps = RiskCaps.aggressive_paper()
-    assert caps.options_max_total_premium_pct == pytest.approx(11.0)
+    assert caps.options_max_total_premium_pct == pytest.approx(7.5)
     assert caps.options_stop_loss_pct == pytest.approx(40.0)
-    assert caps.max_options_book_drawdown_pct == pytest.approx(4.4)
-    assert caps.max_tolerated_book_drawdown_pct == pytest.approx(4.4)
-    assert caps.exceeds_halt_ceiling is True
+    assert caps.max_options_book_drawdown_pct == pytest.approx(3.0)
+    assert caps.max_tolerated_book_drawdown_pct is None
+    assert caps.exceeds_halt_ceiling is False
     # The halt itself is untouched — that is the line that never moves.
     assert caps.daily_drawdown_halt_pct == pytest.approx(-3.0)
 
 
 def test_the_invariant_actually_rejects_a_book_past_its_declared_tail() -> None:
     """If the property cannot fail, it is not an invariant. These exceed
-    even the widened 4.4% tolerance (12% x 40% = 4.8%, 18% x 40% = 7.2%)."""
+    the 3.0% halt tolerance (12% x 40% = 4.8%, 18% x 40% = 7.2%)."""
     for bad_total in (12.0, 18.0):
         bad = RiskCaps.aggressive_paper(options_max_total_premium_pct=bad_total)
         assert not bad.respects_halt_coupling

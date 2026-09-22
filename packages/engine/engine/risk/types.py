@@ -566,33 +566,28 @@ class RiskCaps:
             land nearer the strategy's expected value, so a book that is
             RIGHT wins less on its best name than three would have.
 
-          - ``options_max_total_premium_pct`` 5.0 -> 11.0, with
-            ``max_tolerated_book_drawdown_pct`` declared at 4.4.
+          - ``options_max_total_premium_pct`` 5.0 -> 7.5 — the halt-bounded
+            value: 7.5 x 40% = 3.00% of equity reachable before a stop
+            fires, exactly the -3.00% daily halt.
 
-            **2026-09-04, submission day, operator decision.** Raised from
-            7.5 to 11.0 so the book could open positions during the final
-            90-minute session: it sat at 7.21% of a 7.5% cap, ~$286 of
-            headroom — not one contract. 11.0% frees ~$3,750, about three
-            positions.
-
-            This DELIBERATELY exceeds the halt ceiling. 11.0 x 40% = 4.40%
-            of equity is reachable before a single stop fires, against a
-            -3.00% daily halt, so the halt no longer bounds the worst
-            session (``exceeds_halt_ceiling`` is True for this profile and
-            False for conservative). The tail is declared as a reviewed
-            number rather than the invariant being deleted — I advised
-            against the widening, the operator confirmed it knowing the
-            trade-off, and this records what was accepted.
+            **History, kept so it is not re-litigated.** On 2026-09-04
+            (submission day, operator decision) this was raised to 11.0
+            with ``max_tolerated_book_drawdown_pct`` declared at 4.4, so
+            the book could open positions in the final 90-minute session
+            (it sat at 7.21% of 7.5%, not one contract of headroom). That
+            deliberately exceeded the halt ceiling (11.0 x 40% = 4.40%).
+            It was flagged "revert after submission" and was not reverted
+            until 2026-09-23 — nineteen days of a tail the halt did not
+            bound. The Refusal Ledger had also shown the premium cap is
+            outcome-blind (51 refusals, +$9,581 of blocked upside), which
+            is an argument for RANKING when the book is full, not for a
+            wider cap: widening admits the marginal idea, ranking admits
+            the better one.
 
             ``options_stop_loss_pct`` stays 40: below ~35 it fires on quote
             noise against a 12%-spread delayed mark, which is exactly how
             the CME position behaved on 2026-09-01 (mark frozen 2h16m, then
-            a 26-point gap in one print). Tightening the stop to "pay for"
-            the wider cap would have traded a known tail for a known
-            failure mode.
-
-            **Revert to 7.5 and drop ``max_tolerated_book_drawdown_pct``**
-            to restore the original halt-bounded invariant exactly.
+            a 26-point gap in one print).
 
             The pre-2026-09-04 derivation, which still holds for any profile
             that does NOT declare a wider tail:
@@ -682,8 +677,7 @@ class RiskCaps:
         # keyword argument.
         values: dict[str, object] = {
             "options_max_premium_pct": 1.5,
-            "options_max_total_premium_pct": 11.0,
-            "max_tolerated_book_drawdown_pct": 4.4,
+            "options_max_total_premium_pct": 7.5,
             "min_council_confidence": 0.48,
             "min_specialist_avg_score": 40.0,
             "options_stop_loss_pct": 40.0,

@@ -145,7 +145,7 @@ describe('riskProfileCaption', () => {
   // caption text itself still said "12%" a full day after the real cap
   // dropped to 7.5% — this test would have caught either regression.
   it('names the real caps for the aggressive profile', () => {
-    expect(riskProfileCaption('aggressive_paper')).toBe('under the 1.5%/11% aggressive caps');
+    expect(riskProfileCaption('aggressive_paper')).toBe('under the 1.5%/7.5% aggressive caps');
   });
 
   it('names the real caps for the conservative profile', () => {
