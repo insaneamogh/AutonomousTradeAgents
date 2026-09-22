@@ -57,7 +57,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
-from engine.features.bars import AlpacaDailyBarsProvider, BarsProvider
+from engine.features.bars import DEFAULT_LOOKBACK_DAYS, AlpacaDailyBarsProvider, BarsProvider
 from engine.features.corporate_actions import (
     CorporateActionsProvider,
     compute_corporate_actions,
@@ -82,8 +82,9 @@ logger = logging.getLogger("engine.features.provider")
 
 DEFAULT_EQUITY_FALLBACK = 100_000.0
 
-# Benchmark history pulled for the quant block's beta/correlation.
-SPY_LOOKBACK_DAYS = 320
+# Benchmark history pulled for the quant block's beta/correlation. The same
+# window as the symbol's own bars, so the prefetch cache serves both.
+SPY_LOOKBACK_DAYS = DEFAULT_LOOKBACK_DAYS
 
 # Time stop per horizon — mirrors the Drafter's map. The corporate-action
 # block asks "does anything land while we would still be holding", so the
@@ -236,7 +237,7 @@ class RealFeatureProvider:
         bars = await self.bars.daily_bars(sym)
         if not bars:
             raise InsufficientBarsError(f"no daily bars available for {sym}")
-        # 320 days (~220 trading bars), not 60: the quant block regresses
+        # A full year+ of bars, not 60: the quant block regresses
         # this symbol against SPY over a 63-day window and z-scores ATR
         # against a year of its own history. A 60-day SPY pull would leave
         # beta/correlation permanently None. Provider-cached, so the longer

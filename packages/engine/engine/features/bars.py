@@ -34,11 +34,27 @@ from engine.features.technicals import DailyBar
 logger = logging.getLogger("engine.features.bars")
 
 
+DEFAULT_LOOKBACK_DAYS = 400
+"""Calendar days of daily history fetched per symbol.
+
+The longest window any feature reads is `quant.ret_252d_pct`, which needs
+253 closes. 253 trading days is ~367 calendar days plus ~9 market
+holidays, so 400 leaves margin for a halted or late-listed stretch.
+
+This was 320 (~220 bars) until 2026-09-23, which left `ret_252d_pct` None
+on EVERY live run, so momentum's 12-month leg (weight 0.3) always scored
+neutral. The 6-year backtest (tests/eval/signal_backtest.py) computed
+features over full history, so live momentum was not the signal the
+backtest measured. One constant now serves every default, the batched
+prefetch and the SPY benchmark, so the cache key `(symbol, day, lookback)`
+cannot split between them."""
+
+
 @runtime_checkable
 class BarsProvider(Protocol):
     name: str
 
-    async def daily_bars(self, symbol: str, *, lookback_days: int = 320) -> list[DailyBar]: ...
+    async def daily_bars(self, symbol: str, *, lookback_days: int = DEFAULT_LOOKBACK_DAYS) -> list[DailyBar]: ...
 
 
 class AlpacaDailyBarsProvider:
@@ -61,7 +77,7 @@ class AlpacaDailyBarsProvider:
             self._client = StockHistoricalDataClient(self._api_key, self._secret_key)
         return self._client
 
-    async def daily_bars(self, symbol: str, *, lookback_days: int = 320) -> list[DailyBar]:
+    async def daily_bars(self, symbol: str, *, lookback_days: int = DEFAULT_LOOKBACK_DAYS) -> list[DailyBar]:
         sym = symbol.upper()
         today = datetime.now(UTC).date()
         cache_key = (sym, today, lookback_days)
@@ -112,7 +128,7 @@ class AlpacaDailyBarsProvider:
         return bars
 
     async def prefetch_daily_bars(
-        self, symbols: list[str], *, lookback_days: int = 320, batch_size: int = 100
+        self, symbols: list[str], *, lookback_days: int = DEFAULT_LOOKBACK_DAYS, batch_size: int = 100
     ) -> int:
         """Warm the cache for many symbols in a few requests. Returns the
         number newly fetched.
