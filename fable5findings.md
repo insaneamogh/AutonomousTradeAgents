@@ -4,6 +4,59 @@
 >
 > **Everything from here to the `# Build log
 
+### 2026-09-23 — 5f1b81342 / dfa802d60 / 0b485faf7 / f35909465 — PLAN_PLATFORM Phase 2: the "too defensive" bugs
+- The operator's complaint was that the LLM pass is too defensive. Part of
+  that is real and was bugs. Part is the confidence floor doing its job
+  (59 refusals, -$7,402 avoided), and that part was NOT touched.
+- **5f1b81342 — cap counting.**
+  - Dedup ran AFTER admission, so already-decided names took the same top-N
+    slots every sweep and burned the 4/hour budget with zero model calls.
+    Dedup now runs before admission, with its own `recently_decided`
+    skip_reason.
+  - Escalation ran under the position's original council_run_id, so on any
+    later day each escalated position ate an entry slot. New
+    `NON_ENTRY_ROLES`, applied in both ledgers. Spend still counts.
+- **dfa802d60 — guard parity.** The live Bull/Bear path never passed
+  `realized_vol_pct`/`days_to_earnings` to `select_contract`. The IV band
+  was skipped where it actually trades. This one makes the path stricter,
+  and deliberately so.
+- **0b485faf7 — analysts and macro.**
+  - Technical and macro analysts were never told the proposed direction,
+    so a right bearish read on a put scored LOW and failed the specialist
+    floor.
+  - The macro prompt was long-only and compared FRED DTWEXBGS (~120) with
+    the ICE DXY's 105, so "strong dollar" was permanently on. It also
+    asked about "rising" rates given only a level. The FRED fetch now
+    brings a year of history in the same one request, and derives
+    `ten_year_change_63d_bp` and `dxy_zscore_1y`. The prompt is
+    direction-neutral.
+- **f35909465 — small ones.** The high-conviction delta band threshold of
+  0.7 was unreachable (the council's max ever is 0.62); it now shares
+  `sizing.HIGH_CONVICTION`. Bull/Bear views get 900 tokens, not the 500
+  that truncated analysts.
+- **Deliberately NOT done:** honouring the per-position take-profit, since
+  the b28443384 replay shows cutting the right tail hurts. The per-position
+  stop was already honoured, tighten-only.
+- **Revert-check lesson (new):** a same-LENGTH edit (900 -> 500) reused a
+  stale `.pyc`, so the broken code PASSED. Clear `__pycache__` or set
+  PYTHONDONTWRITEBYTECODE=1 before a same-size revert-check. The earlier
+  checks in this session all FAILED as intended, and a stale pyc cannot
+  fake a failure, so they stand.
+- **VERIFIED:** every fix revert-checked (see each commit). Full suite 1736
+  passed / 11 skipped. ruff at its 1-error baseline. tsc and Jest clean
+  where touched.
+- **NOT verified: live behaviour.**
+  - Whether analyst scores on real short setups actually move.
+  - How often the dedup and escalation bugs fired.
+  - Whether the real DTWEXBGS sits near 120. That came from general
+    knowledge; no live FRED read was made.
+  - All of these need the desk running (breaker acknowledged, GLM key
+    set). The Scan Funnel's `recently_decided` count and the forecast
+    ledger (Phase 3) are how they get measured.
+- **Next:** Phase 3, the research harness (forecast ledger, options-aware
+  backtest). Nothing new trades until a signal clears it.
+
+
 ### 2026-09-23 — 2de24fd89 / f70e80090 / 0784e434f — PLAN_PLATFORM Phase 1 (code side)
 - **z.ai cutover made real (2de24fd89).** `LLM_PROVIDER=glm` had never made
   a live call. Four things against Z.ai's current docs would have broken

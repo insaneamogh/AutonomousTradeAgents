@@ -5,9 +5,16 @@
 > `PLAN_*.md` where they disagree. Phases run in order; tick them off in
 > the build log (`fable5findings.md`), not here.
 >
-> Phase 0 progress: `posthackathon` fast-forwarded into `main` and pushed
-> (a0ad3917f); the 14 date-bomb fixtures were already fixed by 9120fc854;
-> premium cap reverted 11.0 -> 7.5 (0281274d4).
+> **Progress (2026-09-23):**
+> - Phase 0 is DONE: `posthackathon` merged and pushed, fixtures already
+>   fixed by 9120fc854, cap reverted (0281274d4).
+> - Phase 1 code is DONE (2de24fd89, f70e80090, 0784e434f). Its live half
+>   is the operator's: a pay-as-you-go GLM key, then
+>   `provider_check --live --provider glm` must pass BOTH probes before
+>   `LLM_PROVIDER=glm`.
+> - Phase 2 is DONE (5f1b81342, dfa802d60, 0b485faf7, f35909465). The
+>   per-position TP was deliberately left unhonoured (see the build log).
+> - Next is Phase 3.
 
 
 ## Context
