@@ -4,6 +4,49 @@
 >
 > **Everything from here to the `# Build log
 
+### 2026-09-23 — 2de24fd89 / f70e80090 / 0784e434f — PLAN_PLATFORM Phase 1 (code side)
+- **z.ai cutover made real (2de24fd89).** `LLM_PROVIDER=glm` had never made
+  a live call. Four things against Z.ai's current docs would have broken
+  or mis-measured it:
+  - Auth: Z.ai documents Bearer (`ANTHROPIC_AUTH_TOKEN`). The key now goes
+    in both headers, and an env Anthropic key can't leak to Z.ai.
+  - Models: tiers go to glm-5.3 / glm-5.3-flash, the current generation.
+  - Prices: the old glm-4.6 row sat below list price. All rows are now
+    Z.ai's published list prices, pinned by a priced-tier test.
+  - JSON: `parse_json` now extracts the object from prose. GLM's
+    wrap-in-prose habit would have forced re-asks and degraded nodes, so
+    the model would have looked "defensive" over formatting.
+  - `provider_check --live` also probes tool calling, which the options
+    trade hop needs.
+- **12-month momentum leg was dead live (f70e80090).** `ret_252d_pct`
+  needs 253 closes; 320 calendar days gives ~220. The backtest computed
+  features over full history, so live momentum was not the backtested
+  signal. Now one `DEFAULT_LOOKBACK_DAYS = 400` constant, checked against
+  the real NYSE calendar.
+- **Input snapshot (0784e434f).** The Sep 21 claim that decision inputs are
+  "persisted nowhere" was wrong: `reasoning.feature_snapshot` has existed
+  since migration 0012, and the cache script hashed the analyst OUTPUT
+  columns. What was missing was macro / options_context / fundamentals.
+  Those are now added, plus `reasoning.input_hash`, which is None for an
+  empty snapshot.
+- **VERIFIED:** each fix revert-checked (auth 1 fail, parser 5, price rows 2,
+  lookback 5, snapshot 3). Full suite 1714 passed / 11 skipped. ruff at
+  its 1-error baseline.
+- **NOT verified: every live half.**
+  - No GLM key on this machine, and the Railway token here cannot see the
+    service. Still unconfirmed: whether glm-5.3 / glm-5.3-flash are served
+    on the Anthropic path, whether tool calls come back as `tool_use`, and
+    whether thinking eats the token budget.
+  - Operator steps, in order:
+    1. Pay-as-you-go GLM key into `GLM_API_KEY`.
+    2. `railway run -s AutonomousTradeAgents python -m trading_agents.provider_check --live --provider glm`.
+       It must exit 0 on BOTH probes.
+    3. Only then set `LLM_PROVIDER=glm`.
+- **Next:** Phase 2, the defensiveness bugs: direction-blind analysts, the
+  DXY scale, cap counting, guard omissions, the unreachable 0.7 band,
+  Bull/Bear tokens, and per-position exits.
+
+
 ### 2026-09-23 — 0281274d4 fix(risk): revert the submission-day premium cap; Phase 0 of PLAN_PLATFORM
 - Operator asked for a whole-repo analysis: why paper trading lost, how far
   we are from a real autonomous platform, which data sources to add, a less
