@@ -365,3 +365,64 @@ def test_universe_refresh_hour_reads_env_and_falls_back_on_garbage(
 
     monkeypatch.setenv("UNIVERSE_REFRESH_HOUR_UTC", "99")
     assert _universe_refresh_hour() == 12
+
+
+# ── IV history recorder ─────────────────────────────────────────────
+
+
+async def test_iv_snapshot_records_only_option_underlyings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import engine.features
+    from app.services.council import scheduler as sched
+    from app.services.council.scheduler import CouncilScheduler
+    from trading_agents.jobs import iv_snapshot
+
+    monkeypatch.setattr(engine.features, "is_us_trading_day", lambda _d: True)
+    monkeypatch.setenv("USE_POSTGRES", "1")
+    monkeypatch.setenv("ALPACA_API_KEY", "k")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "s")
+
+    async def fake_watchlist():
+        return ["NVDA", "AAPL", "SPY"], {"NVDA": "option", "AAPL": "equity", "SPY": "option"}
+
+    captured: dict = {}
+
+    async def fake_snapshot(symbols, today, *, fetch_chain, write_rows, feed):
+        captured["symbols"] = list(symbols)
+        captured["feed"] = feed
+        return {"recorded": 2, "no_atm_iv": 0, "failed": 0}
+
+    monkeypatch.setattr(sched, "_watchlist_with_instruments", fake_watchlist)
+    monkeypatch.setattr(iv_snapshot, "snapshot", fake_snapshot)
+    monkeypatch.delenv("ALPACA_OPTIONS_FEED", raising=False)
+
+    scheduler = CouncilScheduler()
+    await scheduler._run_iv_snapshot_once()
+    assert captured == {"symbols": ["NVDA", "SPY"], "feed": "indicative"}
+    assert scheduler.last_iv_snapshot_result == {"recorded": 2, "no_atm_iv": 0, "failed": 0}
+
+
+async def test_iv_snapshot_skips_holidays_and_missing_prerequisites(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import engine.features
+    from app.services.council.scheduler import CouncilScheduler
+
+    monkeypatch.setattr(engine.features, "is_us_trading_day", lambda _d: False)
+    s = CouncilScheduler()
+    await s._run_iv_snapshot_once()
+    assert s.last_iv_snapshot_result == "skipped_market_holiday"
+
+    monkeypatch.setattr(engine.features, "is_us_trading_day", lambda _d: True)
+    monkeypatch.delenv("USE_POSTGRES", raising=False)
+    await s._run_iv_snapshot_once()
+    assert s.last_iv_snapshot_result == "skipped_no_postgres"
+
+
+def test_iv_snapshot_is_on_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every day it does not run is history that can never be recovered."""
+    from app.services.council.scheduler import _flag
+
+    monkeypatch.delenv("IV_SNAPSHOT_ENABLED", raising=False)
+    assert _flag("IV_SNAPSHOT_ENABLED", default=True) is True

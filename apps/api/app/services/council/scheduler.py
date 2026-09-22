@@ -65,6 +65,18 @@ Config:
                               the 13:30 UTC US market open, so freshly
                               auto-discovered symbols are in the watchlist
                               before anything sweeps it that day.
+  IV_SNAPSHOT_ENABLED         1 (DEFAULT ON) for the daily IV-history
+                              recorder: one chain snapshot per options
+                              underlying, written to iv_history. Default
+                              on, unlike the loops above, because it
+                              spends no LLM budget, only reads the broker,
+                              and every day it does not run is a day of
+                              history that can never be recovered (IV rank
+                              needs 60+ days of it).
+  IV_SNAPSHOT_HOUR_UTC        Hour (0-23), default 20, fired at :15, i.e.
+                              after the 16:00 ET close in daylight time
+                              (an hour before it in standard time: still
+                              a closing-hour snapshot).
 """
 
 from __future__ import annotations
@@ -108,6 +120,15 @@ def _universe_refresh_hour() -> int:
         logger.warning("ignoring malformed UNIVERSE_REFRESH_HOUR_UTC — using 12")
         return 12
     return h if 0 <= h <= 23 else 12
+
+
+def _iv_snapshot_hour() -> int:
+    try:
+        h = int(os.environ.get("IV_SNAPSHOT_HOUR_UTC", "").strip() or 20)
+    except ValueError:
+        logger.warning("ignoring malformed IV_SNAPSHOT_HOUR_UTC — using 20")
+        return 20
+    return h if 0 <= h <= 23 else 20
 
 
 def _int_env(name: str, default: int) -> int:
@@ -246,6 +267,8 @@ class CouncilScheduler:
         self.scanner_max_council_runs: int | None = None
         self.last_universe_refresh_at: datetime | None = None
         self.last_universe_refresh_result: dict[str, int] | str | None = None
+        self.last_iv_snapshot_at: datetime | None = None
+        self.last_iv_snapshot_result: dict[str, int] | str | None = None
         # Tier 1/2 of the Insights "symbol scan funnel" — fed by
         # daily_cron.main's optional on_sweep_scored recorder, one slot
         # shared by both loops rather than two separate ones. A triggered
@@ -280,6 +303,10 @@ class CouncilScheduler:
             self._tasks.append(asyncio.create_task(self._universe_refresh_loop()))
         else:
             logger.info("universe refresh disabled (set UNIVERSE_REFRESH_ENABLED=1 to arm it)")
+        if _flag("IV_SNAPSHOT_ENABLED", default=True):
+            self._tasks.append(asyncio.create_task(self._iv_snapshot_loop()))
+        else:
+            logger.info("IV snapshot disabled (IV_SNAPSHOT_ENABLED=0)")
 
     async def stop(self) -> None:
         for t in self._tasks:
@@ -355,6 +382,68 @@ class CouncilScheduler:
         self.last_universe_refresh_at = datetime.now(UTC)
         self.last_universe_refresh_result = result
         logger.info("universe refresh done: %s", result)
+
+    # ── IV history recorder ──────────────────────────────────────────
+    #
+    # Zero LLM cost, one chain request per options underlying, once a
+    # trading day. See trading_agents.jobs.iv_snapshot.
+
+    async def _iv_snapshot_loop(self) -> None:
+        hour = _iv_snapshot_hour()
+        logger.info("IV snapshot armed — fires daily at %02d:15 UTC", hour)
+        while True:
+            delay = _seconds_until_next(datetime.now(UTC), [(hour, 15)])
+            try:
+                await asyncio.sleep(delay)
+            except asyncio.CancelledError:
+                raise
+            try:
+                await self._run_iv_snapshot_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("IV snapshot failed — will retry next window")
+                self.last_iv_snapshot_result = "failed"
+            await asyncio.sleep(61)
+
+    async def _run_iv_snapshot_once(self) -> None:
+        from engine.features import is_us_trading_day
+
+        today = datetime.now(UTC).date()
+        if not is_us_trading_day(today):
+            self.last_iv_snapshot_result = "skipped_market_holiday"
+            return
+        if not _flag("USE_POSTGRES"):
+            self.last_iv_snapshot_result = "skipped_no_postgres"
+            return
+        api_key = os.environ.get("ALPACA_API_KEY", "").strip()
+        secret_key = os.environ.get("ALPACA_SECRET_KEY", "").strip()
+        if not api_key or not secret_key:
+            self.last_iv_snapshot_result = "skipped_no_keys"
+            return
+
+        symbols, instruments = await _watchlist_with_instruments()
+        underlyings = [s for s in symbols if instruments.get(s) == "option"]
+        if not underlyings:
+            self.last_iv_snapshot_result = "skipped_no_option_underlyings"
+            return
+
+        from trading_agents.jobs.iv_snapshot import (
+            alpaca_chain_fetcher,
+            postgres_writer,
+            snapshot,
+        )
+
+        feed = "opra" if os.environ.get("ALPACA_OPTIONS_FEED", "").strip().lower() == "opra" else "indicative"
+        result = await snapshot(
+            underlyings, today,
+            fetch_chain=alpaca_chain_fetcher(api_key, secret_key),
+            write_rows=postgres_writer,
+            feed=feed,
+        )
+        self.last_iv_snapshot_at = datetime.now(UTC)
+        self.last_iv_snapshot_result = result
+        logger.info("IV snapshot done: %s", result)
 
     # ── Trigger loop ─────────────────────────────────────────────────
     #

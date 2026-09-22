@@ -5,6 +5,7 @@ the architecture rather than piled into one file:
 
     accounts   Users and the credentials/config hanging off them.
     council    What the agents proposed, and what it cost.
+    market     Market data recorded because it cannot be bought back later.
     trading    Orders, fills, and the risk state that gates them.
 
 Importing this package registers every table on ``Base.metadata`` — which
@@ -32,6 +33,7 @@ from engine.db.models.council import (
     LlmCall,
     StrategyConfidence,
 )
+from engine.db.models.market import IvHistory
 from engine.db.models.trading import (
     CircuitBreakerState,
     Order,
@@ -47,6 +49,7 @@ __all__ = [
     "DecisionReview",
     "DeviceToken",
     "GhostOutcome",
+    "IvHistory",
     "LlmCall",
     "MagicLinkToken",
     "Order",
