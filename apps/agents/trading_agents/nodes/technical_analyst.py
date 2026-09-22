@@ -25,7 +25,7 @@ from __future__ import annotations
 from typing import Any
 
 from trading_agents.llm import LLM, Model
-from trading_agents.nodes._specialist import render_features, run_specialist
+from trading_agents.nodes._specialist import proposed_direction, render_features, run_specialist
 from trading_agents.prompts import TECHNICAL_ANALYST
 from trading_agents.state import CouncilState
 
@@ -107,7 +107,8 @@ async def technical_analyst_node(state: CouncilState, llm: LLM) -> CouncilState:
         model=Model.HAIKU,
         header=(
             f"Ticker: {state['symbol']}\n"
-            f"Horizon: {state.get('horizon', 'short')}\n\n"
+            f"Horizon: {state.get('horizon', 'short')}\n"
+            f"Proposed direction: {proposed_direction(state)}\n\n"
             "Technical features:\n"
         ),
         body=body,

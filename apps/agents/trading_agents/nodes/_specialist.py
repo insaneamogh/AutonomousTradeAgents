@@ -61,6 +61,20 @@ NEUTRAL_ON_PARSE_ERROR = {
 MAX_TOKENS = 900
 
 
+def proposed_direction(state: CouncilState) -> str:
+    """The trade direction a specialist is scoring, as a header line value.
+
+    Analysts used to see the ticker and features but not the direction.
+    The score is read as "how well does this support the TRADE"
+    (`min_specialist_avg_score` averages it), so a correct bearish read on
+    a put or short setup came back as a LOW score and dragged the average
+    under the floor: a right answer was scored as a refusal. strategy_fit
+    sets `selected_direction` before any analyst runs.
+    """
+    direction = (state.get("selected_direction") or "").strip().lower()
+    return direction if direction in ("long", "short") else "unspecified"
+
+
 def render_features(
     features: dict[str, object], keys: tuple[str, ...], *, label_width: int
 ) -> str:

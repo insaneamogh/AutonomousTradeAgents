@@ -158,7 +158,8 @@ _LIQUIDITY_FEATURES = (
 #: pre-pass has while a real per-symbol IV rank does not exist (see
 #: ``_OPTIONS_FEED_FEATURES``).
 _MACRO_FEATURES = (
-    "vix_level", "ten_year_yield_pct", "dxy_index", "sector_relative_strength",
+    "vix_level", "ten_year_yield_pct", "ten_year_change_63d_bp",
+    "dxy_zscore_1y", "sector_relative_strength",
 )
 
 #: ``context["options_context"]`` — the options-specific feed block from

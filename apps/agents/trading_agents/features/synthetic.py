@@ -92,7 +92,10 @@ def synthetic_features(symbol: str, horizon: str = "short") -> dict[str, Any]:
         "macro": {
             "vix_level": round(14.0 + seed * 10.0, 1),               # 14 – 24
             "ten_year_yield_pct": round(3.4 + seed * 1.3, 2),         # 3.4 – 4.7
-            "dxy_index": round(100.0 + seed * 8.0, 1),               # 100 – 108
+            "ten_year_change_63d_bp": round(-40.0 + seed * 80.0, 1),  # -40 – +40bp
+            # FRED DTWEXBGS scale (Jan 2006 = 100), as the real provider serves.
+            "dxy_index": round(118.0 + seed * 10.0, 1),              # 118 – 128
+            "dxy_zscore_1y": round(-2.0 + seed * 4.0, 2),            # -2 – +2
             "sector_relative_strength": round(-3.0 + seed * 8.0, 2),  # -3% to +5% vs SPY (21d)
         },
     }

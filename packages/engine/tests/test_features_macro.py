@@ -140,7 +140,9 @@ def test_compute_macro_survives_a_total_fred_outage(
     assert out == {
         "vix_level": None,
         "ten_year_yield_pct": None,
+        "ten_year_change_63d_bp": None,
         "dxy_index": None,
+        "dxy_zscore_1y": None,
         "sector_relative_strength": None,
     }
 
@@ -181,7 +183,9 @@ def test_no_api_key_short_circuits(monkeypatch: pytest.MonkeyPatch) -> None:
     assert set(out) == {
         "vix_level",
         "ten_year_yield_pct",
+        "ten_year_change_63d_bp",
         "dxy_index",
+        "dxy_zscore_1y",
         "sector_relative_strength",
     }
 
@@ -202,3 +206,63 @@ def test_series_are_fetched_concurrently(monkeypatch: pytest.MonkeyPatch) -> Non
     _install(monkeypatch, handler)
     asyncio.run(compute_macro(fred_api_key="k", symbol_bars=[], spy_bars=[]))
     assert peak == len(macro._FRED_SERIES)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Derived fields: the questions the macro prompt actually asks
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _series(values_newest_first: list[float]) -> list[dict]:
+    return [{"date": f"d{i}", "value": str(v)} for i, v in enumerate(values_newest_first)]
+
+
+def test_rate_change_and_dollar_zscore_come_from_one_request_per_series(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The prompt asks whether the 10y is "rising rapidly" and whether the
+    dollar is strong. One level per series could answer neither. The
+    history arrives in the SAME single request per series as before."""
+    ten_year = [4.60] + [4.10] * 299             # +50bp vs 63 obs ago
+    dollar = [130.0] + [120.0 + (i % 5) for i in range(299)]  # far above its year
+
+    limits: list[int] = []
+
+    async def handler(params: dict) -> httpx.Response:
+        limits.append(int(params["limit"]))
+        sid = params["series_id"]
+        if sid == "DGS10":
+            return _json(_series(ten_year))
+        if sid == "DTWEXBGS":
+            return _json(_series(dollar))
+        return _json(_series([15.0] * 300))
+
+    calls = _install(monkeypatch, handler)
+    out = asyncio.run(compute_macro(fred_api_key="k", symbol_bars=[], spy_bars=[]))
+    assert sorted(calls) == ["DGS10", "DTWEXBGS", "VIXCLS"]
+    assert out["ten_year_yield_pct"] == 4.6
+    assert out["ten_year_change_63d_bp"] == pytest.approx(50.0)
+    assert out["dxy_index"] == 130.0
+    assert out["dxy_zscore_1y"] is not None and out["dxy_zscore_1y"] > 1.5
+    # Live, the history is only as long as we ASK for: the request must
+    # cover the 252-observation z-score window, not just the latest print.
+    assert min(limits) > macro._ZSCORE_WINDOW
+
+
+def test_a_dollar_at_its_usual_level_is_not_strong() -> None:
+    """The bug this replaces: "DXY > 105" against FRED DTWEXBGS, which sits
+    around 120, read as a strong dollar every single day. A level that is
+    ordinary for the series' own year must z-score near zero."""
+    from engine.features.macro import zscore_latest
+
+    steady = tuple(121.0 + (i % 3) * 0.5 for i in range(260))
+    z = zscore_latest(steady, 252, min_obs=60)
+    assert z is not None and abs(z) < 1.5
+
+
+def test_short_history_yields_none_not_a_fabricated_number() -> None:
+    from engine.features.macro import change_bp, zscore_latest
+
+    assert change_bp((4.5, 4.4), 63) is None
+    assert zscore_latest((120.0,) * 10, 252, min_obs=60) is None
+    assert zscore_latest((120.0,) * 100, 252, min_obs=60) is None, "no variance"
