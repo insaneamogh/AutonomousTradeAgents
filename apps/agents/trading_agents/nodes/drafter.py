@@ -81,6 +81,7 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
@@ -432,7 +433,16 @@ async def _draft_option_proposal(
             "contract_funnel": _funnel_block(selection),
         }
 
-    leg = selection.selected
+    # Spot and realized vol ride on the leg for expected_move_below_breakeven,
+    # exactly as on the ToolGuard path, so the two paths judge a contract alike.
+    raw_spot = ctx.get("last_price")
+    leg = replace(
+        selection.selected,
+        underlying_price=float(raw_spot) if raw_spot is not None else None,
+        underlying_realized_vol_pct=(
+            float(raw_realized_vol_pct) if raw_realized_vol_pct is not None else None
+        ),
+    )
     caps = RiskCaps.from_env()
     budget_usd = equity * caps.options_max_premium_pct / 100.0
     sizing = options_position_size(

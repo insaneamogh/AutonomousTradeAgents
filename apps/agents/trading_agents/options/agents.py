@@ -469,6 +469,7 @@ async def run_options_agents(
     realized_vol_pct = _as_optional_float((features.get("quant") or {}).get("realized_vol_pct"))
     raw_dte = _as_optional_float((features.get("options_context") or {}).get("days_to_earnings"))
     days_to_earnings = int(raw_dte) if raw_dte is not None else None
+    underlying_price = _as_optional_float(features.get("last_price"))
 
     async def _dispatch(call: ToolCall) -> dict[str, Any]:
         nonlocal calls_this_pass
@@ -481,6 +482,7 @@ async def run_options_agents(
             caps=caps,
             realized_vol_pct=realized_vol_pct,
             days_to_earnings=days_to_earnings,
+            underlying_price=underlying_price,
         )
         result = await dispatch_tool_call(call, ctx, guard=guard, registry=REGISTRY)
         if call.name == "open_option_trade" and not result.get("is_error"):

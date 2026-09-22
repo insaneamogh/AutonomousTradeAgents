@@ -67,7 +67,7 @@ import os
 import re
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -277,6 +277,10 @@ class GuardContext:
     contract whose IV is implausible (a stale or broken quote) against how
     the stock actually moves. Until 2026-09-23 only the Drafter path passed
     it, so on the live Bull/Bear path the band was silently skipped."""
+    underlying_price: float | None = None
+    """``context["last_price"]``, the UNDERLYING's price. Copied onto the
+    selected leg for ``expected_move_below_breakeven``. It never becomes
+    ``RiskProposal.last_price``, which is the premium on this path."""
     days_to_earnings: int | None = None
     """``context["options_context"]["days_to_earnings"]``. Copied onto the
     selected leg for ``earnings_blackout`` to re-check. Still None in
@@ -848,7 +852,11 @@ class ToolGuard:
         # From HERE DOWN a concrete contract exists, so every refusal below
         # is a Refusal Ledger row (see `_ledger_refusal` for why the line is
         # drawn exactly here and not earlier).
-        option = selection.selected
+        option = replace(
+            selection.selected,
+            underlying_price=ctx.underlying_price,
+            underlying_realized_vol_pct=ctx.realized_vol_pct,
+        )
         if option.action not in _ALLOWED_ACTIONS:
             return await self._ledger_refusal(
                 "naked_short_forbidden",

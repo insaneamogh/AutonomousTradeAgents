@@ -48,6 +48,7 @@ from tests.eval.acceptance import AcceptanceBar, Observation, evaluate
 from tests.eval.signal_backtest import _load, non_overlapping, run
 
 from engine.features.technicals import DailyBar
+from engine.options.breakeven import expected_move_pct, required_move_pct
 from engine.options.pricing import implied_vol, price, strike_for_delta
 
 OPTION_HORIZONS = (2, 5, 10, 20)
@@ -70,6 +71,11 @@ class OptionModel:
     half_spread_pct: float = 2.5
     stop_loss_pct: float | None = 40.0
     rv_window: int = 20
+    breakeven_gate_ratio: float | None = None
+    """When set, skip entries whose breakeven move over the hold exceeds
+    this multiple of the typical move, using the same
+    `engine.options.breakeven` functions as the live
+    `expected_move_below_breakeven` rule. None = ungated."""
 
 
 def realized_vol(bars: list[DailyBar], t: int, window: int) -> float | None:
@@ -116,6 +122,16 @@ def simulate(
     if mid0 <= 0:
         return None
     paid = mid0 * (1 + model.half_spread_pct / 100.0)
+
+    if model.breakeven_gate_ratio is not None:
+        hold = (bars[t + horizon].day - bars[t].day).days
+        need = required_move_pct(
+            spot=spot, strike=strike, kind=kind, dte_days=dte, iv=iv0, paid=paid,
+            half_spread_pct=model.half_spread_pct, hold_days=hold,
+        )
+        typical = expected_move_pct(realized_vol_pct=rv * 100.0, hold_days=hold)
+        if need is None or typical is None or need > typical * model.breakeven_gate_ratio:
+            return None
 
     mark = mid0
     for k in range(1, horizon + 1):
@@ -210,6 +226,16 @@ def main() -> int:
             orc = backtest(h, signals=signals, data=data, oracle=True)
             mean = st.mean(o.ret_pct for o in orc) if orc else float("nan")
             print(f"  oracle {h:>3}d  mean premium return {mean:+.1f}% (perfect direction, n={len(orc)})")
+
+    print("\n  with the live breakeven gate (ratio 0.8), same signals:\n")
+    gated = OptionModel(breakeven_gate_ratio=0.8)
+    for h in OPTION_HORIZONS:
+        obs = backtest(h, signals=signals, data=data, model=gated)
+        print(f"  signal {h:>3}d  {evaluate(obs, OPTIONS_BAR, n_tests=len(OPTION_HORIZONS)).line()}")
+        if args.oracle:
+            orc = backtest(h, signals=signals, data=data, oracle=True, model=gated)
+            mean = st.mean(o.ret_pct for o in orc) if orc else float("nan")
+            print(f"  oracle {h:>3}d  mean premium return {mean:+.1f}% (n={len(orc)})")
 
     cal = calibrate(data)
     if cal:

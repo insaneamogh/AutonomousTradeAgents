@@ -22,6 +22,7 @@ from engine.options.rules.concentration import (
     options_single_underlying_cap,
 )
 from engine.options.rules.earnings_blackout import earnings_blackout
+from engine.options.rules.expected_move_below_breakeven import expected_move_below_breakeven
 from engine.options.rules.expiry_day_entry import expiry_day_entry
 from engine.options.rules.horizon_exceeds_contract import horizon_exceeds_contract
 from engine.options.rules.illiquid_contract import illiquid_contract
@@ -36,6 +37,7 @@ from engine.options.rules.options_level_insufficient import options_level_insuff
 
 __all__ = [
     "earnings_blackout",
+    "expected_move_below_breakeven",
     "expiry_day_entry",
     "horizon_exceeds_contract",
     "illiquid_contract",

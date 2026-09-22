@@ -50,6 +50,7 @@ from dataclasses import replace
 
 from engine.options.rules import (
     earnings_blackout,
+    expected_move_below_breakeven,
     expiry_day_entry,
     horizon_exceeds_contract,
     illiquid_contract,
@@ -168,6 +169,15 @@ def evaluate_option(
     if d is not None and not d.approved:
         return d
     _note_if_entry(working, passed, "iv_unavailable")
+
+    # ── 8b. Breakeven reachable within the hold (entry-only) ─────────
+    # After iv_unavailable because it prices with IV. Before the confidence
+    # floor because it is a property of the CONTRACT: a right call with an
+    # ordinary move would still lose, whatever the conviction.
+    d = expected_move_below_breakeven(working, context, caps)
+    if d is not None and not d.approved:
+        return d
+    _note_if_entry(working, passed, "expected_move_below_breakeven")
 
     # ── 9. Earnings blackout (entry-only; self-gates on missing data) ──
     d = earnings_blackout(working, context, caps)

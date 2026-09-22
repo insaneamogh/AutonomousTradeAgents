@@ -1821,3 +1821,28 @@ async def test_guard_carries_days_to_earnings_onto_the_selected_leg() -> None:
     assert verdict.allow, verdict.reason
     assert verdict.payload is not None
     assert verdict.payload["option"].days_to_earnings == 30
+
+
+async def test_guard_refuses_a_contract_whose_breakeven_outruns_a_quiet_stock() -> None:
+    """Spot 215 against the fixture's 225 call at $2.20: the 5-day breakeven
+    is a ~1.9% move. A stock realizing 12% typically moves ~1.1% in 5 days,
+    so even a right call with an ordinary move loses. (IV 30% / RV 12% = 2.5x,
+    inside the IV band, so this is the breakeven gate and not that one.)"""
+    guard = _guard()
+    with patch("trading_agents.options.tools.guard.fetch_option_candidates", _fetch_ok):
+        verdict = await guard.before(
+            "open_option_trade", OPEN_ARGS, _ctx(underlying_price=215.0, realized_vol_pct=12.0)
+        )
+    assert not verdict.allow
+    assert verdict.reason == "expected_move_below_breakeven"
+
+
+async def test_guard_admits_the_same_contract_on_a_stock_that_moves() -> None:
+    guard = _guard()
+    with patch("trading_agents.options.tools.guard.fetch_option_candidates", _fetch_ok):
+        verdict = await guard.before(
+            "open_option_trade", OPEN_ARGS, _ctx(underlying_price=215.0, realized_vol_pct=60.0)
+        )
+    assert verdict.allow, verdict.reason
+    assert verdict.payload is not None
+    assert verdict.payload["option"].underlying_price == 215.0

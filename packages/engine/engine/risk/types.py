@@ -275,6 +275,19 @@ class RiskCaps:
     have no thesis for, which is worse. 65 leaves a clear directional lean
     available and refuses only a corner."""
 
+    options_breakeven_move_ratio: float | None = 0.8
+    """``expected_move_below_breakeven`` refuses when the underlying move
+    needed to break even over the hold exceeds this multiple of the stock's
+    TYPICAL move over the same hold (mean absolute move, from realized vol).
+
+    0.8 rather than 1.0 on purpose. A long option on a correct thesis earns
+    roughly the typical move, and 0.8 leaves room for the thesis to be right
+    by a little less than an average amount and still not lose. At 1.0, a
+    right call with an exactly average move would only break even, which is
+    the shape that lost on GILD155 / GILD150 / AMD. Set a priori, not fitted
+    (see option_backtest for the measured effect). None disables the rule.
+    """
+
     options_earnings_blackout_days: int = 2
     """No new options entry within this many days of the underlying's next
     earnings — IV crush around a known event."""
@@ -991,6 +1004,19 @@ class OptionLegDetails:
     """Computed once by the ``options_context`` feature block and copied
     here at Drafter-time, so ``earnings_blackout`` can re-check it at
     execution-time without a second fetch."""
+
+    underlying_price: float | None = None
+    """The UNDERLYING's price when the contract was selected (the feature
+    block's ``last_price``). Never the premium: ``RiskProposal.last_price``
+    is the premium on this path, a distinction that once vetoed 100% of
+    options proposals (OPTIONS_PLAYBOOK §5.2). Needed by
+    ``expected_move_below_breakeven``. None means "cannot assess", and the
+    rule then self-gates."""
+
+    underlying_realized_vol_pct: float | None = None
+    """The underlying's annualised realized vol in percent (``quant.
+    realized_vol_pct``). It is the "how much does this stock actually
+    move" side of the breakeven comparison. None means the rule self-gates."""
 
 
 @dataclass(frozen=True)
