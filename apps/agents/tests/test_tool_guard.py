@@ -1846,3 +1846,14 @@ async def test_guard_admits_the_same_contract_on_a_stock_that_moves() -> None:
     assert verdict.allow, verdict.reason
     assert verdict.payload is not None
     assert verdict.payload["option"].underlying_price == 215.0
+
+
+async def test_earnings_tomorrow_is_now_refused_on_the_live_path() -> None:
+    """earnings_blackout had never fired: days_to_earnings was always None.
+    With a calendar configured it arrives on GuardContext, rides onto the
+    leg, and the existing rule refuses a long option held into the print."""
+    guard = _guard()
+    with patch("trading_agents.options.tools.guard.fetch_option_candidates", _fetch_ok):
+        verdict = await guard.before("open_option_trade", OPEN_ARGS, _ctx(days_to_earnings=1))
+    assert not verdict.allow
+    assert verdict.reason == "earnings_blackout"

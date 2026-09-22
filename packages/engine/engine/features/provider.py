@@ -55,6 +55,7 @@ import logging
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
 from engine.features.bars import DEFAULT_LOOKBACK_DAYS, AlpacaDailyBarsProvider, BarsProvider
@@ -63,6 +64,7 @@ from engine.features.corporate_actions import (
     compute_corporate_actions,
     corporate_actions_provider_from_env,
 )
+from engine.features.earnings import EarningsCalendar, earnings_calendar_from_env
 from engine.features.macro import compute_macro
 from engine.features.microstructure import (
     QuoteProvider,
@@ -147,39 +149,47 @@ class OptionsContextProvider(Protocol):
     async def fetch(self, symbol: str) -> dict[str, Any] | None: ...
 
 
-# Always-populated regardless of what the rest of the block knows — these
-# describe the DATA FEED itself (docs/OPTIONS_PLAN.md §0: Alpaca's free
-# Basic tier is an indicative, 15-minute-delayed feed, not full OPRA), not
-# a per-symbol fact that could be legitimately unknown. The UI's "delayed
-# data" badge reads these and must never find them missing.
-_OPTIONS_DATA_DELAY_MINUTES = 15
-_OPTIONS_FEED_TYPE = "indicative_delayed"
+# Always-populated regardless of what the rest of the block knows. These
+# describe the DATA FEED itself, not a per-symbol fact that could be
+# legitimately unknown, and the UI's "delayed data" badge reads them.
+# Resolved from the SAME env var the broker uses to pick the feed
+# (`broker.alpaca._default_options_feed`), so the badge cannot claim
+# "15 min delayed" once the account is on real-time OPRA, or the reverse.
+def _options_feed_quality() -> tuple[int, str]:
+    if os.environ.get("ALPACA_OPTIONS_FEED", "").strip().lower() == "opra":
+        return 0, "opra_realtime"
+    return 15, "indicative_delayed"
 
 
 class MinimalOptionsContextProvider:
-    """Phase-A placeholder: the always-populated feed-quality fields, and
-    ``None`` for everything that needs a real IV-rank/term-structure data
-    source. Deliberately not synthetic — a fabricated IV rank would be
-    worse than an absent one, since ``select_contract``/the options risk
-    rules would have no way to tell a real number from a guess.
-
-    FOLLOW-UP: replace with a real implementation once an options-analytics
-    source is chosen (docs/OPTIONS_PLAN.md §6) — compute ``iv_rank``/
-    ``atm_iv``/``term_structure_slope`` from the underlying's own IV
-    history, and ``days_to_earnings`` from the same corporate-actions
-    source ``compute_corporate_actions`` already uses for ``events``.
+    """The always-populated feed-quality fields, ``days_to_earnings`` when
+    an earnings calendar is configured (``FINNHUB_API_KEY``), and ``None``
+    for what still needs an IV-history source (``iv_rank``, ``atm_iv``,
+    ``term_structure_slope``). Deliberately not synthetic: a fabricated IV
+    rank would be worse than an absent one, since nothing downstream could
+    tell a real number from a guess.
     """
 
     name = "options-context-minimal"
 
+    def __init__(self, earnings: EarningsCalendar | None = None) -> None:
+        self._earnings = earnings
+
     async def fetch(self, symbol: str) -> dict[str, Any]:
+        delay, feed = _options_feed_quality()
+        days_to_earnings: int | None = None
+        if self._earnings is not None:
+            today = datetime.now(UTC).date()
+            nxt = await self._earnings.next_earnings(symbol, today)
+            if nxt is not None:
+                days_to_earnings = (nxt - today).days
         return {
             "iv_rank": None,
             "atm_iv": None,
             "term_structure_slope": None,
-            "days_to_earnings": None,
-            "data_delay_minutes": _OPTIONS_DATA_DELAY_MINUTES,
-            "feed_type": _OPTIONS_FEED_TYPE,
+            "days_to_earnings": days_to_earnings,
+            "data_delay_minutes": delay,
+            "feed_type": feed,
         }
 
 
@@ -393,5 +403,5 @@ def feature_provider_from_env(
         # available whenever features are, not gated behind ALLOW_OPTIONS.
         # Whether a run actually ACTS on days_to_earnings is the Drafter's
         # ALLOW_OPTIONS + instrument_preference gate, not this provider's.
-        options_context=MinimalOptionsContextProvider(),
+        options_context=MinimalOptionsContextProvider(earnings=earnings_calendar_from_env()),
     )
