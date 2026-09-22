@@ -4,6 +4,48 @@
 >
 > **Everything from here to the `# Build log
 
+### 2026-09-23 — ab536dc6a / 0a9fe57e7 / 069492d08 — PLAN_PLATFORM Phase 4: the missing gates
+- **ab536dc6a `expected_move_below_breakeven`.** A new named rule.
+  - It refuses a long option when the underlying move needed to break even
+    over the 5-day hold (theta, both halves of the spread and leverage
+    folded into one Black-Scholes solve) exceeds 0.8x the stock's typical
+    move from REALIZED vol.
+  - Spot and realized vol now ride on OptionLegDetails. Spot was absent
+    from the risk path, because `last_price` is the premium there.
+  - **Honest measurement:** in option_backtest it removes under 0.5% of
+    trades. That is structural: the backtest's IV = RV x 1.15 at 0.45 delta
+    cannot produce IV-rich or far-OTM contracts, which is exactly what the
+    gate targets. Its live effect will show as named refusals in the
+    Refusal Ledger.
+- **0a9fe57e7 earnings calendar.** `earnings_blackout` has existed since
+  launch and never fired, because `days_to_earnings` was always None.
+  - Finnhub free tier, keyed by FINNHUB_API_KEY. The key goes in a header,
+    never a URL. It self-gates on no key or no data.
+  - The options feed badge was hardcoded "15 min delayed"; it now follows
+    ALPACA_OPTIONS_FEED.
+- **069492d08 IV history recorder.** A daily chain snapshot per options
+  underlying, into the new `iv_history` table (migration 0019), holding 30d
+  and 60d constant-maturity ATM IV. **ON by default**: zero LLM cost, and a
+  day not recorded is gone. The consumer (iv_rank in options_context) is
+  deliberately not built until about 60 trading days exist.
+- **Deferred, with reasons:**
+  - `market_regime` gate: it conditions a signal, and there is no signal
+    with an edge to condition. Built now, it would be an unmeasurable
+    filter on a coin flip.
+  - Ranking in place of the premium cap: ranking needs an expected-value
+    estimate, which needs an edge.
+  - FOMC/CPI calendar (FRED releases): not started.
+  - These unblock when a Phase 3 candidate passes.
+- **VERIFIED:** each commit revert-checked (see bodies). Full suite 1809
+  passed / 11 skipped. ruff clean on touched files; apps/api holds a large
+  pre-existing ruff baseline, so only touched files were checked there.
+- **NOT verified live:** no Finnhub key, no deploy from here, no live chain.
+  Operator steps: set FINNHUB_API_KEY, then deploy (migration 0019 runs at
+  boot). The first iv_history rows arrive 20:15 UTC on the next trading day.
+- **Next:** Phase 6 ops (alerting, kill switch, restart catch-up, unique
+  close retry id, close-ladder market-hours gate).
+
+
 ### 2026-09-23 — 9b1893398..(this) — PLAN_PLATFORM Phase 3: the research harness, and what it says
 - **Acceptance bar (9b1893398).** Pure code, drawn before looking:
   independent observations, net of costs, t of the MEAN (not the hit

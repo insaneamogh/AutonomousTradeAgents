@@ -22,7 +22,11 @@
 >   path. **Shadow mode until a candidate clears the bar.**
 > - The forecast scorecard is written but has NOT yet been run on
 >   production. That needs the operator (`railway run`).
-> - Next is Phase 4.
+> - Phase 4 is PARTLY DONE: the breakeven gate (ab536dc6a), the earnings
+>   calendar (0a9fe57e7) and the IV history recorder (069492d08). The regime
+>   gate and premium-cap ranking are deferred until a signal has an edge.
+>   The FOMC/CPI calendar is not started.
+> - Next is Phase 6 ops.
 
 
 ## Context
