@@ -609,3 +609,30 @@ def test_a_mixed_chain_keeps_only_the_fresh_contracts() -> None:
     assert result.funnel_counts["fresh_quote"] == 6
     assert result.selected is not None
     assert result.selected.occ_symbol.startswith("F")
+
+
+# ─────────────────────────────────────────────────────────────────────
+# "High conviction" is one number, and a reachable one
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_the_high_conviction_band_is_reachable_by_the_council() -> None:
+    """The threshold was 0.7. The two-agent council takes the MIN of two
+    convictions, and across 151 real option decisions the maximum ever
+    produced was 0.62, so the nearer-the-money band was dead code. It now
+    shares `sizing.HIGH_CONVICTION`, where sizing grants the full budget."""
+    from engine.options.selection import (
+        _HIGH_CONVICTION_DELTA_BAND,
+        _LOW_CONVICTION_DELTA_BAND,
+        _delta_band,
+    )
+
+    assert _delta_band(0.62) == _HIGH_CONVICTION_DELTA_BAND
+    assert _delta_band(0.61) == _LOW_CONVICTION_DELTA_BAND
+
+
+def test_selection_and_sizing_share_one_high_conviction_number() -> None:
+    from engine.options.selection import _HIGH_CONVICTION_THRESHOLD
+    from engine.options.sizing import HIGH_CONVICTION
+
+    assert _HIGH_CONVICTION_THRESHOLD == HIGH_CONVICTION

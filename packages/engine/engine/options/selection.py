@@ -118,6 +118,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Literal
 
+from engine.options.sizing import HIGH_CONVICTION
 from engine.risk.types import OptionLegDetails
 
 Direction = Literal["long", "short"]
@@ -144,10 +145,14 @@ _DTE_MAX = 45
 # Widened once more 2026-08-30 (was [0.40,0.70]/[0.25,0.55]) for the contest
 # window — docs/PLAN_AGGRESSIVE_PROFILE.md §2: more delta per premium dollar,
 # and the upper strikes this reaches are also the more liquid near-ATM ones.
-# FROZEN after this: docs/HACKATHON.md §8 does not permit touching these
-# constants again once Monday's open has happened, so funnel counts stay
-# comparable day over day across the contest window.
-_HIGH_CONVICTION_THRESHOLD = 0.7
+# (The contest-window freeze on these constants ended with the hackathon.)
+#
+# 2026-09-23: the threshold was 0.7, and no decision in the system's history
+# had reached it: the two-agent council takes the MIN of two convictions,
+# and across 151 real option decisions the maximum was 0.62. So the high
+# band was dead code. It now uses `sizing.HIGH_CONVICTION`, the same number
+# at which sizing grants the full budget, since those are one idea.
+_HIGH_CONVICTION_THRESHOLD = HIGH_CONVICTION
 _HIGH_CONVICTION_DELTA_BAND = (0.35, 0.75)
 _LOW_CONVICTION_DELTA_BAND = (0.25, 0.65)
 

@@ -89,8 +89,14 @@ a trade that clears every deterministic gate is allowed to exist, and
 sizing it to nothing would be a veto wearing a sizer's clothing (the
 system already has named vetoes for that, and they are auditable)."""
 
-_CONVICTION_CEILING = 0.62
-"""Conviction at which a trade earns the FULL budget.
+HIGH_CONVICTION = 0.62
+"""THE definition of "high conviction" for an options entry, used twice:
+the conviction at which sizing grants the FULL budget (below), and the
+threshold at which `selection._delta_band` moves to the nearer-the-money
+band. One number, because they are one idea (CLAUDE.md 4.4). The selection
+threshold used to be a separate 0.7 that no decision had ever reached.
+
+Conviction at which a trade earns the FULL budget.
 
 Deliberately not 1.0. The two-agent council resolves by taking the MINIMUM
 of the bull and bear conviction, which compresses its output hard toward
@@ -112,7 +118,7 @@ def _conviction_scaled_budget(inputs: OptionsSizingInputs) -> float:
     floor = inputs.conviction_floor
     if conviction is None or floor is None:
         return inputs.budget_usd
-    span = _CONVICTION_CEILING - floor
+    span = HIGH_CONVICTION - floor
     if span <= 0:
         # A floor at or above the observed ceiling leaves no range to scale
         # across. Do not silently divide by ~0 and do not invent a value:

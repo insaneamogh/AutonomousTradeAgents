@@ -2252,3 +2252,28 @@ async def test_the_trade_hop_hands_the_guard_realized_vol_from_the_features(
     assert len(opens) == 1
     assert opens[0]["output"]["is_error"] is True
     assert opens[0]["output"]["content"]["denied"] == "iv_outside_plausible_band"
+
+
+async def test_bull_and_bear_views_get_the_analysts_token_headroom() -> None:
+    """500 is the ceiling that truncated 70% of technical-analyst replies
+    mid-JSON. A truncated view is unparseable, and a failed re-ask reads as
+    an abstain, i.e. a HOLD for a formatting reason. The views must get at
+    least the specialists' budget."""
+    from trading_agents.nodes._specialist import MAX_TOKENS as SPECIALIST_MAX_TOKENS
+
+    seen: list[int] = []
+
+    class _Recording(_ScriptedLLM):
+        async def complete(self, *, system: str, user: str, **kwargs: Any) -> LLMResponse:
+            seen.append(int(kwargs["max_tokens"]))
+            return await super().complete(system=system, user=user, **kwargs)
+
+    fake = _Recording(
+        bull_view={"direction": "long", "strategy": "momentum", "conviction": 0.6,
+                   "thesis": "NVDA breaks 190 within 3 weeks."},
+        bear_view={"direction": "long", "strategy": "momentum", "conviction": 0.55,
+                   "thesis": "NVDA holds support within 3 weeks."},
+    )
+    await run_bull_and_bear(_state(), fake)
+    assert len(seen) == 2
+    assert min(seen) >= SPECIALIST_MAX_TOKENS

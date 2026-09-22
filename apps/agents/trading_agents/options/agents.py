@@ -118,7 +118,19 @@ __all__ = [
 #: -> a final text turn), independent of anything in this file.
 DEFAULT_MAX_ROUNDS = 3
 
-_VIEW_MAX_TOKENS = 500
+#: Was 500, the same ceiling that was measured CUTTING OFF 70% of technical
+#: analyst replies mid-JSON (`nodes/_specialist.MAX_TOKENS` has the table):
+#: a truncated view is unparseable, pays for a re-ask, and if the re-ask is
+#: also cut, the agent reads as ABSTAINED, which the resolver turns into a
+#: HOLD. These views carry direction, strategy, conviction AND a thesis,
+#: so they are no shorter than the analysts' replies. Raised to the same
+#: 900. A ceiling that does not bind costs nothing.
+#:
+#: NOT measured for these two roles specifically: their output-length
+#: distribution in `llm_calls` was not queried (the DB was out of reach
+#: when this changed). The GLM cutover makes the headroom matter more: a
+#: reasoning model can spend budget before it writes the JSON.
+_VIEW_MAX_TOKENS = 900
 _TRADE_MAX_TOKENS = 1024
 
 _VALID_DIRECTIONS = frozenset({"long", "short"})
