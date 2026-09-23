@@ -97,6 +97,22 @@ class ClosePositionResponse(CamelCaseModel):
     detail: str | None = None
 
 
+class FlattenResultDto(CamelCaseModel):
+    symbol: str
+    closed: bool
+    error: str | None = None
+
+
+class FlattenAllResponse(CamelCaseModel):
+    """POST /positions/flatten-all. One row per position the Positions
+    screen listed, with its own outcome, so the app can show exactly what
+    is still open. `closed` means a close was INITIATED (a fill confirms
+    later, like every close)."""
+
+    positions: list[FlattenResultDto]
+    auto_approve_revoked: int
+
+
 class ClosedPositionDto(CamelCaseModel):
     """One row in the closed-position history — GET /positions/history.
 

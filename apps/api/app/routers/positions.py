@@ -5,6 +5,8 @@ GET  /api/v1/positions/history                 closed positions, newest first
 POST /api/v1/positions/{decision_id}/close     close one now (manual override)
 POST /api/v1/positions/unmanaged/{symbol}/close  close a position with NO
                                                   decision behind it at all
+POST /api/v1/positions/flatten-all             kill switch: revoke auto-approve,
+                                                  then close every position
 
 The close is the in-app counterpart to "let the agent handle it": the user
 can flatten a position themselves at any time. It routes through the SAME
@@ -41,6 +43,8 @@ from app.middleware.auth import AuthedUser, get_current_user, require_real_auth
 from app.schemas.positions import (
     ClosedPositionListResponse,
     ClosePositionResponse,
+    FlattenAllResponse,
+    FlattenResultDto,
     OpenPositionDto,
 )
 from app.services.orders.positions_service import list_closed_positions, list_open_positions
@@ -97,6 +101,28 @@ async def closed_positions(
         offset=offset,
     )
     return ClosedPositionListResponse(positions=rows, total=total, limit=limit, offset=offset)
+
+
+@router.post(
+    "/flatten-all",
+    response_model=FlattenAllResponse,
+    response_model_by_alias=True,
+)
+async def flatten_all(
+    user: AuthedUser = Depends(require_real_auth),
+) -> FlattenAllResponse:
+    """The kill switch. Revokes auto-approve consent on the caller's broker
+    connections so nothing re-opens, then closes every position through
+    the same risk-gated paths a single close uses. It only ever acts inside
+    the caller's own account. See ``app.services.orders.kill_switch``."""
+    from app.services.orders.kill_switch import flatten_all_now
+    from engine.db.session import async_session_factory
+
+    result = await flatten_all_now(user_id=user.id, session_factory=async_session_factory())
+    return FlattenAllResponse(
+        positions=[FlattenResultDto(**r) for r in result["positions"]],
+        auto_approve_revoked=result["auto_approve_revoked"],
+    )
 
 
 @router.post(
