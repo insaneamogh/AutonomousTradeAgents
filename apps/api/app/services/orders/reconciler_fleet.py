@@ -49,6 +49,20 @@ logger = logging.getLogger("api.reconciler_fleet")
 _FIXTURE_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 
+
+def _exits_allowed_now() -> bool:
+    """True while the US equity/options market is open. Fails OPEN: a
+    calendar error must never be the reason a position cannot exit."""
+    from datetime import UTC, datetime
+
+    from engine.features import is_us_market_open
+
+    try:
+        return bool(is_us_market_open(datetime.now(UTC)))
+    except Exception:
+        logger.exception("fleet: market-hours check failed — allowing exits")
+        return True
+
 @dataclass
 class UserBrokerPoller:
     """``BrokerPoller`` that opens the user's broker connection per tick.
@@ -210,6 +224,14 @@ class ReconcilerFleet:
         from trading_agents.options.escalation import EscalationBudget
 
         escalation_budget = EscalationBudget()
+        # The exit ladder only SUBMITS while the US market is open. Outside
+        # it, option marks are stale and absurdly wide (Saturday spreads of
+        # ~30% were ~$720 of the -$2.3k "loss" on Sep 6), so a stop evaluated
+        # then fires on quote noise and queues a sell at a price set by it.
+        # The broker-side resting stop still covers the gap, which is what
+        # it exists for. Computed once per tick so every user sees the same
+        # answer.
+        exits_open = _exits_allowed_now()
 
         reconciled = 0
         for uid in user_ids:
@@ -308,10 +330,14 @@ class ReconcilerFleet:
             try:
                 from app.services.orders.position_manager import manage_positions_for_user
 
-                closes = await manage_positions_for_user(
-                    user_id=uid,
-                    session_factory=self.session_factory,
-                    escalation_budget=escalation_budget,
+                closes = (
+                    await manage_positions_for_user(
+                        user_id=uid,
+                        session_factory=self.session_factory,
+                        escalation_budget=escalation_budget,
+                    )
+                    if exits_open
+                    else 0
                 )
                 if closes:
                     logger.info("fleet: position manager initiated %d close(s) for %s", closes, uid)
@@ -323,8 +349,12 @@ class ReconcilerFleet:
                     sweep_expiring_options_for_user,
                 )
 
-                expiry_closes = await sweep_expiring_options_for_user(
-                    user_id=uid, session_factory=self.session_factory
+                expiry_closes = (
+                    await sweep_expiring_options_for_user(
+                        user_id=uid, session_factory=self.session_factory
+                    )
+                    if exits_open
+                    else 0
                 )
                 if expiry_closes:
                     logger.info(
