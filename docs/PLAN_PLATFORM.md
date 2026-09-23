@@ -26,7 +26,14 @@
 >   calendar (0a9fe57e7) and the IV history recorder (069492d08). The regime
 >   gate and premium-cap ranking are deferred until a signal has an edge.
 >   The FOMC/CPI calendar is not started.
-> - Next is Phase 6 ops.
+> - Phase 6 is MOSTLY DONE: ops alerts (8d7d6faf0), close-retry fixes
+>   (ce8b722ed), market-hours exit gate (d9902ed94), restart catch-up
+>   (cf1c809a7), and the flatten-all kill switch (endpoint only, no UI button
+>   yet). Still open: assignment/exercise handling, labelling stop fills,
+>   the EOD job, leader election, the daily P&L push, and Greeks limits.
+> - Phases 5 and 5b (debit spreads, instrument router, event interpreter)
+>   are NOT started. Phase 3 says no signal has an edge yet, so they wait on
+>   a candidate that passes.
 
 
 ## Context

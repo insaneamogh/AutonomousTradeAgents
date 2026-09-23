@@ -4,6 +4,60 @@
 >
 > **Everything from here to the `# Build log
 
+### 2026-09-23 — 8d7d6faf0..(kill switch) — PLAN_PLATFORM Phase 6: operating it unattended
+- **8d7d6faf0 ops alerts.** `raise_ops_alert` logs at ERROR (Sentry), pushes
+  to the user's devices, and optionally POSTs to OPS_ALERT_WEBHOOK_URL.
+  - The URL is never logged.
+  - De-duplicated per (kind, key) for 6h, so a 30s breaker tick pages once.
+  - It never raises; a test caught that it did when logging itself failed.
+  - Hooked into: breaker trip, a failed resting stop, an LLM auth failure
+    (once per sweep, not per symbol), a council that refused to start, and
+    a failed sweep. Each hook is revert-checked on its own.
+- **ce8b722ed a close that failed once could never be retried.** Found by
+  reading, NOT observed live.
+  - (a) A fixed `agent-close-{id}` meant that after a DAY close expired
+    unfilled, every retry reused an id that is UNIQUE in `orders` and
+    rejected by Alpaca, forever. Retries now use `-r{n}`.
+  - (b) A submit that RAISED left the row `pending` with no broker id. It
+    was never polled and always "in flight", so the manager skipped that
+    position on every tick and its stop, trail and time exits were dead.
+  - New `mark_order_submit_failed` moves such a row to `rejected`, guarded
+    to `pending` rows with no broker id. It is applied to the agent close
+    and the unmanaged close.
+  - Protective-stop placement has the same shape, lower stakes, and is NOT
+    changed.
+- **d9902ed94 exits only while the market is open.** The fleet ran the
+  close ladder 24/7 against weekend marks with ~30% spreads. The gate
+  lives in the fleet tick, fails OPEN on a calendar error, and leaves the
+  broker-side stop to cover off-hours.
+- **cf1c809a7 restart catch-up.** A restart after 14:00 UTC used to skip
+  the day's sweep. The loop now runs one catch-up sweep if a scan time
+  passed today and the market is still open. It is idempotent through the
+  cron's dedup plus the LLM caps, and a failed catch-up pages.
+- **Kill switch.** `POST /api/v1/positions/flatten-all`:
+  - revokes auto-approve consent on the user's connections;
+  - then closes every listed position through the SAME risk-gated
+    close_position_now / close_unmanaged_position_now paths, with reason
+    `user_kill_switch`;
+  - per-position failures are isolated and reported.
+  It was built and tested with fakes. **Not executed against a broker**
+  (CLAUDE.md §8: the operator presses it).
+- **Correction to 8d7d6faf0's body:** the "unexplained 31-minute stall" was
+  NOT a test hang. `ps` showed wall-clock far ahead of CPU time because the
+  host was throttling or sleeping the background process; the same run
+  finished normally (1824 passed / 95s) once it got CPU. Nothing to fix.
+- **Still open in Phase 6:**
+  - option assignment/exercise/expiry handling (still marked
+    `external_broker`) and labelling protective-stop fills;
+  - an end-of-day job (ghost eval, then deterministic reflection, then an
+    ops report);
+  - leader election before running more than one instance;
+  - the daily P&L push;
+  - portfolio Greeks limits.
+- **VERIFIED:** see each commit; every fix revert-checked. Full-suite
+  count is in the kill-switch commit.
+
+
 ### 2026-09-23 — ab536dc6a / 0a9fe57e7 / 069492d08 — PLAN_PLATFORM Phase 4: the missing gates
 - **ab536dc6a `expected_move_below_breakeven`.** A new named rule.
   - It refuses a long option when the underlying move needed to break even
