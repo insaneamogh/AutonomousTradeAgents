@@ -11,6 +11,7 @@ plumbing; what must be pinned here is WHEN the agent decides to close:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import uuid
 from contextlib import asynccontextmanager
@@ -694,9 +695,15 @@ class _FakeCloseBroker:
 class _FakeSessionCM:
     """Async-context-manager stand-in for ``session_factory()``."""
 
-    def __init__(self) -> None:
+    def __init__(self, prior_close_attempts: int = 0) -> None:
         self.session = MagicMock()
-        self.session.execute = AsyncMock()
+        # A plain (sync) result object, as SQLAlchemy returns: the close
+        # path counts prior close attempts with `.scalar_one()` before it
+        # picks this attempt's client_order_id.
+        result = MagicMock()
+        result.scalar_one.return_value = prior_close_attempts
+        result.scalar_one_or_none.return_value = None
+        self.session.execute = AsyncMock(return_value=result)
         self.session.commit = AsyncMock()
 
     async def __aenter__(self) -> MagicMock:
@@ -1526,3 +1533,114 @@ async def test_a_resting_protective_stop_is_not_treated_as_a_close_in_flight() -
         f"the exclusion must key off {PROTECTIVE_STOP_PREFIX!r} — the prefix "
         "option_stops actually places its orders under"
     )
+
+
+
+# ── close attempts get their own client_order_id ─────────────────────
+
+
+async def test_a_retried_close_gets_a_fresh_client_order_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One fixed `agent-close-{id}` made every retry impossible: the id is
+    UNIQUE in `orders` and Alpaca rejects a reused client_order_id, so once
+    a DAY close expired unfilled the agent could never close the position."""
+    broker = _FakeCloseBroker(
+        positions=[_FakePosition(symbol="NVDA", qty=10, avg_entry_price=100.0, market_value=1000.0)]
+    )
+    conn = SimpleNamespace(id="conn-1", is_paper=True)
+
+    @asynccontextmanager
+    async def fake_broker_cm(_user_id, *, broker_=None, store=None, **_kw):
+        yield broker, conn
+
+    monkeypatch.setattr(position_manager_mod, "with_broker_client", fake_broker_cm)
+    decision = _short_decision()
+
+    first = _FakeSessionCM(prior_close_attempts=0)
+    await _close_position(lambda: first, user_id="00000000-0000-0000-0000-000000000001",
+                          decision=decision, reason="agent_time")
+    retry = _FakeSessionCM(prior_close_attempts=1)
+    await _close_position(lambda: retry, user_id="00000000-0000-0000-0000-000000000001",
+                          decision=decision, reason="agent_time")
+
+    ids = [o.client_order_id for o in broker.placed]
+    assert ids == [f"agent-close-{decision.id}", f"agent-close-{decision.id}-r1"]
+
+
+async def test_a_submit_that_raises_is_marked_terminal_not_left_in_flight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `pending` row with no broker id is never polled, and `pending`
+    counts as in flight, so without this the manager skipped the position
+    on every later tick, disabling its stop, trail and time exits."""
+    class _RaisingBroker(_FakeCloseBroker):
+        async def place_order(self, req):  # type: ignore[override]
+            raise RuntimeError("network reset")
+
+    broker = _RaisingBroker(
+        positions=[_FakePosition(symbol="NVDA", qty=10, avg_entry_price=100.0, market_value=1000.0)]
+    )
+    conn = SimpleNamespace(id="conn-1", is_paper=True)
+
+    @asynccontextmanager
+    async def fake_broker_cm(_user_id, *, broker_=None, store=None, **_kw):
+        yield broker, conn
+
+    row_id = uuid.uuid4()
+    marked: list[object] = []
+
+    async def fake_persist(**_kw):
+        return row_id
+
+    async def fake_mark(order_row_id):
+        marked.append(order_row_id)
+
+    monkeypatch.setattr(position_manager_mod, "with_broker_client", fake_broker_cm)
+    monkeypatch.setattr(position_manager_mod, "persist_linked_order_submit", fake_persist)
+    monkeypatch.setattr(position_manager_mod, "mark_order_submit_failed", fake_mark)
+
+    with pytest.raises(RuntimeError):
+        await _close_position(
+            lambda: _FakeSessionCM(), user_id="00000000-0000-0000-0000-000000000001",
+            decision=_short_decision(), reason="agent_time",
+        )
+    assert marked == [row_id]
+
+
+async def test_an_unmanaged_close_whose_submit_raises_is_marked_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A user-requested close must not leave a `pending` row behind that
+    `_has_in_flight_unmanaged_close` then reads as "already closing" on every
+    later request, which would make the position unclosable from the app."""
+    class _RaisingBroker(_FakeCloseBroker):
+        async def place_order(self, req):  # type: ignore[override]
+            raise RuntimeError("network reset")
+
+    broker = _RaisingBroker(
+        positions=[_FakePosition(symbol="NVDA", qty=5, avg_entry_price=100.0, market_value=500.0)]
+    )
+    conn = SimpleNamespace(id="conn-1", is_paper=True)
+
+    @asynccontextmanager
+    async def fake_broker_cm(_user_id, *, broker_=None, store=None, **_kw):
+        yield broker, conn
+
+    row_id = uuid.uuid4()
+    marked: list[object] = []
+
+    async def fake_mark(order_row_id):
+        marked.append(order_row_id)
+
+    monkeypatch.setattr(position_manager_mod, "with_broker_client", fake_broker_cm)
+    monkeypatch.setattr(position_manager_mod, "persist_unlinked_order_submit",
+                        AsyncMock(return_value=row_id))
+    monkeypatch.setattr(position_manager_mod, "mark_order_submit_failed", fake_mark)
+
+    # Whether the caller surfaces the error or re-raises it, the row must be marked.
+    with contextlib.suppress(RuntimeError):
+        await _close_unmanaged_position(
+            user_id="00000000-0000-0000-0000-000000000001", symbol="NVDA"
+        )
+    assert marked == [row_id]

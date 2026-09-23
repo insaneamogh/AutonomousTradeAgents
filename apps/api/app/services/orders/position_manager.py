@@ -75,6 +75,7 @@ from sqlalchemy import desc, select, text, update
 from app.services.broker.broker_use import with_broker_client
 from app.services.orders.executor import _build_risk_context
 from app.services.orders.order_store import (
+    mark_order_submit_failed,
     persist_linked_order_submit,
     persist_order_result,
     persist_unlinked_order_submit,
@@ -863,17 +864,23 @@ async def _close_unmanaged_position(*, user_id: str, symbol: str) -> dict:
             option_action="sell_to_close" if is_option else None,
         )
 
-        order = await broker.place_order(
-            OrderRequest(
-                symbol=wire_symbol,
-                side=broker_close_side,
-                qty=qty,
-                order_type=order_type,
-                limit_price=round(abs(last_price), 2) if order_type is OrderType.LIMIT else None,
-                time_in_force=TimeInForce.DAY,
-                client_order_id=client_order_id,
+        try:
+            order = await broker.place_order(
+                OrderRequest(
+                    symbol=wire_symbol,
+                    side=broker_close_side,
+                    qty=qty,
+                    order_type=order_type,
+                    limit_price=round(abs(last_price), 2) if order_type is OrderType.LIMIT else None,
+                    time_in_force=TimeInForce.DAY,
+                    client_order_id=client_order_id,
+                )
             )
-        )
+        except Exception:
+            # Same trap as the agent close: a `pending` row with no broker id
+            # would block every later close request for this symbol.
+            await mark_order_submit_failed(order_row_id)
+            raise
 
         if order_row_id is not None:
             try:
@@ -1105,6 +1112,37 @@ async def _exit_reason(
     return None
 
 
+CLOSE_ID_PREFIX = "agent-close-"
+
+
+async def _close_client_order_id(session_factory, decision_id) -> str:
+    """``agent-close-{id}`` for the first attempt, ``agent-close-{id}-r{n}``
+    after that.
+
+    One fixed id per decision made every retry impossible. The id is
+    UNIQUE in ``orders`` (the insert's on-conflict handed back the OLD
+    expired row) and Alpaca rejects a reused ``client_order_id``, so once a
+    DAY close expired unfilled, every later tick resubmitted the same id,
+    got rejected, and the agent could never close that position again.
+
+    Counting prior attempts keeps the id deterministic within an attempt.
+    A retried tick while a close is in flight never gets here, because
+    ``_has_in_flight_close`` skips it, so the count only moves once the
+    previous attempt is terminal."""
+    from sqlalchemy import func
+
+    from engine.db.models import Order
+
+    base = f"{CLOSE_ID_PREFIX}{decision_id}"
+    async with session_factory() as session:
+        prior = (
+            await session.execute(
+                select(func.count(Order.id)).where(Order.client_order_id.like(f"{base}%"))
+            )
+        ).scalar_one()
+    return base if not prior else f"{base}-r{int(prior)}"
+
+
 async def _close_position(
     session_factory: async_sessionmaker,
     *,
@@ -1151,7 +1189,7 @@ async def _close_position(
     if qty <= 0:
         return False
     symbol = decision.symbol.upper()
-    client_order_id = f"agent-close-{decision.id}"
+    client_order_id = await _close_client_order_id(session_factory, decision.id)
     # getattr, not decision.proposal — some callers (older fixtures, a
     # minimal decision-like object) may not carry a proposal attribute at
     # all; treat that exactly like an empty proposal rather than crashing.
@@ -1269,17 +1307,23 @@ async def _close_position(
             option_action="sell_to_close" if is_option else None,
         )
 
-        order = await broker.place_order(
-            OrderRequest(
-                symbol=wire_symbol,
-                side=broker_close_side,
-                qty=qty,
-                order_type=order_type,
-                limit_price=round(last_price, 2) if order_type is OrderType.LIMIT else None,
-                time_in_force=TimeInForce.DAY,
-                client_order_id=client_order_id,
+        try:
+            order = await broker.place_order(
+                OrderRequest(
+                    symbol=wire_symbol,
+                    side=broker_close_side,
+                    qty=qty,
+                    order_type=order_type,
+                    limit_price=round(last_price, 2) if order_type is OrderType.LIMIT else None,
+                    time_in_force=TimeInForce.DAY,
+                    client_order_id=client_order_id,
+                )
             )
-        )
+        except Exception:
+            # Terminal, so the next tick retries under a fresh attempt id
+            # instead of reading this row as "a close is in flight" forever.
+            await mark_order_submit_failed(order_row_id)
+            raise
 
         if order_row_id is not None:
             try:

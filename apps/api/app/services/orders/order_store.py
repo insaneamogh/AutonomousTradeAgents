@@ -255,6 +255,35 @@ async def persist_linked_order_submit(
     )
 
 
+async def mark_order_submit_failed(order_row_id: uuid.UUID | None) -> None:
+    """Move a ``pending`` row whose broker submit RAISED to ``rejected``.
+
+    Without this the row stays ``pending`` with no ``broker_order_id``
+    forever. ``order_sync`` never polls it (it needs a broker id to ask
+    about), and ``pending`` is in ``IN_FLIGHT_STATUSES``, so the position
+    manager reads "a close is already in flight" and skips the position on
+    every later tick, silently disabling its stop, trail and time exits.
+    Only touches a row that is still ``pending`` with no broker id, so it
+    can never overwrite a status the broker actually reported."""
+    if order_row_id is None or not env_flag("USE_POSTGRES"):
+        return
+    from sqlalchemy import update
+
+    from engine.db.models import Order
+    from engine.db.session import async_session_factory
+
+    factory = async_session_factory()
+    async with factory() as session:
+        await session.execute(
+            update(Order)
+            .where(Order.id == order_row_id)
+            .where(Order.status == "pending")
+            .where(Order.broker_order_id.is_(None))
+            .values(status="rejected")
+        )
+        await session.commit()
+
+
 async def persist_unlinked_order_submit(
     *,
     user_id: str,
