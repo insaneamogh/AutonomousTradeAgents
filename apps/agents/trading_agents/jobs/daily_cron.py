@@ -563,6 +563,24 @@ def _equity_resolver(user_id: str):
     return _resolve
 
 
+def _is_llm_auth_error(exc: BaseException) -> bool:
+    """A rejected or unauthorised key, by the SDK's own class names, so this
+    needs no provider import. GLM's Anthropic-compatible endpoint raises the
+    same classes through the same SDK."""
+    return type(exc).__name__ in {"AuthenticationError", "PermissionDeniedError"}
+
+
+def _ops_alert(kind: str, **kwargs) -> None:
+    """Page through the API's ops alerts when running inside it. The cron
+    can also run standalone (CLI) without the API package, where this is a
+    no-op rather than an ImportError."""
+    try:
+        from app.services.notifications.ops_alerts import raise_ops_alert
+    except ImportError:
+        return
+    raise_ops_alert(kind, **kwargs)
+
+
 def _notify_proposal(user_id: str, proposal: dict, push_tasks: list) -> None:
     """Fan out the 'new proposal' push. The audit's Break 4: cron proposals
     never notified anyone and expired unseen. Failure never fails the cron."""
@@ -719,8 +737,14 @@ async def main(
         feature_provider = resolve_feature_provider(
             equity_resolver=_equity_resolver(user_id)
         )
-    except RuntimeError:
+    except RuntimeError as exc:
         log.exception("daily cron refused to start (REQUIRE flag failed)")
+        _ops_alert(
+            "council_refused_start",
+            user_id=user_id,
+            title="Council did not run",
+            body=f"The scheduled pass refused to start: {str(exc)[:160]}",
+        )
         return 2
     log.info("LLM mode: %s", "MOCK" if llm.mock else "REAL")
 
@@ -970,6 +994,19 @@ async def main(
         except Exception as exc:
             log.exception("council failed for %s — continuing", symbol)
             rolled_up.append({"symbol": symbol, "skipped": False, "error": str(exc)})
+            if _is_llm_auth_error(exc):
+                # Every remaining symbol will fail the same way; the key is
+                # the problem, not the symbol. Keyed on the kind alone so it
+                # pages once, not once per symbol.
+                _ops_alert(
+                    "llm_auth_failed",
+                    user_id=user_id,
+                    title="LLM key rejected",
+                    body=(
+                        f"The LLM provider rejected the API key ({type(exc).__name__}). "
+                        "Council passes fail until the key is fixed."
+                    ),
+                )
 
     # Push fan-outs are fire-and-forget tasks — drain them before the
     # process exits or the notifications die with the event loop.

@@ -685,3 +685,53 @@ async def test_an_already_decided_top_name_does_not_take_the_sweep_slot(
         MAX_LLM_SYMBOLS_PER_SWEEP="1",
     )
     assert calls == ["BBB"]
+
+
+# ── ops alerts from the cron ─────────────────────────────────────────
+
+
+async def test_a_rejected_llm_key_pages_once_not_per_symbol(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-09-02: the key 401'd and every pass failed while the scheduler
+    kept running. Every remaining symbol fails the same way, so it pages
+    once per sweep (and the alert module de-duplicates across sweeps)."""
+    from trading_agents.jobs import daily_cron
+
+    class AuthenticationError(Exception):
+        """Named like the SDK's class; detection is by name."""
+
+    async def reject(_symbol: str) -> None:
+        raise AuthenticationError("401 invalid x-api-key")
+
+    alerts: list[str] = []
+    monkeypatch.setattr(daily_cron, "_ops_alert", lambda kind, **kw: alerts.append(kind))
+    await _run_main(monkeypatch, ["AAA", "BBB"], {"AAA": 0.9, "BBB": 0.8}, on_run_council=reject)
+    assert set(alerts) == {"llm_auth_failed"}
+
+
+async def test_an_ordinary_council_error_does_not_page_as_an_auth_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from trading_agents.jobs import daily_cron
+
+    async def flaky(_symbol: str) -> None:
+        raise ValueError("bad bar")
+
+    alerts: list[str] = []
+    monkeypatch.setattr(daily_cron, "_ops_alert", lambda kind, **kw: alerts.append(kind))
+    await _run_main(monkeypatch, ["AAA"], {"AAA": 0.9}, on_run_council=flaky)
+    assert alerts == []
+
+
+async def test_a_council_that_refuses_to_start_pages(monkeypatch: pytest.MonkeyPatch) -> None:
+    from trading_agents.jobs import daily_cron
+
+    def refuse(*_a, **_k):
+        raise RuntimeError("AGENTS_REQUIRE_REAL_LLM=1 but the LLM resolved to MOCK mode")
+
+    alerts: list[str] = []
+    monkeypatch.setattr(daily_cron, "_ops_alert", lambda kind, **kw: alerts.append(kind))
+    monkeypatch.setattr(daily_cron, "LLM", refuse)
+    assert await daily_cron.main(_USER, ["AAA"], force=False) == 2
+    assert alerts == ["council_refused_start"]

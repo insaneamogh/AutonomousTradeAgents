@@ -130,6 +130,7 @@ def schedule_position_event_notification(
     title: str,
     body: str,
     store: NotificationStore | None = None,
+    data_kind: str = "position_event",
 ) -> asyncio.Task[None]:
     """Generic position-event fan-out (order filled / agent closed /
     closed at broker). Same rules as the proposal push: fire-and-forget,
@@ -138,12 +139,13 @@ def schedule_position_event_notification(
     """
     s = store or get_notification_store()
     return asyncio.create_task(
-        _fan_out_plain(user_id=user_id, title=title, body=body, store=s)
+        _fan_out_plain(user_id=user_id, title=title, body=body, store=s, data_kind=data_kind)
     )
 
 
 async def _fan_out_plain(
-    *, user_id: str, title: str, body: str, store: NotificationStore
+    *, user_id: str, title: str, body: str, store: NotificationStore,
+    data_kind: str = "position_event",
 ) -> None:
     try:
         devices = await store.list_active_devices(user_id)
@@ -158,7 +160,7 @@ async def _fan_out_plain(
             to=d.expo_push_token,
             title=title,
             body=body,
-            data={"kind": "position_event"},
+            data={"kind": data_kind},
         )
         for d in devices
     ]

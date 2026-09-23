@@ -262,6 +262,19 @@ class ReconcilerFleet:
                         "fleet: breaker TRIPPED for user=%s (%s)",
                         uid, result.transition.reason,
                     )
+                    from app.services.notifications.ops_alerts import raise_ops_alert
+
+                    raise_ops_alert(
+                        "breaker_tripped",
+                        user_id=str(uid),
+                        key=str(uid),
+                        title="Trading halted",
+                        body=(
+                            "The daily drawdown breaker tripped. New entries are "
+                            "blocked until you acknowledge it in the app; open "
+                            "positions keep their exits."
+                        ),
+                    )
             except Exception:
                 logger.exception("fleet: reconcile tick failed for user=%s", uid)
 

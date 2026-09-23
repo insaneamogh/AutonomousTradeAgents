@@ -288,6 +288,18 @@ async def _place(
             "$%.2f/$%.2f — the position keeps the software stop only",
             occ, decision.id, levels.stop_price, levels.limit_price,
         )
+        from app.services.notifications.ops_alerts import raise_ops_alert
+
+        raise_ops_alert(
+            "protective_stop_failed",
+            user_id=str(user_id),
+            key=occ,
+            title="Broker-side stop not placed",
+            body=(
+                f"The resting stop for {occ} could not be placed. The position is "
+                "protected only while the app's own monitor is running."
+            ),
+        )
         return None
 
     try:

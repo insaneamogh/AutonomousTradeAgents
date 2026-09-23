@@ -333,9 +333,18 @@ class CouncilScheduler:
                 await self._run_once()
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
                 logger.exception("scheduled council scan failed — will retry next window")
                 self.last_result = "failed"
+                from app.services.notifications.ops_alerts import raise_ops_alert
+
+                raise_ops_alert(
+                    "sweep_failed",
+                    user_id=_cron_user(),
+                    title="Scheduled sweep failed",
+                    body=f"The baseline council sweep raised {type(exc).__name__}. "
+                    "It will retry at the next scan time.",
+                )
             # Guard against a scan finishing inside the same minute it
             # started, which would otherwise re-fire immediately.
             await asyncio.sleep(61)
