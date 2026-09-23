@@ -236,6 +236,22 @@ def _seconds_until_next(now: datetime, times: list[tuple[int, int]]) -> float:
     return max(1.0, (nxt - now).total_seconds())
 
 
+def _missed_a_scan_this_session(now: datetime, times: list[tuple[int, int]]) -> bool:
+    """True when a scan time already passed TODAY and the market is open
+    right now, i.e. a restart landed after today's sweep and there is still
+    a session to trade in. Outside market hours there is nothing to catch
+    up: the next scheduled time will do."""
+    from engine.features import is_us_market_open
+
+    passed = any(now.replace(hour=h, minute=m, second=0, microsecond=0) <= now for h, m in times)
+    if not passed:
+        return False
+    try:
+        return bool(is_us_market_open(now))
+    except Exception:
+        return False
+
+
 class CouncilScheduler:
     """Fires the daily council pass at configured UTC times."""
 
@@ -322,6 +338,30 @@ class CouncilScheduler:
             "council scheduler armed — scan times (UTC): %s",
             ", ".join(f"{h:02d}:{m:02d}" for h, m in times),
         )
+        if _missed_a_scan_this_session(datetime.now(UTC), times):
+            # A deploy or crash-restart after today's scan time used to
+            # skip the day's sweep entirely: the loop only ever schedules
+            # FUTURE times. Catch up once, now. Idempotent by construction:
+            # daily_cron's dedup skips symbols already decided today (or
+            # still inside the options cooldown), and the per-day/hour LLM
+            # caps still bound spend.
+            logger.info("council scheduler: missed today's scan while down — catching up now")
+            try:
+                await self._run_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.exception("catch-up council scan failed — waiting for the next window")
+                self.last_result = "failed"
+                from app.services.notifications.ops_alerts import raise_ops_alert
+
+                raise_ops_alert(
+                    "sweep_failed",
+                    user_id=_cron_user(),
+                    title="Catch-up sweep failed",
+                    body=f"The restart catch-up sweep raised {type(exc).__name__}. "
+                    "It will retry at the next scan time.",
+                )
         while True:
             delay = _seconds_until_next(datetime.now(UTC), times)
             logger.info("next council scan in %.0f min", delay / 60)

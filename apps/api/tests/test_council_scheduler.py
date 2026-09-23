@@ -426,3 +426,50 @@ def test_iv_snapshot_is_on_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.delenv("IV_SNAPSHOT_ENABLED", raising=False)
     assert _flag("IV_SNAPSHOT_ENABLED", default=True) is True
+
+
+# ── restart catch-up ────────────────────────────────────────────────
+
+
+def test_a_restart_after_the_scan_time_during_the_session_catches_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import UTC, datetime
+
+    import engine.features
+    from app.services.council.scheduler import _missed_a_scan_this_session
+
+    monkeypatch.setattr(engine.features, "is_us_market_open", lambda _now: True)
+    after = datetime(2026, 9, 23, 15, 30, tzinfo=UTC)
+    before = datetime(2026, 9, 23, 13, 45, tzinfo=UTC)
+    assert _missed_a_scan_this_session(after, [(14, 0)]) is True
+    assert _missed_a_scan_this_session(before, [(14, 0)]) is False
+
+    monkeypatch.setattr(engine.features, "is_us_market_open", lambda _now: False)
+    assert _missed_a_scan_this_session(after, [(14, 0)]) is False, "after the close: wait"
+
+
+async def test_the_baseline_loop_runs_the_missed_sweep_before_waiting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from app.services.council import scheduler as sched
+
+    monkeypatch.setattr(sched, "_missed_a_scan_this_session", lambda _now, _times: True)
+    s = sched.CouncilScheduler()
+    order: list[str] = []
+
+    async def fake_run_once() -> None:
+        order.append("run")
+
+    async def fake_sleep(_seconds: float) -> None:
+        order.append("sleep")
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(s, "_run_once", AsyncMock(side_effect=fake_run_once))
+    monkeypatch.setattr(sched.asyncio, "sleep", fake_sleep)
+    with pytest.raises(asyncio.CancelledError):
+        await s._baseline_loop()
+    assert order == ["run", "sleep"]

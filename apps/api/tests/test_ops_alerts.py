@@ -145,6 +145,8 @@ async def test_a_breaker_trip_pages_the_user() -> None:
 async def test_a_failed_baseline_sweep_pages(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.services.council import scheduler as sched
 
+    # Not a restart-into-the-session case, whatever the wall clock says.
+    monkeypatch.setattr(sched, "_missed_a_scan_this_session", lambda _now, _times: False)
     s = sched.CouncilScheduler()
     monkeypatch.setattr(s, "_run_once", AsyncMock(side_effect=RuntimeError("db down")))
     sleeps = {"n": 0}
