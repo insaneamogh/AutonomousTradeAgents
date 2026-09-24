@@ -113,6 +113,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     require_production_readiness()
 
     reconciler = None
+    leadership = None
     symbol_cache_warm_task: asyncio.Task[None] | None = None
     use_pg = env_flag("USE_POSTGRES")
     enable_reconciler = env_flag("RECONCILER_ENABLED", default=use_pg)
@@ -202,20 +203,51 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 allow_mock_fallback=not settings.is_production,
             ),
         )
-        reconciler.start()
-        logger.info(
-            "reconciler fleet started (interval=%ss, threshold=%s%%, mock_fallback=%s)",
-            interval, threshold, not settings.is_production,
-        )
-
         # Scheduled council scans. Everything for an autonomous pass
         # already existed (daily_cron walks the watchlist, notifies on
         # each proposal) but nothing invoked it, so picks only appeared
         # on a manual tap. Opt-in via COUNCIL_SCHEDULER_ENABLED — it
         # spends LLM budget, so it must never arm itself by accident.
-        from app.services.council.scheduler import start_council_scheduler
+        from app.services.council.scheduler import (
+            start_council_scheduler,
+            stop_council_scheduler,
+        )
 
-        start_council_scheduler()
+        fleet = reconciler
+
+        async def _start_loops() -> None:
+            fleet.start()
+            logger.info(
+                "reconciler fleet started (interval=%ss, threshold=%s%%, mock_fallback=%s)",
+                interval, threshold, not settings.is_production,
+            )
+            start_council_scheduler()
+
+        async def _stop_loops() -> None:
+            await stop_council_scheduler()
+            await fleet.stop()
+
+        # One process runs the loops (app/services/platform/leader.py).
+        # Without this, UVICORN_WORKERS>1 or a Railway deploy overlap runs
+        # two exit ladders and two council sweeps at once.
+        if env_flag("LEADER_ELECTION_ENABLED", default=True):
+            from app.services.platform.leader import (
+                AdvisoryLease,
+                Leadership,
+                set_current_leadership,
+            )
+            from engine.db.session import get_engine
+
+            leadership = Leadership(
+                AdvisoryLease(get_engine()), on_elected=_start_loops, on_deposed=_stop_loops
+            )
+            set_current_leadership(leadership)
+            # A lone instance leads before the first request, as before;
+            # the background task keeps a follower trying.
+            await leadership.tick()
+            leadership.start()
+        else:
+            await _start_loops()
     elif use_pg:
         logger.info("PostgresStore active but reconciler disabled (RECONCILER_ENABLED=0)")
     else:
@@ -224,12 +256,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        from app.services.council.scheduler import stop_council_scheduler
+        if leadership is not None:
+            from app.services.platform.leader import set_current_leadership
 
-        await stop_council_scheduler()
-        if reconciler is not None:
-            logger.info("stopping reconciler…")
-            await reconciler.stop()
+            logger.info("stopping background loops and releasing the leader lease…")
+            await leadership.stop()
+            set_current_leadership(None)
+        else:
+            from app.services.council.scheduler import stop_council_scheduler
+
+            await stop_council_scheduler()
+            if reconciler is not None:
+                logger.info("stopping reconciler…")
+                await reconciler.stop()
         if symbol_cache_warm_task is not None and not symbol_cache_warm_task.done():
             symbol_cache_warm_task.cancel()
 
@@ -366,10 +405,19 @@ async def health() -> dict[str, str]:
     ``/api/v1/health/full`` endpoint provides per-component depth + is
     Bearer-gated.
     """
+    from app.services.platform.leader import current_leadership
+
+    leadership = current_leadership()
     return {
         "status": "ok",
         "env": settings.env,
         "version": app.version,
+        # Which instance runs the reconciler and scheduler. A follower is
+        # healthy; it serves HTTP and takes over if the leader goes away.
+        "loops": (
+            "unmanaged" if leadership is None
+            else "leader" if leadership.is_leader else "follower"
+        ),
     }
 
 
