@@ -146,9 +146,69 @@ def simulate(
     return (received / paid - 1.0) * 100.0
 
 
+@dataclass(frozen=True)
+class SpreadModel:
+    """A vertical DEBIT spread: buy the |delta| ``long_abs_delta`` leg, sell
+    the further-OTM ``short_abs_delta`` leg, same expiry. Everything else
+    (DTE, IV proxy, costs per leg, the stop on net value) follows
+    ``OptionModel`` so the two vehicles differ only in the structure.
+
+    What the flat IV leaves out: skew. Equity puts carry higher IV further
+    OTM (the short put leg sells richer vol, which helps the spread), and
+    calls usually a little lower (which hurts it). The daily close mark
+    also ignores that a spread's two legs rarely both trade at mid."""
+
+    base: OptionModel = OptionModel()
+    long_abs_delta: float = 0.45
+    short_abs_delta: float = 0.25
+    stop_loss_pct: float | None = 40.0
+
+
+def simulate_spread(
+    bars: list[DailyBar], t: int, direction: str, horizon: int, spread: SpreadModel
+) -> float | None:
+    """Return in % of the net debit paid, for the vertical opened at
+    bars[t]'s close and held to the stop or ``horizon``."""
+    model = spread.base
+    if t + horizon >= len(bars):
+        return None
+    dte = dte_for(horizon, model)
+    rv = realized_vol(bars, t, model.rv_window)
+    if dte is None or rv is None:
+        return None
+    kind = "call" if direction == "long" else "put"
+    spot = bars[t].close
+    iv0 = max(model.iv_floor, rv * model.iv_over_rv)
+    t0 = dte / 365.0
+    k_long = strike_for_delta(spot, t0, iv0, kind=kind, target_abs_delta=spread.long_abs_delta)
+    k_short = strike_for_delta(spot, t0, iv0, kind=kind, target_abs_delta=spread.short_abs_delta)
+    if (kind == "call" and k_short <= k_long) or (kind == "put" and k_short >= k_long):
+        return None
+    h = model.half_spread_pct / 100.0
+    debit = price(spot, k_long, t0, iv0, kind=kind) * (1 + h) - price(
+        spot, k_short, t0, iv0, kind=kind
+    ) * (1 - h)
+    if debit <= 0:
+        return None
+
+    value = debit
+    for k in range(1, horizon + 1):
+        bar = bars[t + k]
+        tau = max(0.0, (dte - (bar.day - bars[t].day).days) / 365.0)
+        rv_k = realized_vol(bars, t + k, model.rv_window) or rv
+        iv_k = max(model.iv_floor, rv_k * model.iv_over_rv)
+        # Closing value: sell the long leg at the bid, buy back the short at the ask.
+        value = price(bar.close, k_long, tau, iv_k, kind=kind) * (1 - h) - price(
+            bar.close, k_short, tau, iv_k, kind=kind
+        ) * (1 + h)
+        if spread.stop_loss_pct is not None and value <= debit * (1 - spread.stop_loss_pct / 100.0):
+            break
+    return (value / debit - 1.0) * 100.0
+
+
 def backtest(
     horizon: int, *, model: OptionModel | None = None, oracle: bool = False, step: int = 5,
-    signals=None, data=None,
+    signals=None, data=None, spread: SpreadModel | None = None,
 ) -> list[Observation]:
     """One option-premium Observation per independent signal at `horizon`.
     `oracle=True` replaces the signal's direction with the direction the
@@ -166,7 +226,11 @@ def backtest(
         direction = s.direction
         if oracle:
             direction = "long" if bars[t + horizon].close >= bars[t].close else "short"
-        ret = simulate(bars, t, direction, horizon, model)
+        ret = (
+            simulate_spread(bars, t, direction, horizon, spread)
+            if spread is not None
+            else simulate(bars, t, direction, horizon, model)
+        )
         if ret is not None:
             out.append(Observation(day=s.day, ret_pct=ret))
     return out
@@ -236,6 +300,17 @@ def main() -> int:
             orc = backtest(h, signals=signals, data=data, oracle=True, model=gated)
             mean = st.mean(o.ret_pct for o in orc) if orc else float("nan")
             print(f"  oracle {h:>3}d  mean premium return {mean:+.1f}% (n={len(orc)})")
+
+    print("\n  vertical DEBIT spread (long |delta| 0.45 / short 0.25, same expiry), "
+          "2.5%/side/leg, -40% stop on net value:\n")
+    vertical = SpreadModel()
+    for h in OPTION_HORIZONS:
+        obs = backtest(h, signals=signals, data=data, spread=vertical)
+        print(f"  signal {h:>3}d  {evaluate(obs, OPTIONS_BAR, n_tests=len(OPTION_HORIZONS)).line()}")
+        if args.oracle:
+            orc = backtest(h, signals=signals, data=data, oracle=True, spread=vertical)
+            mean = st.mean(o.ret_pct for o in orc) if orc else float("nan")
+            print(f"  oracle {h:>3}d  mean return on debit {mean:+.1f}% (n={len(orc)})")
 
     cal = calibrate(data)
     if cal:

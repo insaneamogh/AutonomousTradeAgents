@@ -25,9 +25,11 @@ from tests.eval.option_backtest import (
     OPTION_HORIZONS,
     OPTIONS_BAR,
     OptionModel,
+    SpreadModel,
     backtest,
     dte_for,
     simulate,
+    simulate_spread,
 )
 from tests.eval.signal_backtest import _load, run
 
@@ -99,3 +101,34 @@ def test_the_shipped_signal_fails_the_options_bar_at_every_horizon(fixture_run) 
         )
         assert not verdict.passed, f"{h}d unexpectedly passed: {verdict.line()}"
         assert verdict.mean_net_pct < 0
+
+
+def test_a_debit_spread_is_capped_at_its_width() -> None:
+    """A huge right move: the single leg keeps running, the spread cannot
+    pay more than (width - debit) / debit however far the stock goes."""
+    closes = _noisy(30) + [100.0 * (1.05 ** k) for k in range(1, 7)]
+    bars = _bars(closes)
+    single = simulate(bars, 29, "long", 5, OptionModel())
+    vertical = simulate_spread(bars, 29, "long", 5, SpreadModel())
+    assert single is not None and vertical is not None
+    assert 0 < vertical < single
+
+
+def test_a_put_spread_mirrors_a_call_spread() -> None:
+    up = _bars(_noisy(30) + [100.0 * (1.02 ** k) for k in range(1, 7)])
+    down = _bars(_noisy(30) + [100.0 * (0.98 ** k) for k in range(1, 7)])
+    call = simulate_spread(up, 29, "long", 5, SpreadModel())
+    put = simulate_spread(down, 29, "short", 5, SpreadModel())
+    assert call is not None and put is not None
+    assert call > 0 and put > 0
+
+
+def test_the_spread_is_not_cheaper_for_a_perfect_call(fixture_run) -> None:
+    """The measured reason debit spreads are NOT the Phase 5 default
+    (2026-09-25): with the live 2.5%/side cost on each leg, the oracle
+    keeps less through a spread than through the single leg."""
+    data, signals = fixture_run
+    single = backtest(5, signals=signals, data=data, oracle=True)
+    vertical = backtest(5, signals=signals, data=data, oracle=True, spread=SpreadModel())
+    mean = lambda obs: sum(o.ret_pct for o in obs) / len(obs)  # noqa: E731
+    assert mean(vertical) < mean(single)
