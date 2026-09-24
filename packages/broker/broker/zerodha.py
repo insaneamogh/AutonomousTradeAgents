@@ -100,6 +100,25 @@ _STATUS_FROM_KITE: dict[str, OrderStatus] = {
 
 _DEAD_KITE_STATUSES = frozenset({"REJECTED", "CANCELLED", "EXPIRED"})
 
+# SEBI's retail algo framework (in force for API orders since 2026-04-01):
+# a MARKET or SL-M order placed through the API must carry market
+# protection, and Kite rejects one without it. Per Kite's order docs the
+# value is ">0 and up to 100 (custom %), or -1 (auto protection)", applied
+# only to MARKET and SL-M. -1 lets the exchange band decide.
+_PROTECTED_ORDER_TYPES = frozenset({OrderType.MARKET, OrderType.STOP})
+DEFAULT_MARKET_PROTECTION = "-1"
+
+
+def _market_protection(raw: str | None) -> str:
+    value = (raw or "").strip() or DEFAULT_MARKET_PROTECTION
+    try:
+        pct = float(value)
+    except ValueError as exc:
+        raise ValueError(f"KITE_MARKET_PROTECTION must be -1 or in (0, 100], got {value!r}") from exc
+    if pct != -1 and not (0 < pct <= 100):
+        raise ValueError(f"KITE_MARKET_PROTECTION must be -1 or in (0, 100], got {value!r}")
+    return value
+
 
 class ZerodhaError(Exception):
     """Kite API returned an error envelope or unexpected payload."""
@@ -221,6 +240,9 @@ class ZerodhaBroker(BrokerInterface):
         )
         self._transport = transport
         self._timeout = timeout
+        # Validated at construction: a bad value must fail the connection,
+        # not every order at submit time.
+        self._market_protection = _market_protection(os.environ.get("KITE_MARKET_PROTECTION"))
 
     @classmethod
     def from_env(cls) -> ZerodhaBroker:
@@ -323,6 +345,8 @@ class ZerodhaBroker(BrokerInterface):
             if request.stop_price is None:
                 raise ValueError(f"{request.order_type.value} order requires stop_price")
             form["trigger_price"] = request.stop_price
+        if request.order_type in _PROTECTED_ORDER_TYPES:
+            form["market_protection"] = self._market_protection
         if tag is not None:
             form["tag"] = tag
 

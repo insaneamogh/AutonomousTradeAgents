@@ -127,6 +127,8 @@ async def test_place_market_order_maps_form_fields() -> None:
     assert seen["product"] == "CNC"
     assert seen["validity"] == "DAY"
     assert seen["tag"] == "agentexecabc123"
+    # Kite rejects an API market order without it (SEBI, from 2026-04-01).
+    assert seen["market_protection"] == "-1"
     assert order.broker_order_id == "240610000001"
     assert order.status is OrderStatus.ACCEPTED
     assert order.symbol == "NSE:RELIANCE"
@@ -176,6 +178,7 @@ async def test_stop_limit_maps_to_sl_with_both_prices() -> None:
     assert seen["order_type"] == "SL"
     assert seen["price"] == "1490.0"
     assert seen["trigger_price"] == "1500.0"
+    assert "market_protection" not in seen  # MARKET and SL-M only, per Kite
 
 
 @pytest.mark.asyncio
@@ -395,3 +398,12 @@ async def test_exchange_request_token_error_raises() -> None:
                 api_key="key", api_secret="secret", request_token="STALE",
                 base_url="https://api.kite.trade", client=client,
             )
+
+
+def test_market_protection_is_validated_at_construction(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KITE_MARKET_PROTECTION", "3")
+    assert ZerodhaBroker("k", "t")._market_protection == "3"
+    for bad in ("0", "101", "-2", "auto"):
+        monkeypatch.setenv("KITE_MARKET_PROTECTION", bad)
+        with pytest.raises(ValueError):
+            ZerodhaBroker("k", "t")
