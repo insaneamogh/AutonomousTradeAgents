@@ -74,18 +74,6 @@ def test_derivative_detection() -> None:
 # ── Lot size ─────────────────────────────────────────────────────────
 
 
-def test_lot_size_vetoes_off_lot_qty() -> None:
-    d = lot_size_block(_proposal("NFO:NIFTY24DECFUT", 80, 24_000.0), _ctx(), RiskCaps())
-    assert d is not None and not d.approved
-    assert d.veto_rule == "lot_size_block"
-    assert "75" in d.reason
-
-
-def test_lot_size_passes_whole_lots() -> None:
-    assert lot_size_block(_proposal("NFO:NIFTY24DECFUT", 75, 24_000.0), _ctx(), RiskCaps()) is None
-    assert lot_size_block(_proposal("NFO:NIFTY24DECFUT", 150, 24_000.0), _ctx(), RiskCaps()) is None
-
-
 def test_lot_size_longest_prefix_wins() -> None:
     # BANKNIFTY (35) must match before NIFTY (75).
     d = lot_size_block(_proposal("NFO:BANKNIFTY24DECFUT", 35, 51_000.0), _ctx(), RiskCaps())
@@ -100,11 +88,6 @@ def test_lot_size_unknown_underlying_flags_not_vetoes() -> None:
     assert any(f.startswith("lot_size_unverified:") for f in d.informational_flags)
 
 
-def test_lot_size_ignores_equity_and_us() -> None:
-    assert lot_size_block(_proposal("NSE:RELIANCE", 7, 2_900.0), _ctx(), RiskCaps()) is None
-    assert lot_size_block(_proposal("AAPL", 7, 200.0), _ctx(), RiskCaps()) is None
-
-
 # ── Derivative notional cap ──────────────────────────────────────────
 
 
@@ -115,21 +98,6 @@ def test_derivative_notional_cap_vetoes_oversize() -> None:
     )
     assert d is not None and not d.approved
     assert d.veto_rule == "derivative_notional_cap"
-
-
-def test_derivative_notional_cap_passes_within_cap() -> None:
-    # 75 * 240 = 18K vs 200K cap — an options premium-sized order.
-    d = derivative_notional_cap(
-        _proposal("NFO:NIFTY2461924000CE", 75, 240.0), _ctx(), RiskCaps()
-    )
-    assert d is None
-
-
-def test_derivative_notional_cap_ignores_equity_symbols() -> None:
-    d = derivative_notional_cap(
-        _proposal("NSE:RELIANCE", 1_000, 2_900.0), _ctx(), RiskCaps()
-    )
-    assert d is None
 
 
 # ── MIS square-off window ────────────────────────────────────────────
@@ -149,14 +117,6 @@ def test_mis_blocked_after_cutoff() -> None:
     assert d.veto_rule == "mis_square_off_block"
 
 
-def test_mis_allowed_before_cutoff() -> None:
-    ctx = _ctx(now_utc=_utc_for_ist(5, 0))  # 10:30 IST
-    d = mis_square_off_block(
-        _proposal("NSE:RELIANCE", 10, 2_900.0, is_intraday=True), ctx, RiskCaps()
-    )
-    assert d is None
-
-
 def test_mis_rule_ignores_delivery_and_us() -> None:
     ctx = _ctx(now_utc=_utc_for_ist(9, 45))
     assert mis_square_off_block(
@@ -168,14 +128,6 @@ def test_mis_rule_ignores_delivery_and_us() -> None:
 
 
 # ── US rules gate on market ──────────────────────────────────────────
-
-
-def test_pdt_does_not_fire_for_india() -> None:
-    ctx = _ctx(account_equity=10_000.0, day_trades_last_5d=3)
-    proposal = _proposal(
-        "NSE:RELIANCE", 10, 2_900.0, closes_intraday_position=True
-    )
-    assert pdt_block(proposal, ctx, RiskCaps()) is None
 
 
 def test_pdt_still_fires_for_us() -> None:

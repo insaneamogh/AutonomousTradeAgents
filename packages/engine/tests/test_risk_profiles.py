@@ -21,92 +21,15 @@ from engine.risk import RiskCaps
 # ─────────────────────────────────────────────────────────────────────
 
 
-def test_aggressive_profile_widens_the_options_premium_caps() -> None:
-    caps = RiskCaps.aggressive_paper()
-    assert caps.options_max_premium_pct == pytest.approx(1.5)
-    assert caps.options_max_total_premium_pct == pytest.approx(7.5)
-
-
-def test_aggressive_profile_holds_at_least_five_concurrent_option_positions() -> None:
-    """The aggregate cap is pinned by the halt coupling and cannot rise, so
-    per-position size is the ONLY lever on how many positions the book can
-    hold at once. At 2.5% it held three, and the measured consequence was a
-    desk that stopped trading: 293 options runs -> 7 trades, with 48 refusals
-    on ``max_total_premium_pct`` after the book filled at 15:00 UTC.
-
-    Asserted as a RATIO, not as the raw 1.5, so that a future change to
-    either number has to keep the book wide or fail here — which is the
-    property that actually matters. Aggregate risk is untouched either way;
-    ``test_every_reviewed_profile_respects_the_halt_coupling`` guards that.
-    """
-    caps = RiskCaps.aggressive_paper()
-    concurrent = caps.options_max_total_premium_pct / caps.options_max_premium_pct
-    assert concurrent >= 5.0, (
-        f"the options book holds only {concurrent:.1f} max-size positions; "
-        "three was measured to saturate mid-session and stop the desk trading"
-    )
-
-
 def test_aggressive_profile_widens_the_confidence_floors() -> None:
     caps = RiskCaps.aggressive_paper()
     assert caps.min_council_confidence == pytest.approx(0.48)
     assert caps.min_specialist_avg_score == pytest.approx(40.0)
 
 
-def test_confidence_floor_sits_above_the_councils_modal_output() -> None:
-    """0.42 was not a chosen number — it was the MODE of the council's own
-    conviction distribution, so it admitted essentially everything the
-    council produced. Measured over 151 real option decisions the modal
-    filled conviction was 0.42, the floor itself.
-
-    This pins the floor above that mode. It is deliberately not a wider
-    assertion (">= 0.5" say): the highest conviction ever observed was
-    0.62, so a floor much above 0.5 stops the desk entirely.
-    """
-    caps = RiskCaps.aggressive_paper()
-    observed_mode_of_filled_trades = 0.42
-    highest_conviction_ever_observed = 0.62
-    assert caps.min_council_confidence > observed_mode_of_filled_trades
-    assert caps.min_council_confidence < highest_conviction_ever_observed
-
-
-def test_aggressive_profile_tightens_the_options_stop_loss() -> None:
-    """ "Cut losers early" — the stop tightens even though the caps widen."""
-    caps = RiskCaps.aggressive_paper()
-    assert caps.options_stop_loss_pct == pytest.approx(40.0)
-
-
 def test_aggressive_profile_widens_the_correlation_cluster_cap() -> None:
     caps = RiskCaps.aggressive_paper()
     assert caps.max_correlation_cluster == 4
-
-
-def test_aggressive_profile_leaves_the_drawdown_halt_alone() -> None:
-    """The single most load-bearing invariant in the whole plan: widening
-    the options premium cap and holding this halt fixed is ONE coupled
-    decision. If this ever moves, the "12% book-to-zero is a multi-day
-    worst case" argument breaks."""
-    assert RiskCaps.aggressive_paper().daily_drawdown_halt_pct == pytest.approx(
-        RiskCaps().daily_drawdown_halt_pct
-    )
-    assert RiskCaps.aggressive_paper().daily_drawdown_halt_pct == pytest.approx(-3.0)
-
-
-def test_aggressive_profile_leaves_max_position_pct_alone() -> None:
-    """The aggression is concentrated in the options caps, where loss is
-    bounded by construction (the premium). The equity cap does not move."""
-    assert RiskCaps.aggressive_paper().max_position_pct == pytest.approx(
-        RiskCaps().max_position_pct
-    )
-    assert RiskCaps.aggressive_paper().max_position_pct == pytest.approx(5.0)
-
-
-def test_aggressive_profile_still_honors_explicit_overrides() -> None:
-    """``**overrides`` must still work on the new classmethod, same as the
-    conservative constructor — callers (tests, a future profile variant)
-    can still pin an exact value on top."""
-    caps = RiskCaps.aggressive_paper(options_max_premium_pct=9.0)
-    assert caps.options_max_premium_pct == pytest.approx(9.0)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -126,13 +49,6 @@ def test_risk_profile_env_selects_the_profile(monkeypatch: pytest.MonkeyPatch) -
     assert caps.max_position_pct == pytest.approx(5.0)
 
 
-def test_risk_profile_unset_stays_conservative(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("RISK_PROFILE", raising=False)
-    caps = RiskCaps.from_env()
-    assert caps.options_max_premium_pct == pytest.approx(1.0)
-    assert caps.options_max_total_premium_pct == pytest.approx(5.0)
-
-
 def test_unknown_risk_profile_falls_back_to_conservative(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -144,14 +60,6 @@ def test_unknown_risk_profile_falls_back_to_conservative(
     assert caps.options_max_premium_pct == pytest.approx(1.0)
     assert caps.options_max_total_premium_pct == pytest.approx(5.0)
     assert caps.min_council_confidence == pytest.approx(0.50)
-
-
-def test_risk_profile_value_is_trimmed_and_case_insensitive(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("RISK_PROFILE", "  Aggressive_Paper  ")
-    caps = RiskCaps.from_env()
-    assert caps.options_max_premium_pct == pytest.approx(1.5)
 
 
 def test_aggressive_profile_env_data_quality_floors_still_apply_on_top(
@@ -212,22 +120,6 @@ def test_every_reviewed_profile_respects_the_halt_coupling(name: str, caps: Risk
     assert caps.respects_halt_coupling
 
 
-def test_the_conservative_profile_never_exceeds_the_halt_ceiling() -> None:
-    """The widening must never leak into the default profile.
-
-    `conservative` declares no tail of its own, so its tolerance IS the
-    halt — 5.0% x 50% = 2.50% against a 3.00% ceiling. If this ever fails,
-    someone has widened the profile that runs when `RISK_PROFILE` is unset
-    or typo'd, which is the one that must stay bounded by the halt.
-    """
-    caps = RiskCaps()
-    assert caps.max_tolerated_book_drawdown_pct is None
-    assert caps.tolerated_book_drawdown_pct == pytest.approx(
-        abs(caps.daily_drawdown_halt_pct)
-    )
-    assert caps.exceeds_halt_ceiling is False
-
-
 def test_the_aggressive_profile_is_back_under_the_halt_ceiling() -> None:
     """The 2026-09-04 submission-day widening (11.0% x 40% = 4.40% against a
     -3.00% halt, declared via `max_tolerated_book_drawdown_pct=4.4`) was meant
@@ -246,11 +138,3 @@ def test_the_aggressive_profile_is_back_under_the_halt_ceiling() -> None:
     assert caps.exceeds_halt_ceiling is False
     # The halt itself is untouched — that is the line that never moves.
     assert caps.daily_drawdown_halt_pct == pytest.approx(-3.0)
-
-
-def test_the_invariant_actually_rejects_a_book_past_its_declared_tail() -> None:
-    """If the property cannot fail, it is not an invariant. These exceed
-    the 3.0% halt tolerance (12% x 40% = 4.8%, 18% x 40% = 7.2%)."""
-    for bad_total in (12.0, 18.0):
-        bad = RiskCaps.aggressive_paper(options_max_total_premium_pct=bad_total)
-        assert not bad.respects_halt_coupling

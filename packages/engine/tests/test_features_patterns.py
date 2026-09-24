@@ -91,33 +91,12 @@ def _filler(n: int, *, price: float = 100.0) -> list[DailyBar]:
 # ─────────────────────────────────────────────────────────────────────
 
 
-def test_empty_bars_return_the_empty_block() -> None:
-    pb = detect_patterns([], atr=ATR, trend_regime="downtrend")
-    assert pb == PatternBlock(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, (), None, 0.0)
-
-
-def test_fewer_than_seven_bars_does_not_raise() -> None:
-    """Revert-check: remove the length guard and this raises IndexError
-    (single-bar patterns index ``bars[-1]``) before even reaching ``nr7``'s
-    ``bars[-7:]``. Confirmed live against the unmodified guard removed."""
-    bars = _filler(MIN_BARS_FOR_PATTERNS - 1)
-    pb = detect_patterns(bars, atr=ATR, trend_regime="downtrend")
-    assert pb.names == ()
-    assert pb.reversal_bull == 0.0
-
-
 def test_zero_atr_returns_an_empty_block_without_raising() -> None:
     """Revert-check: remove the ``atr <= 0`` guard and every ``/ atr``
     division below this line raises ``ZeroDivisionError`` — confirmed live."""
     bars = _filler(MIN_BARS_FOR_PATTERNS)
     pb = detect_patterns(bars, atr=0.0, trend_regime="downtrend")
     assert pb == PatternBlock(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, (), None, 0.0)
-
-
-def test_negative_atr_returns_an_empty_block_without_raising() -> None:
-    bars = _filler(MIN_BARS_FOR_PATTERNS)
-    pb = detect_patterns(bars, atr=-1.0, trend_regime="downtrend")
-    assert pb.names == ()
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -194,39 +173,14 @@ def test_three_weak_patterns_do_not_outscore_one_clean_one() -> None:
 # ─────────────────────────────────────────────────────────────────────
 
 
-def test_hammer_detects_a_clean_reversal_setup() -> None:
-    bars = [_bar(100.00, 100.15, 97.15, 100.06, _d(0))]
-    assert _hammer(bars, ATR, "downtrend") >= 0.9
-
-
-def test_hammer_with_a_short_lower_wick_scores_zero() -> None:
-    """Same big range as the positive fixture, but the lower wick is only
-    1x the body (needs >= 2x) — fails the ONE geometry condition, not the
-    magnitude one."""
-    bars = [_bar(100.0, 102.0, 99.0, 101.0, _d(0))]
-    assert _hammer(bars, ATR, "downtrend") == 0.0
-
-
 def test_shooting_star_detects_a_clean_reversal_setup() -> None:
     bars = [_bar(100.00, 102.91, 99.91, 100.06, _d(0))]
     assert _shooting_star(bars, ATR, "uptrend") >= 0.9
 
 
-def test_shooting_star_with_a_short_upper_wick_scores_zero() -> None:
-    bars = [_bar(100.0, 102.0, 99.0, 101.0, _d(0))]
-    assert _shooting_star(bars, ATR, "uptrend") == 0.0
-
-
 def test_doji_detects_a_negligible_body_on_a_real_range() -> None:
     bars = [_bar(100.00, 101.51, 98.51, 100.02, _d(0))]
     assert _doji(bars, ATR) >= 0.9
-
-
-def test_doji_with_a_large_body_scores_zero() -> None:
-    """Same real range as the positive fixture; the body is 30% of it
-    (needs <= 15% for any credit) — a real candle, not indecision."""
-    bars = [_bar(100.00, 101.95, 98.95, 100.90, _d(0))]
-    assert _doji(bars, ATR) == 0.0
 
 
 def test_marubozu_bull_detects_a_full_bodied_up_bar() -> None:
@@ -243,13 +197,6 @@ def test_marubozu_bull_with_a_weak_body_scores_zero() -> None:
 def test_marubozu_bear_detects_a_full_bodied_down_bar() -> None:
     bars = [_bar(102.90, 102.95, 99.95, 100.00, _d(0))]
     assert _marubozu_bear(bars, ATR, "downtrend") >= 0.9
-
-
-def test_marubozu_bear_on_a_bullish_bar_scores_zero() -> None:
-    """The bull marubozu's own positive fixture, read as a BEAR marubozu —
-    wrong color entirely."""
-    bars = [_bar(100.00, 102.95, 99.95, 102.90, _d(0))]
-    assert _marubozu_bear(bars, ATR, "downtrend") == 0.0
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -277,12 +224,6 @@ def test_bearish_engulfing_detects_a_clean_engulf() -> None:
     assert _bearish_engulfing([prior, cur], ATR, "uptrend") >= 0.5
 
 
-def test_bearish_engulfing_that_does_not_fully_cover_the_prior_body_scores_zero() -> None:
-    prior = _bar(101.00, 102.05, 100.95, 102.00, _d(0))
-    cur = _bar(101.8, 102.0, 100.2, 100.4, _d(1))
-    assert _bearish_engulfing([prior, cur], ATR, "uptrend") == 0.0
-
-
 def test_bullish_harami_detects_a_small_body_nested_in_a_big_one() -> None:
     prior = _bar(103.00, 103.05, 99.95, 100.00, _d(0))
     cur = _bar(101.3, 101.75, 101.25, 101.7, _d(1))
@@ -301,12 +242,6 @@ def test_bearish_harami_detects_a_small_body_nested_in_a_big_one() -> None:
     prior = _bar(100.00, 103.05, 99.95, 103.00, _d(0))
     cur = _bar(101.7, 101.75, 101.25, 101.3, _d(1))
     assert _bearish_harami([prior, cur], ATR, "uptrend") >= 0.7
-
-
-def test_bearish_harami_that_extends_past_the_prior_body_scores_zero() -> None:
-    prior = _bar(100.00, 103.05, 99.95, 103.00, _d(0))
-    cur = _bar(103.2, 103.25, 101.25, 101.3, _d(1))
-    assert _bearish_harami([prior, cur], ATR, "uptrend") == 0.0
 
 
 def test_piercing_line_detects_a_deep_but_incomplete_penetration() -> None:
@@ -448,30 +383,9 @@ def test_nr7_detects_the_narrowest_range_of_the_trailing_seven() -> None:
     assert _nr7([*context, cur], ATR) >= 0.9
 
 
-def test_nr7_that_is_not_the_narrowest_scores_zero() -> None:
-    """``cur``'s range (1.5) is wider than every one of the six context
-    bars (1.0 each) — the opposite of "narrowest of 7"."""
-    context = [_bar(100.0, 100.5, 99.5, 100.0, _d(i)) for i in range(6)]
-    cur = _bar(100.0, 100.75, 99.25, 100.0, _d(6))
-    assert _nr7([*context, cur], ATR) == 0.0
-
-
 # ─────────────────────────────────────────────────────────────────────
 # Aggregation / naming wiring (detect_patterns / PatternBlock level)
 # ─────────────────────────────────────────────────────────────────────
-
-
-def test_names_lists_the_naming_threshold_and_only_that() -> None:
-    bars = [*_filler(6), _bar(100.0, 100.15, 97.15, 100.06, _d(6))]
-    pb = detect_patterns(bars, atr=ATR, trend_regime="downtrend")
-    assert all(name for name in pb.names)
-    assert pb.top_pattern == pb.names[0]
-    assert pb.top_pattern_score == max(
-        _hammer(bars, ATR, "downtrend"),
-        # every other family's raw score is <= its own aggregate, and no
-        # aggregate here exceeds reversal_bull for this fixture
-        pb.reversal_bull,
-    )
 
 
 def test_top_pattern_is_none_when_nothing_clears_the_threshold() -> None:

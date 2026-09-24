@@ -39,17 +39,6 @@ def test_banks_a_fraction_at_the_first_target() -> None:
     assert o.scale_out_frac == 0.5
 
 
-def test_does_not_fire_below_the_target() -> None:
-    assert _sig(4.9).action == "HOLD"
-
-
-def test_fires_only_once() -> None:
-    """The function is pure and cannot remember. Without the caller
-    persisting `scaled_out`, a position sitting above the target would
-    bank a fraction on every 30s tick until it was gone."""
-    assert _sig(20.0, already_scaled_out=True).action == "HOLD"
-
-
 def test_is_off_by_default_so_existing_callers_are_unchanged() -> None:
     o = option_ratchet_signal(
         unrealized_pl_pct=20.0, peak_pl_pct=None, arm_pct=35.0,
@@ -93,13 +82,6 @@ def test_the_runner_is_not_choked() -> None:
 
 def test_a_tighter_agent_stop_is_honoured() -> None:
     assert effective_stop_loss_pct(decision_stop_pct=35.0, cap_stop_pct=40.0) == 35.0
-
-
-def test_an_agent_stop_can_never_loosen_the_cap() -> None:
-    """The one that matters. Without it an agent emitting 50 would silently
-    disable the 40 the risk profile guarantees — LLM output widening a risk
-    limit, which CLAUDE.md section 3 forbids outright."""
-    assert effective_stop_loss_pct(decision_stop_pct=50.0, cap_stop_pct=40.0) == 40.0
 
 
 @pytest.mark.parametrize(

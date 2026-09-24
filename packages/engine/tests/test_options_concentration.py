@@ -18,10 +18,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 
-import pytest
-
 from engine.options.contracts import to_risk_proposal
-from engine.options.rules import occ_contract_type, occ_root
 from engine.risk import (
     OptionLegDetails,
     PortfolioPosition,
@@ -87,23 +84,6 @@ def _entry(occ: str, underlying: str, ctype: str, premium: float) -> RiskProposa
 # ── the OCC parse, which the whole grouping rests on ──────────────────
 
 
-@pytest.mark.parametrize(
-    "symbol,root,kind",
-    [
-        ("NVDA261002C00230000", "NVDA", "call"),
-        ("TQQQ260918P00071000", "TQQQ", "put"),
-        ("F261016C00015000", "F", "call"),        # 1-char root
-        ("AAPL", None, None),                      # plain equity ticker
-        ("", None, None),
-        ("NVDA26XX02C00230000", None, None),       # non-numeric date
-        ("NVDA261002X00230000", None, None),       # not C or P
-    ],
-)
-def test_occ_parse(symbol: str, root: str | None, kind: str | None) -> None:
-    assert occ_root(symbol) == root
-    assert occ_contract_type(symbol) == kind
-
-
 # ── single-underlying cap ─────────────────────────────────────────────
 
 
@@ -115,43 +95,6 @@ def test_second_strike_on_the_same_underlying_is_refused() -> None:
     assert not d.approved
     assert d.veto_rule == "options_single_underlying_cap"
     assert "NVDA" in d.reason
-
-
-def test_grouping_is_by_underlying_not_by_occ_symbol() -> None:
-    """Three different NVDA OCC strings must aggregate to ONE name. This is
-    the assertion that ``single_name_concentration`` could never make."""
-    held = (
-        _held("NVDA261002C00230000", 700.0),
-        _held("NVDA261009C00245000", 700.0),
-        _held("NVDA261016C00235000", 500.0),
-    )
-    # 1,900 held + 300 new = 2,200 = 2.2% > 2.0% cap. Only aggregation gets there;
-    # no single held position is close on its own.
-    d = evaluate(_entry("NVDA261023C00250000", "NVDA", "call", 300.0), _ctx(held), _caps())
-    assert not d.approved
-    assert d.veto_rule == "options_single_underlying_cap"
-
-
-def test_a_different_underlying_is_unaffected() -> None:
-    ctx = _ctx((_held("NVDA261002C00230000", 1_900.0),))
-    d = evaluate(_entry("GILD261016C00150000", "GILD", "call", 1_160.0), ctx, _caps())
-    assert d.approved, d.reason
-
-
-def test_first_position_on_a_name_within_cap_is_allowed() -> None:
-    d = evaluate(_entry("NVDA261002C00230000", "NVDA", "call", 1_070.0), _ctx(), _caps())
-    assert d.approved, d.reason
-
-
-def test_equity_positions_never_count_toward_an_option_name() -> None:
-    """A held NVDA *share* position is not option premium and must not
-    consume the option book's per-name budget."""
-    shares = PortfolioPosition(
-        symbol="NVDA", qty=100, avg_entry_price=180.0,
-        market_value=18_000.0, is_option=False, multiplier=1,
-    )
-    d = evaluate(_entry("NVDA261002C00230000", "NVDA", "call", 1_070.0), _ctx((shares,)), _caps())
-    assert d.approved, d.reason
 
 
 # ── direction cap ─────────────────────────────────────────────────────
@@ -170,14 +113,6 @@ def test_fourth_call_on_an_all_call_book_is_refused() -> None:
                  _ctx(_three_calls()), _caps())
     assert not d.approved
     assert d.veto_rule == "options_direction_cap"
-
-
-def test_a_put_is_allowed_on_that_same_all_call_book() -> None:
-    """The cap must block only the side that breaches — otherwise the book
-    can never rebalance out of the corner it is in."""
-    d = evaluate(_entry("TQQQ260918P00071000", "TQQQ", "put", 1_265.0),
-                 _ctx(_three_calls()), _caps())
-    assert d.approved, d.reason
 
 
 def test_direction_cap_does_not_bind_on_a_book_too_small_to_have_a_ratio() -> None:

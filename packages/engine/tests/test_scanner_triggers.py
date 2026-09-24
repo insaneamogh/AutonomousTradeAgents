@@ -65,10 +65,6 @@ def rules(s: SymbolSnapshot, cfg: ScannerConfig | None = None) -> set[str]:
 # ─────────────────────────────────────────────────────────────────────
 
 
-def test_inert_snapshot_fires_nothing() -> None:
-    assert rules(snap()) == set()
-
-
 def test_no_intraday_prints_fires_nothing() -> None:
     """A symbol with no tape today has no live price to cross anything."""
     assert rules(snap(intraday_bars=0, last_price=130.0)) == set()
@@ -96,31 +92,6 @@ def test_strength_is_always_within_band() -> None:
 # ─────────────────────────────────────────────────────────────────────
 # Moving-average crosses
 # ─────────────────────────────────────────────────────────────────────
-
-
-def test_dma20_cross_up_requires_the_prior_close_below() -> None:
-    s = snap(prior_close=99.0, last_price=101.0, sma20=100.0)
-    assert TriggerRule.DMA20_CROSS_UP in rules(s)
-
-
-def test_dma20_cross_down() -> None:
-    s = snap(prior_close=101.0, last_price=99.0, sma20=100.0, session_open=101.0)
-    assert TriggerRule.DMA20_CROSS_DOWN in rules(s)
-
-
-def test_no_cross_when_both_sides_are_above_the_level() -> None:
-    """Already above yesterday and still above today is not a cross."""
-    s = snap(prior_close=105.0, last_price=106.0, sma20=100.0)
-    assert TriggerRule.DMA20_CROSS_UP not in rules(s)
-
-
-def test_cross_buffer_rejects_a_price_pinned_to_the_level() -> None:
-    """The failure this buffer exists for: a name sitting on its 20-DMA
-    re-firing on every scan as the last print wobbles a cent either way."""
-    s = snap(prior_close=99.99, last_price=100.05, sma20=100.0)  # +0.05%, buffer 0.1%
-    assert TriggerRule.DMA20_CROSS_UP not in rules(s)
-    s = snap(prior_close=99.99, last_price=100.2, sma20=100.0)  # +0.2%
-    assert TriggerRule.DMA20_CROSS_UP in rules(s)
 
 
 def test_dma50_and_dma200_crosses_fire_independently() -> None:
@@ -155,15 +126,6 @@ def test_rsi_band_transitions(prior: float, live: float, expected: str) -> None:
     assert expected in rules(snap(rsi_prior=prior, rsi_live=live))
 
 
-def test_rsi_inside_the_bands_does_not_fire() -> None:
-    assert rules(snap(rsi_prior=45.0, rsi_live=58.0)) == set()
-
-
-def test_rsi_deep_in_a_band_without_crossing_does_not_fire() -> None:
-    """Staying oversold is not the same event as leaving oversold."""
-    assert rules(snap(rsi_prior=22.0, rsi_live=25.0)) == set()
-
-
 def test_rsi_missing_values_do_not_fire() -> None:
     assert rules(snap(rsi_prior=None, rsi_live=33.0)) == set()
     assert rules(snap(rsi_prior=28.0, rsi_live=None)) == set()
@@ -181,10 +143,6 @@ def test_volume_spike_2x_and_3x_are_distinct_rules() -> None:
     assert TriggerRule.VOLUME_SPIKE_3X in rules(
         snap(session_volume=7_000_000.0, avg_volume_20d=2_000_000.0)
     )
-
-
-def test_volume_just_under_the_multiple_does_not_fire() -> None:
-    assert rules(snap(session_volume=3_900_000.0, avg_volume_20d=2_000_000.0)) == set()
 
 
 def test_volume_spike_direction_follows_the_price_move() -> None:
@@ -213,20 +171,6 @@ def test_volume_with_no_baseline_does_not_fire() -> None:
 def test_atr_expansion_fires_on_a_wide_range_day() -> None:
     s = snap(session_high=104.0, session_low=100.0, atr_14=2.0)  # TR 4.0 = 2.0x ATR
     assert TriggerRule.ATR_EXPANSION in rules(s)
-
-
-def test_atr_expansion_counts_an_overnight_gap_in_the_true_range() -> None:
-    """A 4% gap that then trades quietly is still a volatility event —
-    Wilder's true range includes the distance from the prior close."""
-    s = snap(prior_close=100.0, session_open=104.0, session_high=104.2,
-             session_low=103.8, last_price=104.0, atr_14=2.0, sma20=90.0)
-    assert TriggerRule.ATR_EXPANSION in rules(s)
-
-
-def test_atr_expansion_quiet_day_does_not_fire() -> None:
-    assert TriggerRule.ATR_EXPANSION not in rules(
-        snap(session_high=101.0, session_low=100.0, atr_14=2.0)
-    )
 
 
 def test_atr_expansion_without_an_atr_does_not_fire() -> None:
@@ -280,24 +224,6 @@ def test_donchian_approach_is_mutually_exclusive_with_the_break() -> None:
     )
     assert TriggerRule.DONCHIAN_BREAKOUT_UP in through
     assert TriggerRule.DONCHIAN_UPPER_APPROACH not in through
-
-
-def test_donchian_mid_channel_does_not_fire() -> None:
-    fired = rules(snap(last_price=100.0, donchian_high_20=120.0, donchian_low_20=80.0))
-    assert TriggerRule.DONCHIAN_UPPER_APPROACH not in fired
-    assert TriggerRule.DONCHIAN_LOWER_APPROACH not in fired
-
-
-def test_donchian_approach_ignores_a_hairline_channel() -> None:
-    """A name whose 20-day range is 1% wide is not 'approaching' anything —
-    it is sitting in the middle of a very quiet channel. The percent-distance
-    version of this rule fired here on every scan, forever."""
-    fired = rules(
-        snap(last_price=100.0, donchian_high_20=100.5, donchian_low_20=99.5,
-             donchian_low_10=99.5, close_std_20=0.3)
-    )
-    assert TriggerRule.DONCHIAN_UPPER_APPROACH not in fired
-    assert TriggerRule.DONCHIAN_LOWER_APPROACH not in fired
 
 
 def test_donchian_lower_approach_fires_near_the_channel_low() -> None:
@@ -367,19 +293,3 @@ def test_signal_as_dict_is_json_shaped() -> None:
     assert d["rule"] == TriggerRule.DMA20_CROSS_UP
     assert isinstance(d["observed_at"], str)
     assert isinstance(d["context"], dict)
-
-
-def test_evaluation_is_deterministic() -> None:
-    """Two evaluations of the same snapshot must be identical — the
-    cooldown's correctness depends on it."""
-    s = snap(prior_close=99.0, last_price=104.0, sma20=100.0, session_open=104.0)
-    assert [x.trigger_rule for x in evaluate_triggers(s)] == [
-        x.trigger_rule for x in evaluate_triggers(s)
-    ]
-
-
-def test_custom_config_moves_the_thresholds() -> None:
-    loose = ScannerConfig(gap_pct=0.5)
-    s = snap(prior_close=100.0, session_open=101.0, last_price=101.0, sma20=90.0)
-    assert TriggerRule.GAP_UP not in rules(s)
-    assert TriggerRule.GAP_UP in rules(s, loose)

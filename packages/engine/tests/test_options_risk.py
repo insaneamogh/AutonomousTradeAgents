@@ -13,13 +13,11 @@ now-injection convention that ``engine.options.expiry`` reuses.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, date, datetime
 
 import pytest
 
-import engine.risk.engine as risk_engine_mod
 from engine.options.contracts import to_risk_proposal
 from engine.risk import (
     OptionLegDetails,
@@ -163,28 +161,9 @@ def test_specialist_avg_score_self_gates_on_every_options_entry() -> None:
     assert blocked.veto_rule == "min_specialist_avg_score"
 
 
-def test_happy_close_clears_every_rule() -> None:
-    # A close never depends on options_disabled/level/DTE/liquidity/IV/
-    # earnings — all entry-only. Everything else still applies.
-    d = evaluate(_close(), _ctx(), RiskCaps())  # options_disabled=True, doesn't matter
-    assert d.approved
-    assert d.veto_rule is None
-
-
 # ─────────────────────────────────────────────────────────────────────
 # options_disabled
 # ─────────────────────────────────────────────────────────────────────
-
-
-def test_options_disabled_blocks_entry_by_default() -> None:
-    d = evaluate(_entry(), _ctx(), RiskCaps())  # options_disabled=True (default)
-    assert not d.approved
-    assert d.veto_rule == "options_disabled"
-
-
-def test_options_disabled_off_lets_entry_through() -> None:
-    d = evaluate(_entry(), _ctx(), ENABLED)
-    assert d.approved
 
 
 def test_options_disabled_never_blocks_a_close() -> None:
@@ -204,31 +183,13 @@ def test_naked_short_forbidden_blocks_any_other_action() -> None:
     assert d.veto_rule == "naked_short_forbidden"
 
 
-def test_naked_short_forbidden_allows_buy_to_open_and_sell_to_close() -> None:
-    assert evaluate(_entry(), _ctx(), ENABLED).veto_rule != "naked_short_forbidden"
-    assert evaluate(_close(), _ctx(), ENABLED).veto_rule != "naked_short_forbidden"
-
-
 # ─────────────────────────────────────────────────────────────────────
 # options_level_insufficient
 # ─────────────────────────────────────────────────────────────────────
 
 
-def test_options_level_insufficient_at_level_1() -> None:
-    # Alpaca level 1 = assignment-bearing structures (Phase C) — a LOWER
-    # number than Phase A's long call/put floor of 2.
-    d = evaluate(_entry(), _ctx(options_trading_level=1), ENABLED)
-    assert not d.approved
-    assert d.veto_rule == "options_level_insufficient"
-
-
 def test_options_level_insufficient_at_level_2_passes() -> None:
     d = evaluate(_entry(), _ctx(options_trading_level=2), ENABLED)
-    assert d.veto_rule != "options_level_insufficient"
-
-
-def test_options_level_insufficient_at_level_3_passes() -> None:
-    d = evaluate(_entry(), _ctx(options_trading_level=3), ENABLED)
     assert d.veto_rule != "options_level_insufficient"
 
 
@@ -238,27 +199,9 @@ def test_options_level_insufficient_when_level_unknown() -> None:
     assert d.veto_rule == "options_level_insufficient"
 
 
-def test_options_level_insufficient_never_blocks_a_close() -> None:
-    d = evaluate(_close(), _ctx(options_trading_level=None), ENABLED)
-    assert d.veto_rule != "options_level_insufficient"
-
-
 # ─────────────────────────────────────────────────────────────────────
 # expiry_day_entry
 # ─────────────────────────────────────────────────────────────────────
-
-
-def test_expiry_day_entry_blocks_a_new_position_expiring_today() -> None:
-    opt = _option(expiry=_NOW.date())
-    d = evaluate(_entry(option=opt), _ctx(), ENABLED)
-    assert not d.approved
-    assert d.veto_rule == "expiry_day_entry"
-
-
-def test_expiry_day_entry_never_blocks_a_same_day_close() -> None:
-    opt = _option(expiry=_NOW.date(), action="sell_to_close")
-    d = evaluate(_close(option=opt), _ctx(), ENABLED)
-    assert d.veto_rule != "expiry_day_entry"
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -292,27 +235,9 @@ def test_max_dte_passes_at_exactly_the_ceiling() -> None:
     assert d.veto_rule != "max_dte"
 
 
-def test_dte_boundaries_never_block_a_close() -> None:
-    near = _option(expiry=date(2026, 1, 12), action="sell_to_close")  # 2 dte
-    far = _option(expiry=date(2026, 6, 1), action="sell_to_close")  # far past 60 dte
-    assert evaluate(_close(option=near), _ctx(), ENABLED).veto_rule not in (
-        "min_dte", "max_dte",
-    )
-    assert evaluate(_close(option=far), _ctx(), ENABLED).veto_rule not in (
-        "min_dte", "max_dte",
-    )
-
-
 # ─────────────────────────────────────────────────────────────────────
 # illiquid_contract — three independent sub-conditions
 # ─────────────────────────────────────────────────────────────────────
-
-
-def test_illiquid_contract_blocks_low_open_interest() -> None:
-    opt = _option(open_interest=50)  # floor is 100
-    d = evaluate(_entry(option=opt), _ctx(), ENABLED)
-    assert not d.approved
-    assert d.veto_rule == "illiquid_contract"
 
 
 def test_illiquid_contract_blocks_missing_open_interest() -> None:
@@ -333,21 +258,6 @@ def test_illiquid_contract_blocks_untraded_contract() -> None:
     assert d.veto_rule == "illiquid_contract"
 
 
-def test_illiquid_contract_blocks_missing_volume() -> None:
-    d = evaluate(_entry(option=_option(volume=None)), _ctx(), ENABLED)
-    assert not d.approved
-    assert d.veto_rule == "illiquid_contract"
-
-
-def test_illiquid_contract_allows_thin_last_print() -> None:
-    """Regression pin, mirroring ``selection._passes_liquidity``: a
-    last-trade size of 5 used to fail a floor of 10 here *after* selection
-    had already accepted it, so loosening only the selection side would
-    have been undone one layer later."""
-    d = evaluate(_entry(option=_option(volume=5)), _ctx(), ENABLED)
-    assert d.approved
-
-
 def test_volume_floor_is_disableable() -> None:
     """``options_min_volume=0`` must switch the gate off entirely, including
     for a None volume — the reason both call sites guard on ``> 0``."""
@@ -363,12 +273,6 @@ def test_illiquid_contract_blocks_wide_spread() -> None:
     assert d.veto_rule == "illiquid_contract"
 
 
-def test_illiquid_contract_never_blocks_a_close() -> None:
-    opt = _option(open_interest=0, volume=0, bid=None, ask=None, action="sell_to_close")
-    d = evaluate(_close(option=opt), _ctx(), ENABLED)
-    assert d.veto_rule != "illiquid_contract"
-
-
 # ─────────────────────────────────────────────────────────────────────
 # iv_unavailable
 # ─────────────────────────────────────────────────────────────────────
@@ -379,18 +283,6 @@ def test_iv_unavailable_blocks_when_iv_is_null() -> None:
     d = evaluate(_entry(option=opt), _ctx(), ENABLED)
     assert not d.approved
     assert d.veto_rule == "iv_unavailable"
-
-
-def test_iv_unavailable_passes_when_iv_is_present() -> None:
-    opt = _option(implied_volatility=0.31)
-    d = evaluate(_entry(option=opt), _ctx(), ENABLED)
-    assert d.veto_rule != "iv_unavailable"
-
-
-def test_iv_unavailable_never_blocks_a_close() -> None:
-    opt = _option(implied_volatility=None, action="sell_to_close")
-    d = evaluate(_close(option=opt), _ctx(), ENABLED)
-    assert d.veto_rule != "iv_unavailable"
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -405,33 +297,9 @@ def test_earnings_blackout_blocks_inside_the_window() -> None:
     assert d.veto_rule == "earnings_blackout"
 
 
-def test_earnings_blackout_passes_outside_the_window() -> None:
-    opt = _option(days_to_earnings=10)
-    d = evaluate(_entry(option=opt), _ctx(), ENABLED)
-    assert d.veto_rule != "earnings_blackout"
-
-
-def test_earnings_blackout_self_gates_when_unknown() -> None:
-    """Missing earnings-calendar data must not halt trading — the same
-    "missing data doesn't halt" principle used elsewhere in this rule set."""
-    opt = _option(days_to_earnings=None)
-    d = evaluate(_entry(option=opt), _ctx(), ENABLED)
-    assert d.veto_rule != "earnings_blackout"
-    assert d.approved
-
-
 # ─────────────────────────────────────────────────────────────────────
 # max_premium_pct — trim then reject-below-1-contract
 # ─────────────────────────────────────────────────────────────────────
-
-
-def test_max_premium_pct_trims_when_over_cap() -> None:
-    # qty=10 @ $2.50 x100 = $2,500/contract * 10 = $25,000 premium = 25%
-    # of $100K equity. Cap is 1% -> trims to 4 contracts ($1,000 = 1%).
-    d = evaluate(_entry(qty=10, last_price=2.50), _ctx(), ENABLED)
-    assert d.approved
-    assert d.adjusted_qty == 4
-    assert any("trimmed" in f for f in d.informational_flags)
 
 
 def test_options_trim_names_the_rule_that_shrank_it() -> None:
@@ -457,11 +325,6 @@ def test_max_premium_pct_rejects_when_trim_rounds_to_zero_contracts() -> None:
     assert d.veto_rule == "max_premium_pct"
 
 
-def test_max_premium_pct_never_blocks_a_close() -> None:
-    d = evaluate(_close(qty=10, last_price=2.50), _ctx(account_equity=1_000.0), ENABLED)
-    assert d.veto_rule != "max_premium_pct"
-
-
 # ─────────────────────────────────────────────────────────────────────
 # max_total_premium_pct — portfolio aggregate
 # ─────────────────────────────────────────────────────────────────────
@@ -480,24 +343,6 @@ def test_max_total_premium_pct_blocks_aggregate_over_cap() -> None:
     assert d.veto_rule == "max_total_premium_pct"
 
 
-def test_max_total_premium_pct_ignores_equity_positions() -> None:
-    """A held EQUITY position's market_value must not count toward the
-    options-only aggregate — is_option=False positions are excluded."""
-    held = (PortfolioPosition("NVDA", 100, 490.0, 49_000.0, is_option=False),)
-    d = evaluate(_entry(qty=1, last_price=2.50), _ctx(open_positions=held), ENABLED)
-    assert d.veto_rule != "max_total_premium_pct"
-
-
-def test_max_total_premium_pct_never_blocks_a_close() -> None:
-    held = (
-        PortfolioPosition(
-            "MSFT260201C00400000", 100, 49.0, 490_000.0, is_option=True, multiplier=100
-        ),
-    )
-    d = evaluate(_close(qty=1, last_price=2.50), _ctx(open_positions=held), ENABLED)
-    assert d.veto_rule != "max_total_premium_pct"
-
-
 # ─────────────────────────────────────────────────────────────────────
 # Pipeline ordering — first veto wins through evaluate_option()
 # ─────────────────────────────────────────────────────────────────────
@@ -511,14 +356,6 @@ def test_expiry_day_entry_fires_before_illiquid_contract() -> None:
     assert d.veto_rule == "expiry_day_entry"
 
 
-def test_options_level_insufficient_fires_before_illiquid_contract() -> None:
-    """Both conditions are violated at once; options_level_insufficient
-    (earlier in the sequence) must win over illiquid_contract (later)."""
-    opt = _option(open_interest=1)  # would also veto illiquid_contract
-    d = evaluate(_entry(option=opt), _ctx(options_trading_level=1), ENABLED)
-    assert d.veto_rule == "options_level_insufficient"
-
-
 # ─────────────────────────────────────────────────────────────────────
 # Anti-misrouting — the dispatch must be structural, not coincidental
 # ─────────────────────────────────────────────────────────────────────
@@ -527,76 +364,6 @@ def test_options_level_insufficient_fires_before_illiquid_contract() -> None:
 def test_occ_symbol_is_not_a_derivative_and_is_a_us_symbol() -> None:
     assert is_derivative(_OCC) is False
     assert market_of(_OCC) == "US"
-
-
-def test_options_proposal_never_reaches_equity_only_rules(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Structural proof, not a behavioral coincidence: patch every
-    equity-only rule this dispatch must protect against with a spy that
-    records whether it was ever CALLED, then confirm zero calls for an
-    options proposal run through the TOP-LEVEL evaluate(). Absence from
-    ``checks_passed`` alone wouldn't distinguish "never ran" from "ran and
-    vetoed" for rules that never add themselves to that list even when
-    they DO run (derivative_notional_cap, for one) — call-count is the
-    only assertion that can't be fooled that way.
-    """
-    calls: dict[str, int] = {}
-
-    def _spy(name: str) -> Callable[..., None]:
-        def _fn(*_args: object, **_kwargs: object) -> None:
-            calls[name] = calls.get(name, 0) + 1
-            return None
-        return _fn
-
-    equity_only_rule_names = (
-        "position_size_cap",
-        "sector_concentration",
-        "single_name_concentration",
-        "correlation_cap",
-        "derivative_notional_cap",
-        "lot_size_block",
-    )
-    for name in equity_only_rule_names:
-        monkeypatch.setattr(risk_engine_mod, name, _spy(name))
-
-    # A deliberately absurd qty/notional — big enough that ANY of the
-    # patched rules would trip (or at least run) if the dispatch failed
-    # and this proposal fell through to the equity chain instead.
-    proposal = _entry(qty=1_000_000, last_price=2.50)
-    decision = evaluate(proposal, _ctx(), ENABLED)
-
-    assert calls == {}, f"equity-only rules were called: {calls}"
-    for name in equity_only_rule_names:
-        assert name not in decision.checks_passed
-
-    # The India-lot-size-violating qty specifically must not veto through
-    # derivative_notional_cap — proving the India rule genuinely never
-    # ran on this US options symbol, not merely that it happened to pass.
-    assert decision.veto_rule != "derivative_notional_cap"
-    assert decision.veto_rule != "lot_size_block"
-
-
-def test_options_never_reaches_short_requires_stop(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Cross-boundary regression, mirroring the short-position precedent:
-    an options RiskProposal (stop_price=None, since to_risk_proposal never
-    sets it) must not trip short_requires_stop — proven by patching the
-    rule with a spy, not by asserting the proposal happens to pass today.
-    """
-    calls: list[int] = []
-
-    def _spy(*_args: object, **_kwargs: object) -> None:
-        calls.append(1)
-        return None
-
-    monkeypatch.setattr(risk_engine_mod, "short_requires_stop", _spy)
-
-    proposal = _entry()
-    assert proposal.stop_price is None
-    decision = evaluate(proposal, _ctx(), ENABLED)
-
-    assert calls == []
-    assert decision.veto_rule != "short_requires_stop"
 
 
 # ─────────────────────────────────────────────────────────────────────

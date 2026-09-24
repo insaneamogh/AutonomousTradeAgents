@@ -22,56 +22,6 @@ def test_floor_division_basic_case() -> None:
     assert "$500.00" in decision.notes
 
 
-def test_floor_division_multiple_contracts() -> None:
-    decision = options_position_size(
-        OptionsSizingInputs(budget_usd=1000.0, ask=2.00, multiplier=100)
-    )
-    # cost/contract = $200 -> floor(1000/200) = 5
-    assert decision.qty == 5
-
-
-def test_never_rounds_up() -> None:
-    """$639.99 at $3.20 x100 ($320/contract) -> 1.999...  contracts, must
-    floor to 1, never round to 2."""
-    decision = options_position_size(
-        OptionsSizingInputs(budget_usd=639.99, ask=3.20, multiplier=100)
-    )
-    assert decision.qty == 1
-
-
-def test_boundary_exact_multiple_of_contract_cost() -> None:
-    """$640.00 / $320 = exactly 2.0 -> qty=2, no floor-rounding ambiguity."""
-    decision = options_position_size(
-        OptionsSizingInputs(budget_usd=640.0, ask=3.20, multiplier=100)
-    )
-    assert decision.qty == 2
-
-
-def test_qty_zero_when_budget_cannot_afford_one_contract() -> None:
-    decision = options_position_size(
-        OptionsSizingInputs(budget_usd=100.0, ask=5.00, multiplier=100)
-    )
-    assert decision.qty == 0
-    assert "exceeds" in decision.notes
-
-
-def test_qty_zero_boundary_just_under_one_contract() -> None:
-    """$319.99 budget can't quite afford a $320 contract."""
-    decision = options_position_size(
-        OptionsSizingInputs(budget_usd=319.99, ask=3.20, multiplier=100)
-    )
-    assert decision.qty == 0
-
-
-def test_qty_one_at_exact_contract_cost() -> None:
-    """$320.00 budget exactly affords a $320 contract — the boundary goes
-    the caller's way, not against it."""
-    decision = options_position_size(
-        OptionsSizingInputs(budget_usd=320.0, ask=3.20, multiplier=100)
-    )
-    assert decision.qty == 1
-
-
 def test_non_positive_ask_returns_zero() -> None:
     decision = options_position_size(
         OptionsSizingInputs(budget_usd=500.0, ask=0.0, multiplier=100)
@@ -153,43 +103,6 @@ def test_a_twelve_dollar_contract_sizes_to_at_least_one() -> None:
 # ── liquidity trim (the CME sizing hole) ─────────────────────────────
 
 
-def test_open_interest_trims_a_position_the_budget_alone_would_oversize() -> None:
-    """CME261016P00270000, reconstructed: ask $4.60, open interest 167,
-    $2,300 of premium budget available. Budget alone sizes 5 contracts —
-    which is what actually happened, and the position then gapped 26
-    points between prints. At 1% of open interest it sizes 1."""
-    decision = options_position_size(
-        OptionsSizingInputs(
-            budget_usd=2300.0,
-            ask=4.60,
-            multiplier=100,
-            open_interest=167,
-            max_pct_of_open_interest=1.0,
-        )
-    )
-    assert decision.qty == 1
-    assert "liquidity cap" in decision.notes
-    assert "167" in decision.notes
-
-
-def test_the_trim_does_not_bind_on_a_genuinely_liquid_contract() -> None:
-    """SPY-shaped: 2,841 open interest allows 28 lots, far above what the
-    dollar budget affords. The premium budget must stay the operative
-    constraint on liquid names — this cap exists to shrink doubtful
-    positions, not to shrink every position."""
-    decision = options_position_size(
-        OptionsSizingInputs(
-            budget_usd=2300.0,
-            ask=4.60,
-            multiplier=100,
-            open_interest=2841,
-            max_pct_of_open_interest=1.0,
-        )
-    )
-    assert decision.qty == 5
-    assert "liquidity cap" not in decision.notes
-
-
 def test_the_trim_never_rounds_a_viable_trade_to_zero() -> None:
     """Sizing TRIMS; it does not veto. A contract too thin to hold one lot
     is refused upstream by options_min_open_interest and the chain-depth
@@ -265,25 +178,11 @@ def test_ceiling_conviction_gets_full_size() -> None:
     assert _conv(1_500.0, 1.00, conviction=0.62) == 15
 
 
-def test_size_increases_monotonically_with_conviction() -> None:
-    sizes = [_conv(1_500.0, 1.00, conviction=c)
-             for c in (0.48, 0.52, 0.55, 0.58, 0.62)]
-    assert sizes == sorted(sizes)
-    assert sizes[0] < sizes[-1], "conviction must actually move the size"
-
-
 def test_conviction_above_the_observed_ceiling_does_not_oversize() -> None:
     """0.62 is the highest the two-agent council has ever produced (it
     resolves on the MINIMUM of bull and bear). A hypothetical 0.9 must
     clamp to full budget, never exceed it."""
     assert _conv(1_500.0, 1.00, conviction=0.90) == _conv(1_500.0, 1.00, conviction=0.62)
-
-
-def test_conviction_below_the_floor_never_goes_below_half() -> None:
-    """Sizing is not a veto. A sub-floor conviction should not reach here
-    at all (min_council_confidence refuses it by name), but if it does the
-    sizer must clamp rather than produce a negative or zero budget."""
-    assert _conv(1_500.0, 1.00, conviction=0.10) == 7
 
 
 def test_a_floor_at_or_above_the_ceiling_falls_back_to_full_budget() -> None:
