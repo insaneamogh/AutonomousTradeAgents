@@ -247,8 +247,28 @@ async def _apply_decision_lifecycle(session: AsyncSession, order_row: object) ->
             ).quantize(Decimal("0.01"))
         decision.closed_at = order_row.filled_at or datetime.now(UTC)
         if decision.close_reason is None:
-            decision.close_reason = "user_manual"
+            decision.close_reason = _unstamped_close_reason(order_row)
         await _maybe_record_pdt(session, decision, order_row, entry_side)
+
+
+def _unstamped_close_reason(order_row: object) -> str:
+    """Why a decision closed when no close path stamped a reason first.
+
+    Every agent close (position_manager) and every in-app user close stamps
+    ``close_reason`` when it SUBMITS. A resting protective stop does not:
+    it is placed at fill time and elects at the broker later, possibly
+    while this process is down, so nothing is there to stamp it. Before
+    this, those closes fell through to 'user_manual', crediting the user
+    with an exit the system's own stop made. That understated the stop
+    count on the Positions screen and in anything that grades exits by
+    reason. The client_order_id prefix is the same marker
+    ``_has_in_flight_close`` already relies on to recognise these orders.
+    """
+    from app.services.orders.option_stops import is_protective_stop_id
+
+    if is_protective_stop_id(getattr(order_row, "client_order_id", None)):
+        return "protective_stop"
+    return "user_manual"
 
 
 async def _maybe_place_protective_stop(decision: object, order_row: object) -> None:

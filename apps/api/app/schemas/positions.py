@@ -145,7 +145,8 @@ class ClosedPositionDto(CamelCaseModel):
     closed_at: datetime
     # agent_time / agent_signal / agent_expiry / option_take_profit /
     # option_stop_loss / option_trail_stop (position_manager's own closes) /
-    # user_manual (a tap in this app) / external_broker (order_sync detected
+    # user_manual (a tap in this app) / protective_stop (the resting
+    # broker-side stop elected) / external_broker (order_sync detected
     # the user closed it directly at Alpaca). None for a pre-migration row.
     close_reason: str | None = None
     # Whether the CLOSE was the position manager's own doing ('agent') or

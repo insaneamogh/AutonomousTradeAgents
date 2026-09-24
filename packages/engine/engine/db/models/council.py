@@ -132,7 +132,7 @@ class AgentDecision(Base):
     # ``exit_mode`` records whether the user delegated the CLOSE to the
     # position manager ('agent') or kept it manual. ``close_reason`` is a
     # named identifier like risk veto rules: 'agent_target' | 'agent_stop' |
-    # 'agent_time' | 'agent_signal' | 'user_manual' | 'external_broker'.
+    # 'agent_time' | 'agent_signal' | 'user_manual' | 'protective_stop' | 'external_broker'.
     exit_mode: Mapped[str] = mapped_column(
         String(10), nullable=False, default="agent", server_default="agent"
     )

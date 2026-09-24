@@ -111,6 +111,29 @@ async def test_sell_fill_respects_existing_close_reason_and_idempotency() -> Non
     assert decision.close_reason == "agent_target"
 
 
+async def test_protective_stop_fill_is_labelled_protective_stop_not_user_manual() -> None:
+    """A resting broker stop elects with nothing on our side to stamp a
+    reason. It must not be credited to the user as a manual close."""
+    from app.services.orders.option_stops import protective_stop_client_order_id
+
+    decision = _decision(fill_qty=2, fill_avg_price=Decimal("3.00"))
+    order = _order("SELL", filled_qty=2, avg="1.95", decision_id=decision.id)
+    order.client_order_id = protective_stop_client_order_id(decision.id, seq=1)
+    await _apply_decision_lifecycle(_session_for(decision), order)
+
+    assert decision.closed_at is not None
+    assert decision.close_reason == "protective_stop"
+
+
+async def test_ordinary_unstamped_sell_fill_is_still_user_manual() -> None:
+    decision = _decision(fill_qty=2, fill_avg_price=Decimal("3.00"))
+    order = _order("SELL", filled_qty=2, avg="1.95", decision_id=decision.id)
+    order.client_order_id = f"agent-close-{decision.id}"
+    await _apply_decision_lifecycle(_session_for(decision), order)
+
+    assert decision.close_reason == "user_manual"
+
+
 async def test_partial_sell_uses_min_qty_for_pnl() -> None:
     """Exit filled for fewer shares than the entry → P&L on the exited qty."""
     decision = _decision(fill_qty=12, fill_avg_price=Decimal("100.00"))
