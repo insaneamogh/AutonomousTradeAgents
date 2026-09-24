@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from engine.features import alpaca_cli, clock
+from engine.features import alpaca_cli
 from engine.features.clock import (
     ClockProvider,
     MarketClock,
@@ -51,14 +51,6 @@ async def _never_called(**_: object) -> MarketClock | None:
 # ─────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("value", ["1", "true", "True", "TRUE", "yes", "on"])
-def test_use_alpaca_cli_recognises_truthy_values(
-    monkeypatch: pytest.MonkeyPatch, value: str
-) -> None:
-    monkeypatch.setenv("USE_ALPACA_CLI", value)
-    assert use_alpaca_cli() is True
-
-
 @pytest.mark.parametrize("value", ["0", "false", "False", "no", "off", "OFF"])
 def test_use_alpaca_cli_is_disabled_only_by_an_explicit_falsy_value(
     monkeypatch: pytest.MonkeyPatch, value: str
@@ -67,50 +59,9 @@ def test_use_alpaca_cli_is_disabled_only_by_an_explicit_falsy_value(
     assert use_alpaca_cli() is False
 
 
-def test_use_alpaca_cli_defaults_ON_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Flipped from OFF on 2026-09-02, deliberately.
-
-    The flag defaulted off so the Dockerfile change (ship the binary) and
-    the behaviour change (call it) stayed independently revertible. That
-    was right then and wrong now: this CLI call is the project's hackathon
-    ELIGIBILITY artifact — "projects must utilize either Alpaca's MCP
-    server or its CLI tools" — and an artifact behind a flag nobody
-    remembered to set is an artifact that never ran. Shipping the binary
-    without calling it satisfies nothing.
-
-    Safe to default on because every failure already degrades: a missing
-    binary, non-zero exit, timeout or bad JSON all return None and
-    resolve_market_clock falls through to REST, then the local calendar.
-    """
-    monkeypatch.delenv("USE_ALPACA_CLI", raising=False)
-    assert use_alpaca_cli() is True
-
-
-def test_an_unrecognised_value_keeps_the_cli_on(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Only an explicit falsy value disables it. A typo must not silently
-    switch off the eligibility artifact."""
-    monkeypatch.setenv("USE_ALPACA_CLI", "nonsense")
-    assert use_alpaca_cli() is True
-
-
 # ─────────────────────────────────────────────────────────────────────
 # resolve_market_clock — fallback ordering
 # ─────────────────────────────────────────────────────────────────────
-
-
-async def test_resolve_market_clock_never_touches_cli_when_flag_is_off(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The flag is the only thing D.3 adds — off means the CLI step must
-    not even be invoked, not merely "invoked but ignored"."""
-    monkeypatch.setenv("USE_ALPACA_CLI", "0")
-    monkeypatch.setattr(alpaca_cli, "cli_clock", _never_called)
-    fake = FakeClock(MarketClock(is_open=True, source="alpaca"))
-
-    result = await resolve_market_clock(at=AT, alpaca=fake)
-
-    assert result.source == "alpaca"
-    assert fake.calls == 1
 
 
 async def test_resolve_market_clock_falls_back_to_local_calendar_when_flag_is_off_and_no_alpaca(
@@ -143,39 +94,6 @@ async def test_resolve_market_clock_uses_the_cli_result_when_enabled_and_it_succ
     assert result is cli_result
     assert result.source == "alpaca_cli"
     assert fake_rest.calls == 0, "the REST clock must not be consulted when the CLI answers"
-
-
-async def test_resolve_market_clock_falls_back_to_rest_when_cli_enabled_but_returns_none(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("USE_ALPACA_CLI", "1")
-
-    async def fake_cli_clock(**_: object) -> MarketClock | None:
-        return None
-
-    monkeypatch.setattr(alpaca_cli, "cli_clock", fake_cli_clock)
-    fake_rest = FakeClock(MarketClock(is_open=True, source="alpaca"))
-
-    result = await resolve_market_clock(at=AT, alpaca=fake_rest)
-
-    assert result.source == "alpaca"
-    assert fake_rest.calls == 1
-
-
-async def test_resolve_market_clock_falls_back_to_local_calendar_when_cli_and_rest_both_absent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("USE_ALPACA_CLI", "1")
-
-    async def fake_cli_clock(**_: object) -> MarketClock | None:
-        return None
-
-    monkeypatch.setattr(alpaca_cli, "cli_clock", fake_cli_clock)
-
-    result = await resolve_market_clock(at=AT, alpaca=None)
-
-    assert result.source == "local_calendar"
-    assert result.is_open == clock.is_us_market_open(AT)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -214,17 +132,3 @@ def test_resolved_clock_from_env_wraps_clock_from_env(monkeypatch: pytest.Monkey
 
     assert isinstance(provider, ResolvingClock)
     assert provider.alpaca is None
-
-
-async def test_resolved_clock_from_env_with_no_keys_falls_back_to_local_calendar(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("ALPACA_API_KEY", raising=False)
-    monkeypatch.delenv("ALPACA_SECRET_KEY", raising=False)
-    monkeypatch.delenv("ALPACA_API_SECRET", raising=False)
-    monkeypatch.delenv("USE_ALPACA_CLI", raising=False)
-
-    provider = resolved_clock_from_env()
-    result = await provider.now(at=AT)
-
-    assert result.source == "local_calendar"

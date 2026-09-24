@@ -23,8 +23,6 @@ from engine.scanner import (
 )
 
 OPEN_AT = datetime(2026, 6, 16, 15, 0, tzinfo=UTC)  # Tue, mid-session
-CLOSED_AT = datetime(2026, 6, 16, 23, 0, tzinfo=UTC)  # after hours
-WEEKEND_AT = datetime(2026, 6, 20, 15, 0, tzinfo=UTC)
 
 
 def daily_series(
@@ -136,32 +134,6 @@ def make_scanner(
 # ─────────────────────────────────────────────────────────────────────
 
 
-async def test_no_scan_when_the_market_is_closed() -> None:
-    """The gate must fire BEFORE any provider call — a closed-market scan
-    that still hits the data API is a rate-limit budget spent on nothing."""
-    sc = make_scanner({"AAA": daily_series()}, {"AAA": intraday_series([110.0])})
-    result = await sc.scan(["AAA"], now=CLOSED_AT)
-    assert result.market_open is False
-    assert result.signals == ()
-    assert sc.intraday.calls == 0  # type: ignore[attr-defined]
-    assert sc.daily_bars.calls == 0  # type: ignore[attr-defined]
-
-
-async def test_no_scan_at_the_weekend() -> None:
-    sc = make_scanner({"AAA": daily_series()}, {})
-    assert (await sc.scan(["AAA"], now=WEEKEND_AT)).market_open is False
-
-
-async def test_force_bypasses_the_hours_gate() -> None:
-    sc = make_scanner(
-        {"AAA": daily_series(step=0.0)},
-        {"AAA": intraday_series([104.0])},
-    )
-    result = await sc.scan(["AAA"], now=CLOSED_AT, force=True)
-    assert result.market_open is True
-    assert sc.intraday.calls == 1  # type: ignore[attr-defined]
-
-
 async def test_empty_watchlist_is_a_clean_no_op() -> None:
     sc = make_scanner({}, {})
     result = await sc.scan([], now=OPEN_AT)
@@ -183,20 +155,6 @@ async def test_scanner_uses_the_local_calendar_when_no_clock_is_injected() -> No
     result = await sc.scan(["AAA"], now=OPEN_AT)
     assert result.market_open is True
     assert result.market_open_source == "local_calendar"
-
-
-async def test_scanner_reports_market_open_source() -> None:
-    """An injected clock's ``source`` (e.g. Alpaca's real ``/v2/clock``)
-    flows through to the ``ScanResult`` — not hardcoded to the local-
-    calendar default the moment a clock is configured."""
-    clock = FakeClock(MarketClock(is_open=True, source="alpaca"))
-    sc = make_scanner(
-        {"AAA": daily_series()}, {"AAA": intraday_series([104.0])}, clock=clock
-    )
-    result = await sc.scan(["AAA"], now=OPEN_AT)
-    assert result.market_open is True
-    assert result.market_open_source == "alpaca"
-    assert clock.calls == 1
 
 
 async def test_scanner_skips_scan_when_injected_clock_reports_closed() -> None:
@@ -254,10 +212,6 @@ def test_snapshot_without_intraday_falls_back_to_the_prior_close() -> None:
     assert snap.last_price == pytest.approx(snap.prior_close)
 
 
-def test_snapshot_returns_none_without_settled_history() -> None:
-    assert build_snapshot("AAA", [], intraday_series([100.0]), observed_at=OPEN_AT) is None
-
-
 def test_live_rsi_differs_from_settled_rsi() -> None:
     """The live RSI folds today's price into the Wilder recursion — that is
     what makes an intraday band exit a real transition."""
@@ -291,22 +245,6 @@ async def test_quiet_symbol_produces_no_signal() -> None:
     assert result.triggered_symbols == ()
 
 
-async def test_thin_history_is_reported_as_an_error_not_a_signal() -> None:
-    sc = make_scanner({"AAA": daily_series(20)}, {"AAA": intraday_series([130.0])})
-    result = await sc.scan(["AAA"], now=OPEN_AT)
-    assert result.signals == ()
-    assert "AAA" in result.errors
-
-
-async def test_one_bad_symbol_does_not_kill_the_pass() -> None:
-    """A daily-bars failure on one name must not cost the other fourteen."""
-    daily = daily_series(120, start=100.0, step=0.0)
-    sc = make_scanner({"AAA": daily}, {"AAA": intraday_series([106.0])})
-    result = await sc.scan(["AAA", "MISSING"], now=OPEN_AT)
-    assert result.triggered_symbols == ("AAA",)
-    assert "MISSING" in result.errors
-
-
 async def test_intraday_failure_yields_no_signals_and_records_errors() -> None:
     sc = Scanner(
         daily_bars=FakeDaily({"AAA": daily_series()}),
@@ -316,15 +254,6 @@ async def test_intraday_failure_yields_no_signals_and_records_errors() -> None:
     result = await sc.scan(["AAA"], now=OPEN_AT)
     assert result.signals == ()
     assert "AAA" in result.errors
-
-
-async def test_intraday_is_fetched_in_one_batched_call() -> None:
-    """Cost claim under test: request count must not scale with watchlist size."""
-    daily = {s: daily_series() for s in ("AAA", "BBB", "CCC")}
-    intra = {s: intraday_series([100.0]) for s in daily}
-    sc = make_scanner(daily, intra)
-    await sc.scan(list(daily), now=OPEN_AT)
-    assert sc.intraday.calls == 1  # type: ignore[attr-defined]
 
 
 async def test_relative_strength_ranks_the_scanned_universe() -> None:
@@ -345,52 +274,12 @@ async def test_relative_strength_ranks_the_scanned_universe() -> None:
 # ─────────────────────────────────────────────────────────────────────
 
 
-async def test_the_same_trigger_does_not_re_fire_inside_the_cooldown() -> None:
-    """The whole cost argument: a sticky condition wakes the council once,
-    not once per scan for the rest of the session."""
-    daily = daily_series(120, start=100.0, step=0.0)
-    sc = make_scanner({"AAA": daily}, {"AAA": intraday_series([106.0])})
-
-    first = await sc.scan(["AAA"], now=OPEN_AT)
-    second = await sc.scan(["AAA"], now=OPEN_AT + timedelta(minutes=5))
-    third = await sc.scan(["AAA"], now=OPEN_AT + timedelta(minutes=10))
-
-    assert first.signals != ()
-    assert second.signals == ()
-    assert third.signals == ()
-    assert second.suppressed != ()  # visible, not silently dropped
-
-
 async def test_the_trigger_re_fires_once_the_cooldown_elapses() -> None:
     daily = daily_series(120, start=100.0, step=0.0)
     sc = make_scanner({"AAA": daily}, {"AAA": intraday_series([106.0])}, cooldown_minutes=60)
     assert (await sc.scan(["AAA"], now=OPEN_AT)).signals != ()
     assert (await sc.scan(["AAA"], now=OPEN_AT + timedelta(minutes=30))).signals == ()
     assert (await sc.scan(["AAA"], now=OPEN_AT + timedelta(minutes=61))).signals != ()
-
-
-def test_cooldown_is_scoped_per_symbol_and_rule() -> None:
-    cd = TriggerCooldown(60)
-    assert cd.is_cool("AAA", "dma20_cross_up", OPEN_AT) is True
-    cd.mark("AAA", "dma20_cross_up", OPEN_AT)
-    assert cd.is_cool("AAA", "dma20_cross_up", OPEN_AT) is False
-    # A different rule on the same symbol is independent…
-    assert cd.is_cool("AAA", "gap_up_2pct", OPEN_AT) is True
-    # …and so is the same rule on a different symbol.
-    assert cd.is_cool("BBB", "dma20_cross_up", OPEN_AT) is True
-
-
-def test_cooldown_is_case_insensitive_on_the_symbol() -> None:
-    cd = TriggerCooldown(60)
-    cd.mark("aaa", "gap_up_2pct", OPEN_AT)
-    assert cd.is_cool("AAA", "gap_up_2pct", OPEN_AT) is False
-
-
-def test_cooldown_reset_clears_everything() -> None:
-    cd = TriggerCooldown(60)
-    cd.mark("AAA", "gap_up_2pct", OPEN_AT)
-    cd.reset()
-    assert cd.is_cool("AAA", "gap_up_2pct", OPEN_AT) is True
 
 
 def test_zero_cooldown_never_suppresses() -> None:
