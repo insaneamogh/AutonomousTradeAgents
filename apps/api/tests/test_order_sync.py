@@ -701,3 +701,34 @@ async def test_activities_read_failure_falls_back_to_external_close(
 
     values = _values_of(session.execute.call_args_list[-1].args[0])
     assert values["close_reason"] == "external_broker"
+
+
+
+async def test_an_unacknowledged_order_counts_as_in_flight_only_while_fresh() -> None:
+    """A pending row the broker never acknowledged (NULL broker_order_id)
+    is never polled, so as an "in-flight exit" it hid the vanished position
+    from the detector forever. It must count only while it is fresh."""
+    from sqlalchemy.dialects import postgresql
+
+    decision = _option_decision()
+    captured: list[Any] = []
+    decisions_result = MagicMock()
+    decisions_result.scalars.return_value.all.return_value = [decision]
+    in_flight_result = MagicMock()
+    in_flight_result.scalar_one_or_none.return_value = uuid.uuid4()  # in flight: stop
+
+    async def _execute(stmt: Any) -> Any:
+        captured.append(stmt)
+        return decisions_result if len(captured) == 1 else in_flight_result
+
+    session = MagicMock()
+    session.execute = _execute
+    broker = SimpleNamespace(list_positions=AsyncMock(return_value=[]))
+
+    await order_sync_mod._detect_external_closes(
+        session, uuid.uuid4(), broker, user_id="00000000-0000-0000-0000-000000000001"
+    )
+
+    assert len(captured) == 2
+    sql = str(captured[1].compile(dialect=postgresql.dialect())).replace("\n", " ")
+    assert "orders.broker_order_id IS NOT NULL OR orders.submitted_at >=" in sql

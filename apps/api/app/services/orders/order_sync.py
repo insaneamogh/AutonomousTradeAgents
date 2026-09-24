@@ -54,7 +54,7 @@ from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import desc, select, update
+from sqlalchemy import desc, or_, select, update
 
 from app.services.broker.broker_use import with_broker_client
 
@@ -77,6 +77,15 @@ OPEN_ORDER_STATUSES: tuple[str, ...] = (
 # Order rows in these states count as "an exit is already in flight" for
 # the external-close detector.
 IN_FLIGHT_STATUSES: tuple[str, ...] = OPEN_ORDER_STATUSES
+
+# How long an open row with no broker_order_id still counts as in flight.
+# Every submit path writes the row, then submits, then stamps the broker's
+# id, so a live submit is unacknowledged for a second or two. Past this, the
+# row is an orphan: nothing polls it (_sync_open_orders needs the id), and
+# as an "in-flight exit" it would hide a vanished position from the
+# detector forever. That is how AAPL260918C00340000's stopped-out position
+# read OPEN on 2026-09-04.
+UNACKED_ORDER_GRACE = timedelta(minutes=10)
 
 
 async def sync_user_orders_and_positions(
@@ -442,6 +451,12 @@ async def _detect_external_closes(
             select(Order.id)
             .where(Order.agent_decision_id == decision.id)
             .where(Order.status.in_(IN_FLIGHT_STATUSES))
+            .where(
+                or_(
+                    Order.broker_order_id.is_not(None),
+                    Order.submitted_at >= datetime.now(UTC) - UNACKED_ORDER_GRACE,
+                )
+            )
             .limit(1)
         )
         if (await session.execute(in_flight_stmt)).scalar_one_or_none() is not None:

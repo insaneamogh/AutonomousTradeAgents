@@ -340,9 +340,13 @@ async def _place(
         if order_row_id is not None:
             await persist_order_result(order_row_id=order_row_id, broker_order=order)
     except Exception:
+        # Orphan adoption does NOT reconcile this: it heals decisions, not
+        # orders rows. What keeps a half-written row (pending, no
+        # broker_order_id) from hiding the position from close detection
+        # forever is order_sync.UNACKED_ORDER_GRACE.
         logger.exception(
             "option_stops: placed broker order %s for %s but could not persist "
-            "its row — order_sync's orphan adoption will reconcile it",
+            "its row; the resting stop is live at the broker but untracked here",
             getattr(order, "broker_order_id", "?"), occ,
         )
 
