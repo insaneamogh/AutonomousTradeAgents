@@ -6,13 +6,14 @@ import {
   useCloseUnmanagedPosition,
   useClosedPositions,
   useClosePosition,
+  useFlattenAll,
   useOpenPositions,
 } from '@/hooks/usePositions';
 import { runErrorMessage } from '@/lib/api';
 import { DEMO_DISABLED_REASON, useIsDemoSession } from '@/lib/demoSession';
 import type { ClosedPositionDto, OpenPositionDto } from '@app/shared-types';
 
-import { ago, signedPct, signedUsd, tone, usd } from '../format';
+import { ago, flattenSummary, signedPct, signedUsd, tone, usd } from '../format';
 import {
   Button,
   Card,
@@ -65,6 +66,8 @@ export function PositionsScreen() {
   const account = useAccount();
   const close = useClosePosition();
   const closeUnmanaged = useCloseUnmanagedPosition();
+  const flattenAll = useFlattenAll();
+  const [flattenNote, setFlattenNote] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const isDemo = useIsDemoSession();
 
@@ -84,6 +87,21 @@ export function PositionsScreen() {
     const message = `Close ${p.qty} ${p.symbol} now? This position has no council decision behind it — closing places a market order directly, through the same risk checks as any other close.`;
     if (!window.confirm(message)) return;
     closeUnmanaged.mutate(p.symbol);
+  };
+
+  // The kill switch. Two things happen server-side, and the prompt names
+  // both, because the second one outlives this click.
+  const confirmAndFlattenAll = (count: number) => {
+    const message =
+      `Close ALL ${count} position${count === 1 ? '' : 's'} now, and turn auto-approve off?\n\n` +
+      'Every position gets a market close through the same risk checks as a single Close. ' +
+      'Working entry orders are cancelled. Auto-approve stays off until you turn it back on in Settings.';
+    if (!window.confirm(message)) return;
+    setFlattenNote(null);
+    flattenAll.mutate(undefined, {
+      onSuccess: (res) => setFlattenNote(flattenSummary(res)),
+      onError: (err) => setFlattenNote(`Flatten failed: ${runErrorMessage(err)}`),
+    });
   };
 
   if (view === 'open' && positions.isError) {
@@ -146,11 +164,30 @@ export function PositionsScreen() {
             ) : (
               <Pill tone={rows.length > 0 ? 'bull' : 'neutral'}>{rows.length} OPEN</Pill>
             )}
+            {view === 'open' && rows.length > 0 ? (
+              <Button
+                size="sm"
+                kind="secondary"
+                onClick={() => confirmAndFlattenAll(rows.length)}
+                disabled={flattenAll.isPending || isDemo}
+                title={isDemo ? DEMO_DISABLED_REASON : 'Close every position and turn auto-approve off'}
+                ariaLabel="Flatten all: close every position and turn auto-approve off"
+              >
+                {flattenAll.isPending ? 'Flattening…' : 'Flatten all'}
+              </Button>
+            ) : null}
           </Row>
         }
       />
 
       <div className="pg-grid pg-fade-up">
+        {flattenNote ? (
+          <Cell span={12}>
+            <Card>
+              <p className="pg-caption" role="status">{flattenNote}</p>
+            </Card>
+          </Cell>
+        ) : null}
         <Cell span={3}>
           <StatTile label="Equity" value={acct ? usd(acct.equity) : '—'} loading={account.isLoading} />
         </Cell>

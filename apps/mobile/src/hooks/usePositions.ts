@@ -27,6 +27,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   ClosedPositionListResponse,
   ClosePositionResponse,
+  FlattenAllResponse,
   OpenPositionDto,
 } from '@app/shared-types';
 
@@ -101,6 +102,28 @@ export function useCloseUnmanagedPosition() {
     onSettled: () => {
       qc.invalidateQueries({ queryKey: POSITIONS_KEY });
       qc.invalidateQueries({ queryKey: ['portfolio'] });
+    },
+  });
+}
+
+/**
+ * The kill switch: POST /positions/flatten-all. Server-side it revokes
+ * auto-approve consent on every broker connection, then closes every listed
+ * position through the same risk-gated paths a single Close uses. Each
+ * position succeeds or fails on its own; the response names every outcome.
+ */
+export function useFlattenAll() {
+  const qc = useQueryClient();
+  return useMutation<FlattenAllResponse, Error, void>({
+    mutationFn: () =>
+      request<FlattenAllResponse>('/api/v1/positions/flatten-all', { method: 'POST' }),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: POSITIONS_KEY });
+      qc.invalidateQueries({ queryKey: ['portfolio'] });
+      qc.invalidateQueries({ queryKey: ['positions', 'history'] });
+      // Consent was revoked server-side; the Settings toggle must not keep
+      // showing it armed from cache.
+      qc.invalidateQueries({ queryKey: ['broker', 'connections'] });
     },
   });
 }

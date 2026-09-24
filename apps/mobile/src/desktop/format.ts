@@ -224,3 +224,19 @@ export function stillMarkingCaption(
   const phrase = finalizesPhrase(oldestPendingRemainingTradingDays);
   return `${finalised} finalised · ${pendingCount} still marking${phrase ? ` — ${phrase}` : ''}`;
 }
+
+/** One line for the flatten-all result: how many closes started, and which
+ * positions are still open and why. */
+export function flattenSummary(res: {
+  positions: { symbol: string; closed: boolean; error: string | null }[];
+  autoApproveRevoked: number;
+}): string {
+  const total = res.positions.length;
+  if (total === 0) return 'Nothing was open. Auto-approve is off.';
+  const started = res.positions.filter((p) => p.closed).length;
+  const failed = res.positions.filter((p) => !p.closed);
+  const head = `${started} of ${total} close${total === 1 ? '' : 's'} started. Auto-approve is off.`;
+  if (failed.length === 0) return head;
+  const still = failed.map((p) => `${p.symbol} (${humanize(p.error ?? 'unknown')})`).join(', ');
+  return `${head} Still open: ${still}.`;
+}

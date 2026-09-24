@@ -195,3 +195,33 @@ describe('emptyBucketCaption', () => {
     expect(emptyBucketCaption(4, 'Nothing declined by hand')).toBeNull();
   });
 });
+
+describe('flattenSummary', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { flattenSummary } = require('./format') as typeof import('./format');
+
+  it('names what is still open and why', () => {
+    expect(
+      flattenSummary({
+        positions: [
+          { symbol: 'NVDA', closed: true, error: null },
+          { symbol: 'AMD', closed: false, error: 'risk_vetoed' },
+          { symbol: 'GILD', closed: true, error: null },
+        ],
+        autoApproveRevoked: 1,
+      }),
+    ).toBe('2 of 3 closes started. Auto-approve is off. Still open: AMD (Risk vetoed).');
+  });
+
+  it('says so when everything started closing', () => {
+    expect(
+      flattenSummary({ positions: [{ symbol: 'NVDA', closed: true, error: null }], autoApproveRevoked: 0 }),
+    ).toBe('1 of 1 close started. Auto-approve is off.');
+  });
+
+  it('handles an empty book', () => {
+    expect(flattenSummary({ positions: [], autoApproveRevoked: 1 })).toBe(
+      'Nothing was open. Auto-approve is off.',
+    );
+  });
+});

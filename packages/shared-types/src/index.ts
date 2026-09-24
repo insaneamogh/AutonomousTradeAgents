@@ -274,6 +274,21 @@ export interface OpenPositionDto {
   multiplier?: number;
 }
 
+/** One position's outcome in POST /positions/flatten-all. `closed` means a
+ * close was INITIATED; the fill confirms later, like every close. */
+export interface FlattenResultDto {
+  symbol: string;
+  closed: boolean;
+  error: string | null;
+}
+
+export interface FlattenAllResponse {
+  positions: FlattenResultDto[];
+  /** Broker connections whose auto-approve consent was switched off, so
+   * nothing re-opens behind the flatten. */
+  autoApproveRevoked: number;
+}
+
 export interface ClosePositionResponse {
   /** null for the symbol-keyed unmanaged-close response (see `symbol`
    * below) — there is no decision row to name. */
