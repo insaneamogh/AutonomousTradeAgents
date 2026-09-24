@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -41,6 +42,12 @@ logger = logging.getLogger("agents.ghost_eval")
 DEFAULT_HORIZON_DAYS = 5
 # Look back horizon + buffer so weekend/holiday gaps still finalize.
 LOOKBACK_BUFFER_DAYS = 7
+
+MAX_HORIZON_TRADING_DAYS = 60
+"""The longest horizon a proposal can declare (momentum, strategies/
+horizon.py). The row query must reach back far enough for it to finalize;
+finalized ghosts are skipped before any price fetch, so the wider window
+costs a query, not a mark."""
 
 _HORIZON_BY_PROPOSAL_HORIZON = {
     "intraday": 1,
@@ -149,6 +156,20 @@ def _reason_of(row: AgentDecision) -> str | None:
     return None
 
 
+def _grading_horizon(proposal: dict[str, Any], label: str | None) -> int:
+    """Trading days to grade a refusal over. A proposal routed by horizon
+    (strategies/router.py) states its own; everything older grades by its
+    horizon label, exactly as before."""
+    explicit = proposal.get("horizonTradingDays", proposal.get("horizon_trading_days"))
+    try:
+        days = int(explicit) if explicit is not None else 0
+    except (TypeError, ValueError):
+        days = 0
+    if 0 < days <= MAX_HORIZON_TRADING_DAYS:
+        return days
+    return _HORIZON_BY_PROPOSAL_HORIZON.get(label or "", DEFAULT_HORIZON_DAYS)
+
+
 def _ghost_pnl(side: str, qty: int, entry: float, mark: float, multiplier: int = 1) -> float:
     """Dollar P&L of the refused trade.
 
@@ -201,7 +222,7 @@ async def evaluate_ghosts(*, today: date | None = None) -> dict[str, int | dict[
 
     async with session_factory() as session:
         cutoff = datetime.now(UTC) - timedelta(
-            days=max(_HORIZON_BY_PROPOSAL_HORIZON.values()) + LOOKBACK_BUFFER_DAYS
+            days=math.ceil(MAX_HORIZON_TRADING_DAYS * 7 / 5) + LOOKBACK_BUFFER_DAYS
         )
         stmt = (
             select(AgentDecision)
@@ -239,7 +260,7 @@ async def evaluate_ghosts(*, today: date | None = None) -> dict[str, int | dict[
             entry_price, entry_source = entry
             multiplier = _multiplier(proposal)
             is_option = _is_option(proposal)
-            horizon = _HORIZON_BY_PROPOSAL_HORIZON.get(row.horizon, DEFAULT_HORIZON_DAYS)
+            horizon = _grading_horizon(proposal, row.horizon)
             start_day = row.triggered_at.date()
 
             ghost = (

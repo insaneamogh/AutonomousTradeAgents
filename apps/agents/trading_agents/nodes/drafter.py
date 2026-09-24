@@ -100,6 +100,7 @@ from trading_agents.nodes._guards import clamp_confidence, clamp_level
 from trading_agents.prompts import drafter_prompt
 from trading_agents.state import CouncilState
 from trading_agents.strategies import resolve_strategy
+from trading_agents.strategies.horizon import horizon_calendar_days, strategy_horizon_days
 
 logger = logging.getLogger("agents.node.drafter")
 
@@ -291,6 +292,15 @@ async def drafter_node(state: CouncilState, llm: LLM) -> CouncilState:
     # mirrors the ghost evaluator's horizon mapping so executed and
     # non-executed picks are graded over the same window.
     time_stop_days = _TIME_STOP_BY_HORIZON.get(str(state.get("horizon", "short")), 5)
+    # When the horizon router sent this thesis to equity BECAUSE its horizon
+    # outlives an option, hold it for that horizon. A 5-day time stop on a
+    # 60-day momentum thesis is the mismatch the router exists to remove.
+    # horizon_trading_days travels with the proposal so ghost_eval grades a
+    # refused pick over the same window (it prefers this over the label).
+    horizon_trading_days: int | None = None
+    if state.get("instrument_route"):
+        horizon_trading_days = strategy_horizon_days(strategy_id)
+        time_stop_days = horizon_calendar_days(strategy_id)
     # R is a RATIO of distances, so it must be computed from absolute
     # distances — signing it off (entry - stop) yields a negative R on a
     # short, where the stop is legitimately above the entry.
@@ -313,6 +323,7 @@ async def drafter_node(state: CouncilState, llm: LLM) -> CouncilState:
             "stop_loss": sizing.stop_price,
             "target_price": sizing.target_price,
             "time_stop_days": time_stop_days,
+            "horizon_trading_days": horizon_trading_days,
             "r_multiple": r_multiple,
             "rationale": combined_rationale,
             "bull_case": str(data.get("bull_case", "")),

@@ -73,6 +73,12 @@ class CouncilState(TypedDict, total=False):
     this ever took before Phase A. Read by ``drafter_node`` to switch from
     ``atr_position_size`` to ``select_contract`` + ``options_position_size``."""
 
+    instrument_route: dict[str, Any]
+    """Set by ``strategy_fit_node`` only when INSTRUMENT_ROUTER_ENABLED ran
+    the horizon router (strategies/router.py): ``instrument``, ``reason``,
+    ``horizon_days``. Its presence is what tells the Drafter to hold an
+    equity position for the strategy's own horizon."""
+
     # ── Drafter output ───────────────────────────────────────────────
     proposal: dict[str, Any] | None
     drafter_rationale: str

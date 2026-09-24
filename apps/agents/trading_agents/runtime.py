@@ -252,6 +252,9 @@ def _to_proposal_dto(state: CouncilState) -> dict[str, Any] | None:
         "stopLoss": p.get("stop_loss"),
         "targetPrice": p.get("target_price"),
         "timeStopDays": int(p.get("time_stop_days", 5)),
+        # Trading days the thesis needs; set only when the horizon router
+        # chose the instrument. ghost_eval grades a refusal over it.
+        "horizonTradingDays": p.get("horizon_trading_days"),
         "rMultiple": p.get("r_multiple"),
         "informationalFlags": list(p.get("informational_flags") or []),
         "rationale": p.get("rationale", ""),

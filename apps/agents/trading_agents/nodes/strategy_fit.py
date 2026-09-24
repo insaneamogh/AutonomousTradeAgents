@@ -58,6 +58,7 @@ from engine.env import env_flag
 from trading_agents.state import CouncilState
 from trading_agents.strategies import best_strategy
 from trading_agents.strategies.fit import _has_usable_features
+from trading_agents.strategies.router import route_instrument
 
 logger = logging.getLogger("agents.node.strategy_fit")
 
@@ -197,7 +198,25 @@ async def strategy_fit_node(state: CouncilState) -> CouncilState:
     # rather than re-deriving it — same condition either way, which is
     # exactly what keeps a "short" winner from ever surfacing without
     # `instrument` also being set to "option" here.
+    #
+    # INSTRUMENT_ROUTER_ENABLED (off by default) adds one deterministic
+    # step: a thesis whose own horizon outlives any contract goes to equity
+    # instead (strategies/router.py). A short thesis still goes to a put,
+    # so the invariant above holds: a "short" winner only surfaces with
+    # `instrument` set to "option", unless ALLOW_SHORTS is on.
     if options_eligible_pass:
-        result["instrument"] = "option"
+        if env_flag("INSTRUMENT_ROUTER_ENABLED"):
+            route = route_instrument(
+                strategy_id=winner.strategy_id,
+                direction=winner.direction,
+                requested="option",
+                allow_equity_shorts=allow_shorts,
+            )
+            result["instrument_route"] = route.as_dict()
+            fit_block["instrument_route"] = route.as_dict()
+            if route.instrument == "option":
+                result["instrument"] = "option"
+        else:
+            result["instrument"] = "option"
 
     return result
