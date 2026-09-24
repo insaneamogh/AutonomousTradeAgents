@@ -77,6 +77,16 @@ Config:
                               after the 16:00 ET close in daylight time
                               (an hour before it in standard time: still
                               a closing-hour snapshot).
+  EOD_REPORT_ENABLED          1 (DEFAULT ON) for the end-of-day job:
+                              ghost P&L marking, then the daily report
+                              (log + OPS_ALERT_WEBHOOK_URL + a counts-only
+                              push). No LLM spend. Runs whether or not the
+                              council can, which is the point: ghost
+                              marking used to run only inside the council
+                              cron, and stopped when the LLM key did.
+  EOD_REPORT_HOUR_UTC         Hour (0-23), default 21, fired at :15, i.e.
+                              after the 16:00 ET close in both daylight
+                              and standard time.
 """
 
 from __future__ import annotations
@@ -129,6 +139,15 @@ def _iv_snapshot_hour() -> int:
         logger.warning("ignoring malformed IV_SNAPSHOT_HOUR_UTC — using 20")
         return 20
     return h if 0 <= h <= 23 else 20
+
+
+def _eod_report_hour() -> int:
+    try:
+        h = int(os.environ.get("EOD_REPORT_HOUR_UTC", "").strip() or 21)
+    except ValueError:
+        logger.warning("ignoring malformed EOD_REPORT_HOUR_UTC — using 21")
+        return 21
+    return h if 0 <= h <= 23 else 21
 
 
 def _int_env(name: str, default: int) -> int:
@@ -285,6 +304,8 @@ class CouncilScheduler:
         self.last_universe_refresh_result: dict[str, int] | str | None = None
         self.last_iv_snapshot_at: datetime | None = None
         self.last_iv_snapshot_result: dict[str, int] | str | None = None
+        self.last_eod_at: datetime | None = None
+        self.last_eod_result: str | None = None
         # Tier 1/2 of the Insights "symbol scan funnel" — fed by
         # daily_cron.main's optional on_sweep_scored recorder, one slot
         # shared by both loops rather than two separate ones. A triggered
@@ -323,6 +344,10 @@ class CouncilScheduler:
             self._tasks.append(asyncio.create_task(self._iv_snapshot_loop()))
         else:
             logger.info("IV snapshot disabled (IV_SNAPSHOT_ENABLED=0)")
+        if _flag("EOD_REPORT_ENABLED", default=True):
+            self._tasks.append(asyncio.create_task(self._eod_loop()))
+        else:
+            logger.info("EOD report disabled (EOD_REPORT_ENABLED=0)")
 
     async def stop(self) -> None:
         for t in self._tasks:
@@ -493,6 +518,44 @@ class CouncilScheduler:
         self.last_iv_snapshot_at = datetime.now(UTC)
         self.last_iv_snapshot_result = result
         logger.info("IV snapshot done: %s", result)
+
+    async def _eod_loop(self) -> None:
+        hour = _eod_report_hour()
+        logger.info("EOD report armed — fires daily at %02d:15 UTC", hour)
+        while True:
+            delay = _seconds_until_next(datetime.now(UTC), [(hour, 15)])
+            try:
+                await asyncio.sleep(delay)
+            except asyncio.CancelledError:
+                raise
+            try:
+                await self._run_eod_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("EOD report failed — will retry next window")
+                self.last_eod_result = "failed"
+            await asyncio.sleep(61)
+
+    async def _run_eod_once(self) -> None:
+        from engine.features import is_us_trading_day
+
+        today = datetime.now(UTC).date()
+        if not is_us_trading_day(today):
+            self.last_eod_result = "skipped_market_holiday"
+            return
+        if not _flag("USE_POSTGRES"):
+            self.last_eod_result = "skipped_no_postgres"
+            return
+
+        from app.services.council.eod_report import run_eod
+        from engine.db import async_session_factory
+
+        report = await run_eod(
+            user_id=_cron_user(), session_factory=async_session_factory(), day=today
+        )
+        self.last_eod_at = datetime.now(UTC)
+        self.last_eod_result = "sent" if report is not None else "report_failed"
 
     # ── Trigger loop ─────────────────────────────────────────────────
     #

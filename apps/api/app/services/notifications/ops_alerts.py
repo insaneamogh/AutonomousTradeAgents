@@ -47,6 +47,16 @@ DEFAULT_MIN_INTERVAL_S = 6 * 3600.0
 
 _last_sent: dict[tuple[str, str], float] = {}
 
+# The loop holds only a weak reference to a task, so an unreferenced
+# fire-and-forget webhook post can be garbage-collected mid-flight.
+_in_flight: set[asyncio.Task[None]] = set()
+
+
+def _spawn_webhook(loop: asyncio.AbstractEventLoop, url: str, text: str) -> None:
+    task = loop.create_task(_post_webhook(url, text))
+    _in_flight.add(task)
+    task.add_done_callback(_in_flight.discard)
+
 
 def reset_ops_alerts_for_tests() -> None:
     _last_sent.clear()
@@ -88,7 +98,7 @@ def raise_ops_alert(
                 )
             url = os.environ.get("OPS_ALERT_WEBHOOK_URL", "").strip()
             if url:
-                loop.create_task(_post_webhook(url, f"[{kind}] {title}: {body}"))
+                _spawn_webhook(loop, url, f"[{kind}] {title}: {body}")
         return True
     except Exception:
         # Logging can be the thing that failed, and logger.exception goes
@@ -96,6 +106,21 @@ def raise_ops_alert(
         with contextlib.suppress(Exception):
             logger.exception("ops alert %s could not be dispatched", kind)
         return False
+
+
+def post_ops_webhook(text: str) -> bool:
+    """Post plain text to OPS_ALERT_WEBHOOK_URL, fire-and-forget. For
+    reports rather than alerts: no dedup, no ERROR log, no push. False when
+    no URL is set or no loop is running."""
+    url = os.environ.get("OPS_ALERT_WEBHOOK_URL", "").strip()
+    if not url:
+        return False
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    _spawn_webhook(loop, url, text)
+    return True
 
 
 async def _post_webhook(url: str, text: str) -> None:

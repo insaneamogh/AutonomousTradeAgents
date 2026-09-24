@@ -82,6 +82,27 @@ def test_it_never_raises_into_its_caller(monkeypatch: pytest.MonkeyPatch) -> Non
     assert raise_ops_alert("x", title="t", body="b") is False
 
 
+async def test_report_webhook_posts_and_keeps_the_task_alive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    posted: list[tuple[str, str]] = []
+
+    async def fake_post(url: str, text: str) -> None:
+        await asyncio.sleep(0)
+        posted.append((url, text))
+
+    monkeypatch.setattr(ops_mod, "_post_webhook", fake_post)
+    monkeypatch.delenv("OPS_ALERT_WEBHOOK_URL", raising=False)
+    assert ops_mod.post_ops_webhook("daily") is False
+
+    monkeypatch.setenv("OPS_ALERT_WEBHOOK_URL", "https://hooks.example/x")
+    assert ops_mod.post_ops_webhook("daily") is True
+    assert len(ops_mod._in_flight) == 1  # referenced until it finishes
+    await asyncio.sleep(0.01)
+    assert posted == [("https://hooks.example/x", "daily")]
+    assert not ops_mod._in_flight
+
+
 # ── the hooks ────────────────────────────────────────────────────────
 
 

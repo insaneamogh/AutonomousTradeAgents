@@ -473,3 +473,65 @@ async def test_the_baseline_loop_runs_the_missed_sweep_before_waiting(
     with pytest.raises(asyncio.CancelledError):
         await s._baseline_loop()
     assert order == ["run", "sleep"]
+
+
+# ── End-of-day job ─────────────────────────────────────────────────
+
+
+async def test_eod_runs_on_a_trading_day_without_the_council(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The EOD job must not depend on the LLM: it calls run_eod directly,
+    never daily_cron.main (which exits 2 when the LLM key is missing)."""
+    import engine.db
+    import engine.features
+    from app.services.council import eod_report
+    from app.services.council.scheduler import CouncilScheduler
+    from trading_agents.jobs import daily_cron
+
+    monkeypatch.setattr(engine.features, "is_us_trading_day", lambda _d: True)
+    monkeypatch.setattr(engine.db, "async_session_factory", lambda: "factory")
+    monkeypatch.setenv("USE_POSTGRES", "1")
+
+    async def _no_cron(*_a, **_k):
+        raise AssertionError("the EOD job must not go through the council cron")
+
+    monkeypatch.setattr(daily_cron, "main", _no_cron)
+    calls: list[dict] = []
+
+    async def fake_run_eod(**kw):
+        calls.append(kw)
+        return object()
+
+    monkeypatch.setattr(eod_report, "run_eod", fake_run_eod)
+
+    s = CouncilScheduler()
+    await s._run_eod_once()
+    assert s.last_eod_result == "sent"
+    assert calls and calls[0]["session_factory"] == "factory"
+
+
+async def test_eod_skips_holidays_and_no_postgres(monkeypatch: pytest.MonkeyPatch) -> None:
+    import engine.features
+    from app.services.council.scheduler import CouncilScheduler
+
+    monkeypatch.setattr(engine.features, "is_us_trading_day", lambda _d: False)
+    s = CouncilScheduler()
+    await s._run_eod_once()
+    assert s.last_eod_result == "skipped_market_holiday"
+
+    monkeypatch.setattr(engine.features, "is_us_trading_day", lambda _d: True)
+    monkeypatch.delenv("USE_POSTGRES", raising=False)
+    await s._run_eod_once()
+    assert s.last_eod_result == "skipped_no_postgres"
+
+
+def test_eod_report_hour_defaults_after_the_close_year_round(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.council.scheduler import _eod_report_hour
+
+    monkeypatch.delenv("EOD_REPORT_HOUR_UTC", raising=False)
+    assert _eod_report_hour() == 21  # 21:15 UTC is after 16:00 ET in EST and EDT
+    monkeypatch.setenv("EOD_REPORT_HOUR_UTC", "nope")
+    assert _eod_report_hour() == 21
