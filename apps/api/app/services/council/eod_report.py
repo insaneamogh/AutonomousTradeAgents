@@ -61,6 +61,12 @@ def _money(v: float) -> str:
     return f"-${abs(v):,.2f}" if v < 0 else f"+${v:,.2f}"
 
 
+def _spend(v: float) -> str:
+    """GLM calls cost fractions of a cent; "$0.00" over 40 real calls
+    would read as "nothing ran"."""
+    return "<$0.01" if 0 < v < 0.005 else f"${v:.2f}"
+
+
 def render_report(r: DailyReport) -> tuple[str, str]:
     """Title and full body, dollar amounts included. For the log and the
     operator webhook, never for a push."""
@@ -82,7 +88,7 @@ def render_report(r: DailyReport) -> tuple[str, str]:
         lines.append("Closed 0")
     unreal = f", unrealized {_money(r.unrealized)}" if r.unrealized is not None else ""
     lines.append(f"Open positions {r.open_positions}{unreal}")
-    lines.append(f"Council decisions {r.decisions_today}, LLM ${r.llm_spend_usd:.2f} "
+    lines.append(f"Council decisions {r.decisions_today}, LLM {_spend(r.llm_spend_usd)} "
                  f"over {r.llm_calls} call(s)")
     if r.breaker_status == "halted":
         lines.append("Breaker HALTED: no new entries until acknowledged")

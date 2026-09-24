@@ -45,6 +45,13 @@ def test_render_carries_the_numbers_and_the_breaker() -> None:
     assert "Breaker HALTED" in body
 
 
+def test_a_sub_cent_llm_spend_does_not_read_as_zero() -> None:
+    _title, body = render_report(_report(llm_spend_usd=0.0023, llm_calls=1))
+    assert "LLM <$0.01 over 1 call(s)" in body
+    _title, body = render_report(_report(llm_spend_usd=0.0, llm_calls=0))
+    assert "LLM $0.00 over 0 call(s)" in body
+
+
 def test_push_body_is_lock_screen_safe() -> None:
     body = push_body(_report())
     assert "$" not in body
