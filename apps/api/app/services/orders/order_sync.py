@@ -106,6 +106,7 @@ async def sync_user_orders_and_positions(
         # unadopted orphan is invisible to it too.
         await _adopt_orphaned_fills(session, uid, broker)
         await _sync_open_orders(session, uid, broker)
+        await _catch_up_filled_at_ack(session, uid)
         await _detect_external_closes(session, uid, broker, user_id=user_id)
         await session.commit()
 
@@ -170,6 +171,59 @@ async def _sync_open_orders(
             "order_sync: order %s → %s (filled %d/%d)",
             row.client_order_id, new_status, row.filled_qty, row.qty,
         )
+
+
+async def _catch_up_filled_at_ack(session: AsyncSession, uid: uuid.UUID) -> None:
+    """Run the fill lifecycle for orders that were ALREADY filled when the
+    broker acknowledged them.
+
+    ``_sync_open_orders`` only polls rows still open, and a fill is only
+    ever applied on the transition it observes. An order the broker
+    reports filled in its submit response is stored filled at once
+    (``persist_order_result``) and never transitions, so:
+
+      * a CLOSE filled at acknowledgement never closed its decision; the
+        next tick saw the position gone with nothing in flight and wrote
+        ``external_broker`` over the agent's own reason;
+      * an option ENTRY filled at acknowledgement never got its resting
+        protective stop.
+
+    Found by the e2e scenarios (apps/api/tests/e2e), whose simulated
+    broker fills a marketable order at submit. The fix routes both through
+    ``_apply_decision_lifecycle``, the one code path a polled fill takes.
+    Scoped to OPEN decisions, and for entries to options that have no
+    protective-stop row yet, so a settled book costs one small query.
+    """
+    from app.services.orders.option_stops import PROTECTIVE_STOP_PREFIX
+    from engine.db.models import AgentDecision, Order
+
+    stmt = (
+        select(Order, AgentDecision)
+        .join(AgentDecision, AgentDecision.id == Order.agent_decision_id)
+        .where(Order.user_id == uid)
+        .where(Order.status == "filled")
+        .where(AgentDecision.closed_at.is_(None))
+        .where(Order.client_order_id.not_like(f"{PROTECTIVE_STOP_PREFIX}%"))
+    )
+    pairs = (await session.execute(stmt)).all()
+    if not pairs:
+        return
+    stopped = {
+        d
+        for (d,) in (
+            await session.execute(
+                select(Order.agent_decision_id)
+                .where(Order.user_id == uid)
+                .where(Order.client_order_id.like(f"{PROTECTIVE_STOP_PREFIX}%"))
+            )
+        ).all()
+    }
+    for order_row, decision in pairs:
+        entry_side = str((decision.proposal or {}).get("side", "BUY"))
+        is_exit = order_row.side != entry_side
+        unstopped_option_entry = _is_option_decision(decision) and decision.id not in stopped
+        if is_exit or unstopped_option_entry:
+            await _apply_decision_lifecycle(session, order_row)
 
 
 async def _record_fill_delta(

@@ -384,17 +384,25 @@ async def persist_order_result(
         )
 
         if broker_order.filled_qty and avg_price is not None:
-            decision_id_stmt = select(Order.agent_decision_id).where(Order.id == order_row_id)
-            decision_id = (await session.execute(decision_id_stmt)).scalar_one_or_none()
-            if decision_id is not None:
-                await session.execute(
-                    update(AgentDecision)
-                    .where(AgentDecision.id == decision_id)
-                    .values(
-                        fill_qty=broker_order.filled_qty,
-                        fill_avg_price=avg_price,
-                    )
-                )
+            row_stmt = select(Order.agent_decision_id, Order.side).where(Order.id == order_row_id)
+            linked = (await session.execute(row_stmt)).one_or_none()
+            decision = (
+                await session.get(AgentDecision, linked.agent_decision_id)
+                if linked is not None and linked.agent_decision_id is not None
+                else None
+            )
+            # Only an ENTRY fill heals the decision's entry columns. A close
+            # that fills at acknowledgement used to land here too and
+            # overwrite the entry price with the exit price, after which
+            # every P&L computed for that decision was wrong. An exit fill
+            # (and the stop placement an entry fill triggers) is order_sync's
+            # job: _catch_up_filled_at_ack runs the same lifecycle a polled
+            # fill gets, on the next tick, after the approval has recorded
+            # exit_mode.
+            entry_side = str(((decision.proposal if decision else None) or {}).get("side", "BUY"))
+            if decision is not None and linked.side == entry_side:
+                decision.fill_qty = broker_order.filled_qty
+                decision.fill_avg_price = avg_price
 
         await session.commit()
 
