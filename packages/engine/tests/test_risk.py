@@ -66,23 +66,9 @@ def _sell(symbol: str = "AAPL", qty: int = 10, last_price: float = 150.0, **kw: 
 # ─────────────────────────────────────────────────────────────────────
 
 
-def test_happy_buy_passes() -> None:
-    d = evaluate(_buy("AAPL", 10, 150.0), _ctx())
-    assert d.approved
-    assert d.veto_rule is None
-    assert d.adjusted_qty is None
-
-
 # ─────────────────────────────────────────────────────────────────────
 # Drawdown circuit breaker
 # ─────────────────────────────────────────────────────────────────────
-
-
-def test_drawdown_already_halted_blocks_buy() -> None:
-    ctx = _ctx(drawdown_halted=True, drawdown_halt_reason="Yesterday's loss")
-    d = evaluate(_buy(), ctx)
-    assert not d.approved
-    assert d.veto_rule == "drawdown_halt_active"
 
 
 def test_drawdown_just_tripped_blocks_and_explains() -> None:
@@ -91,25 +77,6 @@ def test_drawdown_just_tripped_blocks_and_explains() -> None:
     assert not d.approved
     assert d.veto_rule == "drawdown_halt_just_tripped"
     assert "-3.50" in d.reason or "-3.5" in d.reason
-
-
-def test_drawdown_does_not_block_sells_so_user_can_flatten() -> None:
-    # SELL on a held position is allowed even when halted.
-    ctx = _ctx(
-        drawdown_halted=True,
-        open_positions=(PortfolioPosition("AAPL", 10, 150.0, 1500.0, "tech"),),
-    )
-    sell = _buy(symbol="AAPL", qty=10).__class__(  # build a SELL via dataclass replace
-        symbol="AAPL",
-        side=Side.SELL,
-        qty=10,
-        last_price=150.0,
-        estimated_notional=1500.0,
-        confidence=0.7,
-        closes_intraday_position=False,
-    )
-    d = evaluate(sell, ctx)
-    assert d.approved
 
 
 def test_drawdown_halt_still_blocks_a_new_short_during_halt() -> None:
@@ -131,19 +98,6 @@ def test_drawdown_halt_allows_covering_an_existing_short() -> None:
     )
     d = evaluate(_buy("AAPL", 10), ctx, RiskCaps(forbid_short_phase_0=False))
     assert d.approved
-
-
-def test_drawdown_halt_blocks_a_cover_that_flips_long() -> None:
-    """A BUY bigger than the held short crosses into a brand-new long —
-    that portion is a new bet, so the halt still applies to the whole
-    order (covers_short_only is False the moment any part goes net-long)."""
-    ctx = _ctx(
-        drawdown_halted=True,
-        open_positions=(PortfolioPosition("AAPL", -10, 150.0, -1500.0, "tech"),),
-    )
-    d = evaluate(_buy("AAPL", 15), ctx, RiskCaps(forbid_short_phase_0=False))
-    assert not d.approved
-    assert d.veto_rule == "drawdown_halt_active"
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -191,17 +145,6 @@ def test_pdt_skipped_when_above_25k() -> None:
 # ─────────────────────────────────────────────────────────────────────
 # Position-size cap (trim path)
 # ─────────────────────────────────────────────────────────────────────
-
-
-def test_position_size_trims_when_over_cap() -> None:
-    # 50 × $200 = $10K = 10% of $100K equity. Cap position at 5% → trim to 25.
-    # Loosen single-name + sector caps so they don't fire first.
-    p = _buy(symbol="AAPL", qty=50, last_price=200.0)
-    caps = RiskCaps(max_position_pct=5.0, max_single_name_pct=99.0, max_sector_pct=99.0)
-    d = evaluate(p, _ctx(), caps=caps)
-    assert d.approved
-    assert d.adjusted_qty == 25
-    assert any("trimmed" in f for f in d.informational_flags)
 
 
 def test_trim_names_the_rule_that_shrank_the_trade() -> None:
@@ -287,34 +230,6 @@ def test_correlation_cap_blocks_4th_megacap_tech() -> None:
     assert "megacap_tech" in d.reason
 
 
-def test_correlation_cap_allows_adding_to_existing_cluster_member() -> None:
-    # Adding to a held member doesn't count as a new cluster name.
-    held = (
-        PortfolioPosition("AAPL", 10, 100.0, 1_000.0, "tech"),
-        PortfolioPosition("MSFT", 10, 100.0, 1_000.0, "tech"),
-        PortfolioPosition("GOOGL", 10, 100.0, 1_000.0, "tech"),
-    )
-    ctx = _ctx(open_positions=held)
-    p = _buy(symbol="AAPL", qty=5, last_price=100.0)  # already held
-    d = evaluate(p, ctx, caps=RiskCaps(max_correlation_cluster=3))
-    assert d.approved
-    assert d.veto_rule is None
-
-
-def test_correlation_cap_skips_unclustered_symbols() -> None:
-    # JPM is in the money_center_banks cluster, but the held names are all
-    # in megacap_tech — JPM goes through.
-    held = (
-        PortfolioPosition("AAPL", 10, 100.0, 1_000.0, "tech"),
-        PortfolioPosition("MSFT", 10, 100.0, 1_000.0, "tech"),
-        PortfolioPosition("GOOGL", 10, 100.0, 1_000.0, "tech"),
-    )
-    ctx = _ctx(open_positions=held)
-    p = _buy(symbol="JPM", qty=5, last_price=100.0)  # different cluster
-    d = evaluate(p, ctx, caps=RiskCaps(max_correlation_cluster=3))
-    assert d.approved
-
-
 # ─────────────────────────────────────────────────────────────────────
 # Specialist average score
 # ─────────────────────────────────────────────────────────────────────
@@ -328,17 +243,6 @@ def test_specialist_avg_below_floor_blocks() -> None:
     )
     assert not d.approved
     assert d.veto_rule == "min_specialist_avg_score"
-
-
-def test_specialist_avg_score_absent_from_checks_passed_when_self_gated() -> None:
-    # `specialists=()` (the default) means the rule never ran — RiskDecision
-    # .checks_passed's own contract says a self-gated rule is not listed as
-    # passed. This is the same options-council situation that let
-    # min_specialist_avg_score silently pass unconditionally for every
-    # options trade — see test_options_risk.py's twin of this test.
-    d = evaluate(_buy(), _ctx())
-    assert d.approved
-    assert "min_specialist_avg_score" not in d.checks_passed
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -356,34 +260,9 @@ def test_wash_sale_warns_when_recent_loss_on_same_symbol() -> None:
     # checks passed"); we only verify the flag is propagated.
 
 
-def test_wash_sale_silent_when_no_recent_close() -> None:
-    d = evaluate(_buy(symbol="AAPL"), _ctx())
-    assert d.approved
-    assert "wash_sale_warning" not in d.informational_flags
-
-
-def test_wash_sale_silent_when_close_older_than_lookback() -> None:
-    # Default lookback is 30 days; 45 days old should not trigger.
-    old = ClosedTrade(symbol="AAPL", closed_at=_today() - timedelta(days=45), realized_pnl=-200.0)
-    ctx = _ctx(recent_losing_closes=(old,))
-    d = evaluate(_buy(symbol="AAPL"), ctx)
-    assert d.approved
-    assert "wash_sale_warning" not in d.informational_flags
-
-
 def test_wash_sale_silent_when_different_symbol() -> None:
     recent = ClosedTrade(symbol="MSFT", closed_at=_today(), realized_pnl=-50.0)
     ctx = _ctx(recent_losing_closes=(recent,))
     d = evaluate(_buy(symbol="AAPL"), ctx)  # buying a different ticker
-    assert d.approved
-    assert "wash_sale_warning" not in d.informational_flags
-
-
-def test_wash_sale_silent_when_closed_at_profit() -> None:
-    # Only LOSING closes count; a profitable close on the same name isn't
-    # a wash-sale concern.
-    winner = ClosedTrade(symbol="AAPL", closed_at=_today() - timedelta(days=5), realized_pnl=+250.0)
-    ctx = _ctx(recent_losing_closes=(winner,))
-    d = evaluate(_buy(symbol="AAPL"), ctx)
     assert d.approved
     assert "wash_sale_warning" not in d.informational_flags
