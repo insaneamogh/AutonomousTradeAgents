@@ -355,6 +355,58 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 # Build log
 
+### 2026-09-24 — (this commit) docs: SHORTCOMINGS.md audit; README rewritten for the post-hackathon state
+- **Operator asked:** find the shortcomings, write them up as an md file,
+  and update the outdated root README. New file `docs/SHORTCOMINGS.md`
+  (audit at 262bba9e, every item cited to file:line and tagged
+  measured / read / new). README rewritten: current status, plan phase
+  table, safety switches, verification commands, docs map. Hackathon
+  material moved to an archive section.
+- **New findings, not in PLAN_PLATFORM before this. Read §2 of the doc
+  before touching the unattended paths:**
+  - `AlpacaBroker.from_env()` picks live vs paper from `ALPACA_BASE_URL`
+    at call time, while the env-key connection row is stored
+    `is_paper=True`. So the two-key live gate can be bypassed by env
+    alone.
+  - `flatten-all` revokes only auto-approve consent. `ToolGuard` never
+    reads consent, so options auto-trade can reopen positions.
+  - Breaker `manual_override` never resets to `normal`, so the latch
+    and alert never fire again.
+  - The mock drafter's 0.58 confidence clears the 0.50 floor, and the
+    auto-approver has no mock check.
+  - Bars are not split-adjusted, live or in the fixture: 13
+    discontinuities.
+  - `wash_sale` returns `()` on Postgres.
+  - `OPTIONS_MAX_QUOTE_AGE_SECONDS` is never passed to `select_contract`.
+  - The DTE sweep covers `exit_mode=agent` only.
+  - `pending_cancel` and `replaced` status mapping.
+  - No CI.
+- **MEASURED:**
+  - Full suite: 1833 passed / 11 skipped.
+  - `signal_backtest` reproduces byte-for-byte.
+  - Split-adjusted re-run: the fixture back-adjusted at each >40%
+    close-to-close jump, factor snapped to the nearest common split ratio.
+    All 5 horizons still FAIL. 2d pooled t −4.60 → −5.12; 20d +0.49 →
+    +1.12. **"No edge" is robust.**
+  - Date-clustered t: mean of the net returns per signal day, then
+    `acceptance.t_stat` over the day means. 2d −4.60 → −2.54, which
+    misses the 2.58 Bonferroni bar, so "significantly negative" does not
+    hold. The acceptance bar pools correlated same-day signals. **Fix it
+    before judging the next candidate**, or a spurious one can pass.
+  - Both scripts were run from scratch and not committed. The method is
+    above; they are ~30 lines each against `signal_backtest.run`.
+- **READ, not executed:** every §2–§6 finding. None has a failing test
+  yet. Per §4.1, each fix needs one shown to fail first.
+- **NOT verified:** anything on Railway. Production env vars
+  (`AGENTS_REQUIRE_REAL_LLM`, `ALPACA_BASE_URL`, `UVICORN_WORKERS`) are
+  unknown. Mobile `tsc` and Jest were not run.
+- **Suggested next, highest value per hour:**
+  1. Close the three §2 safety holes (2.1–2.3) with revert-checked tests.
+  2. Set `adjustment=` in `bars.py` and `fetch_bars.py`, and refetch the
+     fixture.
+  3. Date-cluster the acceptance bar.
+  4. Add a minimal CI workflow for pytest.
+
 ### 2026-09-23 — 8d7d6faf0..(kill switch) — PLAN_PLATFORM Phase 6: operating it unattended
 - **8d7d6faf0 ops alerts.** `raise_ops_alert` logs at ERROR (Sentry), pushes
   to the user's devices, and optionally POSTs to OPS_ALERT_WEBHOOK_URL.
