@@ -153,6 +153,11 @@ class Order:
     submitted_at: datetime
     filled_at: datetime | None = None
     raw: dict = field(default_factory=dict)  # broker-specific payload, for audit
+    legs: tuple[Order, ...] = ()
+    """A bracket parent's child orders (the take-profit limit and the
+    stop), as the broker reports them now. Empty for a simple order. The
+    legs never get ``orders`` rows of ours, so this is the only place a
+    bracket exit's fill is visible."""
 
 
 @dataclass(frozen=True)

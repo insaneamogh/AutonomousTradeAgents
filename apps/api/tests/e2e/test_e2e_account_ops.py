@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
+from broker.types import AccountActivity
 from e2e_harness import (
     SimBroker,
     _Held,
@@ -119,7 +120,31 @@ async def test_a_lost_broker_ack_still_leaves_the_position_managed_and_closable(
     await fleet_tick(monkeypatch, market_open=False)
     assert (await decision_row(pid)).closed_at is None, "inside the grace: still in flight"
 
+    # Another contract's expiry must not be read as this one's.
+    sim.activities.append(AccountActivity(
+        activity_id="x", activity_type="OPEXP", symbol=occ_for("NVDA", expiry, "call", 260.0),
+        qty=-1.0, day=datetime.now(UTC).date(),
+    ))
     monkeypatch.setattr(order_sync, "UNACKED_ORDER_GRACE", timedelta(0))
     await fleet_tick(monkeypatch, market_open=False)
     d = await decision_row(pid)
     assert d.close_reason == "external_broker"
+    # From the last snapshot mark before it vanished (2.50), per contract x 100.
+    assert d.realized_pnl == Decimal("-5.00")
+
+
+async def test_a_failed_activities_read_still_records_the_close(
+    monkeypatch: pytest.MonkeyPatch, options_on: None, outbox: list[dict],
+) -> None:
+    sim = SimBroker()
+    expiry = (datetime.now(UTC) + timedelta(days=30)).date()
+    occ = occ_for("NVDA", expiry, "call", 250.0)
+    sim.set_price(occ, 2.50)
+    patch_broker(monkeypatch, sim, await seed_account())
+    pid = await _approve(occ, expiry, exit_mode="manual")
+    await fleet_tick(monkeypatch)
+
+    sim.expire(occ)
+    sim.activities_error = RuntimeError("403 from the activities endpoint")
+    await fleet_tick(monkeypatch, market_open=False)
+    assert (await decision_row(pid)).close_reason == "external_broker"

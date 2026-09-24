@@ -93,3 +93,27 @@ async def test_pages_with_the_last_id_until_a_short_page() -> None:
     assert len(out) == _ACTIVITY_PAGE_SIZE + 1
     assert len(client.calls) == 2
     assert client.calls[1][1]["page_token"] == f"id-{_ACTIVITY_PAGE_SIZE - 1}"
+
+
+def test_a_bracket_parents_legs_are_mapped_with_their_order_type() -> None:
+    """order_sync closes an equity decision from its bracket's filled leg;
+    the legs exist only on the parent order Alpaca returns."""
+    from types import SimpleNamespace
+
+    from alpaca.trading.enums import OrderSide, OrderStatus, OrderType
+
+    def _raw(oid: str, kind: OrderType, status: OrderStatus, avg: str | None, legs=None):
+        return SimpleNamespace(
+            id=oid, symbol="AAPL", side=OrderSide.SELL, qty="10", filled_qty="10" if avg else "0",
+            filled_avg_price=avg, submitted_at=None, filled_at=None, status=status,
+            client_order_id=None, order_type=kind, legs=legs,
+        )
+
+    parent = _raw("p1", OrderType.MARKET, OrderStatus.FILLED, "200", legs=[
+        _raw("tp", OrderType.LIMIT, OrderStatus.CANCELED, None),
+        _raw("sl", OrderType.STOP, OrderStatus.FILLED, "189.5"),
+    ])
+    order = _broker(_FakeClient([]))._order_from_alpaca(parent)
+    assert [(leg.broker_order_id, leg.raw["order_type"]) for leg in order.legs] == [
+        ("tp", "limit"), ("sl", "stop")]
+    assert order.legs[1].avg_fill_price == 189.5

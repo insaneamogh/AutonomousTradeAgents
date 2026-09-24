@@ -63,7 +63,10 @@ class SimBroker:
     held: dict[str, _Held] = field(default_factory=dict)
     orders: dict[str, Order] = field(default_factory=dict)
     requests: dict[str, OrderRequest] = field(default_factory=dict)
+    legs_of: dict[str, tuple[str, ...]] = field(default_factory=dict)
     activities: list[AccountActivity] = field(default_factory=list)
+    activities_error: Exception | None = None
+    """Set to make the activities read fail, as a 403 or timeout would."""
     _ids: Any = field(default_factory=lambda: itertools.count(1))
     _start_equity: float | None = None
 
@@ -85,6 +88,12 @@ class SimBroker:
                 )
                 if elected and limit_ok:
                     self._fill(oid, price)
+                    self._cancel_siblings(oid)
+            elif req.order_type is OrderType.LIMIT:
+                crosses = price >= req.limit_price if req.side in _SELLS else price <= req.limit_price
+                if crosses:
+                    self._fill(oid, req.limit_price)
+                    self._cancel_siblings(oid)
 
     def expire(self, occ: str, on: date | None = None) -> None:
         """The contract expires worthless: position gone, OPEXP recorded."""
@@ -131,10 +140,16 @@ class SimBroker:
             buy = request.side not in _SELLS
             if (buy and price <= request.limit_price) or (not buy and price >= request.limit_price):
                 self._fill(oid, request.limit_price)
-        return self.orders[oid]
+        if request.is_bracket and self.orders[oid].status is OrderStatus.FILLED:
+            self._open_bracket_legs(oid, request)
+        return await self.get_order(oid)
 
     async def get_order(self, broker_order_id: str) -> Order:
-        return self.orders[broker_order_id]
+        from dataclasses import replace
+
+        order = self.orders[broker_order_id]
+        legs = tuple(self.orders[c] for c in self.legs_of.get(broker_order_id, ()))
+        return replace(order, legs=legs) if legs else order
 
     async def cancel_order(self, broker_order_id: str) -> Order:
         self._set(broker_order_id, status=OrderStatus.CANCELED)
@@ -168,6 +183,8 @@ class SimBroker:
         return self._start_equity
 
     async def list_option_lifecycle_activities(self, *, since: date) -> list[AccountActivity]:
+        if self.activities_error is not None:
+            raise self.activities_error
         return [a for a in reversed(self.activities) if a.day >= since]
 
     # ── internals ────────────────────────────────────────────────────
@@ -210,6 +227,39 @@ class SimBroker:
         self.cash -= signed * price * mult
         self._set(oid, status=OrderStatus.FILLED, filled_qty=req.qty,
                   avg_fill_price=price, filled_at=datetime.now(UTC))
+
+    def _open_bracket_legs(self, parent: str, req: OrderRequest) -> None:
+        """Alpaca's bracket: once the entry fills, a take-profit LIMIT and a
+        STOP rest as OCO siblings. They are the broker's orders, not ours:
+        no client_order_id, no orders row."""
+        exit_side = Side.SELL if req.side not in _SELLS else Side.BUY
+        children = []
+        for kind, px in ((OrderType.LIMIT, req.take_profit_price),
+                         (OrderType.STOP, req.stop_loss_price)):
+            if px is None:
+                continue
+            oid = f"sim-{next(self._ids)}"
+            child = OrderRequest(
+                symbol=req.symbol, side=exit_side, qty=req.qty, order_type=kind,
+                limit_price=px if kind is OrderType.LIMIT else None,
+                stop_price=px if kind is OrderType.STOP else None,
+            )
+            self.requests[oid] = child
+            self.orders[oid] = Order(
+                broker_order_id=oid, client_order_id=None, symbol=req.symbol,
+                side=exit_side, qty=req.qty, filled_qty=0, avg_fill_price=None,
+                status=OrderStatus.ACCEPTED, submitted_at=datetime.now(UTC),
+                raw={"order_type": kind.value.lower()},
+            )
+            children.append(oid)
+        self.legs_of[parent] = tuple(children)
+
+    def _cancel_siblings(self, oid: str) -> None:
+        for children in self.legs_of.values():
+            if oid in children:
+                for other in children:
+                    if other != oid and self.orders[other].status is OrderStatus.ACCEPTED:
+                        self._set(other, status=OrderStatus.CANCELED)
 
     def _cancel_open(self, symbol: str) -> int:
         n = 0
@@ -383,3 +433,23 @@ async def order_rows(proposal_id: str) -> list[Any]:
             .order_by(OrderRow.submitted_at)
         )
         return list(rows.scalars().all())
+
+
+def equity_proposal(*, symbol: str, qty: int, last: float, stop: float, target: float) -> Any:
+    """A pending long-equity proposal with the ATR bracket the Drafter
+    would disclose (runtime._to_proposal_dto's shape)."""
+    from datetime import timedelta
+
+    from app.schemas.approvals import ApprovalProposalDto
+
+    now = datetime.now(UTC)
+    risk = last - stop
+    return ApprovalProposalDto(
+        id=f"agent-{uuid.uuid4().hex[:12]}", symbol=symbol, side="BUY", direction="long",
+        qty=qty, order_type="MARKET", estimated_notional=qty * last,
+        stop_loss=stop, target_price=target, time_stop_days=28,
+        r_multiple=round((target - last) / risk, 2) if risk > 0 else None,
+        rationale="e2e", bull_case="e2e bull", bear_case="e2e bear",
+        risk_level=2, conviction_level=3, council_confidence=0.7,
+        proposed_at=now, expires_at=now + timedelta(hours=6),
+    )

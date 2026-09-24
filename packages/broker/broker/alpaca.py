@@ -152,6 +152,13 @@ def _activity_from_alpaca(raw: object) -> AccountActivity | None:
     )
 
 
+def _enum_value(v: object) -> str:
+    """'stop' for OrderType.STOP or the string 'stop'; '' for None."""
+    if v is None:
+        return ""
+    return str(getattr(v, "value", v)).lower()
+
+
 def _status_from_alpaca(s: _AlpacaStatus) -> OrderStatus:
     # Alpaca has more granular statuses than we need; collapse to ours.
     name = s.value.lower() if hasattr(s, "value") else str(s).lower()
@@ -513,9 +520,20 @@ class AlpacaBroker(BrokerInterface):
             submitted_at=submitted,
             filled_at=filled,
             raw={
-                k: str(v)
-                for k, v in (getattr(raw, "model_dump", lambda: {})() or {}).items()
+                **{
+                    k: str(v)
+                    for k, v in (getattr(raw, "model_dump", lambda: {})() or {}).items()
+                },
+                # Normalised, because str() of an alpaca-py enum is not its
+                # value on every Python version. order_sync reads it to tell
+                # a bracket's stop leg from its take-profit leg.
+                "order_type": _enum_value(getattr(raw, "order_type", None)
+                                          or getattr(raw, "type", None)),
             },
+            # A bracket parent carries its take-profit and stop children.
+            # They are the only record of a bracket exit's fill: the legs
+            # never get orders rows of ours.
+            legs=tuple(self._order_from_alpaca(leg) for leg in (getattr(raw, "legs", None) or [])),
         )
 
     def _position_from_alpaca(self, raw: object) -> Position:

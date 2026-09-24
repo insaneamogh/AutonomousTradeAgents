@@ -529,6 +529,12 @@ async def _detect_external_closes(
 
     for decision, broker_key in vanished:
         symbol = decision.symbol.upper()
+        # A bracket's own stop or take-profit leg filled. Those are the
+        # broker's child orders, with no orders row of ours, so without
+        # this check an exit the system planned read as the user selling
+        # at Alpaca (found by apps/api/tests/e2e/test_e2e_equity.py).
+        if await _close_from_bracket_leg(session, broker, decision):
+            continue
         event = _lifecycle_event_for(lifecycle, broker_key)
         if event is not None:
             await _close_from_lifecycle(
@@ -573,6 +579,105 @@ async def _detect_external_closes(
             symbol, uid, realized,
         )
         _notify_external_close(user_id=user_id, symbol=symbol, qty=int(decision.fill_qty or 0))
+
+
+BRACKET_LEG_PREFIX = "bracket-leg-"
+
+
+async def _close_from_bracket_leg(
+    session: AsyncSession, broker: BrokerInterface, decision: object
+) -> bool:
+    """Close ``decision`` from its entry bracket's filled leg, if one filled.
+
+    The leg is written as an ``orders`` row of ours (client_order_id
+    ``bracket-leg-<broker id>``, idempotent on that unique id) and then
+    goes through ``_apply_decision_lifecycle`` like any other exit fill:
+    realized P&L from the leg's real fill, the PDT ledger, and the
+    positions history reading the exit price from an order fill. The
+    reason is stamped first so the lifecycle keeps it: ``bracket_stop``
+    or ``bracket_target``.
+    """
+    from engine.db.models import Order
+
+    proposal = getattr(decision, "proposal", None) or {}
+    entry_side = str(proposal.get("side", "BUY"))
+    parent = (
+        await session.execute(
+            select(Order)
+            .where(Order.agent_decision_id == decision.id)  # type: ignore[attr-defined]
+            .where(Order.side == entry_side)
+            .where(Order.broker_order_id.is_not(None))
+            .order_by(desc(Order.submitted_at))
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if parent is None:
+        return False
+    try:
+        broker_parent = await broker.get_order(parent.broker_order_id)
+    except Exception:
+        logger.warning("order_sync: could not re-read bracket parent %s",
+                       parent.broker_order_id, exc_info=True)
+        return False
+    leg = next(
+        (
+            leg for leg in getattr(broker_parent, "legs", ()) or ()
+            if (leg.status.value if hasattr(leg.status, "value") else str(leg.status)) == "filled"
+            and leg.filled_qty and leg.avg_fill_price is not None
+        ),
+        None,
+    )
+    if leg is None:
+        return False
+
+    client_order_id = f"{BRACKET_LEG_PREFIX}{leg.broker_order_id}"[:64]
+    row = (
+        await session.execute(select(Order).where(Order.client_order_id == client_order_id))
+    ).scalar_one_or_none()
+    if row is None:
+        row = Order(
+            id=uuid.uuid4(),
+            user_id=parent.user_id,
+            broker_connection_id=parent.broker_connection_id,
+            agent_decision_id=parent.agent_decision_id,
+            client_order_id=client_order_id,
+            broker_order_id=leg.broker_order_id,
+            symbol=parent.symbol,
+            side="SELL" if entry_side == "BUY" else "BUY",
+            qty=int(leg.qty),
+            order_type=(leg.raw or {}).get("order_type", "").upper() or "UNKNOWN",
+            status="filled",
+            filled_qty=int(leg.filled_qty),
+            avg_fill_price=Decimal(str(leg.avg_fill_price)),
+            is_paper=parent.is_paper,
+            filled_at=leg.filled_at or datetime.now(UTC),
+            raw_response={"source": "bracket_leg", "parent": parent.broker_order_id},
+        )
+        session.add(row)
+        await session.flush()
+    if getattr(decision, "close_reason", None) is None:
+        decision.close_reason = _bracket_leg_reason(  # type: ignore[attr-defined]
+            leg, entry_side=entry_side, entry=getattr(decision, "fill_avg_price", None)
+        )
+    await _apply_decision_lifecycle(session, row)
+    logger.info("order_sync: %s closed by its bracket leg %s (%s)",
+                parent.symbol, leg.broker_order_id, decision.close_reason)  # type: ignore[attr-defined]
+    return True
+
+
+def _bracket_leg_reason(leg: object, *, entry_side: str, entry: Decimal | None) -> str:
+    """Stop or target leg. The leg's order type says so when the broker
+    reports it; otherwise the side of the entry the fill landed on does."""
+    kind = str((getattr(leg, "raw", None) or {}).get("order_type", "")).lower()
+    if "stop" in kind:
+        return "bracket_stop"
+    if kind == "limit":
+        return "bracket_target"
+    fill = Decimal(str(leg.avg_fill_price))  # type: ignore[attr-defined]
+    if entry is None:
+        return "bracket_stop"
+    below = fill < entry
+    return "bracket_stop" if below == (entry_side == "BUY") else "bracket_target"
 
 
 _LIFECYCLE_CLOSE_REASON: dict[str, str] = {

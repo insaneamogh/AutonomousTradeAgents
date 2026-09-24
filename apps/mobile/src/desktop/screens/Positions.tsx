@@ -50,6 +50,8 @@ const CLOSE_REASON_LABEL: Record<string, string> = {
   option_expired: 'option expired',
   option_exercised: 'option exercised into stock',
   option_assigned: 'option assigned',
+  bracket_stop: 'broker stop leg filled',
+  bracket_target: 'broker take-profit leg filled',
   user_manual: 'closed in the app',
   external_broker: 'closed directly at Alpaca',
 };

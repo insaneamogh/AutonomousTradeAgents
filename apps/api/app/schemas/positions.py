@@ -148,6 +148,7 @@ class ClosedPositionDto(CamelCaseModel):
     # user_manual (a tap in this app) / protective_stop (the resting
     # broker-side stop elected) / option_expired / option_exercised /
     # option_assigned (read from Alpaca's account activities) /
+    # bracket_stop / bracket_target (an equity bracket's own leg filled) /
     # external_broker (order_sync detected the user closed it directly at
     # Alpaca). None for a pre-migration row.
     close_reason: str | None = None
