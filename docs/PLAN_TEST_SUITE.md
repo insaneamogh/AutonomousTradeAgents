@@ -66,14 +66,21 @@ shrink the unit layer to what scenarios cannot reach cheaply.
   **They found a real bug on the first run** (617ca2769: an order filled
   at acknowledgement never ran its fill lifecycle, and a close filled
   that way overwrote the entry price).
-- **140 engine test functions pruned** (28c0d7906) across 12 files,
-  subsumed per step 3. Proof per step 4: see the build log.
+- **175 engine test functions pruned** in three tranches (28c0d7906,
+  90ba3128e, bffc525ad) across 16 files, subsumed per step 3. **Proof per
+  step 4: 2,162 caught mutants before, the identical 2,162 after, 0 lost.**
+- **Nine mock-session order_sync tests replaced by scenarios**
+  (d7639b2c2). Each scenario was revert-checked for the behaviour the
+  deleted test pinned. Six of the nine had broken on an unrelated change,
+  because a hand-built `execute()` result list was one query short.
+- A second scenario found a second real bug: an equity bracket's own stop
+  or target fill was recorded as `external_broker` (d7639b2c2).
 
 ## 5. Next tranches
 
 | Tranche | Scope | How |
 |---|---|---|
-| 2 | Remaining engine test files | Same method, file by file. |
+| 2 | Remaining engine test files (24 of 40 not yet analysed) | Same method, file by file. |
 | 3 | `apps/api` mock-session tests (order_sync, position_manager, kill switch, executor) | Run `mutation_prune.py` with the unit file AND the e2e files together (set `E2E_DATABASE_URL` to a running server so each mutant run skips initdb). A unit test the scenarios subsume goes. Mock-heavy tests are the first candidates: they pin call order and SQL shape, which is why they break on refactors without catching wiring bugs. |
 | 4 | `apps/agents` | Slower per run (LangGraph imports); batch overnight. Agent graph wiring gets scenario coverage through the mock-LLM council (`test_council_mock.py`) first. |
 | 5 | Jest (127) | Same idea with Stryker only if the Python tranches pay off. |

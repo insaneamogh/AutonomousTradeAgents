@@ -355,6 +355,96 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 # Build log
 
+### 2026-09-25 (second session) — 8c3f25235..bffc525ad — Phase 5 start, e2e layer, 184 test functions removed, Zerodha plan
+Operator asked for: research then start the next phase; OpenClaw's e2e
+isolation approach instead of so many unit tests (about 1,400 tests,
+"useless"); a plan to integrate Zerodha, not just Alpaca.
+
+- **Phase 5, research first (8c3f25235).** Debit spreads were added to the
+  option backtest before any mleg code. They lose MORE than a single leg:
+  the shipped signal goes -12 to -14% vs -5 to -8%, and a perfect oracle
+  +19 to +24% vs +37 to +43%. Even cost-free they only match the single
+  leg. **Pushback recorded:** the plan's "debit spreads preferred" is not
+  supported; no multi-leg execution was built. Two by-products are worth
+  more: execution cost (2.5% -> 1% per side is about 3 points per trade),
+  and the -40% stop costs a correct spread 11-23 points.
+- **Horizon router (4b1ebb884)**, behind `INSTRUMENT_ROUTER_ENABLED`,
+  default off. A thesis of 20 or more trading days goes to equity, held
+  for its own horizon (momentum: 84 calendar days). A short thesis still
+  goes to a put. Ghost grading uses the proposal's `horizonTradingDays`.
+- **Zerodha.** 97dd854d2 sends `market_protection` (SEBI requires it on
+  API market orders since 2026-04-01, and Kite rejects orders without it).
+  a2b2ee389 adds docs/PLAN_ZERODHA.md (proposed). Key findings:
+  - every background loop is hardwired to Alpaca;
+  - there is no NSE data or calendar;
+  - SEBI's static-IP rule is not met by Railway's 3 shared outbound IPs,
+    so a dedicated egress is needed;
+  - the daily Kite login stays the operator's action.
+- **E2E layer (617ca2769, 9f30e13a3, 8a64b11b9, d7639b2c2).** The OpenClaw
+  pattern applied to a database:
+  - one Postgres per run, migrated once into a template;
+  - `CREATE DATABASE ... TEMPLATE` per test;
+  - a deterministic `SimBroker`;
+  - the real approvals HTTP route, executor, risk re-check, order store
+    and production `ReconcilerFleet.tick()`.
+  There are 12 scenarios, taking about 6 s. **They found two real bugs:**
+  - An order filled at acknowledgement skipped the fill lifecycle. An
+    option entry got no resting stop; a close overwrote the ENTRY price
+    and was then relabelled `external_broker`. Fixed by making
+    `persist_order_result` heal entry-side fills only, plus
+    `order_sync._catch_up_filled_at_ack`.
+  - An equity bracket's own stop or target fill was recorded as
+    `external_broker` with an approximate P&L. Fixed with `Order.legs`
+    from the Alpaca adapter and `_close_from_bracket_leg`, giving
+    `bracket_stop` / `bracket_target` with the real fill.
+- **Test reduction (28c0d7906, 90ba3128e, bffc525ad, d7639b2c2): 184 test
+  functions removed** (175 engine, 9 mock-session order_sync).
+  - Method, in scripts/test_audit/: per-test coverage chooses where to
+    look; per-file mutation analysis (comparisons, logic, arithmetic,
+    constants, strings, `return None`, dropped sequence elements) decides.
+  - A test is deleted only if it catches at least one injected bug and
+    every bug it catches is also caught by a KEPT test in the same file.
+    Tranche 1 removed 140 engine test functions across 12 files;
+    tranches 2 and 3 removed 35 more across 4 files.
+  - **Proof: re-running mutation analysis on each pruned file gives the
+    IDENTICAL set of caught mutants.** Tranche 1, per file (test cases
+    before -> after, caught mutants before -> after):
+
+        features_patterns     48->36    299->299     options_scale_out   22->19    53->53
+        features_quant        25->20    248->248     options_selection   51->24   127->127
+        market_calendar       15->7      36->36      options_sizing      24->14    60->60
+        options_concentration 16->4     185->185     risk_india          18->11   153->153
+        options_exits         23->11     55->55      risk_profiles       21->10    46->46
+        options_risk          52->27    300->300     scanner_triggers    41->27   172->172
+        TOTAL caught 1,734 -> 1,734; lost 0, gained 0.
+
+    Tranche 2 (90ba3128e) and 3 (bffc525ad), same proof:
+        clock 24->12 34->34   scanner_engine 26->14 157->157
+        risk  25->14 193->193 options_protective_stop 19->14 44->44
+    All 16 engine files: 175 test functions removed, 2,162 caught
+    mutants before and after, 0 lost.
+  - Nine mock-session unit tests in test_order_sync.py were replaced by
+    scenarios, each scenario revert-checked. Six of them had broken for a
+    non-behavioural reason (a hand-built `execute()` result list one query
+    short).
+  - Suite: 1,872 collected at the start of this request -> 1,709 now
+    (1,697 passed, 12 skipped), net of about 40 new tests, 12 of them
+    scenarios.
+- **VERIFIED:**
+  - full suite, every step;
+  - every fix revert-checked, most through a scenario;
+  - the mutation proof per pruned file;
+  - tsc, and ruff at baseline (the one pre-existing I001).
+- **NOT verified:** anything against Alpaca or Kite. The bracket-legs
+  mapping is tested with alpaca-py enums on a stand-in object;
+  `market_protection` has not been sent to Kite. Coverage 7.16 was added to
+  the local venv for the audit only (lockfile unchanged).
+- **Open:**
+  - test tranches 2-5 (docs/PLAN_TEST_SUITE.md);
+  - turning on the router (operator);
+  - Zerodha Z0-Z5 (operator decisions first);
+  - Phase 5b.
+
 ### 2026-09-25 — c24aa4e1f..1d9ce8cd9 — PLAN_PLATFORM Phase 6: what ends a position, and who runs the loops
 - **c24aa4e1f protective-stop fills.** A resting broker stop that elected
   was stamped `user_manual` (nothing of ours was running to stamp it). Now

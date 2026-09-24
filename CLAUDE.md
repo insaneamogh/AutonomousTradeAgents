@@ -321,8 +321,14 @@ it — append below the `# Build log` heading.
 ## 7. Verification commands
 
 ```bash
-# Full Python suite — 757 passing, 9 skipped as of 2026-08-29
+# Full Python suite — 1697 passing, 12 skipped as of 2026-09-25
 .venv/bin/python -m pytest apps/agents apps/api packages/ -q
+
+# The two layers separately (docs/PLAN_TEST_SUITE.md). e2e scenarios run
+# against a private Postgres per test (local server binaries or
+# E2E_DATABASE_URL) and SimBroker; they SKIP when neither exists.
+.venv/bin/python -m pytest apps/agents apps/api packages/ -q -m "not e2e"
+.venv/bin/python -m pytest apps/api/tests -q -m e2e
 
 # apps/mcp_server needs `uv sync --all-packages` first, else it fails collection
 .venv/bin/python -m pytest apps/ packages/ -q

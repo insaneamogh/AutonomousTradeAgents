@@ -5,7 +5,7 @@
 > `PLAN_*.md` where they disagree. Phases run in order; tick them off in
 > the build log (`fable5findings.md`), not here.
 >
-> **Progress (updated 2026-09-25):**
+> **Progress (updated 2026-09-25, second session):**
 > - Phase 0 is DONE: `posthackathon` merged and pushed, fixtures already
 >   fixed by 9120fc854, cap reverted (0281274d4).
 > - Phase 1 code is DONE (2de24fd89, f70e80090, 0784e434f). Its live half
@@ -42,9 +42,27 @@
 >   **Portfolio Greeks limits move to Phase 5.** A long-premium-only book
 >   is already bounded by the premium caps, and short legs are what make
 >   Greeks load-bearing.
-> - Phases 5 and 5b (debit spreads, instrument router, event interpreter)
->   are NOT started. Phase 3 says no signal has an edge yet, so they wait on
->   a candidate that passes.
+> - Phase 5 is STARTED (2026-09-25):
+>   - **Debit spreads were measured first, and lose MORE than a single leg**
+>     (8c3f25235): -12 to -14% per trade against -5 to -8% for the shipped
+>     signal, and +19 to +24% against +37 to +43% for a perfect-direction
+>     oracle, at the live 2.5%/side cost per leg. Even cost-free they only
+>     match the single leg. So no multi-leg execution is built. The model
+>     has no IV skew, so put spreads should be re-measured once iv_history
+>     has data.
+>   - The horizon router is built behind INSTRUMENT_ROUTER_ENABLED, default
+>     off (4b1ebb884): a thesis of 20 or more trading days goes to equity,
+>     held for its own horizon, with ghost grading over the same window.
+>   - The equity path was verified end to end by e2e scenarios, and they
+>     found two real bugs, both fixed: an order filled at acknowledgement
+>     skipped its fill lifecycle (617ca2769), and a bracket leg's exit was
+>     recorded as `external_broker` (d7639b2c2). The router's precondition
+>     is now met in simulation; turning it on is the operator's call.
+>   - Portfolio Greeks limits belong with short legs, so they stay deferred
+>     along with spreads.
+> - Phase 5b (event interpreter) is NOT started; it waits on a signal.
+> - Tests: docs/PLAN_TEST_SUITE.md (OpenClaw-style layers, mutation-proven
+>   pruning, e2e scenarios). Zerodha: docs/PLAN_ZERODHA.md (proposed).
 
 
 ## Context
