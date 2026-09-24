@@ -78,3 +78,6 @@ warn_unused_ignores = true
 asyncio_mode = "auto"
 testpaths = ["apps/api/tests", "apps/agents/tests", "apps/mcp_server/tests", "packages/broker/tests", "packages/engine/tests"]
 filterwarnings = ["error"]
+markers = [
+    "e2e: end-to-end scenarios on a private Postgres database and SimBroker (apps/api/tests/e2e). Fast loop: -m 'not e2e'.",
+]

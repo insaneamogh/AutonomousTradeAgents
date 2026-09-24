@@ -8,6 +8,9 @@ Server, in order of preference:
   3. Neither available: every e2e scenario SKIPS, with that reason. The
      unit suite does not depend on them.
 
+E2E_REUSE_TEMPLATE=1 skips re-migrating when the template already exists
+(for repeated runs that only change application code).
+
 Isolation (the OpenClaw pattern, applied to a database): the schema is
 migrated ONCE into a template with the real Alembic migrations, and each
 test gets `CREATE DATABASE ... TEMPLATE`, a full private copy in tens of
@@ -98,15 +101,27 @@ def e2e_template(pg_server_url: str) -> str:
 
     import asyncpg
 
-    async def _create() -> None:
+    reuse = os.environ.get("E2E_REUSE_TEMPLATE", "").strip() == "1"
+
+    async def _create() -> bool:
+        """True when a usable template already exists and may be reused.
+        E2E_REUSE_TEMPLATE=1 is for repeated runs that change application
+        code only (mutation analysis): migrations are not re-applied."""
         conn = await asyncpg.connect(pg_server_url)
         try:
+            exists = await conn.fetchval(
+                "SELECT 1 FROM pg_database WHERE datname = $1", TEMPLATE_DB
+            )
+            if reuse and exists:
+                return True
             await conn.execute(f'DROP DATABASE IF EXISTS "{TEMPLATE_DB}" WITH (FORCE)')
             await conn.execute(f'CREATE DATABASE "{TEMPLATE_DB}"')
+            return False
         finally:
             await conn.close()
 
-    asyncio.run(_create())
+    if asyncio.run(_create()):
+        return TEMPLATE_DB
     env = {**os.environ, "DATABASE_URL": _with_db(pg_server_url, TEMPLATE_DB),
            "PYTHONDONTWRITEBYTECODE": "1"}
     alembic = str(Path(sys.executable).with_name("alembic"))

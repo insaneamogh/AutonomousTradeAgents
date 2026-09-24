@@ -23,7 +23,7 @@ from e2e_harness import (
     seed_account,
 )
 
-pytestmark = pytest.mark.usefixtures("e2e_db")
+pytestmark = [pytest.mark.e2e, pytest.mark.usefixtures("e2e_db")]
 
 
 @pytest.fixture
