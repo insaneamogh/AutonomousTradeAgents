@@ -62,7 +62,7 @@ shrink the unit layer to what scenarios cannot reach cheaply.
   fills, stop elections, expiry and exercise with Alpaca's activity
   records); the real approvals HTTP route, executor, risk re-check,
   order store, and the production `ReconcilerFleet.tick()` with the
-  market clock pinned. Eight scenarios, about 6 s including server start.
+  market clock pinned. Twelve scenarios, about 6 s including server start.
   **They found a real bug on the first run** (617ca2769: an order filled
   at acknowledgement never ran its fill lifecycle, and a close filled
   that way overwrote the entry price).
