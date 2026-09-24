@@ -5,7 +5,7 @@
 > `PLAN_*.md` where they disagree. Phases run in order; tick them off in
 > the build log (`fable5findings.md`), not here.
 >
-> **Progress (2026-09-23):**
+> **Progress (updated 2026-09-25):**
 > - Phase 0 is DONE: `posthackathon` merged and pushed, fixtures already
 >   fixed by 9120fc854, cap reverted (0281274d4).
 > - Phase 1 code is DONE (2de24fd89, f70e80090, 0784e434f). Its live half
@@ -25,12 +25,23 @@
 > - Phase 4 is PARTLY DONE: the breakeven gate (ab536dc6a), the earnings
 >   calendar (0a9fe57e7) and the IV history recorder (069492d08). The regime
 >   gate and premium-cap ranking are deferred until a signal has an edge.
->   The FOMC/CPI calendar is not started.
-> - Phase 6 is MOSTLY DONE: ops alerts (8d7d6faf0), close-retry fixes
->   (ce8b722ed), market-hours exit gate (d9902ed94), restart catch-up
->   (cf1c809a7), and the flatten-all kill switch (endpoint only, no UI button
->   yet). Still open: assignment/exercise handling, labelling stop fills,
->   the EOD job, leader election, the daily P&L push, and Greeks limits.
+>   The FOMC/CPI/NFP blackout is DEFERRED as a veto (2026-09-25). The sweep
+>   runs at 10:00 ET, after the 8:30 prints, and a pre-event blackout would
+>   veto about half of all 5-day holds for a small single-name effect.
+>   Revisit it as a backtested feature. The FRED release ids are in the
+>   build log.
+> - Phase 6 is DONE except Greeks limits:
+>   - ops alerts (8d7d6faf0), close-retry fixes (ce8b722ed), the
+>     market-hours exit gate (d9902ed94), restart catch-up (cf1c809a7);
+>   - the kill switch: endpoint ceb95bfee, desktop button 1d9ce8cd9;
+>   - protective-stop fill labels (c24aa4e1f);
+>   - option expiry/exercise/assignment (f1784f92a);
+>   - the EOD job with ghost marking and the daily report (0aef8aa6c);
+>   - leader election (b53f5aee5);
+>   - the unacknowledged-order grace (6ac94d5bf).
+>   **Portfolio Greeks limits move to Phase 5.** A long-premium-only book
+>   is already bounded by the premium caps, and short legs are what make
+>   Greeks load-bearing.
 > - Phases 5 and 5b (debit spreads, instrument router, event interpreter)
 >   are NOT started. Phase 3 says no signal has an edge yet, so they wait on
 >   a candidate that passes.
