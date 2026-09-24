@@ -24,6 +24,27 @@ _OCC_RE = re.compile(r"^([A-Z]{1,6})(\d{2})(\d{2})(\d{2})([CP])(\d{8})$")
 
 
 @dataclass(frozen=True)
+class AccountActivity:
+    """One non-order account event reported by the broker.
+
+    Read today only for the option lifecycle. Alpaca's codes: ``OPEXP``
+    (a contract expired and was removed), ``OPEXC`` (a long contract was
+    exercised), ``OPASN`` (a short contract was assigned), and ``OPTRD``,
+    the underlying trade Alpaca pairs with every exercise or assignment
+    (``symbol`` is the UNDERLYING, ``qty`` is signed shares, ``price`` is
+    the strike). ``qty`` keeps the broker's sign.
+    """
+
+    activity_id: str
+    activity_type: str
+    symbol: str
+    qty: float
+    day: date
+    price: float | None = None
+    net_amount: float = 0.0
+
+
+@dataclass(frozen=True)
 class OccSymbol:
     """A parsed OCC option symbol, e.g. ``AAPL260828C00250000``.
 

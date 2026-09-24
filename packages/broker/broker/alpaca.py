@@ -53,6 +53,7 @@ from alpaca.trading.requests import (
 
 from broker.base import BrokerInterface
 from broker.types import (
+    AccountActivity,
     OccSymbol,
     Order,
     OrderRequest,
@@ -116,6 +117,39 @@ _TIF_TO_ALPACA: dict[TimeInForce, _AlpacaTif] = {
     TimeInForce.IOC: _AlpacaTif.IOC,
     TimeInForce.FOK: _AlpacaTif.FOK,
 }
+
+
+OPTION_LIFECYCLE_ACTIVITY_TYPES: tuple[str, ...] = ("OPEXP", "OPEXC", "OPASN", "OPTRD")
+_ACTIVITY_PAGE_SIZE = 100
+_ACTIVITY_MAX_PAGES = 10
+
+
+def _activity_from_alpaca(raw: object) -> AccountActivity | None:
+    """One raw activity dict → ``AccountActivity``. None for a row that is
+    missing what a caller needs (type, symbol, a parseable date), so one
+    malformed row never hides the rest."""
+    if not isinstance(raw, dict):
+        return None
+    kind = str(raw.get("activity_type") or "").upper()
+    symbol = str(raw.get("symbol") or "").upper()
+    if not kind or not symbol:
+        return None
+    try:
+        day = date.fromisoformat(str(raw.get("date") or "")[:10])
+        qty = float(raw.get("qty") or 0)
+        price = float(raw["price"]) if raw.get("price") not in (None, "") else None
+        net_amount = float(raw.get("net_amount") or 0)
+    except (TypeError, ValueError):
+        return None
+    return AccountActivity(
+        activity_id=str(raw.get("id") or ""),
+        activity_type=kind,
+        symbol=symbol,
+        qty=qty,
+        day=day,
+        price=price,
+        net_amount=net_amount,
+    )
 
 
 def _status_from_alpaca(s: _AlpacaStatus) -> OrderStatus:
@@ -353,6 +387,47 @@ class AlpacaBroker(BrokerInterface):
         except (TypeError, ValueError):
             return None
         return equity if equity > 0 else None
+
+    # ── Activities ───────────────────────────────────────────────────
+
+    async def list_option_lifecycle_activities(self, *, since: date) -> list[AccountActivity]:
+        """Option expiries, exercises and assignments created after ``since``,
+        plus the underlying trades Alpaca pairs with them.
+
+        This is the only record of how an option position ended when no
+        order of ours closed it. Without it, a contract that expired
+        worthless or was auto-exercised into 100 shares per contract looks
+        identical to one the user sold by hand at Alpaca.
+
+        GET /v2/account/activities. Per Alpaca's reference: ``after`` takes
+        YYYY-MM-DD, ``page_size`` tops out at 100, and ``page_token`` is
+        the id of the last activity on the previous page. alpaca-py 0.43
+        has no typed wrapper for this endpoint, so it goes through the
+        client's own authenticated ``get``, which works for both the key
+        and the OAuth auth paths.
+
+        Same structural-resolution contract as ``get_prior_close_equity``:
+        NOT on the ``BrokerInterface`` Protocol, reached through
+        ``getattr``.
+        """
+        params: dict[str, object] = {
+            "activity_types": ",".join(OPTION_LIFECYCLE_ACTIVITY_TYPES),
+            "after": since.isoformat(),
+            "direction": "desc",
+            "page_size": _ACTIVITY_PAGE_SIZE,
+        }
+        out: list[AccountActivity] = []
+        for _ in range(_ACTIVITY_MAX_PAGES):
+            page = await asyncio.to_thread(self._client.get, "/account/activities", params)
+            rows = list(page or [])
+            out.extend(a for a in (_activity_from_alpaca(r) for r in rows) if a is not None)
+            if len(rows) < _ACTIVITY_PAGE_SIZE:
+                break
+            last_id = rows[-1].get("id") if isinstance(rows[-1], dict) else None
+            if not last_id:
+                break
+            params["page_token"] = last_id
+        return out
 
     # ── Mappers ──────────────────────────────────────────────────────
 

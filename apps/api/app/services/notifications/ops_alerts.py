@@ -13,6 +13,9 @@ was found days later by a human reading logs, not by the system:
                           and nothing else happens.
   sweep_failed            A scheduled sweep raised. Logged, then it waits for
                           tomorrow.
+  option_exercised        An option left the account as stock (exercise or
+  option_assigned         assignment): 100 shares per contract that no
+                          decision manages, with no stop.
 
 One call, three channels, each best-effort and independent:
   1. `logger.error`. Sentry captures ERROR-level logs when SENTRY_DSN is set.
@@ -33,6 +36,7 @@ trying to report a failure.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import time
@@ -89,10 +93,8 @@ def raise_ops_alert(
     except Exception:
         # Logging can be the thing that failed, and logger.exception goes
         # through the same handlers, so even reporting the failure is guarded.
-        try:
+        with contextlib.suppress(Exception):
             logger.exception("ops alert %s could not be dispatched", kind)
-        except Exception:
-            pass
         return False
 
 

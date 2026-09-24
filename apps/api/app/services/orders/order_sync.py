@@ -35,6 +35,13 @@ Four responsibilities, in order:
      mark exists we leave realized_pnl NULL rather than fabricate one.
      A push notification tells the user we noticed.
 
+     An OPTION can also vanish with no order from anyone: it expired, was
+     exercised, or was assigned. Those are read from the broker's account
+     activities first and closed as ``option_expired`` (exit value 0,
+     exact), ``option_exercised`` or ``option_assigned`` (exit value from
+     the last mark). Exercise and assignment raise an ops alert, because
+     they leave a stock position that no decision manages.
+
 Everything is deterministic reads/writes. Per-user; called by the fleet
 with errors isolated upstream.
 """
@@ -43,7 +50,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -55,6 +62,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from broker.base import BrokerInterface
+    from broker.types import AccountActivity
 
 logger = logging.getLogger("api.order_sync")
 
@@ -417,8 +425,8 @@ async def _detect_external_closes(
         return
     held_qty = {p.symbol.upper(): int(p.qty) for p in broker_positions}
 
+    vanished: list[tuple[object, str]] = []
     for decision in open_decisions:
-        symbol = decision.symbol.upper()
         broker_key = _broker_key_for_decision(decision)
         # != 0, not > 0: Alpaca reports a held SHORT as a NEGATIVE qty, and
         # "still held" must be true for that case too — v1 ignores partial
@@ -437,6 +445,26 @@ async def _detect_external_closes(
             .limit(1)
         )
         if (await session.execute(in_flight_stmt)).scalar_one_or_none() is not None:
+            continue
+        vanished.append((decision, broker_key))
+
+    # An option can also leave the account with no order at all: it
+    # expired, was exercised, or was assigned. Alpaca records each as an
+    # account activity, so those are read BEFORE anything is called an
+    # external close. Fetched once per pass, and only when an option
+    # actually vanished.
+    lifecycle: list[AccountActivity] = []
+    option_vanished = [d for d, _key in vanished if _is_option_decision(d)]
+    if option_vanished:
+        lifecycle = await _option_lifecycle_activities(broker, option_vanished)
+
+    for decision, broker_key in vanished:
+        symbol = decision.symbol.upper()
+        event = _lifecycle_event_for(lifecycle, broker_key)
+        if event is not None:
+            await _close_from_lifecycle(
+                session, uid, decision, broker_key, event, lifecycle, user_id=user_id
+            )
             continue
 
         entry_side = str((decision.proposal or {}).get("side", "BUY"))
@@ -476,6 +504,172 @@ async def _detect_external_closes(
             symbol, uid, realized,
         )
         _notify_external_close(user_id=user_id, symbol=symbol, qty=int(decision.fill_qty or 0))
+
+
+_LIFECYCLE_CLOSE_REASON: dict[str, str] = {
+    "OPEXP": "option_expired",
+    "OPEXC": "option_exercised",
+    "OPASN": "option_assigned",
+}
+
+# The activity carries a date, not a time. 21:00 UTC is after the 16:00 ET
+# close in both EDT and EST, and still the same UTC date.
+_LIFECYCLE_CLOSE_TIME_UTC = time(21, 0)
+
+
+def _is_option_decision(decision: object) -> bool:
+    proposal = getattr(decision, "proposal", None) or {}
+    return bool(proposal.get("isOption", proposal.get("is_option", False)))
+
+
+async def _option_lifecycle_activities(
+    broker: BrokerInterface, decisions: list[object]
+) -> list[AccountActivity]:
+    """Alpaca's option lifecycle activities since the oldest of these
+    decisions opened. Empty when the broker has no such method or the read
+    fails; the caller then treats the vanish as an external close, which
+    is what it did before this existed."""
+    fetch = getattr(broker, "list_option_lifecycle_activities", None)
+    if fetch is None:
+        return []
+    opened = [
+        t.date()
+        for t in (getattr(d, "triggered_at", None) for d in decisions)
+        if isinstance(t, datetime)
+    ]
+    since = (min(opened) if opened else datetime.now(UTC).date()) - timedelta(days=1)
+    try:
+        return list(await fetch(since=since))
+    except Exception:
+        logger.warning(
+            "order_sync: option lifecycle activities unavailable; a vanished option "
+            "is treated as an external close this tick",
+            exc_info=True,
+        )
+        return []
+
+
+def _lifecycle_event_for(
+    activities: list[AccountActivity], occ: str
+) -> AccountActivity | None:
+    """The newest expiry, exercise or assignment on this contract."""
+    for activity in activities:
+        if activity.symbol == occ and activity.activity_type in _LIFECYCLE_CLOSE_REASON:
+            return activity
+    return None
+
+
+async def _close_from_lifecycle(
+    session: AsyncSession,
+    uid: uuid.UUID,
+    decision: object,
+    occ: str,
+    event: AccountActivity,
+    activities: list[AccountActivity],
+    *,
+    user_id: str,
+) -> None:
+    """Close a decision whose contract left the account through expiry,
+    exercise or assignment, with the reason that actually happened."""
+    from engine.db.models import AgentDecision
+
+    reason = _LIFECYCLE_CLOSE_REASON[event.activity_type]
+    proposal = decision.proposal or {}  # type: ignore[attr-defined]
+    entry_side = str(proposal.get("side", "BUY"))
+    multiplier = int(proposal.get("multiplier", 1) or 1)
+    qty = int(decision.fill_qty or 0)  # type: ignore[attr-defined]
+    entry = decision.fill_avg_price  # type: ignore[attr-defined]
+
+    exit_price: Decimal | None
+    if event.activity_type == "OPEXP":
+        # Removed at zero value. Exact, not an estimate.
+        exit_price = Decimal("0")
+    else:
+        # Became stock at the strike. What the contract was worth at that
+        # moment is its intrinsic value, which the activity does not report,
+        # so the last mark before it vanished stands in, as it does for an
+        # external close.
+        exit_price = await _last_snapshot_mark(session, uid, occ, multiplier=multiplier)
+
+    realized: Decimal | None = None
+    if exit_price is not None and entry is not None and qty:
+        signed_move = (entry - exit_price) if entry_side == "SELL" else (exit_price - entry)
+        realized = (signed_move * Decimal(qty) * Decimal(multiplier)).quantize(Decimal("0.01"))
+
+    closed_at = min(
+        datetime.combine(event.day, _LIFECYCLE_CLOSE_TIME_UTC, tzinfo=UTC), datetime.now(UTC)
+    )
+    await session.execute(
+        update(AgentDecision)
+        .where(AgentDecision.id == decision.id)  # type: ignore[attr-defined]
+        .values(closed_at=closed_at, close_reason=reason, realized_pnl=realized)
+    )
+    underlying = decision.symbol.upper()  # type: ignore[attr-defined]
+    logger.warning(
+        "order_sync: %s %s (%s) on %s (user=%s, realized=%s)",
+        occ, reason, event.activity_type, event.day, uid, realized,
+    )
+
+    if event.activity_type == "OPEXP":
+        _notify_option_expired(user_id=user_id, symbol=underlying, qty=qty)
+        return
+
+    # The paired OPTRD is the underlying trade the exercise or assignment
+    # made: signed shares, at the strike.
+    shares = sum(
+        a.qty for a in activities
+        if a.activity_type == "OPTRD" and a.symbol == underlying and a.day == event.day
+    )
+    _alert_stock_delivered(
+        user_id=user_id,
+        occ=occ,
+        underlying=underlying,
+        contracts=qty,
+        shares=int(shares),
+        verb="exercised" if event.activity_type == "OPEXC" else "assigned",
+    )
+
+
+def _notify_option_expired(*, user_id: str, symbol: str, qty: int) -> None:
+    """Fire-and-forget push, lock-screen-safe (same rule as external close)."""
+    try:
+        from app.services.notifications.notifications import schedule_position_event_notification
+
+        schedule_position_event_notification(
+            user_id=user_id,
+            title="Option expired",
+            body=f"Your {qty} {symbol} option contract(s) expired. Trade log updated.",
+        )
+    except Exception:
+        logger.exception("order_sync: option-expired notification failed")
+
+
+def _alert_stock_delivered(
+    *, user_id: str, occ: str, underlying: str, contracts: int, shares: int, verb: str
+) -> None:
+    """Exercise and assignment turn a capped-risk option into stock that no
+    decision manages: no stop, no time exit, and 100 shares per contract of
+    notional. That is an operator page, not a notification."""
+    if shares:
+        traded = f"{abs(shares)} {underlying} shares {'bought' if shares > 0 else 'sold'}"
+    else:
+        traded = f"{underlying} shares traded (quantity not reported)"
+    try:
+        from app.services.notifications.ops_alerts import raise_ops_alert
+
+        raise_ops_alert(
+            f"option_{verb}",
+            user_id=user_id,
+            key=occ,
+            title=f"{underlying} option {verb}",
+            body=(
+                f"{contracts} {occ} {verb}: {traded} at the strike. The resulting "
+                f"{underlying} stock position has no stop and no time exit. Close it "
+                "from Positions, or flatten all."
+            ),
+        )
+    except Exception:
+        logger.exception("order_sync: stock-delivered alert failed for %s", occ)
 
 
 async def _last_snapshot_mark(

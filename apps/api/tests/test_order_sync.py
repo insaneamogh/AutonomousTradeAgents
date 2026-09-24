@@ -13,7 +13,7 @@ is the math + state transitions that must never drift:
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
@@ -54,7 +54,7 @@ def _order(side: str, *, filled_qty: int, avg: str, decision_id: uuid.UUID) -> S
         side=side,
         filled_qty=filled_qty,
         avg_fill_price=Decimal(avg),
-        filled_at=datetime(2026, 6, 12, 15, 30, tzinfo=timezone.utc),
+        filled_at=datetime(2026, 6, 12, 15, 30, tzinfo=UTC),
         symbol="NVDA",
         user_id=uuid.uuid4(),
     )
@@ -94,7 +94,7 @@ async def test_sell_fill_closes_decision_with_realized_pnl() -> None:
 
 
 async def test_sell_fill_respects_existing_close_reason_and_idempotency() -> None:
-    already_closed_at = datetime(2026, 6, 10, 20, 0, tzinfo=timezone.utc)
+    already_closed_at = datetime(2026, 6, 10, 20, 0, tzinfo=UTC)
     decision = _decision(
         fill_qty=12,
         fill_avg_price=Decimal("100.00"),
@@ -542,3 +542,162 @@ async def test_adoption_survives_a_broker_that_raises() -> None:
     await order_sync_mod._adopt_orphaned_fills(session, uuid.uuid4(), broker)
 
     assert orphan.fill_qty is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Option lifecycle: expiry, exercise, assignment. These leave the account
+# with no order from anyone, and used to be recorded as 'external_broker'.
+# Activity rows mirror Alpaca's documented OPEXP / OPEXC / OPTRD examples.
+# ─────────────────────────────────────────────────────────────────────
+
+_OCC = "NVDA260918C00225000"
+
+
+def _option_decision() -> SimpleNamespace:
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        symbol="NVDA",
+        proposal={"side": "BUY", "isOption": True, "occSymbol": _OCC, "multiplier": 100},
+        fill_qty=2,
+        fill_avg_price=Decimal("1.50"),
+        triggered_at=datetime(2026, 9, 10, 14, 0, tzinfo=UTC),
+    )
+
+
+def _vanished_session(decision: SimpleNamespace) -> MagicMock:
+    decisions_result = MagicMock()
+    decisions_result.scalars.return_value.all.return_value = [decision]
+    in_flight_result = MagicMock()
+    in_flight_result.scalar_one_or_none.return_value = None
+    session = MagicMock()
+    session.execute = AsyncMock(side_effect=[decisions_result, in_flight_result, MagicMock()])
+    return session
+
+
+def _activity(kind: str, symbol: str, qty: float, *, price: float | None = None):
+    from datetime import date
+
+    from broker.types import AccountActivity
+
+    return AccountActivity(
+        activity_id=f"{kind}-{symbol}", activity_type=kind, symbol=symbol,
+        qty=qty, day=date(2026, 9, 18), price=price,
+    )
+
+
+def _broker_with_activities(activities: list[Any] | Exception) -> SimpleNamespace:
+    fetch = (
+        AsyncMock(side_effect=activities) if isinstance(activities, Exception)
+        else AsyncMock(return_value=activities)
+    )
+    return SimpleNamespace(
+        list_positions=AsyncMock(return_value=[]),
+        list_option_lifecycle_activities=fetch,
+    )
+
+
+async def test_expired_option_closes_as_option_expired_at_zero_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    decision = _option_decision()
+    session = _vanished_session(decision)
+
+    async def _no_mark(*_a: object, **_k: object) -> Decimal:
+        raise AssertionError("an expiry is worth exactly zero; no mark is needed")
+
+    monkeypatch.setattr(order_sync_mod, "_last_snapshot_mark", _no_mark)
+    pushes: list[dict] = []
+    monkeypatch.setattr(order_sync_mod, "_notify_option_expired", lambda **k: pushes.append(k))
+    monkeypatch.setattr(order_sync_mod, "_notify_external_close", lambda **k: None)
+    broker = _broker_with_activities([_activity("OPEXP", _OCC, -2)])
+
+    await order_sync_mod._detect_external_closes(
+        session, uuid.uuid4(), broker, user_id="00000000-0000-0000-0000-000000000001"
+    )
+
+    values = _values_of(session.execute.call_args_list[-1].args[0])
+    assert values["close_reason"] == "option_expired"
+    # (0 - 1.50) * 2 contracts * 100
+    assert values["realized_pnl"] == Decimal("-300.00")
+    assert values["closed_at"].date().isoformat() == "2026-09-18"
+    assert pushes and pushes[0]["symbol"] == "NVDA"
+    # Asked from the day before the decision opened.
+    since = broker.list_option_lifecycle_activities.await_args.kwargs["since"]
+    assert since.isoformat() == "2026-09-09"
+
+
+async def test_exercised_option_closes_as_option_exercised_and_pages_the_operator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.notifications import ops_alerts
+
+    decision = _option_decision()
+    session = _vanished_session(decision)
+
+    async def _mark(*_a: object, **_k: object) -> Decimal:
+        return Decimal("5.00")
+
+    monkeypatch.setattr(order_sync_mod, "_last_snapshot_mark", _mark)
+    alerts: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        ops_alerts, "raise_ops_alert", lambda kind, **k: alerts.append((kind, k)) or True
+    )
+    broker = _broker_with_activities([
+        _activity("OPEXC", _OCC, -2),
+        _activity("OPTRD", "NVDA", 200, price=225.0),
+    ])
+
+    await order_sync_mod._detect_external_closes(
+        session, uuid.uuid4(), broker, user_id="00000000-0000-0000-0000-000000000001"
+    )
+
+    values = _values_of(session.execute.call_args_list[-1].args[0])
+    assert values["close_reason"] == "option_exercised"
+    # (5.00 - 1.50) * 2 * 100, from the last mark
+    assert values["realized_pnl"] == Decimal("700.00")
+    assert [kind for kind, _ in alerts] == ["option_exercised"]
+    assert alerts[0][1]["key"] == _OCC
+    assert "200 NVDA shares bought" in alerts[0][1]["body"]
+
+
+async def test_vanished_option_with_no_lifecycle_event_is_still_external(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    decision = _option_decision()
+    session = _vanished_session(decision)
+
+    async def _mark(*_a: object, **_k: object) -> Decimal:
+        return Decimal("2.00")
+
+    monkeypatch.setattr(order_sync_mod, "_last_snapshot_mark", _mark)
+    monkeypatch.setattr(order_sync_mod, "_notify_external_close", lambda **k: None)
+    # An expiry on a DIFFERENT contract must not close this one.
+    broker = _broker_with_activities([_activity("OPEXP", "NVDA260918C00230000", -1)])
+
+    await order_sync_mod._detect_external_closes(
+        session, uuid.uuid4(), broker, user_id="00000000-0000-0000-0000-000000000001"
+    )
+
+    values = _values_of(session.execute.call_args_list[-1].args[0])
+    assert values["close_reason"] == "external_broker"
+
+
+async def test_activities_read_failure_falls_back_to_external_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    decision = _option_decision()
+    session = _vanished_session(decision)
+
+    async def _mark(*_a: object, **_k: object) -> Decimal:
+        return Decimal("2.00")
+
+    monkeypatch.setattr(order_sync_mod, "_last_snapshot_mark", _mark)
+    monkeypatch.setattr(order_sync_mod, "_notify_external_close", lambda **k: None)
+    broker = _broker_with_activities(RuntimeError("403"))
+
+    await order_sync_mod._detect_external_closes(
+        session, uuid.uuid4(), broker, user_id="00000000-0000-0000-0000-000000000001"
+    )
+
+    values = _values_of(session.execute.call_args_list[-1].args[0])
+    assert values["close_reason"] == "external_broker"
