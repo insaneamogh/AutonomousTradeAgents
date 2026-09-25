@@ -1,7 +1,8 @@
 """lot_size_block — India F&O orders must be whole-lot multiples.
 
-NSE/BSE derivatives trade in contract lots (e.g. NIFTY = 75 units/lot as
-of the 2024 revision). The exchange rejects off-lot quantities anyway, but
+NSE/BSE derivatives trade in contract lots (NIFTY = 65 units/lot from the
+January 2026 series). The lot comes from the proposal's ``lot_size`` (the
+broker's own instrument list) when present, else the caps fallback table. The exchange rejects off-lot quantities anyway, but
 catching it here gives the audit log a named rule instead of a raw broker
 error, and keeps a bad sizer from burning the order round-trip.
 
@@ -36,7 +37,9 @@ def lot_size_block(
         return None
 
     tradingsymbol = tradingsymbol_of(proposal.symbol)
-    lot = _lot_size_for(tradingsymbol, caps)
+    # The broker's instrument list first; the caps table only as a fallback.
+    lot = proposal.lot_size if proposal.lot_size and proposal.lot_size > 0 else None
+    lot = lot or _lot_size_for(tradingsymbol, caps)
     if lot is None:
         return RiskDecision(
             approved=True,

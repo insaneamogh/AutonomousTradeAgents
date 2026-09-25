@@ -512,14 +512,19 @@ class RiskCaps:
     # ── India (NSE/BSE/NFO) — read by the IN-market rules ────────────
     lot_sizes: tuple[tuple[str, int], ...] = (
         ("MIDCPNIFTY", 120),
-        ("BANKNIFTY", 35),
-        ("FINNIFTY", 65),
-        ("NIFTY", 75),
+        ("BANKNIFTY", 30),
+        ("FINNIFTY", 60),
+        ("NIFTY", 65),
         ("SENSEX", 20),
     )
-    """NSE/BSE F&O contract lot sizes, longest-prefix-matched against the
-    tradingsymbol (so BANKNIFTY must sort before NIFTY). Exchanges revise
-    these — production callers override per the latest circular. Tuple of
+    """FALLBACK NSE/BSE F&O lot sizes, longest-prefix-matched against the
+    tradingsymbol (so BANKNIFTY must sort before NIFTY). Used only when a
+    proposal does not carry ``lot_size`` from the broker's own instrument
+    list, which is the authoritative source: exchanges revise these by
+    circular, and a stale number here vetoes every correctly-sized order.
+    This table said NIFTY 75 until 2026-09-25; NSE moved NIFTY to 65,
+    BANKNIFTY to 30, FINNIFTY to 60 (MIDCPNIFTY 120) from the January 2026
+    series. SENSEX 20 is unverified against a 2026 BSE circular. Tuple of
     pairs (not a dict) because the dataclass is frozen/hashable."""
 
     max_derivative_notional_pct: float = 20.0
@@ -1061,6 +1066,11 @@ class RiskProposal:
 
     `None` means unattributed — every rule reading it must treat that as
     "cannot assess", never as a default strategy."""
+
+    lot_size: int | None = None
+    """An Indian derivative's lot size from the broker's own instrument
+    list (Kite's daily dump) at draft time. Authoritative over the
+    RiskCaps.lot_sizes fallback table, which exchanges outdate by circular."""
 
     # ── Options inputs ───────────────────────────────────────────────
     is_option: bool = False

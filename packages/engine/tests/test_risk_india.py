@@ -75,10 +75,10 @@ def test_derivative_detection() -> None:
 
 
 def test_lot_size_longest_prefix_wins() -> None:
-    # BANKNIFTY (35) must match before NIFTY (75).
-    d = lot_size_block(_proposal("NFO:BANKNIFTY24DECFUT", 35, 51_000.0), _ctx(), RiskCaps())
+    # BANKNIFTY (30) must match before NIFTY (65).
+    d = lot_size_block(_proposal("NFO:BANKNIFTY24DECFUT", 30, 51_000.0), _ctx(), RiskCaps())
     assert d is None
-    d = lot_size_block(_proposal("NFO:BANKNIFTY24DECFUT", 75, 51_000.0), _ctx(), RiskCaps())
+    d = lot_size_block(_proposal("NFO:BANKNIFTY24DECFUT", 65, 51_000.0), _ctx(), RiskCaps())
     assert d is not None and not d.approved
 
 
@@ -92,9 +92,9 @@ def test_lot_size_unknown_underlying_flags_not_vetoes() -> None:
 
 
 def test_derivative_notional_cap_vetoes_oversize() -> None:
-    # 75 * 24,000 = 1.8M notional vs 20% of 1M equity = 200K cap.
+    # 65 * 24,000 = 1.56M notional vs 20% of 1M equity = 200K cap.
     d = derivative_notional_cap(
-        _proposal("NFO:NIFTY24DECFUT", 75, 24_000.0), _ctx(), RiskCaps()
+        _proposal("NFO:NIFTY24DECFUT", 65, 24_000.0), _ctx(), RiskCaps()
     )
     assert d is not None and not d.approved
     assert d.veto_rule == "derivative_notional_cap"
@@ -160,7 +160,19 @@ def test_evaluate_vetoes_off_lot_india_derivative() -> None:
 
 def test_evaluate_approves_clean_india_option_order() -> None:
     d = evaluate(
-        _proposal("NFO:NIFTY2461924000CE", 75, 240.0),
+        _proposal("NFO:NIFTY2461924000CE", 65, 240.0),
         _ctx(now_utc=_utc_for_ist(5, 0)),
     )
     assert d.approved, d.reason
+
+
+def test_the_brokers_lot_size_wins_over_the_fallback_table() -> None:
+    """The table outdates by circular (it said NIFTY 75 after NSE moved to
+    65). The instrument list's lot size carried on the proposal is used."""
+    from dataclasses import replace
+
+    stale = RiskCaps(lot_sizes=(("NIFTY", 75),))
+    order = replace(_proposal("NFO:NIFTY26SEP25000CE", 65, 200.0), lot_size=65)
+    assert lot_size_block(order, _ctx(), stale) is None
+    off_lot = replace(_proposal("NFO:NIFTY26SEP25000CE", 70, 200.0), lot_size=65)
+    assert lot_size_block(off_lot, _ctx(), stale).veto_rule == "lot_size_block"
