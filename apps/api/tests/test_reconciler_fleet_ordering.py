@@ -33,7 +33,11 @@ USER_ID = "43221580-69bc-4134-8e1e-5af75499d874"
 
 
 def _connection(user_id: str) -> SimpleNamespace:
-    return SimpleNamespace(user_id=user_id, id=str(uuid.uuid4()), is_paper=True)
+    return SimpleNamespace(user_id=user_id, id=str(uuid.uuid4()), is_paper=True, broker="alpaca")
+
+
+async def _alpaca_only(broker: str) -> list[SimpleNamespace]:
+    return [_connection(USER_ID)] if broker == "alpaca" else []
 
 
 class _NullCtx:
@@ -54,7 +58,7 @@ async def test_account_switch_is_awaited_before_the_reconciler_tick_and_order_sy
     fleet = fleet_mod.ReconcilerFleet(
         session_factory=lambda: _FakeSession(),
         broker_store=SimpleNamespace(
-            list_active_connections_by_broker=AsyncMock(return_value=[_connection(USER_ID)])
+            list_active_connections_by_broker=AsyncMock(side_effect=_alpaca_only)
         ),
     )
 

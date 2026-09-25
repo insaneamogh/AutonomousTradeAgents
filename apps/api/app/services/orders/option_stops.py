@@ -68,6 +68,7 @@ from engine.options.protective_stop import (
     protective_stop_levels,
     should_replace,
 )
+from engine.risk.markets import market_of
 from engine.risk.types import RiskCaps
 
 if TYPE_CHECKING:
@@ -168,6 +169,11 @@ async def sync_protective_stop(
     if not caps.options_protective_stop_enabled:
         return None
     if not _is_option_decision(decision):
+        return None
+    if market_of(str(getattr(decision, "symbol", ""))) != "US":
+        # Kite regular orders are DAY/IOC: there is no resting GTC stop to
+        # place for an NFO contract. The software stop covers it
+        # (docs/PLAN_ZERODHA.md Z1).
         return None
     if getattr(decision, "closed_at", None) is not None:
         return None

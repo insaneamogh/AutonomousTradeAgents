@@ -38,6 +38,7 @@ from engine.reconciler import (
     ReconcilerConfig,
 )
 from engine.risk import PortfolioPosition, sector_for
+from engine.risk.markets import market_for_broker
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -50,15 +51,22 @@ _FIXTURE_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 
 
-def _exits_allowed_now() -> bool:
-    """True while the US equity/options market is open. Fails OPEN: a
+FLEET_BROKERS: tuple[str, ...] = ("alpaca", "zerodha")
+"""Every broker whose connections the fleet reconciles. Each (user,
+broker) pair is its own pass: its own poller, snapshot source, market
+clock and decision scope (engine.risk.markets decides which decisions a
+broker owns, from the symbol's exchange)."""
+
+
+def _exits_allowed_now(market: str = "US") -> bool:
+    """True while ``market``'s regular session is open. Fails OPEN: a
     calendar error must never be the reason a position cannot exit."""
     from datetime import UTC, datetime
 
-    from engine.features import is_us_market_open
+    from engine.features import is_market_open
 
     try:
-        return bool(is_us_market_open(datetime.now(UTC)))
+        return bool(is_market_open(market, datetime.now(UTC)))
     except Exception:
         logger.exception("fleet: market-hours check failed — allowing exits")
         return True
@@ -75,9 +83,10 @@ class UserBrokerPoller:
 
     user_id: str
     name: str = "alpaca"
+    """The broker, which is also the snapshot's ``source``."""
 
     async def get_account_state(self) -> RawAccountState:
-        async with with_broker_client(self.user_id, broker="alpaca") as (broker, conn):
+        async with with_broker_client(self.user_id, broker=self.name) as (broker, conn):
             equity = await broker.get_account_equity()
             buying_power = await broker.get_buying_power()
             # MUST be fetched here, not just in engine.reconciler.poller's
@@ -138,7 +147,7 @@ class UserBrokerPoller:
                 options_trading_level=options_trading_level,
                 prior_close_equity=prior_close_equity,
                 raw={
-                    "source": "alpaca",
+                    "source": self.name,
                     "is_paper": conn.is_paper,
                     "connection_id": conn.id,
                 },
@@ -161,16 +170,16 @@ class ReconcilerFleet:
     config: FleetConfig = field(default_factory=FleetConfig)
 
     def __post_init__(self) -> None:
-        self._reconcilers: dict[str, Reconciler] = {}
+        self._reconcilers: dict[tuple[str, str], Reconciler] = {}
         self._mock_reconciler: Reconciler | None = None
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
 
-    def _reconciler_for(self, user_id: str) -> Reconciler:
-        rec = self._reconcilers.get(user_id)
+    def _reconciler_for(self, user_id: str, broker: str = "alpaca") -> Reconciler:
+        rec = self._reconcilers.get((user_id, broker))
         if rec is None:
             rec = Reconciler(
-                poller=UserBrokerPoller(user_id=user_id),
+                poller=UserBrokerPoller(user_id=user_id, name=broker),
                 session_factory=self.session_factory,
                 user_id=uuid.UUID(user_id),
                 config=ReconcilerConfig(
@@ -178,7 +187,7 @@ class ReconcilerFleet:
                     halt_threshold_pct=self.config.halt_threshold_pct,
                 ),
             )
-            self._reconcilers[user_id] = rec
+            self._reconcilers[(user_id, broker)] = rec
         return rec
 
     def _mock_fallback(self) -> Reconciler:
@@ -196,15 +205,17 @@ class ReconcilerFleet:
 
     async def tick(self) -> int:
         """One fleet pass. Returns the number of users reconciled."""
-        try:
-            conns = await self.broker_store.list_active_connections_by_broker("alpaca")
-        except Exception:
-            logger.exception("fleet: connection listing failed — skipping tick")
-            return 0
+        conns = []
+        for broker_name in FLEET_BROKERS:
+            try:
+                conns += await self.broker_store.list_active_connections_by_broker(broker_name)
+            except Exception:
+                logger.exception("fleet: %s connection listing failed", broker_name)
+        # One pass per (user, broker). A user with both Alpaca and Zerodha
+        # gets two, and each only touches its own broker's positions.
+        pairs = sorted({(c.user_id, c.broker) for c in conns})
 
-        user_ids = sorted({c.user_id for c in conns})
-
-        if not user_ids:
+        if not pairs:
             if self.config.allow_mock_fallback:
                 try:
                     await self._mock_fallback().tick()
@@ -231,10 +242,11 @@ class ReconcilerFleet:
         # The broker-side resting stop still covers the gap, which is what
         # it exists for. Computed once per tick so every user sees the same
         # answer.
-        exits_open = _exits_allowed_now()
+        exits_open = {m: _exits_allowed_now(m) for m in {market_for_broker(b) for _, b in pairs}}
 
         reconciled = 0
-        for uid in user_ids:
+        for uid, broker_name in pairs:
+            market = market_for_broker(broker_name)
             # GENUINELY first, before this tick reads or writes ANY
             # position state — not just commented as first while sitting
             # after `.tick()`/`sync_user_orders_and_positions` in the
@@ -255,7 +267,7 @@ class ReconcilerFleet:
                 from app.services.orders.account_switch import reconcile_account_identity
 
                 async with (
-                    with_broker_client(uid, broker="alpaca") as (_b, _conn),
+                    with_broker_client(uid, broker=broker_name) as (_b, _conn),
                     self.session_factory() as _s,
                 ):
                     _get_num = getattr(_b, "get_account_number", None)
@@ -277,7 +289,7 @@ class ReconcilerFleet:
                 logger.exception("fleet: account identity check failed for user=%s", uid)
 
             try:
-                result = await self._reconciler_for(uid).tick()
+                result = await self._reconciler_for(uid, broker_name).tick()
                 reconciled += 1
                 if result.transition.tripped:
                     logger.warning(
@@ -304,7 +316,7 @@ class ReconcilerFleet:
                 from app.services.orders.order_sync import sync_user_orders_and_positions
 
                 await sync_user_orders_and_positions(
-                    user_id=uid, session_factory=self.session_factory
+                    user_id=uid, session_factory=self.session_factory, broker=broker_name
                 )
             except Exception:
                 logger.exception("fleet: order/position sync failed for user=%s", uid)
@@ -318,7 +330,7 @@ class ReconcilerFleet:
                 # nothing re-examined. Cancels only; the symbol goes back
                 # to the scanner for a fresh council pass.
                 stale = await sweep_stale_entry_orders_for_user(
-                    user_id=uid, session_factory=self.session_factory
+                    user_id=uid, session_factory=self.session_factory, broker=broker_name
                 )
                 if stale:
                     logger.info(
@@ -335,8 +347,9 @@ class ReconcilerFleet:
                         user_id=uid,
                         session_factory=self.session_factory,
                         escalation_budget=escalation_budget,
+                        broker=broker_name,
                     )
-                    if exits_open
+                    if exits_open[market]
                     else 0
                 )
                 if closes:
@@ -351,9 +364,9 @@ class ReconcilerFleet:
 
                 expiry_closes = (
                     await sweep_expiring_options_for_user(
-                        user_id=uid, session_factory=self.session_factory
+                        user_id=uid, session_factory=self.session_factory, broker=broker_name
                     )
-                    if exits_open
+                    if exits_open[market]
                     else 0
                 )
                 if expiry_closes:
@@ -364,6 +377,11 @@ class ReconcilerFleet:
             except Exception:
                 logger.exception("fleet: options expiry sweep failed for user=%s", uid)
 
+            if broker_name != "alpaca":
+                # Auto-approve is consent on an Alpaca PAPER connection
+                # (auto_approver._resolve_paper_connection). A Zerodha
+                # connection is always real money; nothing here arms it.
+                continue
             try:
                 from app.services.orders.auto_approver import auto_approve_for_user
 

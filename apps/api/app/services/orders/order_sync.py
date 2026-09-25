@@ -57,6 +57,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import desc, or_, select, update
 
 from app.services.broker.broker_use import with_broker_client
+from engine.risk.markets import market_for_broker, market_of
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -92,22 +93,30 @@ async def sync_user_orders_and_positions(
     *,
     user_id: str,
     session_factory: async_sessionmaker,
+    broker: str = "alpaca",
 ) -> None:
-    """One sync pass for one user. Opens the broker connection once."""
+    """One sync pass for one user's connection to ``broker``. Opens the
+    broker connection once, and touches only the decisions and orders of
+    that broker's market (engine.risk.markets): a Zerodha pass must never
+    poll an Alpaca order, nor read an NSE position's absence at Alpaca as
+    a close."""
     uid = uuid.UUID(user_id)
+    market = market_for_broker(broker)
 
     async with (
-        with_broker_client(user_id, broker="alpaca") as (broker, _conn),
+        with_broker_client(user_id, broker=broker) as (client, _conn),
         session_factory() as session,
     ):
         # Adoption runs FIRST: it is what makes a broker-real position
         # visible to everything keyed on ``fill_qty IS NOT NULL``, and
         # ``_detect_external_closes`` below is one of those readers — an
         # unadopted orphan is invisible to it too.
-        await _adopt_orphaned_fills(session, uid, broker)
-        await _sync_open_orders(session, uid, broker)
-        await _catch_up_filled_at_ack(session, uid)
-        await _detect_external_closes(session, uid, broker, user_id=user_id)
+        await _adopt_orphaned_fills(session, uid, client, market=market)
+        await _sync_open_orders(session, uid, client, market=market)
+        await _catch_up_filled_at_ack(session, uid, market=market)
+        await _detect_external_closes(
+            session, uid, client, user_id=user_id, market=market, source=broker
+        )
         await session.commit()
 
 
@@ -117,7 +126,7 @@ async def sync_user_orders_and_positions(
 
 
 async def _sync_open_orders(
-    session: AsyncSession, uid: uuid.UUID, broker: BrokerInterface
+    session: AsyncSession, uid: uuid.UUID, broker: BrokerInterface, *, market: str = "US"
 ) -> None:
     from engine.db.models import Order
 
@@ -127,7 +136,9 @@ async def _sync_open_orders(
         .where(Order.status.in_(OPEN_ORDER_STATUSES))
         .where(Order.broker_order_id.is_not(None))
     )
-    rows = (await session.execute(stmt)).scalars().all()
+    rows = [
+        r for r in (await session.execute(stmt)).scalars().all() if market_of(r.symbol) == market
+    ]
 
     for row in rows:
         try:
@@ -173,7 +184,9 @@ async def _sync_open_orders(
         )
 
 
-async def _catch_up_filled_at_ack(session: AsyncSession, uid: uuid.UUID) -> None:
+async def _catch_up_filled_at_ack(
+    session: AsyncSession, uid: uuid.UUID, *, market: str = "US"
+) -> None:
     """Run the fill lifecycle for orders that were ALREADY filled when the
     broker acknowledged them.
 
@@ -205,7 +218,9 @@ async def _catch_up_filled_at_ack(session: AsyncSession, uid: uuid.UUID) -> None
         .where(AgentDecision.closed_at.is_(None))
         .where(Order.client_order_id.not_like(f"{PROTECTIVE_STOP_PREFIX}%"))
     )
-    pairs = (await session.execute(stmt)).all()
+    pairs = [
+        (o, d) for o, d in (await session.execute(stmt)).all() if market_of(d.symbol) == market
+    ]
     if not pairs:
         return
     stopped = {
@@ -360,9 +375,8 @@ async def _maybe_place_protective_stop(decision: object, order_row: object) -> N
     ):
         return
     try:
-        from engine.db.session import async_session_factory
-
         from app.services.orders.option_stops import sync_protective_stop
+        from engine.db.session import async_session_factory
 
         await sync_protective_stop(
             async_session_factory(),
@@ -467,6 +481,8 @@ async def _detect_external_closes(
     broker: BrokerInterface,
     *,
     user_id: str,
+    market: str = "US",
+    source: str | None = None,
 ) -> None:
     from engine.db.models import AgentDecision, Order
 
@@ -477,7 +493,10 @@ async def _detect_external_closes(
         .where(AgentDecision.fill_qty.is_not(None))
         .where(AgentDecision.closed_at.is_(None))
     )
-    open_decisions = (await session.execute(open_decisions_stmt)).scalars().all()
+    open_decisions = [
+        d for d in (await session.execute(open_decisions_stmt)).scalars().all()
+        if market_of(d.symbol) == market
+    ]
     if not open_decisions:
         return
 
@@ -538,7 +557,8 @@ async def _detect_external_closes(
         event = _lifecycle_event_for(lifecycle, broker_key)
         if event is not None:
             await _close_from_lifecycle(
-                session, uid, decision, broker_key, event, lifecycle, user_id=user_id
+                session, uid, decision, broker_key, event, lifecycle, user_id=user_id,
+                source=source,
             )
             continue
 
@@ -547,7 +567,9 @@ async def _detect_external_closes(
         # broker_key, not symbol: _last_snapshot_mark matches against the
         # SAME snapshot position dicts held_qty was built from above, which
         # are OCC-keyed for an option.
-        approx_exit = await _last_snapshot_mark(session, uid, broker_key, multiplier=multiplier)
+        approx_exit = await _last_snapshot_mark(
+            session, uid, broker_key, multiplier=multiplier, source=source
+        )
         realized: Decimal | None = None
         if approx_exit is not None and decision.fill_avg_price is not None and decision.fill_qty:
             # Same entry-side-keyed sign flip as the ordinary close path —
@@ -742,6 +764,7 @@ async def _close_from_lifecycle(
     activities: list[AccountActivity],
     *,
     user_id: str,
+    source: str | None = None,
 ) -> None:
     """Close a decision whose contract left the account through expiry,
     exercise or assignment, with the reason that actually happened."""
@@ -763,7 +786,9 @@ async def _close_from_lifecycle(
         # moment is its intrinsic value, which the activity does not report,
         # so the last mark before it vanished stands in, as it does for an
         # external close.
-        exit_price = await _last_snapshot_mark(session, uid, occ, multiplier=multiplier)
+        exit_price = await _last_snapshot_mark(
+            session, uid, occ, multiplier=multiplier, source=source
+        )
 
     realized: Decimal | None = None
     if exit_price is not None and entry is not None and qty:
@@ -847,7 +872,8 @@ def _alert_stock_delivered(
 
 
 async def _last_snapshot_mark(
-    session: AsyncSession, uid: uuid.UUID, symbol: str, *, multiplier: int = 1
+    session: AsyncSession, uid: uuid.UUID, symbol: str, *, multiplier: int = 1,
+    source: str | None = None,
 ) -> Decimal | None:
     """Most recent snapshot price for a symbol — the best exit-price proxy
     we have for a close that happened outside our order flow.
@@ -863,6 +889,7 @@ async def _last_snapshot_mark(
     stmt = (
         select(PositionsSnapshot)
         .where(PositionsSnapshot.user_id == uid)
+        .where(PositionsSnapshot.source == source if source else True)
         .order_by(desc(PositionsSnapshot.captured_at))
         .limit(20)
     )
@@ -923,7 +950,7 @@ def _decision_broker_key(decision: object) -> str:
 
 
 async def _adopt_orphaned_fills(
-    session: AsyncSession, uid: uuid.UUID, broker: BrokerInterface
+    session: AsyncSession, uid: uuid.UUID, broker: BrokerInterface, *, market: str = "US"
 ) -> None:
     """Heal decisions the broker has a position for but whose entry
     columns are still NULL.
@@ -979,7 +1006,9 @@ async def _adopt_orphaned_fills(
         .where(AgentDecision.closed_at.is_(None))
         .where(AgentDecision.fill_qty.is_(None))
     )
-    orphans = (await session.execute(stmt)).scalars().all()
+    orphans = [
+        d for d in (await session.execute(stmt)).scalars().all() if market_of(d.symbol) == market
+    ]
     if not orphans:
         return
 

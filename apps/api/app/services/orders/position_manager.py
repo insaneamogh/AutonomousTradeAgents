@@ -88,6 +88,7 @@ from engine.options.exits import (
 )
 from engine.options.expiry import dte
 from engine.risk import RiskCaps
+from engine.risk.markets import broker_for_symbol, market_for_broker, market_of
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -116,9 +117,11 @@ async def manage_positions_for_user(
     escalation_budget: Any | None = None,
     llm: Any | None = None,
     guard: Any | None = None,
+    broker: str = "alpaca",
 ) -> int:
     """One pass: close every agent-managed position whose exit condition
-    fired. Returns the number of closes initiated.
+    fired. Returns the number of closes initiated. Only positions in
+    ``broker``'s market are considered (engine.risk.markets).
 
     ``escalation_budget``/``llm``/``guard`` are injectable purely for the
     escalation loop (see the ESCALATION scope rule above) — production
@@ -147,7 +150,11 @@ async def manage_positions_for_user(
             .where(AgentDecision.closed_at.is_(None))
             .where(AgentDecision.exit_mode == "agent")
         )
-        open_decisions = (await session.execute(stmt)).scalars().all()
+        market = market_for_broker(broker)
+        open_decisions = [
+            d for d in (await session.execute(stmt)).scalars().all()
+            if market_of(d.symbol) == market
+        ]
 
         if not open_decisions:
             return 0
@@ -158,7 +165,7 @@ async def manage_positions_for_user(
             bool((d.proposal or {}).get("isOption", (d.proposal or {}).get("is_option", False)))
             for d in open_decisions
         )
-        option_pl_pct = await _option_pl_pct_by_symbol(user_id) if has_option else {}
+        option_pl_pct = await _option_pl_pct_by_symbol(user_id, broker) if has_option else {}
 
         # Lazily constructed, and ONLY when this user actually has an open
         # option position — an equity-only book never touches
@@ -295,7 +302,7 @@ async def manage_positions_for_user(
         return closes
 
 
-async def _option_pl_pct_by_symbol(user_id: str) -> dict[str, float]:
+async def _option_pl_pct_by_symbol(user_id: str, broker: str = "alpaca") -> dict[str, float]:
     """Broker-reported unrealized P&L percent, keyed by OCC symbol.
 
     Fetched ONCE per user pass rather than per position: the premium exit
@@ -313,8 +320,8 @@ async def _option_pl_pct_by_symbol(user_id: str) -> dict[str, float]:
     position is never left unmanaged, merely un-price-stopped for a tick.
     """
     try:
-        async with with_broker_client(user_id, broker="alpaca") as (broker, _conn):
-            positions = await broker.list_positions()
+        async with with_broker_client(user_id, broker=broker) as (client, _conn):
+            positions = await client.list_positions()
     except Exception:
         logger.warning(
             "position_manager: could not read broker positions for premium exits "
@@ -515,6 +522,7 @@ async def sweep_expiring_options_for_user(
     user_id: str,
     session_factory: async_sessionmaker,
     caps: RiskCaps | None = None,
+    broker: str = "alpaca",
 ) -> int:
     """One pass: force-close every agent-managed OPTION position within
     ``caps.options_expiry_sweep_dte`` days of expiry.
@@ -549,7 +557,11 @@ async def sweep_expiring_options_for_user(
             .where(AgentDecision.closed_at.is_(None))
             .where(AgentDecision.exit_mode == "agent")
         )
-        open_decisions = (await session.execute(stmt)).scalars().all()
+        market = market_for_broker(broker)
+        open_decisions = [
+            d for d in (await session.execute(stmt)).scalars().all()
+            if market_of(d.symbol) == market
+        ]
 
         if not open_decisions:
             return 0
@@ -774,8 +786,10 @@ async def _close_unmanaged_position(*, user_id: str, symbol: str) -> dict:
     wire_symbol = symbol
     client_order_id = f"user-close-unmanaged-{uuid.uuid4()}"
 
-    async with with_broker_client(user_id, broker="alpaca") as (broker, conn):
-        risk_ctx = await _build_risk_context(broker, user_id=user_id)
+    async with with_broker_client(user_id, broker=broker_for_symbol(symbol)) as (broker, conn):
+        risk_ctx = await _build_risk_context(
+            broker, user_id=user_id, source=getattr(conn, "broker", None)
+        )
         held = next(
             (
                 p for p in risk_ctx.open_positions
@@ -942,7 +956,9 @@ async def cancel_pending_order_now(
         return {"closed": False, "error": "no_pending_order"}
 
     try:
-        async with with_broker_client(user_id, broker="alpaca") as (broker, _conn):
+        async with with_broker_client(
+            user_id, broker=broker_for_symbol(decision.symbol)
+        ) as (broker, _conn):
             canceled = await broker.cancel_order(order_row.broker_order_id)
     except Exception:
         logger.exception(
@@ -1205,8 +1221,10 @@ async def _close_position(
     _occ_stored = stored_proposal.get("occSymbol") or stored_proposal.get("occ_symbol")
     wire_symbol = str(_occ_stored).upper() if _occ_stored else symbol
 
-    async with with_broker_client(user_id, broker="alpaca") as (broker, conn):
-        risk_ctx = await _build_risk_context(broker, user_id=user_id)
+    async with with_broker_client(user_id, broker=broker_for_symbol(symbol)) as (broker, conn):
+        risk_ctx = await _build_risk_context(
+            broker, user_id=user_id, source=getattr(conn, "broker", None)
+        )
         held = next(
             (
                 p for p in risk_ctx.open_positions

@@ -79,8 +79,13 @@ async def sweep_stale_entry_orders_for_user(
     user_id: str,
     session_factory: object,
     now: datetime | None = None,
+    broker: str = "alpaca",
 ) -> int:
     """Cancel this user's stale working entry orders. Returns how many.
+
+    Alpaca only. Kite regular orders are DAY or IOC (ZerodhaBroker refuses
+    GTC), so an unfilled Zerodha entry dies at the close on its own and
+    there is never a stale one to sweep.
 
     No-ops entirely while the market is closed: the boundary this tests is
     "did the order survive an open", which cannot be answered before the
@@ -89,6 +94,8 @@ async def sweep_stale_entry_orders_for_user(
     """
     from engine.db.models import AgentDecision, Order
 
+    if broker != "alpaca":
+        return 0
     at = (now or datetime.now(UTC)).astimezone(UTC)
     if not is_us_market_open(at):
         return 0

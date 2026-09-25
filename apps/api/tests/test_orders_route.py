@@ -178,7 +178,7 @@ def _patch_executor_with_fake_broker(
     )
 
     @asynccontextmanager
-    async def fake_cm(_user_id, *, store=None):  # noqa: ANN001
+    async def fake_cm(_user_id, *, store=None, **_kw):  # noqa: ANN001
         yield broker, fake_conn
 
     monkeypatch.setattr(executor_mod, "with_broker_client", fake_cm)

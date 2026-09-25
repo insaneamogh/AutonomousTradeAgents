@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 
+import pytest
+
 from engine.features.market_calendar import (
     is_us_market_open,
     is_us_trading_day,
@@ -59,3 +61,23 @@ def test_minutes_until_open_after_the_close_is_the_next_morning() -> None:
     mins = minutes_until_us_market_open(_utc(2026, 6, 16, 21, 0))
     assert mins is not None
     assert 15 * 60 < mins < 18 * 60
+
+
+@pytest.mark.parametrize(
+    ("when", "open_"),
+    [
+        (datetime(2026, 9, 25, 4, 0, tzinfo=UTC), True),     # 09:30 IST, a Friday session
+        (datetime(2026, 9, 25, 3, 44, tzinfo=UTC), False),   # 09:14 IST, pre-open
+        (datetime(2026, 9, 25, 10, 0, tzinfo=UTC), False),   # 15:30 IST, the close
+        (datetime(2026, 10, 2, 5, 0, tzinfo=UTC), False),    # Gandhi Jayanti (NSE list)
+        (datetime(2026, 1, 15, 5, 0, tzinfo=UTC), False),    # municipal-election closure
+        (datetime(2026, 9, 26, 5, 0, tzinfo=UTC), False),    # Saturday
+    ],
+)
+def test_nse_session_gate(when: datetime, open_: bool) -> None:
+    from engine.features import is_market_open
+
+    assert is_market_open("IN", when) is open_
+    # 04:00 UTC on a US trading day is not the US session: the markets are
+    # separate clocks, never one gate.
+    assert is_market_open("US", datetime(2026, 9, 25, 4, 0, tzinfo=UTC)) is False

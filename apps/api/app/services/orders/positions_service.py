@@ -100,15 +100,23 @@ async def list_open_positions(user_id: str) -> list[OpenPositionDto]:
                 if latest_status.get(d.id) not in _DEAD_ORDER_STATUSES
             ]
 
-        # One snapshot read → symbol → last mark map for live unrealized P&L,
-        # and the source of truth for what the broker actually holds.
+        # The latest snapshot PER BROKER (its `source`) → symbol → last mark
+        # map for live unrealized P&L, and the source of truth for what each
+        # broker actually holds. One user can hold an Alpaca and a Zerodha
+        # account; the fleet writes a snapshot for each, so "the latest
+        # snapshot" alone would show one account and hide the other's
+        # positions (docs/PLAN_ZERODHA.md Z1).
         snap_stmt = (
             select(PositionsSnapshot)
             .where(PositionsSnapshot.user_id == uid)
             .order_by(desc(PositionsSnapshot.captured_at))
-            .limit(1)
+            .limit(50)
         )
-        snapshot = (await session.execute(snap_stmt)).scalar_one_or_none()
+        latest_by_source: dict[str, Any] = {}
+        for snap in (await session.execute(snap_stmt)).scalars().all():
+            latest_by_source.setdefault(snap.source, snap)
+        snapshots = list(latest_by_source.values())
+        snapshot = snapshots[0] if snapshots else None
 
     marks: dict[str, float] = {}
     # The broker's OWN unrealized P&L per symbol — already correctly scaled
@@ -118,8 +126,8 @@ async def list_open_positions(user_id: str) -> list[OpenPositionDto]:
     # have the broker's own dollar P&L.
     broker_pnl: dict[str, float] = {}
     broker_positions: dict[str, dict[str, Any]] = {}
-    if snapshot is not None:
-        for pos in snapshot.open_positions or []:
+    for snap in snapshots:
+        for pos in snap.open_positions or []:
             sym = str(pos.get("symbol", "")).upper()
             qty = int(pos.get("qty", 0) or 0)
             mv = float(pos.get("market_value", 0) or 0)

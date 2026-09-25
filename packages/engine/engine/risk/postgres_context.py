@@ -102,14 +102,19 @@ async def _recent_losing_closes(
 
 
 async def _first_snapshot_equity_today(
-    session: AsyncSession, uid: uuid.UUID
+    session: AsyncSession, uid: uuid.UUID, source: str | None = None
 ) -> float | None:
+    """The day's first snapshot equity, from ``source``'s snapshots when
+    given. A user with an Alpaca AND a Zerodha account has a USD and an INR
+    snapshot series; without the source, today's drawdown subtracted one
+    currency from the other."""
     today_start = datetime.combine(
         datetime.now(UTC).date(), datetime.min.time(), tzinfo=UTC
     )
     stmt = (
         select(PositionsSnapshot)
         .where(PositionsSnapshot.user_id == uid)
+        .where(PositionsSnapshot.source == source if source else True)
         .where(PositionsSnapshot.captured_at >= today_start)
         .order_by(PositionsSnapshot.captured_at.asc())
         .limit(1)
@@ -151,6 +156,7 @@ async def load_db_risk_state(
     *,
     user_id: str | uuid.UUID,
     current_equity: float | None = None,
+    source: str | None = None,
 ) -> DbRiskState:
     """Read the DB-owned slice of ``RiskContext`` for a user.
 
@@ -174,7 +180,7 @@ async def load_db_risk_state(
         daily_pnl = 0.0
         daily_pnl_pct = 0.0
         if current_equity is not None:
-            start_equity = await _first_snapshot_equity_today(session, uid)
+            start_equity = await _first_snapshot_equity_today(session, uid, source)
             if start_equity is not None:
                 daily_pnl = current_equity - start_equity
                 daily_pnl_pct = (daily_pnl / start_equity) * 100.0

@@ -65,6 +65,9 @@ class SimBroker:
     requests: dict[str, OrderRequest] = field(default_factory=dict)
     legs_of: dict[str, tuple[str, ...]] = field(default_factory=dict)
     activities: list[AccountActivity] = field(default_factory=list)
+    kite: bool = False
+    """Behave like ZerodhaBroker: refuse bracket legs and GTC, exactly as
+    the real adapter does (broker/zerodha.py place_order)."""
     activities_error: Exception | None = None
     """Set to make the activities read fail, as a 403 or timeout would."""
     _ids: Any = field(default_factory=lambda: itertools.count(1))
@@ -115,6 +118,13 @@ class SimBroker:
     # ── BrokerInterface ──────────────────────────────────────────────
 
     async def place_order(self, request: OrderRequest) -> Order:
+        if self.kite:
+            from broker.types import TimeInForce
+
+            if request.take_profit_price is not None or request.stop_loss_price is not None:
+                raise RuntimeError("bracket exit legs are not supported on Zerodha")
+            if request.time_in_force not in (TimeInForce.DAY, TimeInForce.IOC):
+                raise ValueError("Zerodha regular orders support DAY/IOC only")
         if request.client_order_id and any(
             o.client_order_id == request.client_order_id for o in self.orders.values()
         ):
@@ -287,6 +297,7 @@ class SimConnection:
     id: str
     is_paper: bool = True
     broker: str = "alpaca"
+    live_trading_consent: bool = False
 
 
 # Modules that bind ``with_broker_client`` by name at import time; each
@@ -303,11 +314,29 @@ _BROKER_CLIENT_USERS = (
 
 
 def patch_broker(monkeypatch: Any, sim: SimBroker, connection: SimConnection) -> None:
+    """One simulated broker account, answering for its own broker name."""
+    patch_brokers(monkeypatch, {connection.broker: (sim, connection)})
+
+
+def patch_brokers(monkeypatch: Any, accounts: dict[str, tuple[SimBroker, SimConnection]]) -> None:
+    """Several simulated accounts, one per broker name. A caller that asks
+    for a broker gets that one (and a loud error if the scenario has none,
+    which is how a loop hardcoded to the wrong broker shows up); a caller
+    that asks for none gets them in BROKER_PREFERENCE order."""
     import importlib
 
     @contextlib.asynccontextmanager
-    async def _client(_user_id: str, *_a: Any, **_kw: Any):
-        yield sim, connection
+    async def _client(_user_id: str, *_a: Any, broker: str | None = None, **_kw: Any):
+        if broker is not None:
+            if broker not in accounts:
+                raise RuntimeError(f"scenario has no {broker!r} account")
+            yield accounts[broker]
+            return
+        for name in ("alpaca", "zerodha"):
+            if name in accounts:
+                yield accounts[name]
+                return
+        raise RuntimeError("scenario has no broker account")
 
     for mod in _BROKER_CLIENT_USERS:
         monkeypatch.setattr(importlib.import_module(mod), "with_broker_client", _client)
@@ -320,9 +349,12 @@ def occ_for(underlying: str, expiry: date, kind: str, strike: float) -> str:
     return f"{underlying}{expiry:%y%m%d}{'C' if kind == 'call' else 'P'}{round(strike * 1000):08d}"
 
 
-async def seed_account(*, auto_approve: bool = False) -> SimConnection:
-    """The fixture user and one active Alpaca-paper connection, as the
-    OAuth flow would leave them."""
+async def seed_account(
+    *, auto_approve: bool = False, broker: str = "alpaca", live_consent: bool = False,
+) -> SimConnection:
+    """The fixture user and one active connection, as the connect flow
+    would leave it: Alpaca paper, or Zerodha (always live: Kite has no
+    paper environment)."""
     from sqlalchemy.dialects.postgresql import insert as pg_insert
 
     from engine.db.models import BrokerConnection, User
@@ -333,12 +365,15 @@ async def seed_account(*, auto_approve: bool = False) -> SimConnection:
         await s.execute(pg_insert(User).values(
             id=uuid.UUID(FIXTURE_USER), email="e2e@local.test", display_name="E2E",
         ).on_conflict_do_nothing(index_elements=["id"]))
+        is_paper = broker == "alpaca"
         s.add(BrokerConnection(
-            id=conn_id, user_id=uuid.UUID(FIXTURE_USER), broker="alpaca", is_paper=True,
+            id=conn_id, user_id=uuid.UUID(FIXTURE_USER), broker=broker, is_paper=is_paper,
             encrypted_access_token="sim", status="active", auto_approve_consent=auto_approve,
+            live_trading_consent=live_consent,
         ))
         await s.commit()
-    return SimConnection(id=str(conn_id))
+    return SimConnection(id=str(conn_id), is_paper=is_paper, broker=broker,
+                         live_trading_consent=live_consent)
 
 
 def option_proposal(*, occ: str, underlying: str, strike: float, expiry: date,
@@ -385,14 +420,18 @@ async def api_client():
         app.dependency_overrides.pop(require_real_auth, None)
 
 
-async def fleet_tick(monkeypatch: Any, *, market_open: bool = True) -> int:
-    """One pass of the production reconciler fleet, with the market clock
-    pinned by the scenario instead of the wall clock."""
+async def fleet_tick(monkeypatch: Any, *, market_open: bool | dict[str, bool] = True) -> int:
+    """One pass of the production reconciler fleet, with each market's clock
+    pinned by the scenario instead of the wall clock: a bool for every
+    market, or {"US": ..., "IN": ...}."""
     from app.services.broker.broker_store import get_broker_store
     from app.services.orders import reconciler_fleet
     from engine.db.session import async_session_factory
 
-    monkeypatch.setattr(reconciler_fleet, "_exits_allowed_now", lambda: market_open)
+    def _open(market: str = "US") -> bool:
+        return market_open.get(market, False) if isinstance(market_open, dict) else market_open
+
+    monkeypatch.setattr(reconciler_fleet, "_exits_allowed_now", _open)
     fleet = reconciler_fleet.ReconcilerFleet(
         session_factory=async_session_factory(),
         broker_store=get_broker_store(),

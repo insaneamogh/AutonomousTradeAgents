@@ -83,6 +83,7 @@ from engine.risk import (
 from engine.risk import (
     Side as RiskSide,
 )
+from engine.risk.markets import broker_for_symbol
 
 if TYPE_CHECKING:
     from broker.base import BrokerInterface
@@ -191,7 +192,13 @@ async def _execute_via_broker(
     exit_mode: str,
 ) -> ExecuteResponse:
     proposal_id = proposal.id
-    async with with_broker_client(user_id) as (broker, conn):
+    # The symbol's exchange picks the broker (NSE:/NFO: -> Zerodha, a bare
+    # symbol -> Alpaca), not BROKER_PREFERENCE: a user with both accounts
+    # must never have an NSE proposal sent to Alpaca, or the reverse.
+    async with with_broker_client(user_id, broker=broker_for_symbol(proposal.symbol)) as (
+        broker,
+        conn,
+    ):
         # 0. Live-trading gate — see live_trading_gate.py for the two-key
         # rule (operator env + per-connection consent). Either missing →
         # refuse, named for audit.
@@ -201,7 +208,9 @@ async def _execute_via_broker(
 
         # 1. Re-evaluate risk against the BROKER's view of the world,
         # merged with OUR halt/PDT state. Fails closed if state is unreadable.
-        risk_ctx = await _build_risk_context(broker, user_id=user_id)
+        risk_ctx = await _build_risk_context(
+            broker, user_id=user_id, source=getattr(conn, "broker", None)
+        )
         risk_inputs = await load_risk_inputs(proposal, user_id=user_id)
         risk_decision = _re_run_risk(proposal, risk_ctx, risk_caps, risk_inputs)
 
@@ -629,7 +638,9 @@ async def _find_pending_proposal(
     return None
 
 
-async def _load_db_state_or_fail(user_id: str, current_equity: float | None) -> DbRiskState:
+async def _load_db_state_or_fail(
+    user_id: str, current_equity: float | None, source: str | None = None
+) -> DbRiskState:
     """Halt + PDT + daily-drawdown state from Postgres — FAIL CLOSED.
 
     The execution moment is the one place the system must never run blind:
@@ -649,7 +660,8 @@ async def _load_db_state_or_fail(user_id: str, current_equity: float | None) -> 
         from engine.db.session import async_session_factory
 
         return await load_db_risk_state(
-            async_session_factory(), user_id=user_id, current_equity=current_equity
+            async_session_factory(), user_id=user_id, current_equity=current_equity,
+            source=source,
         )
     except Exception as exc:  # noqa: BLE001 — any failure here fails closed
         raise ExecutorError(
@@ -658,7 +670,9 @@ async def _load_db_state_or_fail(user_id: str, current_equity: float | None) -> 
         ) from exc
 
 
-async def _build_risk_context(broker: "BrokerInterface", *, user_id: str) -> RiskContext:
+async def _build_risk_context(
+    broker: "BrokerInterface", *, user_id: str, source: str | None = None
+) -> RiskContext:
     """Broker = freshest equity/positions; Postgres = halt + PDT state.
 
     We deliberately don't pull equity/positions from ``positions_snapshot``
@@ -684,7 +698,9 @@ async def _build_risk_context(broker: "BrokerInterface", *, user_id: str) -> Ris
     )
     cash = max(0.0, equity - sum(p.market_value for p in positions))
 
-    db_state = await _load_db_state_or_fail(user_id, equity)
+    # The drawdown baseline must come from THIS broker's snapshots: equity
+    # here is in its currency.
+    db_state = await _load_db_state_or_fail(user_id, equity, source)
     options_trading_level = await broker.get_options_trading_level()
 
     return RiskContext(

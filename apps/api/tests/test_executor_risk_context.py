@@ -191,7 +191,7 @@ async def test_tripped_breaker_blocks_buy_at_execution(
         drawdown_halt_reason="daily drawdown -3.2%",
     )
 
-    async def _halted_state(_user_id: str, _equity: float | None) -> DbRiskState:
+    async def _halted_state(_user_id: str, _equity: float | None, _source=None) -> DbRiskState:
         return halted
 
     monkeypatch.setattr(executor_mod, "_load_db_state_or_fail", _halted_state)

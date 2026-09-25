@@ -40,7 +40,9 @@ async def _tick(exits_open: bool) -> tuple[AsyncMock, AsyncMock]:
         session_factory=lambda: None,
         broker_store=SimpleNamespace(
             list_active_connections_by_broker=AsyncMock(
-                return_value=[SimpleNamespace(user_id=UID, id=str(uuid.uuid4()), is_paper=True)]
+                side_effect=lambda b: [
+                    SimpleNamespace(user_id=UID, id=str(uuid.uuid4()), is_paper=True, broker=b)
+                ] if b == "alpaca" else []
             )
         ),
     )
@@ -53,7 +55,7 @@ async def _tick(exits_open: bool) -> tuple[AsyncMock, AsyncMock]:
     expiry = AsyncMock(return_value=0)
     with (
         patch.object(fleet_mod, "with_broker_client", lambda *a, **k: _Ctx()),
-        patch.object(fleet_mod, "_exits_allowed_now", lambda: exits_open),
+        patch.object(fleet_mod, "_exits_allowed_now", lambda *_a: exits_open),
         patch.object(account_switch_mod, "reconcile_account_identity", AsyncMock(return_value=False)),
         patch.object(order_sync_mod, "sync_user_orders_and_positions", AsyncMock(return_value=None)),
         patch.object(stale_entries_mod, "sweep_stale_entry_orders_for_user", AsyncMock(return_value=0)),
@@ -84,5 +86,6 @@ def test_a_calendar_failure_allows_exits(monkeypatch: pytest.MonkeyPatch) -> Non
     def boom(_now: Any) -> bool:
         raise RuntimeError("calendar unavailable")
 
-    monkeypatch.setattr(engine.features, "is_us_market_open", boom)
+    monkeypatch.setattr(engine.features, "is_market_open", lambda *_a: boom(None))
     assert fleet_mod._exits_allowed_now() is True
+    assert fleet_mod._exits_allowed_now("IN") is True

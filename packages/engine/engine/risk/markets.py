@@ -39,3 +39,19 @@ def tradingsymbol_of(symbol: str) -> str:
     """Return the tradingsymbol with any exchange prefix stripped."""
     _, sep, rest = symbol.partition(":")
     return rest if sep else symbol
+
+
+# Which broker trades which market. One place, so no loop hardcodes a
+# broker name again (docs/PLAN_ZERODHA.md Z1).
+BROKER_FOR_MARKET: dict[str, str] = {"US": "alpaca", "IN": "zerodha"}
+MARKET_FOR_BROKER: dict[str, str] = {b: m for m, b in BROKER_FOR_MARKET.items()}
+
+
+def broker_for_symbol(symbol: str) -> str:
+    """"zerodha" for an Indian-exchange symbol, "alpaca" otherwise."""
+    return BROKER_FOR_MARKET[market_of(symbol)]
+
+
+def market_for_broker(broker: str) -> str:
+    """"IN" for zerodha, "US" for alpaca (and for anything unknown)."""
+    return MARKET_FOR_BROKER.get(str(broker).lower(), "US")

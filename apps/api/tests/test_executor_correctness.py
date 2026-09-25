@@ -262,7 +262,7 @@ def test_pdt_block_reaches_the_broker_path(monkeypatch: pytest.MonkeyPatch) -> N
             RiskInputs(council_confidence=0.9, closes_intraday_position=True),
         )
 
-        async def _state(_user_id: str, _equity: float | None) -> DbRiskState:
+        async def _state(_user_id: str, _equity: float | None, _source=None) -> DbRiskState:
             return DbRiskState(day_trades_last_5d=4)
 
         monkeypatch.setattr(executor_mod, "_load_db_state_or_fail", _state)

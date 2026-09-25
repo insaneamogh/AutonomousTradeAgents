@@ -137,7 +137,9 @@ async def test_a_breaker_trip_pages_the_user() -> None:
         session_factory=lambda: _FakeSession(),
         broker_store=SimpleNamespace(
             list_active_connections_by_broker=AsyncMock(
-                return_value=[SimpleNamespace(user_id=uid, id=str(uuid.uuid4()), is_paper=True)]
+                side_effect=lambda b: [
+                    SimpleNamespace(user_id=uid, id=str(uuid.uuid4()), is_paper=True, broker=b)
+                ] if b == "alpaca" else []
             )
         ),
     )

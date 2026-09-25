@@ -219,3 +219,96 @@ def minutes_until_us_market_open(now: datetime) -> float | None:
             return (bounds[0] - now_utc).total_seconds() / 60.0
         probe += timedelta(days=1)
     return None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# India (NSE / BSE): docs/PLAN_ZERODHA.md Z1
+#
+# exchange_calendars' XBOM calendar (BSE; NSE observes the same trading
+# days) is already installed as a pandas_market_calendars dependency. Its
+# 2026 closures were checked against NSE's published 2026 holiday list on
+# 2026-09-25: identical, all 16 dates, including the 2026-01-15 municipal
+# election closure. Regular session 09:15-15:30 IST, no DST.
+# ─────────────────────────────────────────────────────────────────────
+
+_IST = "Asia/Kolkata"
+IN_REGULAR_OPEN = _dtime(9, 15)
+IN_REGULAR_CLOSE = _dtime(15, 30)
+
+# Static fallback, used only if exchange_calendars cannot be imported.
+IN_MARKET_HOLIDAYS: frozenset[date] = frozenset(
+    {
+        date(2026, 1, 15),   # Maharashtra municipal elections
+        date(2026, 1, 26),   # Republic Day
+        date(2026, 3, 3),    # Holi
+        date(2026, 3, 26),   # Ram Navami
+        date(2026, 3, 31),   # Mahavir Jayanti
+        date(2026, 4, 3),    # Good Friday
+        date(2026, 4, 14),   # Dr. Ambedkar Jayanti
+        date(2026, 5, 1),    # Maharashtra Day
+        date(2026, 5, 28),   # Bakri Id
+        date(2026, 6, 26),   # Muharram
+        date(2026, 9, 14),   # Ganesh Chaturthi
+        date(2026, 10, 2),   # Gandhi Jayanti
+        date(2026, 10, 20),  # Dussehra
+        date(2026, 11, 10),  # Diwali Balipratipada
+        date(2026, 11, 24),  # Guru Nanak Jayanti
+        date(2026, 12, 25),  # Christmas
+    }
+)
+_IN_COVERED_YEARS = frozenset(d.year for d in IN_MARKET_HOLIDAYS)
+_XBOM_CACHE: object = False
+
+
+def _xbom_sessions() -> tuple[frozenset[date], date, date] | None:
+    global _XBOM_CACHE
+    if _XBOM_CACHE is not False:
+        return _XBOM_CACHE  # type: ignore[return-value]
+    try:
+        import exchange_calendars as xcals
+
+        cal = xcals.get_calendar("XBOM")
+        lo = max(date(2024, 1, 1), cal.first_session.date())
+        hi = min(date(2031, 12, 31), cal.last_session.date())
+        days = frozenset(ts.date() for ts in cal.sessions_in_range(lo.isoformat(), hi.isoformat()))
+        _XBOM_CACHE = (days, lo, hi)
+        logger.info("market_calendar: using exchange_calendars XBOM (%d sessions cached)", len(days))
+    except Exception as exc:
+        logger.info("market_calendar: XBOM unavailable (%s) — static India table", exc)
+        _XBOM_CACHE = None
+    return _XBOM_CACHE  # type: ignore[return-value]
+
+
+def is_in_trading_day(d: date) -> bool:
+    """True when NSE holds a regular session on ``d``. Fails OPEN outside
+    every table, for the same reason as the US gate."""
+    if d.weekday() >= 5:
+        return False
+    xbom = _xbom_sessions()
+    if xbom is not None:
+        days, lo, hi = xbom
+        if lo <= d <= hi:
+            return d in days
+    if d.year not in _IN_COVERED_YEARS:
+        logger.warning("market_calendar: %s not covered for India — treating as OPEN", d.year)
+        return True
+    return d not in IN_MARKET_HOLIDAYS
+
+
+def is_in_market_open(now: datetime) -> bool:
+    """True inside the regular NSE session, 09:15-15:30 IST. Pre-open
+    (09:00-09:15) and the closing session read as closed."""
+    local = now.astimezone(ZoneInfo(_IST))
+    if not is_in_trading_day(local.date()):
+        return False
+    return IN_REGULAR_OPEN <= local.time() < IN_REGULAR_CLOSE
+
+
+def is_market_open(market: str, now: datetime) -> bool:
+    """The session gate for a market code from engine.risk.markets
+    ("US" or "IN")."""
+    return is_in_market_open(now) if market == "IN" else is_us_market_open(now)
+
+
+def is_trading_day(market: str, d: date) -> bool:
+    return is_in_trading_day(d) if market == "IN" else is_us_trading_day(d)

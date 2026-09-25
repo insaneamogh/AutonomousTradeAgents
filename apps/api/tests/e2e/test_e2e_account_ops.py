@@ -10,7 +10,6 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
-from broker.types import AccountActivity
 from e2e_harness import (
     SimBroker,
     _Held,
@@ -23,6 +22,8 @@ from e2e_harness import (
     patch_broker,
     seed_account,
 )
+
+from broker.types import AccountActivity
 
 pytestmark = [pytest.mark.e2e, pytest.mark.usefixtures("e2e_db")]
 
