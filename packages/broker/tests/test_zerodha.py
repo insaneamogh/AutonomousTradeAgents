@@ -29,6 +29,13 @@ from broker.zerodha import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _fresh_order_pacing() -> None:
+    from broker.zerodha import reset_order_rate_for_tests
+
+    reset_order_rate_for_tests()
+
+
 def _broker(handler: Callable[[httpx.Request], httpx.Response]) -> ZerodhaBroker:
     return ZerodhaBroker(
         api_key="testkey",
@@ -507,3 +514,69 @@ async def test_closing_a_symbol_also_deletes_its_active_gtts() -> None:
 
     assert await _broker(handler).cancel_open_orders("NSE:RELIANCE") == 1
     assert deleted == ["/gtt/triggers/123"]
+
+
+@pytest.mark.asyncio
+async def test_an_unregistered_ip_is_its_own_error_not_a_login_problem() -> None:
+    from broker.zerodha import ZerodhaIpNotAllowedError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return _ok([])
+        return httpx.Response(403, json={"status": "error", "error_type": "PermissionException",
+                                         "message": "Orders from this IP are not allowed"})
+
+    with pytest.raises(ZerodhaIpNotAllowedError):
+        await _broker(handler).place_order(
+            OrderRequest(symbol="NSE:RELIANCE", side=Side.BUY, qty=1, order_type=OrderType.MARKET)
+        )
+
+
+@pytest.mark.asyncio
+async def test_order_placement_is_paced_under_kites_per_second_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    import broker.zerodha as z
+
+    z.reset_order_rate_for_tests()
+    slept: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+        z._order_times["testkey"].clear()  # the window passes
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    for _ in range(z._ORDER_RATE_PER_SECOND):
+        await z._await_order_slot("testkey")
+    assert slept == []
+    await z._await_order_slot("testkey")  # the 9th inside one second waits
+    assert slept and slept[0] <= 1.0
+    z.reset_order_rate_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_only_order_mutations_go_through_the_static_ip_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import broker.zerodha as z
+
+    monkeypatch.setenv("KITE_ORDER_PROXY_URL", "http://egress.internal:3128")
+    proxies: list[tuple[str, str, object]] = []
+    real_client = httpx.AsyncClient
+
+    def spy(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        proxies.append(kwargs.pop("proxy"))
+        return real_client(*args, transport=httpx.MockTransport(
+            lambda r: _ok({"order_id": "1"} if r.method == "POST" else [_order_row(order_id="1")])
+        ), **{k: v for k, v in kwargs.items() if k != "transport"})
+
+    monkeypatch.setattr(z.httpx, "AsyncClient", spy)
+    broker = ZerodhaBroker(api_key="k", access_token="t")  # no transport: real egress path
+    await broker.place_order(OrderRequest(symbol="NSE:RELIANCE", side=Side.BUY, qty=1,
+                                          order_type=OrderType.MARKET))
+    # POST /orders/regular via the proxy; the read-back GET /orders/1 direct.
+    assert proxies == ["http://egress.internal:3128", None]

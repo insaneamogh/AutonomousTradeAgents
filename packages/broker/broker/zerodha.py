@@ -126,6 +126,50 @@ class ZerodhaError(Exception):
     """Kite API returned an error envelope or unexpected payload."""
 
 
+class ZerodhaIpNotAllowedError(ZerodhaError):
+    """Kite refused an order because it did not come from the static IP
+    registered for this API key (SEBI's retail algo framework, in force for
+    API orders since 2026-04-01). Distinct from an expired token: the fix
+    is the egress (KITE_ORDER_PROXY_URL / the IP registered with Kite), not
+    a re-login."""
+
+
+# ── Order-rate guard ──────────────────────────────────────────────────
+# Kite: 10 orders/s and 400/min per API key; above 10/s the strategy must
+# be registered with the exchange. Stay well under both, per key, across
+# every ZerodhaBroker in this process (one is built per request).
+_ORDER_RATE_PER_SECOND = 8
+_ORDER_RATE_PER_MINUTE = 300
+_order_times: dict[str, list[float]] = {}
+
+
+async def _await_order_slot(api_key: str) -> None:
+    import asyncio
+    import time as _time
+
+    stamps = _order_times.setdefault(api_key, [])
+    while True:
+        now = _time.monotonic()
+        stamps[:] = [t for t in stamps if now - t < 60.0]
+        last_second = [t for t in stamps if now - t < 1.0]
+        if len(last_second) < _ORDER_RATE_PER_SECOND and len(stamps) < _ORDER_RATE_PER_MINUTE:
+            stamps.append(now)
+            return
+        oldest = last_second[0] if len(last_second) >= _ORDER_RATE_PER_SECOND else stamps[0]
+        window = 1.0 if len(last_second) >= _ORDER_RATE_PER_SECOND else 60.0
+        await asyncio.sleep(max(0.01, window - (now - oldest)))
+
+
+def reset_order_rate_for_tests() -> None:
+    _order_times.clear()
+
+
+def _is_order_mutation(method: str, path: str) -> bool:
+    """Calls that place, modify or cancel an order or a GTT: the ones Kite
+    checks against the registered static IP."""
+    return method != "GET" and (path.startswith("/orders") or path.startswith("/gtt"))
+
+
 def split_symbol(symbol: str) -> tuple[str, str]:
     """``'NFO:NIFTY24DECFUT'`` → ``('NFO', 'NIFTY24DECFUT')``. Bare → NSE."""
     if ":" in symbol:
@@ -257,6 +301,10 @@ class ZerodhaBroker(BrokerInterface):
         )
         self._transport = transport
         self._timeout = timeout
+        # SEBI: API orders must leave from the static IP registered with
+        # Kite. When set, every order/GTT mutation goes out through this
+        # proxy (the dedicated egress); reads stay direct.
+        self._order_proxy = os.environ.get("KITE_ORDER_PROXY_URL", "").strip() or None
         # Validated at construction: a bad value must fail the connection,
         # not every order at submit time.
         self._market_protection = _market_protection(os.environ.get("KITE_MARKET_PROTECTION"))
@@ -287,10 +335,15 @@ class ZerodhaBroker(BrokerInterface):
         """One Kite call. Unwraps the ``{status, data}`` envelope; raises
         ``ZerodhaError`` with Kite's message on anything non-success.
         """
+        mutation = _is_order_mutation(method, path)
+        if mutation and method == "POST":
+            await _await_order_slot(self._api_key)
+        proxy = self._order_proxy if mutation and self._transport is None else None
         async with httpx.AsyncClient(
             base_url=self._base_url,
             transport=self._transport,
             timeout=self._timeout,
+            proxy=proxy,
         ) as client:
             try:
                 resp = await client.request(
@@ -309,6 +362,12 @@ class ZerodhaBroker(BrokerInterface):
         if resp.status_code >= 400 or payload.get("status") == "error":
             message = payload.get("message", f"HTTP {resp.status_code}")
             error_type = payload.get("error_type", "unknown")
+            if mutation and " ip" in f" {message}".lower():
+                logger.error(
+                    "zerodha: Kite refused an order from an unregistered IP. Register this "
+                    "server's egress IP with Kite, or set KITE_ORDER_PROXY_URL (%s)", error_type,
+                )
+                raise ZerodhaIpNotAllowedError(f"{error_type}: {message}")
             raise ZerodhaError(f"{error_type}: {message}")
         return payload.get("data")
 
