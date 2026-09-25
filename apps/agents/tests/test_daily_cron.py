@@ -280,3 +280,31 @@ async def test_reflection_pass_uses_a_window_wide_enough_for_multi_day_holds(
         f"reflection window is only {captured['since']} -- too narrow to catch "
         "a trade that takes several days to close (the production bug)"
     )
+
+
+async def test_an_nse_run_gates_on_the_nse_calendar_and_drops_us_symbols(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import engine.features
+    from trading_agents.jobs import daily_cron
+
+    # A US holiday must not stop an NSE run; an NSE holiday must.
+    monkeypatch.setattr(engine.features, "is_us_trading_day", lambda _d: False)
+    monkeypatch.setattr(engine.features, "is_in_trading_day", lambda _d: False)
+    user = "00000000-0000-0000-0000-000000000001"
+    assert await daily_cron.main(user, ["NSE:RELIANCE"], force=False, market="IN") == 0
+
+    ran: list[str] = []
+
+    class _Stop(Exception):
+        pass
+
+    def _llm_refuses():
+        ran.append("past the calendar gate")
+        raise _Stop
+
+    monkeypatch.setattr(engine.features, "is_in_trading_day", lambda _d: True)
+    monkeypatch.setattr(daily_cron, "LLM", _llm_refuses)
+    with pytest.raises(_Stop):
+        await daily_cron.main(user, ["NSE:RELIANCE", "AAPL"], force=False, market="IN")
+    assert ran == ["past the calendar gate"]

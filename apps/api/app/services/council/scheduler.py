@@ -224,9 +224,11 @@ def _cron_user() -> str:
     return os.environ.get("AGENT_CRON_USER_ID", "").strip() or _FIXTURE_USER
 
 
-def _scan_times() -> list[tuple[int, int]]:
-    """Parse COUNCIL_SCAN_TIMES_UTC into sorted (hour, minute) pairs."""
-    raw = os.environ.get("COUNCIL_SCAN_TIMES_UTC", "").strip() or DEFAULT_SCAN_TIMES
+def _scan_times(
+    env: str = "COUNCIL_SCAN_TIMES_UTC", default: str = DEFAULT_SCAN_TIMES
+) -> list[tuple[int, int]]:
+    """Parse a scan-times env var into sorted (hour, minute) pairs."""
+    raw = os.environ.get(env, "").strip() or default
     out: list[tuple[int, int]] = []
     for chunk in raw.split(","):
         chunk = chunk.strip()
@@ -236,13 +238,27 @@ def _scan_times() -> list[tuple[int, int]]:
             hh, mm = chunk.split(":")
             h, m = int(hh), int(mm)
         except ValueError:
-            logger.warning("ignoring malformed COUNCIL_SCAN_TIMES_UTC entry %r", chunk)
+            logger.warning("ignoring malformed %s entry %r", env, chunk)
             continue
         if 0 <= h <= 23 and 0 <= m <= 59:
             out.append((h, m))
         else:
             logger.warning("ignoring out-of-range scan time %r", chunk)
-    return sorted(set(out)) or [(14, 0)]
+    if out:
+        return sorted(set(out))
+    h, m = default.split(",")[0].split(":")
+    return [(int(h), int(m))]
+
+
+IN_DEFAULT_SCAN_TIMES = "04:30"
+"""10:00 IST: after the 09:15 open and its first-quarter-hour noise, with
+the whole session left for the entry to fill (Kite orders are DAY)."""
+
+
+def _for_market(symbols: list[str], market: str) -> list[str]:
+    from engine.risk.markets import market_of
+
+    return [s for s in symbols if market_of(s) == market]
 
 
 def _seconds_until_next(now: datetime, times: list[tuple[int, int]]) -> float:
@@ -344,6 +360,10 @@ class CouncilScheduler:
             self._tasks.append(asyncio.create_task(self._iv_snapshot_loop()))
         else:
             logger.info("IV snapshot disabled (IV_SNAPSHOT_ENABLED=0)")
+        if _flag("IN_SWEEP_ENABLED"):
+            self._tasks.append(asyncio.create_task(self._india_loop()))
+        else:
+            logger.info("NSE sweep disabled (IN_SWEEP_ENABLED=0; Zerodha trades real money)")
         if _flag("EOD_REPORT_ENABLED", default=True):
             self._tasks.append(asyncio.create_task(self._eod_loop()))
         else:
@@ -412,6 +432,33 @@ class CouncilScheduler:
                 )
             # Guard against a scan finishing inside the same minute it
             # started, which would otherwise re-fire immediately.
+            await asyncio.sleep(61)
+
+    async def _india_loop(self) -> None:
+        """The NSE sweep: IN_SCAN_TIMES_UTC (default 04:30 = 10:00 IST),
+        NSE symbols only, gated on the NSE calendar inside the cron."""
+        times = _scan_times("IN_SCAN_TIMES_UTC", IN_DEFAULT_SCAN_TIMES)
+        logger.info("NSE sweep armed — scan times (UTC): %s",
+                    ", ".join(f"{h:02d}:{m:02d}" for h, m in times))
+        while True:
+            try:
+                await asyncio.sleep(_seconds_until_next(datetime.now(UTC), times))
+            except asyncio.CancelledError:
+                raise
+            try:
+                await self._run_once(market="IN")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.exception("NSE sweep failed — will retry next window")
+                from app.services.notifications.ops_alerts import raise_ops_alert
+
+                raise_ops_alert(
+                    "sweep_failed", user_id=_cron_user(), key="IN",
+                    title="NSE sweep failed",
+                    body=f"The NSE council sweep raised {type(exc).__name__}. "
+                    "It will retry at the next scan time.",
+                )
             await asyncio.sleep(61)
 
     # ── Universe refresh loop ────────────────────────────────────────
@@ -685,8 +732,9 @@ class CouncilScheduler:
         self.last_run_at = started
         self.last_result = {"exit_code": code, "symbols": len(selected), "triggered": 1}
 
-    async def _run_once(self) -> None:
-        """One full watchlist pass. Delegates to the existing cron entry point.
+    async def _run_once(self, market: str = "US") -> None:
+        """One full watchlist pass over ``market``'s symbols. Delegates to the
+        existing cron entry point.
 
         ``daily_cron.main`` owns the market-calendar gate, the per-symbol
         idempotency check, the push notification, and the ghost/reflection
@@ -696,12 +744,20 @@ class CouncilScheduler:
 
         user_id = _cron_user()
         watchlist, instruments = await _watchlist_with_instruments()
+        # Each market is swept in its own session on its own calendar: an
+        # NSE symbol swept at the US scan time (19:30 IST) would draft an
+        # order NSE cannot fill until tomorrow, on today's stale close.
+        watchlist = _for_market(watchlist, market)
+        if not watchlist:
+            logger.info("council scan (%s): no symbols for this market", market)
+            return
 
-        logger.info("council scan starting — %d symbols", len(watchlist))
+        logger.info("council scan (%s) starting — %d symbols", market, len(watchlist))
         started = datetime.now(UTC)
         code = await cron_main(
             user_id, watchlist, force=False, instrument_by_symbol=instruments,
             on_sweep_scored=lambda t: self._record_sweep_tally(t, kind="baseline"),
+            market=market,
         )
         self.last_run_at = started
         self.last_result = {"exit_code": code, "symbols": len(watchlist)}

@@ -535,3 +535,40 @@ def test_eod_report_hour_defaults_after_the_close_year_round(
     assert _eod_report_hour() == 21  # 21:15 UTC is after 16:00 ET in EST and EDT
     monkeypatch.setenv("EOD_REPORT_HOUR_UTC", "nope")
     assert _eod_report_hour() == 21
+
+
+# ── NSE sweep (docs/PLAN_ZERODHA.md Z5) ─────────────────────────────
+
+
+async def test_each_markets_sweep_runs_only_its_own_symbols(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.council import scheduler as sched
+    from app.services.council.scheduler import CouncilScheduler
+    from trading_agents.jobs import daily_cron
+
+    async def mixed():
+        return ["AAPL", "NSE:RELIANCE", "NVDA", "NSE:INFY"], {}
+
+    calls: list[tuple[list[str], str]] = []
+
+    async def fake_cron_main(user_id, symbols, **kwargs):
+        calls.append((list(symbols), kwargs["market"]))
+        return 0
+
+    monkeypatch.setattr(sched, "_watchlist_with_instruments", mixed)
+    monkeypatch.setattr(daily_cron, "main", fake_cron_main)
+    s = CouncilScheduler()
+    await s._run_once()
+    await s._run_once(market="IN")
+    assert calls == [(["AAPL", "NVDA"], "US"), (["NSE:RELIANCE", "NSE:INFY"], "IN")]
+
+
+def test_the_nse_sweep_is_off_until_turned_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Zerodha is real money: nothing arms it by default."""
+    from app.services.council.scheduler import IN_DEFAULT_SCAN_TIMES, _flag, _scan_times
+
+    monkeypatch.delenv("IN_SWEEP_ENABLED", raising=False)
+    assert _flag("IN_SWEEP_ENABLED") is False
+    monkeypatch.delenv("IN_SCAN_TIMES_UTC", raising=False)
+    assert _scan_times("IN_SCAN_TIMES_UTC", IN_DEFAULT_SCAN_TIMES) == [(4, 30)]  # 10:00 IST

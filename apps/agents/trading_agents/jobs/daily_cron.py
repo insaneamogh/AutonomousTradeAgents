@@ -677,8 +677,12 @@ async def main(
     scan_context: Mapping[str, SymbolScanContext] | None = None,
     instrument_by_symbol: Mapping[str, str] | None = None,
     on_sweep_scored: Callable[[SweepTally], None] | None = None,
+    market: str = "US",
 ) -> int:
     """Run the council across ``watchlist``. Returns a process exit code.
+
+    ``market`` ("US" / "IN") picks the trading calendar the run is gated on,
+    and only that market's symbols are run.
 
     ``on_sweep_scored``, like ``scan_context``/``instrument_by_symbol``
     above, is optional and additive — every existing caller that omits it
@@ -747,11 +751,17 @@ async def main(
     # the dedup check below); skip_calendar_gate overrides ONLY this gate,
     # for a caller that already knows the market is open.
     today = datetime.now(UTC).date()
-    from engine.features import is_us_trading_day
+    from engine.features import is_in_trading_day, is_us_trading_day
+    from engine.risk.markets import market_of
 
-    if not (force or skip_calendar_gate) and not is_us_trading_day(today):
-        log.info("US market closed on %s — skipping council run", today)
+    is_open_day = is_in_trading_day if market == "IN" else is_us_trading_day
+    if not (force or skip_calendar_gate) and not is_open_day(today):
+        log.info("%s market closed on %s — skipping council run", market, today)
         return 0
+    other = [s for s in watchlist if market_of(s) != market]
+    if other:
+        log.warning("skipping %d symbol(s) not on the %s market: %s", len(other), market, other)
+        watchlist = [s for s in watchlist if market_of(s) == market]
 
     # Both constructors hard-fail under the REQUIRE flags — a misconfigured
     # production cron must crash loudly, never degrade to mock/synthetic.
