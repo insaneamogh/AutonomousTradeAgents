@@ -255,6 +255,17 @@ def _parse_kite_ts(value: Any) -> datetime | None:
         return None
 
 
+_KITE_SIDE: dict[Side, str] = {
+    Side.BUY: "BUY", Side.SELL: "SELL", Side.BUY_TO_OPEN: "BUY", Side.SELL_TO_CLOSE: "SELL",
+}
+
+
+def _is_kite_option(exchange: str, tradingsymbol: str) -> bool:
+    """An exchange-traded option on a derivatives segment: the symbol ends
+    CE (call) or PE (put). Futures end FUT."""
+    return exchange.upper() in _DERIVATIVE_EXCHANGES and tradingsymbol.upper().endswith(("CE", "PE"))
+
+
 GTT_PREFIX = "gtt:"
 
 
@@ -413,7 +424,9 @@ class ZerodhaBroker(BrokerInterface):
         form: dict[str, Any] = {
             "exchange": exchange,
             "tradingsymbol": tradingsymbol,
-            "transaction_type": request.side.value,
+            # Kite knows BUY and SELL only; an option order arrives here as
+            # BUY_TO_OPEN / SELL_TO_CLOSE (the Alpaca-shaped intent).
+            "transaction_type": _KITE_SIDE[request.side],
             "order_type": _TYPE_TO_KITE[request.order_type],
             "quantity": request.qty,
             "product": self._product_for(exchange),
@@ -795,15 +808,21 @@ class ZerodhaBroker(BrokerInterface):
         last = float(raw.get("last_price", 0) or 0)
         pnl = float(raw.get("pnl", (last - avg) * qty) or 0)
         cost = avg * qty
+        exchange = str(raw.get("exchange", "NSE"))
+        tradingsymbol = str(raw.get("tradingsymbol", ""))
         return Position(
-            symbol=join_symbol(
-                str(raw.get("exchange", "NSE")), str(raw.get("tradingsymbol", ""))
-            ),
+            symbol=join_symbol(exchange, tradingsymbol),
             qty=qty,
             avg_entry_price=avg,
             market_value=last * qty,
             unrealized_pl=pnl,
             unrealized_pl_pct=(pnl / abs(cost)) * 100 if cost else 0.0,
+            # Kite counts an option position in UNITS (lots x lot size), so
+            # the multiplier is 1: value = price x qty, unlike an OCC
+            # contract's x100. is_option is what lets the premium stop and
+            # the total-premium cap see it at all.
+            multiplier=1,
+            is_option=_is_kite_option(exchange, tradingsymbol),
             raw={k: str(v) for k, v in raw.items()},
         )
 

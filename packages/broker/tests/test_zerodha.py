@@ -630,3 +630,41 @@ async def test_quotes_are_requested_in_one_call_keyed_by_exchange_symbol() -> No
 
     q = await _broker(handler).quotes(["NSE:RELIANCE", "infy"])
     assert q == {"NSE:RELIANCE": {"last_price": 2905.0}}
+
+
+# ── Index options (NFO) ───────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("side", "kite"), [(Side.BUY_TO_OPEN, "BUY"), (Side.SELL_TO_CLOSE, "SELL")])
+async def test_option_sides_reach_kite_as_buy_and_sell(side: Side, kite: str) -> None:
+    """Kite's transaction_type is BUY or SELL; the executor sends options as
+    BUY_TO_OPEN / SELL_TO_CLOSE, which Kite would reject."""
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            seen.update({k: v[0] for k, v in parse_qs(request.content.decode()).items()})
+            return _ok({"order_id": "1"})
+        return _ok([_order_row(order_id="1", exchange="NFO",
+                               tradingsymbol="NIFTY26SEP25000CE", transaction_type=kite)])
+
+    order = await _broker(handler).place_order(OrderRequest(
+        symbol="NFO:NIFTY26SEP25000CE", side=side, qty=65, order_type=OrderType.LIMIT,
+        limit_price=120.0,
+    ))
+    assert seen["transaction_type"] == kite
+    assert seen["product"] == "NRML" and seen["exchange"] == "NFO"
+    assert order.symbol == "NFO:NIFTY26SEP25000CE"
+
+
+def test_an_nfo_option_position_is_an_option_in_units() -> None:
+    b = ZerodhaBroker(api_key="k", access_token="t")
+    opt = b._position_from_kite({"exchange": "NFO", "tradingsymbol": "NIFTY26SEP25000CE",
+                                 "quantity": 65, "average_price": 120.0, "last_price": 90.0})
+    fut = b._position_from_kite({"exchange": "NFO", "tradingsymbol": "NIFTY26SEPFUT",
+                                 "quantity": 65, "average_price": 25000.0, "last_price": 25100.0})
+    eq = b._position_from_kite({"exchange": "NSE", "tradingsymbol": "RELIANCE", "quantity": 5,
+                                "average_price": 2900.0, "last_price": 2950.0})
+    assert (opt.is_option, opt.multiplier, opt.unrealized_pl_pct) == (True, 1, -25.0)
+    assert fut.is_option is False and eq.is_option is False
