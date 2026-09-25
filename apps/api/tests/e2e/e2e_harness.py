@@ -69,11 +69,21 @@ class SimBroker:
     """Behave like ZerodhaBroker: refuse bracket legs and GTC, exactly as
     the real adapter does (broker/zerodha.py place_order)."""
     activities_error: Exception | None = None
+    exit_oco_error: Exception | None = None
+    """Set to make GTT placement fail, as a Kite rejection would."""
+    gtts: set[str] = field(default_factory=set)
+    hold_gtts: bool = False
+    """Kite evaluates a GTT with some latency; True keeps crossed GTT legs
+    resting, to pin what happens in that gap."""
     """Set to make the activities read fail, as a 403 or timeout would."""
     _ids: Any = field(default_factory=lambda: itertools.count(1))
     _start_equity: float | None = None
 
     name = "sim"
+
+    @property
+    def supports_brackets(self) -> bool:
+        return not self.kite
 
     # ── scenario controls ────────────────────────────────────────────
 
@@ -83,6 +93,8 @@ class SimBroker:
         for oid, req in list(self.requests.items()):
             order = self.orders[oid]
             if req.symbol != symbol or order.status is not OrderStatus.ACCEPTED:
+                continue
+            if self.hold_gtts and any(oid in self.legs_of.get(g, ()) for g in self.gtts):
                 continue
             if req.order_type in (OrderType.STOP, OrderType.STOP_LIMIT):
                 elected = price <= req.stop_price if req.side in _SELLS else price >= req.stop_price
@@ -154,14 +166,43 @@ class SimBroker:
             self._open_bracket_legs(oid, request)
         return await self.get_order(oid)
 
+    async def place_exit_oco(self, *, symbol: str, qty: int, entry_side: Side, stop: float,
+                             target: float, last_price: float) -> str:
+        """Kite's two-leg GTT: a stop and a limit resting as OCO siblings,
+        read back as ONE order ``gtt:<n>`` (ZerodhaBroker._gtt_as_order)."""
+        if self.exit_oco_error is not None:
+            raise self.exit_oco_error
+        gtt = f"gtt:{next(self._ids)}"
+        self._open_bracket_legs(gtt, OrderRequest(
+            symbol=symbol, side=entry_side, qty=qty, take_profit_price=target,
+            stop_loss_price=stop,
+        ))
+        self.gtts.add(gtt)
+        return gtt
+
     async def get_order(self, broker_order_id: str) -> Order:
         from dataclasses import replace
 
+        if broker_order_id in self.gtts:
+            legs = [self.orders[c] for c in self.legs_of[broker_order_id]]
+            filled = next((leg for leg in legs if leg.status is OrderStatus.FILLED), None)
+            live = any(leg.status is OrderStatus.ACCEPTED for leg in legs)
+            base = legs[0]
+            if filled is not None:
+                return replace(filled, broker_order_id=broker_order_id, legs=())
+            return replace(base, broker_order_id=broker_order_id, filled_qty=0,
+                           avg_fill_price=None, raw={},
+                           status=OrderStatus.ACCEPTED if live else OrderStatus.CANCELED)
         order = self.orders[broker_order_id]
         legs = tuple(self.orders[c] for c in self.legs_of.get(broker_order_id, ()))
         return replace(order, legs=legs) if legs else order
 
     async def cancel_order(self, broker_order_id: str) -> Order:
+        if broker_order_id in self.gtts:
+            for child in self.legs_of[broker_order_id]:
+                if self.orders[child].status is OrderStatus.ACCEPTED:
+                    self._set(child, status=OrderStatus.CANCELED)
+            return await self.get_order(broker_order_id)
         self._set(broker_order_id, status=OrderStatus.CANCELED)
         return self.orders[broker_order_id]
 
@@ -310,6 +351,7 @@ _BROKER_CLIENT_USERS = (
     "app.services.orders.executor",
     "app.services.orders.stale_entries",
     "app.services.orders.portfolio_service",
+    "app.services.orders.exit_oco",
 )
 
 

@@ -42,9 +42,11 @@ account's native currency; the risk engine is currency-agnostic (ratios).
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import re
+from dataclasses import replace
 from datetime import UTC, datetime, time, timedelta, timezone
 from typing import Any
 from urllib.parse import urlencode
@@ -203,6 +205,18 @@ def _parse_kite_ts(value: Any) -> datetime | None:
         return None
 
 
+GTT_PREFIX = "gtt:"
+
+
+def _gtt_id(broker_order_id: str) -> str:
+    return broker_order_id[len(GTT_PREFIX):]
+
+
+def _tick(price: float, tick: float = 0.05) -> float:
+    """NSE equity tick size is 0.05; Kite rejects prices off the tick."""
+    return round(round(price / tick) * tick, 2)
+
+
 class ZerodhaBroker(BrokerInterface):
     """Zerodha Kite Connect trading client (live only — Kite has no paper env).
 
@@ -212,6 +226,9 @@ class ZerodhaBroker(BrokerInterface):
     """
 
     name = "zerodha"
+    supports_brackets = False
+    """Kite has no bracket for an API equity entry. The executor places a
+    plain entry and order_sync puts a GTT OCO on it once it fills."""
     is_paper = False
 
     def __init__(
@@ -355,16 +372,35 @@ class ZerodhaBroker(BrokerInterface):
         return await self.get_order(order_id)
 
     async def cancel_order(self, broker_order_id: str) -> Order:
+        if broker_order_id.startswith(GTT_PREFIX):
+            await self._request("DELETE", f"/gtt/triggers/{_gtt_id(broker_order_id)}")
+            return await self.get_order(broker_order_id)
         await self._request("DELETE", f"/orders/regular/{broker_order_id}")
         return await self.get_order(broker_order_id)
 
     async def cancel_open_orders(self, symbol: str) -> int:
-        """Cancel today's open orders on a symbol. Kite's orderbook is
-        day-scoped, which matches the intent (clear resting exits before a
-        close). Bracket-style GTT cleanup arrives with the India phase."""
+        """Cancel today's open orders on a symbol, AND delete its active
+        GTTs. Called before every agent or user close: a protective GTT
+        left behind after the position is gone would later fire a sell of
+        shares no longer held."""
         wanted = symbol.upper()
-        orders = await self._request("GET", "/orders") or []
         canceled = 0
+        try:
+            triggers = await self._request("GET", "/gtt/triggers") or []
+        except Exception as exc:
+            logger.warning("cancel_open_orders: could not list GTTs — %s", exc)
+            triggers = []
+        for t in triggers:
+            cond = t.get("condition") or {}
+            t_symbol = f"{cond.get('exchange', '')}:{cond.get('tradingsymbol', '')}".upper()
+            if str(t.get("status", "")).lower() != "active" or t_symbol != wanted:
+                continue
+            try:
+                await self._request("DELETE", f"/gtt/triggers/{t.get('id')}")
+                canceled += 1
+            except Exception as exc:
+                logger.warning("cancel_open_orders: GTT %s delete failed — %s", t.get("id"), exc)
+        orders = await self._request("GET", "/orders") or []
         for raw in orders:
             status = str(raw.get("status", "")).upper()
             raw_symbol = f"{raw.get('exchange', '')}:{raw.get('tradingsymbol', '')}".upper()
@@ -381,11 +417,106 @@ class ZerodhaBroker(BrokerInterface):
         return canceled
 
     async def get_order(self, broker_order_id: str) -> Order:
+        if broker_order_id.startswith(GTT_PREFIX):
+            return await self._gtt_as_order(broker_order_id)
         # Kite returns the order's full state history; last entry is current.
         history = await self._request("GET", f"/orders/{broker_order_id}")
         if not history:
             raise ZerodhaError(f"order {broker_order_id} not found")
         return self._order_from_kite(history[-1])
+
+    # ── GTT: the broker-side exit for an equity entry ─────────────────
+
+    async def place_exit_oco(
+        self,
+        *,
+        symbol: str,
+        qty: int,
+        entry_side: Side,
+        stop: float,
+        target: float,
+        last_price: float,
+    ) -> str:
+        """A two-leg GTT that exits ``qty`` at ``stop`` or ``target``,
+        whichever the price reaches first; Kite deletes the other leg.
+
+        Kite has no bracket order for an API equity entry, so this is the
+        broker-side exit that survives our process being down. Per the GTT
+        docs: ``trigger_values`` ascending, ``orders`` in the same order,
+        LIMIT orders only. The stop leg's limit sits half a percent through
+        the trigger so a fast move still fills; the target leg's limit is
+        the target. Returns ``gtt:<trigger_id>``, the id order_sync polls.
+        """
+        exchange, tradingsymbol = split_symbol(symbol)
+        closing = "SELL" if entry_side in (Side.BUY, Side.BUY_TO_OPEN) else "BUY"
+        slip = -0.005 if closing == "SELL" else 0.005
+        legs = sorted(
+            [(stop, _tick(stop * (1 + slip))), (target, _tick(target))], key=lambda leg: leg[0]
+        )
+        if not (legs[0][0] < last_price < legs[1][0]):
+            raise ZerodhaError(
+                f"GTT OCO needs last price {last_price} strictly between {legs[0][0]} "
+                f"and {legs[1][0]}"
+            )
+        condition = {
+            "exchange": exchange, "tradingsymbol": tradingsymbol,
+            "trigger_values": [legs[0][0], legs[1][0]], "last_price": last_price,
+        }
+        orders = [
+            {"exchange": exchange, "tradingsymbol": tradingsymbol,
+             "transaction_type": closing, "quantity": int(qty), "order_type": "LIMIT",
+             "product": self._product_for(exchange), "price": price}
+            for _trigger, price in legs
+        ]
+        data = await self._request("POST", "/gtt/triggers", data={
+            "type": "two-leg",
+            "condition": json.dumps(condition),
+            "orders": json.dumps(orders),
+        })
+        return f"{GTT_PREFIX}{data['trigger_id']}"
+
+    async def _gtt_as_order(self, broker_order_id: str) -> Order:
+        """A GTT read as one exit order. Active -> accepted; triggered ->
+        the order its leg placed (fill price and status from /orders), with
+        ``raw['order_type']`` 'stop' or 'limit' naming the leg; deleted,
+        cancelled or expired -> canceled; a leg Kite failed to place ->
+        rejected with Kite's reason."""
+        t = await self._request("GET", f"/gtt/triggers/{_gtt_id(broker_order_id)}") or {}
+        cond = t.get("condition") or {}
+        symbol = join_symbol(str(cond.get("exchange", "NSE")), str(cond.get("tradingsymbol", "")))
+        legs = t.get("orders") or []
+        side = Side(str(legs[0].get("transaction_type", "SELL")).upper()) if legs else Side.SELL
+        qty = int(legs[0].get("quantity", 0) or 0) if legs else 0
+        status = str(t.get("status", "")).lower()
+        base = Order(
+            broker_order_id=broker_order_id, client_order_id=None, symbol=symbol, side=side,
+            qty=qty, filled_qty=0, avg_fill_price=None, status=OrderStatus.ACCEPTED,
+            submitted_at=_parse_kite_ts(t.get("created_at")) or datetime.now(UTC),
+            raw={"gtt_status": status},
+        )
+        if status == "active":
+            return base
+        if status != "triggered":
+            final = OrderStatus.EXPIRED if status == "expired" else OrderStatus.CANCELED
+            return replace(base, status=final)
+        for idx, leg in enumerate(legs):
+            result = leg.get("result") or {}
+            if not result:
+                continue
+            order_id = (result.get("order_result") or {}).get("order_id") or result.get("order_id")
+            # For a SELL-to-close the lower trigger is the stop; for a
+            # BUY-to-cover the upper one is.
+            kind = "stop" if (idx == 0) == (side == Side.SELL) else "limit"
+            if not order_id:
+                reason = (result.get("order_result") or {}).get("rejection_reason") or result.get(
+                    "rejection_reason", "GTT leg was not placed")
+                return replace(base, status=OrderStatus.REJECTED,
+                               raw={"gtt_status": status, "order_type": kind,
+                                    "rejection_reason": reason})
+            placed = await self.get_order(str(order_id))
+            return replace(placed, broker_order_id=broker_order_id,
+                           raw={**placed.raw, "gtt_status": status, "order_type": kind})
+        return base
 
     async def _find_order_by_tag(self, tag: str) -> Order | None:
         """Scan today's orderbook for a non-dead order carrying ``tag``."""

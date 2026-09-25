@@ -203,6 +203,7 @@ class AlpacaBroker(BrokerInterface):
     """
 
     name = "alpaca"
+    supports_brackets = True
 
     def __init__(
         self,

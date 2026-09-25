@@ -263,12 +263,19 @@ async def _execute_via_broker(
                     "options_agent_managed_exit_no_broker_bracket"
                 )
         else:
-            use_bracket = (
+            has_exit_plan = (
                 exit_mode == "agent"
                 and proposal.stop_loss is not None
                 and proposal.target_price is not None
             )
-            if exit_mode == "agent" and not use_bracket:
+            # Kite has no bracket for an API equity entry. The plan still
+            # reaches the broker: order_sync places a GTT OCO at the same
+            # stop and target once the entry fills (exit_oco.py), and the
+            # position manager's software stop covers the seconds before.
+            use_bracket = has_exit_plan and bool(getattr(broker, "supports_brackets", True))
+            if has_exit_plan and not use_bracket:
+                extra_informational_flags.append("exit_via_broker_oco_after_fill")
+            if exit_mode == "agent" and not has_exit_plan:
                 if not conn.is_paper:
                     # Real money: REFUSE rather than silently demote. Without
                     # broker-side legs the position manager's time-stop is the

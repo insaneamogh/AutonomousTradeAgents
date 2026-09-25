@@ -175,6 +175,12 @@ async def _sync_open_orders(
         if fill_delta > 0 and avg_price is not None:
             await _record_fill_delta(session, row, fill_delta, avg_price, broker_order)
 
+        # A GTT exit reports which leg filled; keep it on the row so the
+        # close is labelled stop or target (_unstamped_close_reason).
+        leg_type = str((getattr(broker_order, "raw", None) or {}).get("order_type", ""))
+        if new_status == "filled" and _is_resting_exit(row.client_order_id) and leg_type:
+            row.order_type = leg_type.upper()[:15]
+
         if new_status == "filled":
             await _apply_decision_lifecycle(session, row)
 
@@ -207,6 +213,7 @@ async def _catch_up_filled_at_ack(
     Scoped to OPEN decisions, and for entries to options that have no
     protective-stop row yet, so a settled book costs one small query.
     """
+    from app.services.orders.exit_oco import EXIT_OCO_PREFIX, needs_exit_oco
     from app.services.orders.option_stops import PROTECTIVE_STOP_PREFIX
     from engine.db.models import AgentDecision, Order
 
@@ -223,13 +230,18 @@ async def _catch_up_filled_at_ack(
     ]
     if not pairs:
         return
+    # Decisions that already have a broker-side exit placed: an Alpaca
+    # option's resting stop, or a Zerodha equity's GTT OCO.
     stopped = {
         d
         for (d,) in (
             await session.execute(
                 select(Order.agent_decision_id)
                 .where(Order.user_id == uid)
-                .where(Order.client_order_id.like(f"{PROTECTIVE_STOP_PREFIX}%"))
+                .where(
+                    Order.client_order_id.like(f"{PROTECTIVE_STOP_PREFIX}%")
+                    | Order.client_order_id.like(f"{EXIT_OCO_PREFIX}%")
+                )
             )
         ).all()
     }
@@ -237,7 +249,8 @@ async def _catch_up_filled_at_ack(
         entry_side = str((decision.proposal or {}).get("side", "BUY"))
         is_exit = order_row.side != entry_side
         unstopped_option_entry = _is_option_decision(decision) and decision.id not in stopped
-        if is_exit or unstopped_option_entry:
+        unprotected_equity_entry = needs_exit_oco(decision) and decision.id not in stopped
+        if is_exit or unstopped_option_entry or unprotected_equity_entry:
             await _apply_decision_lifecycle(session, order_row)
 
 
@@ -307,6 +320,7 @@ async def _apply_decision_lifecycle(session: AsyncSession, order_row: object) ->
         # good fill look like a failed one, and the software stop covers
         # the position either way.
         await _maybe_place_protective_stop(decision, order_row)
+        await _maybe_place_exit_oco(decision, order_row)
         return
 
     # Opposite side of the entry → the decision's position is (fully or
@@ -352,9 +366,45 @@ def _unstamped_close_reason(order_row: object) -> str:
     """
     from app.services.orders.option_stops import is_protective_stop_id
 
-    if is_protective_stop_id(getattr(order_row, "client_order_id", None)):
+    client_order_id = getattr(order_row, "client_order_id", None)
+    if is_protective_stop_id(client_order_id):
         return "protective_stop"
+    from app.services.orders.exit_oco import is_exit_oco_id
+
+    if is_exit_oco_id(client_order_id):
+        kind = str(getattr(order_row, "order_type", "") or "").upper()
+        return "bracket_stop" if "STOP" in kind else "bracket_target"
     return "user_manual"
+
+
+def _is_resting_exit(client_order_id: str | None) -> bool:
+    """A broker-side exit meant to rest for the life of the position (an
+    Alpaca option's protective stop, a Zerodha equity's GTT OCO), as
+    opposed to a close attempt in flight."""
+    from app.services.orders.exit_oco import is_exit_oco_id
+    from app.services.orders.option_stops import is_protective_stop_id
+
+    return is_protective_stop_id(client_order_id) or is_exit_oco_id(client_order_id)
+
+
+async def _maybe_place_exit_oco(decision: object, order_row: object) -> None:
+    """The Zerodha equity counterpart of _maybe_place_protective_stop:
+    a GTT OCO at the disclosed stop and target once the entry fills.
+    Swallows everything, for the same reason."""
+    from app.services.orders.exit_oco import needs_exit_oco
+
+    if not needs_exit_oco(decision):
+        return
+    try:
+        from app.services.orders.exit_oco import sync_exit_oco
+        from engine.db.session import async_session_factory
+
+        await sync_exit_oco(
+            async_session_factory(), user_id=str(order_row.user_id), decision=decision
+        )
+    except Exception:
+        logger.warning("order_sync: could not place the GTT exit for decision %s",
+                       getattr(decision, "id", "?"), exc_info=True)
 
 
 async def _maybe_place_protective_stop(decision: object, order_row: object) -> None:
@@ -484,6 +534,8 @@ async def _detect_external_closes(
     market: str = "US",
     source: str | None = None,
 ) -> None:
+    from app.services.orders.exit_oco import EXIT_OCO_PREFIX
+    from app.services.orders.option_stops import PROTECTIVE_STOP_PREFIX
     from engine.db.models import AgentDecision, Order
 
     open_decisions_stmt = (
@@ -524,6 +576,11 @@ async def _detect_external_closes(
             select(Order.id)
             .where(Order.agent_decision_id == decision.id)
             .where(Order.status.in_(IN_FLIGHT_STATUSES))
+            # A resting protective exit is not an exit in flight. Counting
+            # it kept a position the user sold by hand at the broker open
+            # for as long as its stop or GTT rested there.
+            .where(~Order.client_order_id.like(f"{PROTECTIVE_STOP_PREFIX}%"))
+            .where(~Order.client_order_id.like(f"{EXIT_OCO_PREFIX}%"))
             .where(
                 or_(
                     Order.broker_order_id.is_not(None),
@@ -596,6 +653,7 @@ async def _detect_external_closes(
                 realized_pnl=realized,
             )
         )
+        await _retire_resting_exits(session, broker, decision.id)
         logger.info(
             "order_sync: %s closed EXTERNALLY at the broker (user=%s, approx_pnl=%s)",
             symbol, uid, realized,
@@ -869,6 +927,35 @@ def _alert_stock_delivered(
         )
     except Exception:
         logger.exception("order_sync: stock-delivered alert failed for %s", occ)
+
+
+async def _retire_resting_exits(
+    session: AsyncSession, broker: BrokerInterface, decision_id: object
+) -> None:
+    """Cancel a closed position's resting exits at the broker (an Alpaca
+    option's protective stop, a Zerodha GTT OCO) and mark their rows. The
+    position is gone, so a stop or GTT left behind could only ever fire a
+    sell of something no longer held. Best effort: a failure is logged
+    and the row stays for the next pass to report."""
+    from engine.db.models import Order
+
+    rows = (await session.execute(
+        select(Order)
+        .where(Order.agent_decision_id == decision_id)
+        .where(Order.status.in_(OPEN_ORDER_STATUSES))
+        .where(Order.broker_order_id.is_not(None))
+    )).scalars().all()
+    for row in rows:
+        if not _is_resting_exit(row.client_order_id):
+            continue
+        try:
+            await broker.cancel_order(row.broker_order_id)
+        except Exception:
+            logger.warning("order_sync: could not cancel resting exit %s",
+                           row.broker_order_id, exc_info=True)
+            continue
+        row.status = "canceled"
+        row.canceled_at = datetime.now(UTC)
 
 
 async def _last_snapshot_mark(

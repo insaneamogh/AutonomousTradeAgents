@@ -102,6 +102,8 @@ _CLOSE_REASON_LABEL = {
     "option_take_profit": "premium take-profit hit",
     "option_stop_loss": "premium stop-loss hit",
     "option_trail_stop": "trailing stop hit",
+    "agent_stop": "stop-loss hit",
+    "agent_target": "target hit",
 }
 
 # Mirrors the drafter / ghost evaluator horizon map — used only when an
@@ -166,6 +168,15 @@ async def manage_positions_for_user(
             for d in open_decisions
         )
         option_pl_pct = await _option_pl_pct_by_symbol(user_id, broker) if has_option else {}
+        # A Zerodha equity has no broker bracket; its broker-side exit is a
+        # GTT OCO (exit_oco.py). When that is not working, this pass's
+        # software stop/target needs the current price.
+        has_in_equity = any(
+            market_of(d.symbol) == "IN"
+            and not bool((d.proposal or {}).get("isOption", (d.proposal or {}).get("is_option")))
+            for d in open_decisions
+        )
+        equity_marks = await _equity_marks(user_id, broker) if has_in_equity else {}
 
         # Lazily constructed, and ONLY when this user actually has an open
         # option position — an equity-only book never touches
@@ -201,7 +212,7 @@ async def manage_positions_for_user(
             ratchet_outcome = _ratchet_outcome_for(decision, option_pl_pct, caps)
             reason = await _exit_reason(
                 session, decision, now, caps=caps, option_pl_pct=option_pl_pct,
-                ratchet_outcome=ratchet_outcome,
+                ratchet_outcome=ratchet_outcome, equity_marks=equity_marks,
             )
             if ratchet_outcome is not None and ratchet_outcome.peak_advanced:
                 # Persisted regardless of whether this tick ALSO closes the
@@ -1002,6 +1013,7 @@ async def _has_in_flight_close(session, decision_id) -> bool:
     ratchet close and escalation. That trades four working exits for one,
     which is strictly worse than having no broker stop at all.
     """
+    from app.services.orders.exit_oco import EXIT_OCO_PREFIX
     from app.services.orders.option_stops import PROTECTIVE_STOP_PREFIX
     from app.services.orders.order_sync import IN_FLIGHT_STATUSES
     from engine.db.models import Order
@@ -1011,6 +1023,8 @@ async def _has_in_flight_close(session, decision_id) -> bool:
         .where(Order.agent_decision_id == decision_id)
         .where(Order.status.in_(IN_FLIGHT_STATUSES))
         .where(~Order.client_order_id.like(f"{PROTECTIVE_STOP_PREFIX}%"))
+        # A Zerodha equity's resting GTT OCO: same reason as the stop above.
+        .where(~Order.client_order_id.like(f"{EXIT_OCO_PREFIX}%"))
         .limit(1)
     )
     return (await session.execute(stmt)).scalar_one_or_none() is not None
@@ -1048,6 +1062,7 @@ async def _exit_reason(
     caps: RiskCaps | None = None,
     option_pl_pct: dict[str, float] | None = None,
     ratchet_outcome: RatchetOutcome | None = None,
+    equity_marks: dict[str, float] | None = None,
 ) -> str | None:
     """Which exit condition fired, if any. Deterministic reads only.
 
@@ -1098,6 +1113,15 @@ async def _exit_reason(
                     )
                     return signal.reason
 
+    # 0b. A Zerodha equity whose GTT OCO is not working (placement failed,
+    # or Kite rejected the leg when it triggered): the disclosed stop and
+    # target, checked here while the app runs. Never while a GTT works,
+    # so the broker's exit and this one cannot both sell.
+    elif equity_marks and market_of(decision.symbol) == "IN":
+        reason = await _software_stop_or_target(session, decision, equity_marks)
+        if reason is not None:
+            return reason
+
     # 1. Time stop — Phase 0 calendar days, consistent with PDT/idempotency.
     time_stop_days = int(
         proposal.get("timeStopDays")
@@ -1126,6 +1150,51 @@ async def _exit_reason(
         return "agent_signal"
 
     return None
+
+
+async def _software_stop_or_target(session, decision, equity_marks: dict[str, float]) -> str | None:
+    from app.services.orders.exit_oco import EXIT_OCO_PREFIX
+    from app.services.orders.order_sync import OPEN_ORDER_STATUSES
+    from engine.db.models import Order
+
+    proposal = decision.proposal or {}
+    mark = equity_marks.get(decision.symbol.upper())
+    stop = proposal.get("stopLoss", proposal.get("stop_loss"))
+    target = proposal.get("targetPrice", proposal.get("target_price"))
+    if not mark or (stop is None and target is None):
+        return None
+    working = (await session.execute(
+        select(Order.id)
+        .where(Order.agent_decision_id == decision.id)
+        .where(Order.client_order_id.like(f"{EXIT_OCO_PREFIX}%"))
+        .where(Order.status.in_(OPEN_ORDER_STATUSES))
+        .limit(1)
+    )).scalar_one_or_none()
+    if working is not None:
+        return None
+    long = str(proposal.get("side", "BUY")).upper() == "BUY"
+    if stop is not None and (mark <= float(stop) if long else mark >= float(stop)):
+        return "agent_stop"
+    if target is not None and (mark >= float(target) if long else mark <= float(target)):
+        return "agent_target"
+    return None
+
+
+async def _equity_marks(user_id: str, broker: str) -> dict[str, float]:
+    """Last price per held equity symbol, from the broker's own positions.
+    A read failure returns {} and holds everything this tick, the same
+    safe direction as _option_pl_pct_by_symbol."""
+    try:
+        async with with_broker_client(user_id, broker=broker) as (client, _conn):
+            positions = await client.list_positions()
+    except Exception:
+        logger.warning("position_manager: could not read %s positions for stops (user=%s)",
+                       broker, user_id, exc_info=True)
+        return {}
+    return {
+        p.symbol.upper(): abs(float(p.market_value)) / abs(int(p.qty))
+        for p in positions if not p.is_option and p.qty
+    }
 
 
 CLOSE_ID_PREFIX = "agent-close-"

@@ -407,3 +407,103 @@ def test_market_protection_is_validated_at_construction(monkeypatch: pytest.Monk
         monkeypatch.setenv("KITE_MARKET_PROTECTION", bad)
         with pytest.raises(ValueError):
             ZerodhaBroker("k", "t")
+
+
+# ── GTT: the broker-side exit for an equity entry ───────────────────
+
+
+@pytest.mark.asyncio
+async def test_exit_oco_is_a_two_leg_gtt_with_ascending_triggers() -> None:
+    import json
+
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert (request.method, request.url.path) == ("POST", "/gtt/triggers")
+        seen.update({k: v[0] for k, v in parse_qs(request.content.decode()).items()})
+        return _ok({"trigger_id": 123})
+
+    gtt = await _broker(handler).place_exit_oco(
+        symbol="NSE:RELIANCE", qty=5, entry_side=Side.BUY, stop=2800.0, target=3100.0,
+        last_price=2900.0,
+    )
+    assert gtt == "gtt:123"
+    assert seen["type"] == "two-leg"
+    condition, orders = json.loads(seen["condition"]), json.loads(seen["orders"])
+    assert condition["trigger_values"] == [2800.0, 3100.0]
+    assert condition["last_price"] == 2900.0
+    # Stop leg first (lower trigger), limit half a percent through it, on the tick.
+    assert [(o["transaction_type"], o["order_type"], o["price"]) for o in orders] == [
+        ("SELL", "LIMIT", 2786.0), ("SELL", "LIMIT", 3100.0)]
+    assert {o["product"] for o in orders} == {"CNC"} and {o["quantity"] for o in orders} == {5}
+
+
+@pytest.mark.asyncio
+async def test_exit_oco_refuses_a_last_price_outside_its_triggers() -> None:
+    with pytest.raises(ZerodhaError):
+        await _broker(lambda r: _ok({"trigger_id": 1})).place_exit_oco(
+            symbol="NSE:RELIANCE", qty=5, entry_side=Side.BUY, stop=2800.0, target=3100.0,
+            last_price=2790.0,
+        )
+
+
+def _gtt(status: str, results: list[Any]) -> dict[str, Any]:
+    return {
+        "id": 123, "status": status, "type": "two-leg", "created_at": "2026-09-25 10:00:00",
+        "condition": {"exchange": "NSE", "tradingsymbol": "RELIANCE",
+                      "trigger_values": [2800.0, 3100.0]},
+        "orders": [
+            {"transaction_type": "SELL", "quantity": 5, "price": 2786.0, "result": results[0]},
+            {"transaction_type": "SELL", "quantity": 5, "price": 3100.0, "result": results[1]},
+        ],
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("gtt", "status", "kind", "avg"),
+    [
+        (_gtt("active", [None, None]), OrderStatus.ACCEPTED, None, None),
+        (_gtt("deleted", [None, None]), OrderStatus.CANCELED, None, None),
+        (_gtt("triggered", [{"order_result": {"order_id": "9001"}}, None]),
+         OrderStatus.FILLED, "stop", 2795.0),
+        (_gtt("triggered", [None, {"order_result": {"order_id": "9001"}}]),
+         OrderStatus.FILLED, "limit", 2795.0),
+        (_gtt("triggered", [{"order_result": {"order_id": "", "rejection_reason": "circuit"}},
+                            None]), OrderStatus.REJECTED, "stop", None),
+    ],
+)
+async def test_a_gtt_reads_as_one_exit_order(gtt, status, kind, avg) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/gtt/triggers/123":
+            return _ok(gtt)
+        if request.url.path == "/orders/9001":
+            return _ok([_order_row(order_id="9001", transaction_type="SELL", quantity=5,
+                                   filled_quantity=5, average_price=2795.0, status="COMPLETE")])
+        raise AssertionError(f"unexpected {request.url.path}")
+
+    order = await _broker(handler).get_order("gtt:123")
+    assert order.broker_order_id == "gtt:123"
+    assert order.status is status
+    assert order.raw.get("order_type") == kind
+    assert order.avg_fill_price == avg
+
+
+@pytest.mark.asyncio
+async def test_closing_a_symbol_also_deletes_its_active_gtts() -> None:
+    deleted: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/gtt/triggers":
+            other = dict(_gtt("active", [None, None]), id=124)
+            other["condition"] = {"exchange": "NSE", "tradingsymbol": "INFY"}
+            return _ok([_gtt("active", [None, None]), other])
+        if request.method == "DELETE":
+            deleted.append(request.url.path)
+            return _ok({"trigger_id": 123})
+        if request.url.path == "/orders":
+            return _ok([])
+        raise AssertionError(f"unexpected {request.method} {request.url.path}")
+
+    assert await _broker(handler).cancel_open_orders("NSE:RELIANCE") == 1
+    assert deleted == ["/gtt/triggers/123"]

@@ -129,3 +129,95 @@ async def test_each_broker_keeps_its_own_book_and_flatten_all_closes_both(
     await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
     assert (await decision_row(us_pid)).close_reason == "user_kill_switch"
     assert (await decision_row(in_pid)).close_reason == "user_kill_switch"
+
+
+# ── Agent-managed NSE equity: the GTT OCO is the broker-side exit ─────
+
+
+async def _agent_mode_reliance(monkeypatch: pytest.MonkeyPatch) -> tuple[SimBroker, str]:
+    _us, india = await _both_accounts(monkeypatch)
+    india.set_price("NSE:RELIANCE", 2900.0)
+    pid = await _approve(
+        equity_proposal(symbol="NSE:RELIANCE", qty=5, last=2900.0, stop=2800.0, target=3100.0),
+        exit_mode="agent",
+    )
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+    return india, pid
+
+
+async def test_an_agent_mode_nse_entry_gets_a_gtt_and_its_stop_leg_closes_it(
+    monkeypatch: pytest.MonkeyPatch, live_india: None, outbox: list[dict],
+) -> None:
+    india, pid = await _agent_mode_reliance(monkeypatch)
+    assert len(india.gtts) == 1, "the fill must place exactly one GTT OCO"
+    legs = [india.requests[c] for c in india.legs_of[next(iter(india.gtts))]]
+    assert sorted((leg.order_type.value, leg.stop_price or leg.limit_price) for leg in legs) == [
+        ("LIMIT", 3100.0), ("STOP", 2800.0)]
+
+    # A second tick must not place another one.
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+    assert len(india.gtts) == 1
+
+    india.set_price("NSE:RELIANCE", 2790.0)  # overnight, with nothing of ours running
+    await fleet_tick(monkeypatch, market_open={"US": False, "IN": False})
+    d = await decision_row(pid)
+    assert d.close_reason == "bracket_stop"
+    assert d.realized_pnl == Decimal("-550.00")  # (2790 - 2900) x 5
+
+
+async def test_a_failed_gtt_pages_and_the_software_stop_covers_it_in_session_only(
+    monkeypatch: pytest.MonkeyPatch, live_india: None, outbox: list[dict],
+) -> None:
+    _us, india = await _both_accounts(monkeypatch)
+    india.exit_oco_error = RuntimeError("InputException: trigger too close to LTP")
+    india.set_price("NSE:RELIANCE", 2900.0)
+    pid = await _approve(
+        equity_proposal(symbol="NSE:RELIANCE", qty=5, last=2900.0, stop=2800.0, target=3100.0),
+        exit_mode="agent",
+    )
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+    assert not india.gtts
+    assert any(p.get("data_kind") == "ops_alert" and "GTT" in p["body"] for p in outbox)
+
+    india.set_price("NSE:RELIANCE", 2795.0)
+    await fleet_tick(monkeypatch, market_open={"US": True, "IN": False})  # NSE shut: hold
+    assert (await decision_row(pid)).closed_at is None
+    assert "NSE:RELIANCE" in india.held
+
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)  # NSE open: sell
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+    d = await decision_row(pid)
+    assert d.close_reason == "agent_stop"
+    assert d.realized_pnl == Decimal("-525.00")  # (2795 - 2900) x 5
+
+
+async def test_a_hand_sale_in_kite_is_detected_and_the_leftover_gtt_cancelled(
+    monkeypatch: pytest.MonkeyPatch, live_india: None, outbox: list[dict],
+) -> None:
+    india, pid = await _agent_mode_reliance(monkeypatch)
+    gtt = next(iter(india.gtts))
+    india.set_price("NSE:RELIANCE", 2950.0)
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)  # snapshot marks 2950
+
+    india.held.pop("NSE:RELIANCE")  # sold in the Kite app; Kite leaves the GTT active
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+
+    d = await decision_row(pid)
+    assert d.close_reason == "external_broker"
+    assert d.realized_pnl == Decimal("250.00")
+    assert (await india.get_order(gtt)).status.value == "canceled", "a GTT left behind could sell later"
+
+
+async def test_the_software_stop_never_sells_while_a_gtt_is_working(
+    monkeypatch: pytest.MonkeyPatch, live_india: None, outbox: list[dict],
+) -> None:
+    """In the seconds between the price crossing and Kite firing the GTT,
+    the software stop must hold: two exits for one position would sell
+    twice."""
+    india, pid = await _agent_mode_reliance(monkeypatch)
+    india.hold_gtts = True
+    india.set_price("NSE:RELIANCE", 2795.0)
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+
+    assert (await decision_row(pid)).closed_at is None
+    assert india.held["NSE:RELIANCE"].qty == 5, "nothing may sell while the GTT works"
