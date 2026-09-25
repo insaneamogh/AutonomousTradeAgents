@@ -580,3 +580,53 @@ async def test_only_order_mutations_go_through_the_static_ip_proxy(
                                           order_type=OrderType.MARKET))
     # POST /orders/regular via the proxy; the read-back GET /orders/1 direct.
     assert proxies == ["http://egress.internal:3128", None]
+
+
+# ── Market data ───────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_instruments_dump_is_parsed_with_lot_and_tick_sizes() -> None:
+    csv_text = (
+        "instrument_token,exchange_token,tradingsymbol,name,last_price,expiry,strike,"
+        "tick_size,lot_size,instrument_type,segment,exchange\n"
+        "738561,2885,RELIANCE,RELIANCE INDUSTRIES,0,,0,0.05,1,EQ,NSE,NSE\n"
+        "256265,1001,NIFTY 50,NIFTY 50,0,,0,0,0,EQ,INDICES,NSE\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/instruments/NSE"
+        return httpx.Response(200, text=csv_text)
+
+    rows = await _broker(handler).instruments("nse")
+    assert [(r["tradingsymbol"], r["instrument_token"], r["lot_size"], r["tick_size"])
+            for r in rows] == [("RELIANCE", 738561, 1, 0.05), ("NIFTY 50", 256265, 0, 0.0)]
+
+
+@pytest.mark.asyncio
+async def test_daily_history_parses_kites_iso_candles() -> None:
+    from datetime import UTC, datetime
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/instruments/historical/738561/day"
+        assert request.url.params["from"] == "2026-09-01 00:00:00"
+        return _ok({"candles": [["2026-09-24T00:00:00+0530", 2890.0, 2915.5, 2880.0, 2905.0,
+                                 1_234_567]]})
+
+    candles = await _broker(handler).historical_daily(
+        738561, start=datetime(2026, 9, 1, tzinfo=UTC), end=datetime(2026, 9, 25, tzinfo=UTC),
+    )
+    assert len(candles) == 1
+    ts, o, h, low, c, v = candles[0]
+    assert (ts.date().isoformat(), o, h, low, c, v) == ("2026-09-24", 2890.0, 2915.5, 2880.0,
+                                                        2905.0, 1_234_567.0)
+
+
+@pytest.mark.asyncio
+async def test_quotes_are_requested_in_one_call_keyed_by_exchange_symbol() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params.get_list("i") == ["NSE:RELIANCE", "NSE:INFY"]
+        return _ok({"NSE:RELIANCE": {"last_price": 2905.0}})
+
+    q = await _broker(handler).quotes(["NSE:RELIANCE", "infy"])
+    assert q == {"NSE:RELIANCE": {"last_price": 2905.0}}

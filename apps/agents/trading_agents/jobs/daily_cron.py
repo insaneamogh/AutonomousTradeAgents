@@ -539,7 +539,10 @@ def _equity_resolver(user_id: str):
     The sizer needs REAL equity — synthetic 100k sizing against a real
     account was audit finding §5."""
 
-    async def _resolve() -> float | None:
+    async def _resolve(source: str | None = None) -> float | None:
+        """``source`` ('alpaca' / 'zerodha') picks that broker's account:
+        a two-broker user has a USD and an INR equity, and an NSE trade
+        must be sized off the INR one."""
         if not env_flag("USE_POSTGRES"):
             return None
         import uuid as _uuid
@@ -554,6 +557,7 @@ def _equity_resolver(user_id: str):
             stmt = (
                 select(PositionsSnapshot.account_equity)
                 .where(PositionsSnapshot.user_id == _uuid.UUID(user_id))
+                .where(PositionsSnapshot.source == source if source else True)
                 .order_by(desc(PositionsSnapshot.captured_at))
                 .limit(1)
             )
@@ -568,6 +572,25 @@ def _is_llm_auth_error(exc: BaseException) -> bool:
     needs no provider import. GLM's Anthropic-compatible endpoint raises the
     same classes through the same SDK."""
     return type(exc).__name__ in {"AuthenticationError", "PermissionDeniedError"}
+
+
+def _kite_client_factory(user_id: str):
+    """Opens the user's Kite client for market data (docs/PLAN_ZERODHA.md
+    Z2), through the API's broker_use so the daily token is decrypted the
+    same way as for orders. None when the cron runs without the API
+    package (standalone CLI), which leaves NSE symbols without bars."""
+    try:
+        from app.services.broker.broker_use import with_broker_client
+    except ImportError:
+        return None
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _client():
+        async with with_broker_client(user_id, broker="zerodha") as (client, _conn):
+            yield client
+
+    return _client
 
 
 def _ops_alert(kind: str, **kwargs) -> None:
@@ -735,7 +758,8 @@ async def main(
     try:
         llm = LLM()
         feature_provider = resolve_feature_provider(
-            equity_resolver=_equity_resolver(user_id)
+            equity_resolver=_equity_resolver(user_id),
+            kite_client_factory=_kite_client_factory(user_id),
         )
     except RuntimeError as exc:
         log.exception("daily cron refused to start (REQUIRE flag failed)")

@@ -221,3 +221,17 @@ async def test_the_software_stop_never_sells_while_a_gtt_is_working(
 
     assert (await decision_row(pid)).closed_at is None
     assert india.held["NSE:RELIANCE"].qty == 5, "nothing may sell while the GTT works"
+
+
+async def test_the_councils_sizing_equity_is_the_symbols_own_broker_account(
+    monkeypatch: pytest.MonkeyPatch, live_india: None, outbox: list[dict],
+) -> None:
+    """A two-broker user has a USD and an INR account. The cron's equity
+    resolver must hand the Drafter the INR figure for an NSE symbol."""
+    from trading_agents.jobs.daily_cron import _equity_resolver
+
+    await _both_accounts(monkeypatch)
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)  # one snapshot per broker
+    resolve = _equity_resolver("00000000-0000-0000-0000-000000000001")
+    assert await resolve(source="alpaca") == 100_000.0
+    assert await resolve(source="zerodha") == 1_000_000.0

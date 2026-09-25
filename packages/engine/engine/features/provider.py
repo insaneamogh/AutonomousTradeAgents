@@ -79,6 +79,7 @@ from engine.features.news import (
 from engine.features.patterns import detect_patterns
 from engine.features.quant import compute_quant
 from engine.features.technicals import InsufficientBarsError, compute_technicals
+from engine.risk.markets import BROKER_FOR_MARKET, market_of
 
 logger = logging.getLogger("engine.features.provider")
 
@@ -234,7 +235,7 @@ class RealFeatureProvider:
     bars: BarsProvider
     fred_api_key: str | None = None
     fundamentals: FundamentalsProvider | None = None
-    equity_resolver: Callable[[], Awaitable[float | None]] | None = None
+    equity_resolver: Callable[..., Awaitable[float | None]] | None = None
     universe: str = "US"
     news: NewsProvider | None = None
     quotes: QuoteProvider | None = None
@@ -244,15 +245,19 @@ class RealFeatureProvider:
 
     async def __call__(self, symbol: str, horizon: str = "short") -> dict[str, Any]:
         sym = symbol.upper()
+        market = market_of(sym)
         bars = await self.bars.daily_bars(sym)
         if not bars:
             raise InsufficientBarsError(f"no daily bars available for {sym}")
         # A full year+ of bars, not 60: the quant block regresses
-        # this symbol against SPY over a 63-day window and z-scores ATR
-        # against a year of its own history. A 60-day SPY pull would leave
-        # beta/correlation permanently None. Provider-cached, so the longer
-        # window costs one request per process, not one per symbol.
-        spy_bars = await self.bars.daily_bars("SPY", lookback_days=SPY_LOOKBACK_DAYS)
+        # this symbol against its market's benchmark over a 63-day window
+        # and z-scores ATR against a year of its own history. A 60-day pull
+        # would leave beta/correlation permanently None. Provider-cached, so
+        # the longer window costs one request per process, not one per
+        # symbol. An NSE symbol regresses against NIFTY 50, not SPY.
+        spy_bars = await self.bars.daily_bars(
+            BENCHMARK_BY_MARKET[market], lookback_days=SPY_LOOKBACK_DAYS
+        )
 
         technicals = compute_technicals(bars)
         quant = compute_quant(bars, benchmark_bars=spy_bars)
@@ -264,14 +269,20 @@ class RealFeatureProvider:
             atr=float(technicals["atr_14"]),
             trend_regime=str(technicals["trend_regime"]),
         )
-        macro = await compute_macro(
-            fred_api_key=self.fred_api_key, symbol_bars=bars, spy_bars=spy_bars
-        )
+        if market == "US":
+            macro = await compute_macro(
+                fred_api_key=self.fred_api_key, symbol_bars=bars, spy_bars=spy_bars
+            )
+        else:
+            # FRED's VIX / US 10y / dollar index describe the US market.
+            # Feeding them to an NSE thesis would be wrong, not just weak.
+            macro = {"market": market, "available": False,
+                     "reason": "US macro (FRED) does not apply; India macro is not wired"}
 
         equity: float | None = None
         if self.equity_resolver is not None:
             try:
-                equity = await self.equity_resolver()
+                equity = await _resolve_equity(self.equity_resolver, BROKER_FOR_MARKET[market])
             except Exception:
                 logger.exception("features: equity resolver failed — using fallback")
         if equity is None or equity <= 0:
@@ -282,19 +293,21 @@ class RealFeatureProvider:
             )
             equity = DEFAULT_EQUITY_FALLBACK
 
-        extras = await self._optional_blocks(sym, horizon, bars[-1].close)
+        # News, quote liquidity, corporate actions, the asset/borrow record
+        # and the options context are all Alpaca reads: US only.
+        extras = await self._optional_blocks(sym, horizon, bars[-1].close) if market == "US" else {}
 
         features: dict[str, Any] = {
             "symbol": sym,
             "horizon": horizon,
-            "universe": self.universe,
+            "universe": market,
             "last_price": bars[-1].close,
             "portfolio_equity": equity,
             "technicals": technicals,
             "quant": quant.as_dict(),
             "patterns": patterns.as_dict(),
             "macro": macro,
-            "feature_source": "alpaca",
+            "feature_source": "alpaca" if market == "US" else "kite",
             **extras,
         }
 
@@ -371,10 +384,26 @@ class RealFeatureProvider:
         return out
 
 
+BENCHMARK_BY_MARKET: dict[str, str] = {"US": "SPY", "IN": "NSE:NIFTY 50"}
+
+
+async def _resolve_equity(resolver: Callable[..., Awaitable[float | None]], source: str):
+    """The account equity for ``source``'s market. A resolver that takes
+    ``source`` gets it: a user with Alpaca AND Zerodha has a USD and an INR
+    account, and sizing an NSE trade off the USD figure would be wrong by
+    the exchange rate. An older no-argument resolver still works."""
+    import inspect
+
+    if "source" in inspect.signature(resolver).parameters:
+        return await resolver(source=source)
+    return await resolver()
+
+
 def feature_provider_from_env(
     *,
-    equity_resolver: Callable[[], Awaitable[float | None]] | None = None,
+    equity_resolver: Callable[..., Awaitable[float | None]] | None = None,
     fundamentals: FundamentalsProvider | None = None,
+    kite_client_factory: Any = None,
 ) -> RealFeatureProvider | None:
     """Real provider when Alpaca data keys are set; otherwise None.
 
@@ -388,8 +417,16 @@ def feature_provider_from_env(
     if not api_key or not secret:
         return None
     fred_key = os.environ.get("FRED_API_KEY", "").strip() or None
+    from engine.features.kite_bars import KiteDailyBarsProvider, MarketRoutedBarsProvider
+
+    us_bars = AlpacaDailyBarsProvider(api_key, secret)
     return RealFeatureProvider(
-        bars=AlpacaDailyBarsProvider(api_key, secret),
+        # NSE/NFO symbols read Kite (docs/PLAN_ZERODHA.md Z2) when a Kite
+        # client can be opened; every other symbol reads Alpaca as before.
+        bars=MarketRoutedBarsProvider(
+            us_bars,
+            KiteDailyBarsProvider(kite_client_factory) if kite_client_factory else None,
+        ),
         fred_api_key=fred_key,
         fundamentals=fundamentals,
         equity_resolver=equity_resolver,

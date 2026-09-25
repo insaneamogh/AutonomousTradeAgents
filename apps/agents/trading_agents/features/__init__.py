@@ -27,12 +27,16 @@ FeatureProvider = Callable[..., Any]
 
 def resolve_feature_provider(
     *,
-    equity_resolver: Callable[[], Awaitable[float | None]] | None = None,
+    equity_resolver: Callable[..., Awaitable[float | None]] | None = None,
+    kite_client_factory: Any = None,
 ) -> FeatureProvider:
-    """The provider production entry points (daily cron, /agent/run) use."""
+    """The provider production entry points (daily cron, /agent/run) use.
+    ``kite_client_factory`` lets NSE/NFO symbols read Kite bars."""
     from engine.features import feature_provider_from_env
 
-    provider = feature_provider_from_env(equity_resolver=equity_resolver)
+    provider = feature_provider_from_env(
+        equity_resolver=equity_resolver, kite_client_factory=kite_client_factory
+    )
     if provider is not None:
         logger.info("features: REAL provider active (Alpaca bars%s)",
                     " + FRED" if provider.fred_api_key else ", no FRED key")

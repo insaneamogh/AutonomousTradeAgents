@@ -243,8 +243,14 @@ def _parse_kite_ts(value: Any) -> datetime | None:
         return None
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=IST)
+    text = str(value)
     try:
-        return datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S").replace(tzinfo=IST)
+        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=IST)
+    except ValueError:
+        pass
+    # Historical candles carry ISO with an offset: 2017-12-15T09:15:00+0530.
+    try:
+        return datetime.strptime(text, "%Y-%m-%dT%H:%M:%S%z")
     except ValueError:
         return None
 
@@ -483,6 +489,71 @@ class ZerodhaBroker(BrokerInterface):
         if not history:
             raise ZerodhaError(f"order {broker_order_id} not found")
         return self._order_from_kite(history[-1])
+
+    # ── Market data (the same access token; Kite Connect's paid plan) ─
+
+    async def _get_text(self, path: str) -> str:
+        """A non-JSON GET (the instruments dump is CSV, gzip-encoded on the
+        wire; httpx decodes Content-Encoding itself)."""
+        async with httpx.AsyncClient(
+            base_url=self._base_url, transport=self._transport, timeout=max(self._timeout, 30.0),
+        ) as client:
+            try:
+                resp = await client.get(path, headers=self._headers())
+            except httpx.HTTPError as exc:
+                raise ZerodhaError(f"network error reaching Kite: {exc}") from exc
+        if resp.status_code >= 400:
+            raise ZerodhaError(f"instruments dump: HTTP {resp.status_code}")
+        return resp.text
+
+    async def instruments(self, exchange: str) -> list[dict[str, Any]]:
+        """Kite's daily instruments dump for one exchange: instrument_token,
+        tradingsymbol, name, expiry, strike, tick_size, lot_size,
+        instrument_type, segment, exchange. Regenerated once a day by Kite;
+        callers cache it for the day."""
+        import csv
+        import io
+
+        text = await self._get_text(f"/instruments/{exchange.upper()}")
+        rows = []
+        for r in csv.DictReader(io.StringIO(text)):
+            rows.append({
+                **r,
+                "instrument_token": int(r.get("instrument_token") or 0),
+                "lot_size": int(float(r.get("lot_size") or 1)),
+                "tick_size": float(r.get("tick_size") or 0.05),
+                "strike": float(r.get("strike") or 0),
+            })
+        return rows
+
+    async def historical_daily(
+        self, instrument_token: int, *, start: datetime, end: datetime
+    ) -> list[tuple[datetime, float, float, float, float, float]]:
+        """Daily candles (timestamp, open, high, low, close, volume) from
+        GET /instruments/historical/:token/day."""
+        fmt = "%Y-%m-%d %H:%M:%S"
+        query = urlencode({"from": start.strftime(fmt), "to": end.strftime(fmt)})
+        data = await self._request(
+            "GET", f"/instruments/historical/{int(instrument_token)}/day?{query}"
+        )
+        out = []
+        for c in (data or {}).get("candles", []):
+            ts = _parse_kite_ts(c[0])
+            if ts is None:
+                continue
+            out.append((ts, float(c[1]), float(c[2]), float(c[3]), float(c[4]), float(c[5])))
+        return out
+
+    async def quotes(self, symbols: list[str]) -> dict[str, dict[str, Any]]:
+        """Full quotes (last_price, ohlc, volume, depth, oi, ...) keyed by
+        EXCHANGE:TRADINGSYMBOL, at most 500 per Kite call. A symbol Kite has
+        no data for is absent, not an error."""
+        out: dict[str, dict[str, Any]] = {}
+        wanted = [s.upper() if ":" in s else f"NSE:{s.upper()}" for s in symbols]
+        for i in range(0, len(wanted), 500):
+            query = urlencode([("i", s) for s in wanted[i:i + 500]])
+            out.update(await self._request("GET", f"/quote?{query}") or {})
+        return out
 
     # ── GTT: the broker-side exit for an equity entry ─────────────────
 
