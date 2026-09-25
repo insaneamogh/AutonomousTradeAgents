@@ -142,7 +142,7 @@ class UserWatchlistItem(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
-    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(40), nullable=False)
     asset_class: Mapped[str] = mapped_column(
         String(10), nullable=False, default="equity", server_default="equity"
     )

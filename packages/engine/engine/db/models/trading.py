@@ -78,7 +78,7 @@ class Order(Base):
     client_order_id: Mapped[str] = mapped_column(String(80), nullable=False)
     broker_order_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
 
-    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(40), nullable=False)
     side: Mapped[str] = mapped_column(String(4), nullable=False)
     qty: Mapped[int] = mapped_column(Integer, nullable=False)
     order_type: Mapped[str] = mapped_column(String(15), nullable=False)
@@ -148,7 +148,7 @@ class PdtLedger(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
-    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(40), nullable=False)
     open_order_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("orders.id", ondelete="RESTRICT"), nullable=False
     )

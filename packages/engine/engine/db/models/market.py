@@ -22,7 +22,7 @@ from engine.db.base import Base
 class IvHistory(Base):
     __tablename__ = "iv_history"
 
-    symbol: Mapped[str] = mapped_column(String(20), primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(40), primary_key=True)
     day: Mapped[date] = mapped_column(Date, primary_key=True)
     """The ET trading date of the snapshot. One row per (symbol, day); a
     re-run the same day overwrites rather than duplicating."""

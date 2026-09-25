@@ -235,3 +235,56 @@ async def test_the_councils_sizing_equity_is_the_symbols_own_broker_account(
     resolve = _equity_resolver("00000000-0000-0000-0000-000000000001")
     assert await resolve(source="alpaca") == 100_000.0
     assert await resolve(source="zerodha") == 1_000_000.0
+
+
+# ── NSE index options (NFO) ──────────────────────────────────────────
+
+
+def _nifty_call(expiry, *, lots: int = 1, lot_size: int = 65, premium: float = 120.0):
+    from datetime import timedelta
+
+    from app.schemas.approvals import ApprovalProposalDto
+
+    now = datetime.now(UTC)
+    contract = f"NFO:NIFTY{expiry:%y%b}25000CE".upper()
+    return ApprovalProposalDto(
+        id=f"agent-nfo-{contract[-12:].lower()}", symbol="NSE:NIFTY 50", side="BUY",
+        direction="long", is_option=True, option_action="buy_to_open", occ_symbol=contract,
+        strike=25000.0, expiry_date=expiry, contract_type="call",
+        # Kite counts option quantity in UNITS (lots x lot size): multiplier 1.
+        multiplier=1, open_interest=500_000, volume=200_000,
+        bid=round(premium - 0.5, 2), ask=premium, implied_volatility=0.14,
+        qty=lots * lot_size, order_type="LIMIT", limit_price=premium,
+        estimated_notional=lots * lot_size * premium, time_stop_days=5,
+        rationale="e2e", bull_case="e2e bull", bear_case="e2e bear",
+        risk_level=2, conviction_level=3, council_confidence=0.6,
+        proposed_at=now, expires_at=now + timedelta(hours=6),
+    ), contract
+
+
+async def test_a_nifty_call_goes_to_zerodha_in_lots_and_its_premium_stop_closes_it(
+    monkeypatch: pytest.MonkeyPatch, live_india: None, outbox: list[dict],
+) -> None:
+    us, india = await _both_accounts(monkeypatch)
+    expiry = (datetime.now(UTC) + timedelta(days=25)).date()
+    proposal, contract = _nifty_call(expiry)
+    india.set_price(contract, 118.0)
+
+    pid = await _approve(proposal, exit_mode="agent")
+    assert us.orders == {}
+    placed = [r for r in india.requests.values() if r.symbol == contract]
+    assert [(r.side.value, r.qty, r.order_type.value) for r in placed] == [
+        ("BUY_TO_OPEN", 65, "LIMIT")]  # ZerodhaBroker maps BUY_TO_OPEN to Kite's BUY
+
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+    d = await decision_row(pid)
+    assert d.fill_qty == 65 and d.fill_avg_price == Decimal("120.0000")
+    assert not [r for r in india.requests.values() if r.stop_price is not None], (
+        "no resting stop at Kite (DAY/IOC only); the software stop covers NFO")
+
+    india.set_price(contract, 60.0)  # -50%, through the -40% premium stop
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+    d = await decision_row(pid)
+    assert d.close_reason in ("option_stop_loss", "option_trail_stop")
+    assert d.realized_pnl == Decimal("-3900.00")  # (60 - 120) x 65 units, in INR

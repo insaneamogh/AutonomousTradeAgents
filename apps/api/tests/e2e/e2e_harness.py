@@ -42,6 +42,12 @@ FIXTURE_USER = "00000000-0000-0000-0000-000000000001"
 _SELLS = (Side.SELL, Side.SELL_TO_CLOSE)
 
 
+def _is_kite_option(symbol: str) -> bool:
+    """Mirrors ZerodhaBroker: an NFO/BFO symbol ending CE or PE, in units."""
+    exchange, _, ts = symbol.partition(":")
+    return exchange in ("NFO", "BFO") and ts.endswith(("CE", "PE"))
+
+
 def _is_occ(symbol: str) -> bool:
     return len(symbol) > 15 and symbol[-9] in "CP" and symbol[-8:].isdigit()
 
@@ -256,7 +262,7 @@ class SimBroker:
             symbol=symbol, qty=h.qty, avg_entry_price=h.avg, market_value=mv,
             unrealized_pl=mv - cost,
             unrealized_pl_pct=((mv - cost) / abs(cost) * 100.0) if cost else 0.0,
-            multiplier=mult, is_option=mult == 100,
+            multiplier=mult, is_option=mult == 100 or _is_kite_option(symbol),
         )
 
     def _fill(self, oid: str, price: float) -> None:
