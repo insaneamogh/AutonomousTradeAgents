@@ -1591,7 +1591,7 @@ async def test_preflight_fails_open_when_the_context_provider_raises() -> None:
     caps = _preflight_caps()
 
     class _Boom:
-        async def fetch(self, *, user_id: str | None = None) -> Any:
+        async def fetch(self, *, user_id: str | None = None, source: str | None = None) -> Any:
             raise RuntimeError("postgres down")
 
     guard = _guard(context_provider=_Boom())

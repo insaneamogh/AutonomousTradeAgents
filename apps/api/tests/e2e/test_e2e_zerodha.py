@@ -331,3 +331,82 @@ async def test_an_off_lot_nifty_quantity_is_refused_before_it_reaches_kite(
     body = await _refused(proposal)
     assert body["riskVetoRule"] == "lot_size_block"
     assert india.requests == {}
+
+
+# ── Each book's drawdown is measured in its own currency ─────────────
+
+
+async def test_a_small_inr_book_is_not_measured_against_the_usd_book(
+    monkeypatch: pytest.MonkeyPatch, live_india: None,
+) -> None:
+    """Kite reports no prior-close equity, so the Zerodha snapshot's day
+    P&L falls back to the day's first snapshot. That must be Zerodha's
+    own: the Alpaca pass runs first every tick, and INR 50,000 against a
+    USD 100,000 baseline read as -50% and latched the breaker."""
+    from sqlalchemy import select
+
+    from engine.db.models import CircuitBreakerState, PositionsSnapshot
+    from engine.db.session import async_session_factory
+
+    _us, india = await _both_accounts(monkeypatch)
+    india.cash = 50_000.0
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+    india.cash = 49_000.0  # a real -2% INR day
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+
+    async with async_session_factory()() as s:
+        snaps = (await s.execute(
+            select(PositionsSnapshot).order_by(PositionsSnapshot.captured_at.desc())
+        )).scalars().all()
+        breaker = (await s.execute(select(CircuitBreakerState))).scalars().all()
+    latest = {}
+    for snap in snaps:
+        latest.setdefault(snap.source, snap)
+    assert float(latest["zerodha"].daily_pnl_pct) == pytest.approx(-2.0)
+    assert float(latest["alpaca"].daily_pnl_pct) == pytest.approx(0.0)
+    assert all(b.status != "halted" for b in breaker), [b.halt_reason for b in breaker]
+
+
+async def test_the_council_risks_each_proposal_against_its_own_brokers_book(
+    monkeypatch: pytest.MonkeyPatch, live_india: None,
+) -> None:
+    """The draft-time risk officer read the newest snapshot of any broker,
+    and the Zerodha pass writes last each tick: a US proposal was judged
+    against INR 1,000,000 of equity and the INR positions."""
+    from unittest.mock import patch
+
+    from e2e_harness import FIXTURE_USER
+
+    from engine.db.session import async_session_factory
+    from engine.risk.postgres_context import PostgresRiskContextProvider
+    from engine.risk.types import RiskDecision
+    from trading_agents.nodes.risk_officer import risk_officer_node
+
+    us, india = await _both_accounts(monkeypatch)
+    us.set_price("AAPL", 200.0)
+    us.held["AAPL"] = _Held(2, 190.0)
+    india.set_price("NSE:TCS", 4000.0)
+    india.held["NSE:TCS"] = _Held(3, 3900.0)
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+
+    seen: dict[str, object] = {}
+
+    def _spy(proposal, context, caps, *, specialists):
+        seen[proposal.symbol] = context
+        return RiskDecision(approved=True, reason="ok", checks_passed=())
+
+    provider = PostgresRiskContextProvider(async_session_factory())
+    with patch("trading_agents.nodes.risk_officer.evaluate", _spy):
+        for symbol in ("AAPL", "NSE:INFY"):
+            await risk_officer_node({
+                "symbol": symbol, "user_id": FIXTURE_USER,
+                "context": {"last_price": 100.0, "asset": {}},
+                "proposal": {"side": "BUY", "qty": 1, "estimated_notional": 100.0,
+                             "confidence": 0.7},
+            }, context_provider=provider)
+
+    us_ctx, in_ctx = seen["AAPL"], seen["NSE:INFY"]
+    assert us_ctx.account_equity == pytest.approx(100_400.0)  # cash + 2 x 200
+    assert [p.symbol for p in us_ctx.open_positions] == ["AAPL"]
+    assert in_ctx.account_equity == pytest.approx(1_012_000.0)  # cash + 3 x 4000
+    assert [p.symbol for p in in_ctx.open_positions] == ["NSE:TCS"]

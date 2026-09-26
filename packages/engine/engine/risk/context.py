@@ -18,7 +18,11 @@ from engine.risk.types import ClosedTrade, PortfolioPosition, RiskContext
 class RiskContextProvider(Protocol):
     """Async because the real implementation hits Postgres + Redis."""
 
-    async def fetch(self, *, user_id: str | None = None) -> RiskContext: ...
+    async def fetch(
+        self, *, user_id: str | None = None, source: str | None = None
+    ) -> RiskContext:
+        """``source``: the broker whose book is being risked."""
+        ...
 
 
 @dataclass
@@ -67,7 +71,9 @@ class MockRiskContextProvider:
     mock-mode/CI can exercise the options path without extra wiring.
     Override to test ``options_level_insufficient`` explicitly."""
 
-    async def fetch(self, *, user_id: str | None = None) -> RiskContext:
+    async def fetch(
+        self, *, user_id: str | None = None, source: str | None = None
+    ) -> RiskContext:
         return RiskContext(
             account_equity=self.account_equity,
             cash=self.cash,

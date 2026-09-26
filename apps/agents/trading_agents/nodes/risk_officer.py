@@ -38,6 +38,7 @@ from engine.risk import (
     SpecialistScore,
     evaluate,
 )
+from engine.risk.markets import broker_for_symbol
 from engine.risk.types import OptionLegDetails
 from trading_agents.state import CouncilState
 
@@ -119,7 +120,11 @@ async def risk_officer_node(
         easy_to_borrow=_opt_bool(asset.get("easy_to_borrow")),
     )
 
-    context = await provider.fetch(user_id=state.get("user_id"))
+    # The book of the broker this symbol trades at: a US proposal must not
+    # be judged against the INR account, nor an NSE one against the USD one.
+    context = await provider.fetch(
+        user_id=state.get("user_id"), source=broker_for_symbol(str(state["symbol"]))
+    )
     decision = evaluate(risk_proposal, context, caps, specialists=_specialists_from_state(state))
 
     out: CouncilState = {

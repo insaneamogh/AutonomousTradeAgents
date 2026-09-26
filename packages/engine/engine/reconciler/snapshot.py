@@ -39,6 +39,7 @@ async def write_snapshot(
         user_id=user_id,
         current_equity=state.equity,
         prior_close_equity=state.prior_close_equity,
+        source=source,
     )
 
     snapshot = PositionsSnapshot(
@@ -78,6 +79,7 @@ async def _daily_pnl(
     user_id: uuid.UUID,
     current_equity: float,
     prior_close_equity: float | None = None,
+    source: str | None = None,
 ) -> tuple[float, float]:
     """(pnl, pnl_pct) for the session, against the previous CLOSE.
 
@@ -101,6 +103,12 @@ async def _daily_pnl(
     ``snapshot.daily_pnl_pct``, so a baseline that understates the day's
     loss understates it for the halt too.
 
+    The fallback reads ``source``'s own snapshots. Kite reports no
+    prior-close equity, so a Zerodha book always takes the fallback, and
+    the fleet's Alpaca pass writes the day's first snapshot: baselining the
+    INR equity against that USD number read a INR 50,000 book as -50% and
+    latched the breaker (tests/e2e/test_e2e_zerodha.py).
+
     Returns (0, 0) when neither a broker baseline nor a prior snapshot
     exists — a brand-new account has no previous session, and inventing a
     number there would be worse than admitting we cannot compute one.
@@ -118,6 +126,7 @@ async def _daily_pnl(
         stmt = (
             select(PositionsSnapshot)
             .where(PositionsSnapshot.user_id == user_id)
+            .where(PositionsSnapshot.source == source if source else True)
             .where(PositionsSnapshot.captured_at >= today_start)
             .order_by(PositionsSnapshot.captured_at.asc())
             .limit(1)

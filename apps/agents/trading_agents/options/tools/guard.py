@@ -145,6 +145,11 @@ _TIMEFRAME_RE = re.compile(
 # tool-use schema is a HINT to the model, not a server-side validator; a
 # malformed or adversarial completion could still emit an out-of-band
 # number, so this file clamps defensively rather than trusting the schema.
+_BOOK = "alpaca"
+"""The broker book the guard risks against. The options agent is US-only
+(Alpaca chain, OCC symbols, the US session gate), and the fleet writes the
+Zerodha snapshot last each tick, so an unscoped fetch read the INR book."""
+
 _STOP_LOSS_BAND = (25.0, 50.0)
 _TAKE_PROFIT_BAND = (40.0, 300.0)
 
@@ -572,7 +577,7 @@ class ToolGuard:
             return GuardVerdict(False, "market_closed")
 
         try:
-            context = await self._resolve_context_provider().fetch(user_id=user_id)
+            context = await self._resolve_context_provider().fetch(user_id=user_id, source=_BOOK)
         except Exception:
             logger.exception(
                 "guard: preflight context fetch failed for %s — allowing the "
@@ -874,7 +879,7 @@ class ToolGuard:
             )
 
         try:
-            context = await self._resolve_context_provider().fetch(user_id=ctx.user_id)
+            context = await self._resolve_context_provider().fetch(user_id=ctx.user_id, source=_BOOK)
         except Exception:
             logger.exception("guard: risk-context fetch failed for user %s", ctx.user_id)
             return GuardVerdict(False, "context_fetch_failed")
@@ -1117,7 +1122,7 @@ class ToolGuard:
             return GuardVerdict(False, "contract_unavailable")
 
         try:
-            context = await self._resolve_context_provider().fetch(user_id=ctx.user_id)
+            context = await self._resolve_context_provider().fetch(user_id=ctx.user_id, source=_BOOK)
         except Exception:
             logger.exception("guard: risk-context fetch failed for user %s", ctx.user_id)
             return GuardVerdict(False, "context_fetch_failed")

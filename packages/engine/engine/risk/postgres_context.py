@@ -204,19 +204,32 @@ class PostgresRiskContextProvider:
 
     session_factory: async_sessionmaker
 
-    async def fetch(self, *, user_id: str | uuid.UUID | None = None) -> RiskContext:
+    async def fetch(
+        self, *, user_id: str | uuid.UUID | None = None, source: str | None = None
+    ) -> RiskContext:
+        """``source`` is the broker whose book is being risked ("alpaca",
+        "zerodha"). A user with both has a USD and an INR snapshot series,
+        and the fleet writes Zerodha's last each tick, so without it a US
+        proposal was judged against the INR book (equity, positions,
+        options level). Snapshots of the OTHER real broker are excluded;
+        a dev fixture's "mock" snapshot still counts."""
         uid = _to_uuid(user_id)
         if uid is None:
             return self._cold_boot_fallback()
 
+        from engine.risk.markets import MARKET_FOR_BROKER
+
         async with self.session_factory() as session:
-            # Newest snapshot
+            # Newest snapshot of this broker's book
             snap_stmt = (
                 select(PositionsSnapshot)
                 .where(PositionsSnapshot.user_id == uid)
                 .order_by(desc(PositionsSnapshot.captured_at))
                 .limit(1)
             )
+            if source:
+                others = [b for b in MARKET_FOR_BROKER if b != source]
+                snap_stmt = snap_stmt.where(PositionsSnapshot.source.notin_(others))
             snapshot = (await session.execute(snap_stmt)).scalar_one_or_none()
 
             breaker = await _breaker_state(session, uid)

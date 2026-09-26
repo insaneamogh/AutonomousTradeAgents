@@ -242,7 +242,9 @@ class SimBroker:
         return self.account_number
 
     async def get_prior_close_equity(self) -> float | None:
-        return self._start_equity
+        # ZerodhaBroker has no such method (Kite reports no prior-close
+        # equity); the fleet then falls back to today's first snapshot.
+        return None if self.kite else self._start_equity
 
     async def list_option_lifecycle_activities(self, *, since: date) -> list[AccountActivity]:
         if self.activities_error is not None:
