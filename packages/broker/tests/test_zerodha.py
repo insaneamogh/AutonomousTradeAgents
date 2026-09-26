@@ -668,3 +668,21 @@ def test_an_nfo_option_position_is_an_option_in_units() -> None:
                                 "average_price": 2900.0, "last_price": 2950.0})
     assert (opt.is_option, opt.multiplier, opt.unrealized_pl_pct) == (True, 1, -25.0)
     assert fut.is_option is False and eq.is_option is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("exchanges", "level"), [
+    (["NSE", "BSE", "NFO", "BFO"], 2),
+    (["NSE", "BSE"], 0),
+    ([], 0),
+])
+async def test_options_level_is_whether_the_account_has_fo_enabled(
+    exchanges: list[str], level: int,
+) -> None:
+    """options_level_insufficient vetoes None, so returning None (as this
+    once did) refused every NSE option entry."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/user/profile"
+        return _ok({"user_id": "AB1234", "exchanges": exchanges})
+
+    assert await _broker(handler).get_options_trading_level() == level

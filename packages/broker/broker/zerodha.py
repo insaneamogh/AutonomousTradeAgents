@@ -765,12 +765,19 @@ class ZerodhaBroker(BrokerInterface):
         return float((margins.get("equity") or {}).get("net", 0) or 0)
 
     async def get_options_trading_level(self) -> int | None:
-        """Kite has no options-trading-tier concept — Phase A options are
-        US/Alpaca-only. Always None; ``options_level_insufficient`` never
-        runs against an Indian symbol anyway (it's a US-only rule set),
-        but this keeps the Protocol honestly implemented rather than
-        silently inherited from the stub."""
-        return None
+        """2 when the account can trade F&O, else 0.
+
+        Kite has no options tier. What gates buying an NSE option is the
+        F&O segment being enabled on the account, which GET /user/profile
+        reports as "NFO" in ``exchanges`` ("exchanges enabled for trading on
+        the user's account", per Kite's docs). 2 is the long-call/put tier
+        options_level_insufficient requires. This used to return None
+        always, and the rule vetoes None, so every NSE option entry would
+        have been refused; the docstring claimed the rule never ran for
+        Indian symbols, which was not true."""
+        profile = await self._request("GET", "/user/profile") or {}
+        exchanges = {str(e).upper() for e in profile.get("exchanges", [])}
+        return 2 if "NFO" in exchanges else 0
 
     # ── Mappers ──────────────────────────────────────────────────────
 

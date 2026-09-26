@@ -74,6 +74,9 @@ class SimBroker:
     kite: bool = False
     """Behave like ZerodhaBroker: refuse bracket legs and GTC, exactly as
     the real adapter does (broker/zerodha.py place_order)."""
+    fo_enabled: bool = True
+    """Kite mode: whether the account has the F&O segment. ZerodhaBroker
+    reports it as the options level (2 or 0), not ``options_level``."""
     activities_error: Exception | None = None
     exit_oco_error: Exception | None = None
     """Set to make GTT placement fail, as a Kite rejection would."""
@@ -231,6 +234,8 @@ class SimBroker:
         return self.cash * 2
 
     async def get_options_trading_level(self) -> int | None:
+        if self.kite:
+            return 2 if self.fo_enabled else 0
         return self.options_level
 
     async def get_account_number(self) -> str | None:

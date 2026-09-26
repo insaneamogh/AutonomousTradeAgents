@@ -288,3 +288,46 @@ async def test_a_nifty_call_goes_to_zerodha_in_lots_and_its_premium_stop_closes_
     d = await decision_row(pid)
     assert d.close_reason in ("option_stop_loss", "option_trail_stop")
     assert d.realized_pnl == Decimal("-3900.00")  # (60 - 120) x 65 units, in INR
+
+
+async def _refused(proposal) -> dict:
+    from app.services.council.store import get_store
+
+    await get_store().append_pending(proposal)
+    async with api_client() as api:
+        pending = (await api.get("/api/v1/approvals/pending")).json()
+        pid = next(p["id"] for p in pending if p["symbol"] == proposal.symbol)
+        r = await api.post(f"/api/v1/approvals/{pid}/decision",
+                           json={"outcome": "approved", "exitMode": "agent"})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["executed"] is False and body["riskBlocked"] is True, body
+    return body
+
+
+async def test_an_account_without_fo_is_refused_the_nifty_call_by_name(
+    monkeypatch: pytest.MonkeyPatch, live_india: None,
+) -> None:
+    """The real adapter reports F&O as the options level. Before, it
+    returned None for every account and the rule refused them all."""
+    _us, india = await _both_accounts(monkeypatch)
+    india.fo_enabled = False
+    proposal, contract = _nifty_call((datetime.now(UTC) + timedelta(days=25)).date())
+    india.set_price(contract, 118.0)
+
+    body = await _refused(proposal)
+    assert body["riskVetoRule"] == "options_level_insufficient"
+    assert india.requests == {}
+
+
+async def test_an_off_lot_nifty_quantity_is_refused_before_it_reaches_kite(
+    monkeypatch: pytest.MonkeyPatch, live_india: None,
+) -> None:
+    _us, india = await _both_accounts(monkeypatch)
+    proposal, contract = _nifty_call((datetime.now(UTC) + timedelta(days=25)).date(),
+                                     lot_size=50)  # 50 units: NIFTY trades in 65s
+    india.set_price(contract, 118.0)
+
+    body = await _refused(proposal)
+    assert body["riskVetoRule"] == "lot_size_block"
+    assert india.requests == {}

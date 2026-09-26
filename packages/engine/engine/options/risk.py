@@ -65,7 +65,9 @@ from engine.options.rules import (
     options_level_insufficient,
     options_single_underlying_cap,
 )
+from engine.risk.markets import is_derivative
 from engine.risk.rules import (
+    lot_size_block,
     max_open_positions,
     min_council_confidence,
     min_specialist_avg_score,
@@ -124,6 +126,19 @@ def evaluate_option(
     if d is not None and not d.approved:
         return d
     passed.append("naked_short_forbidden")
+
+    # ── 2b. Whole lots for an Indian derivative (NFO/BFO) ────────────
+    # The equity sequence's lot_size_block never ran for options (evaluate
+    # returns into this pipeline first). Kite rejects an off-lot quantity
+    # anyway; this refuses it by name first. A US option is not a
+    # derivative symbol, so the rule is a no-op for it.
+    d = lot_size_block(working, context, caps)
+    if d is not None and not d.approved:
+        return d
+    if d is not None:
+        informational.extend(d.informational_flags)
+    elif is_derivative(working.symbol):
+        passed.append("lot_size_block")
 
     # ── 3. Broker trading-level gate (entry-only) ────────────────────
     d = options_level_insufficient(working, context, caps)
