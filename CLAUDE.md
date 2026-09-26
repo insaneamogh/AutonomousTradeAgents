@@ -321,7 +321,7 @@ it — append below the `# Build log` heading.
 ## 7. Verification commands
 
 ```bash
-# Full Python suite — 1697 passing, 12 skipped as of 2026-09-25
+# Full Python suite — 1759 passing, 12 skipped as of 2026-09-26
 .venv/bin/python -m pytest apps/agents apps/api packages/ -q
 
 # The two layers separately (docs/PLAN_TEST_SUITE.md). e2e scenarios run

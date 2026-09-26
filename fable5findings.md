@@ -355,6 +355,98 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 # Build log
 
+### 2026-09-26 — dddfd17be..672fc9897 — Zerodha: both books live side by side, NSE equity and index options (PLAN_ZERODHA)
+Operator: "zerodha both and router keep off start". So: NSE cash equity
+AND index options, with `INSTRUMENT_ROUTER_ENABLED` left off.
+
+**Everything below is proven against SimBroker in Kite mode only. No live
+Kite account was connected, and no order was placed anywhere.**
+
+- **Z1 (dddfd17be).** The fleet runs one pass per (user, broker):
+  `FLEET_BROKERS = ("alpaca", "zerodha")`, with snapshots keyed by
+  `source`. Decisions are scoped by `market_of(symbol)`, and there is a
+  per-market exit gate. Every close path and the executor pick the broker
+  with `broker_for_symbol`. The NSE clock is exchange_calendars XBOM,
+  09:15-15:30 IST. Auto-approve runs on the Alpaca pass only.
+- **GTT OCO exits (aa354f8bf).** Kite has no bracket order for an API
+  equity entry. An agent-mode NSE equity fill therefore gets a two-leg GTT
+  (`gtt-oco-*` row, `gtt:<id>`). Its fill closes the decision as
+  `bracket_stop` or `bracket_target`. If placement fails, it pages, and
+  the software stop covers the position while the app runs. A hand sale in
+  Kite is detected and the leftover GTT deleted.
+- **Z0 in code (d6763641c).** Orders are paced at 8/s and 300/min.
+  `KITE_ORDER_PROXY_URL` applies to order mutations only.
+  `ZerodhaIpNotAllowedError` is distinct from an expired token.
+- **Z2 (5b230a901).** Kite daily bars and the instruments dump. The IN
+  benchmark is NIFTY 50. Macro and the US-only feature blocks are skipped
+  for IN, and equity is resolved per source.
+- **Z5 (f45e3a37d).** NSE scan times sit behind `IN_SWEEP_ENABLED`, which
+  is **off**. `daily_cron.main(market=)` runs only that market's symbols,
+  on that market's calendar.
+- **Z3 (b58afc8a0, c04a5382d).** The Indian round-trip cost model. The
+  lot-size rule takes the broker's lot size, and the stale NIFTY 75
+  fallback is corrected to 65 (January 2026 revision).
+- **Options.**
+  - 68783bc95: Kite sides are BUY/SELL, and NFO positions are options in
+    units.
+  - 7366866d2: migration 0020 widens `symbol` to 40 characters. An NFO
+    contract did not fit in 20.
+  - 672fc9897: the NFO chain is the dump plus one quote call, with IV and
+    delta by Black-Scholes. `ContractQuote.multiplier` is the lot size, so
+    the sizer counts lots. The drafter writes units with multiplier 1 plus
+    `lot_size`, and the lot size reaches the executor re-check. The Kite
+    client reaches the drafter through a ContextVar set only for an IN run
+    in `_run_one`.
+- **Real bugs found and fixed. Each was hidden by the simulator or the
+  unit layer:**
+  1. **Every NSE option entry was refused for every account (54c20eccb).**
+     `ZerodhaBroker.get_options_trading_level` returned None, and
+     `options_level_insufficient` vetoes None. The sim returned 3. The
+     level is now 2 when /user/profile `exchanges` includes NFO, else 0.
+     The same commit runs `lot_size_block` in the OPTIONS sequence too;
+     before, an off-lot NFO quantity reached Kite.
+  2. **A false user-wide breaker halt (f68aa274c).** Kite has no
+     prior-close equity, so the INR snapshot's day P&L used the day's
+     first snapshot of ANY broker, which is the USD one (the Alpaca pass
+     runs first). Reproduced: INR 50,000 against USD 100,000 gave "Daily
+     drawdown -50.00% breached halt threshold -3.00%" and latched.
+  3. **Draft-time risk read the other broker's book (f68aa274c).** The
+     Zerodha snapshot is the newest every tick, so the risk officer and the
+     US options guard judged US proposals against INR 1,012,000 of equity
+     and the INR positions. `fetch(source=)` fixes it.
+  4. **Off-tick limits (bedb13044).** The mid + 0.01 option entry is off
+     Kite's 0.05 tick about 4 times in 5. Buys now round up and sells
+     down.
+- **Verified.**
+  - Full suite: 1759 passed, 12 skipped. It was 1709 collected after
+    pruning; the growth is Zerodha work.
+  - The e2e layer: 25 passed in 5.8 s. 13 of the scenarios are Zerodha.
+  - Every fix was revert-checked (commands and outputs are in each commit
+    body).
+  - ruff is clean on touched files, except the 9 pre-existing errors in
+    daily_cron, runtime and executor (the same count at HEAD~).
+- **Open / not verified.**
+  - Live Kite, all of it. Needs the operator:
+    - static-IP egress, registered in the console;
+    - `KITE_API_KEY` / `KITE_API_SECRET`;
+    - the ₹500/month plan;
+    - the daily login;
+    - a deploy (migration 0020);
+    - `LIVE_TRADING_ENABLED` plus the Zerodha live consent, because Kite
+      has no paper account.
+  - India option expiry inference (Kite has no OPEXP feed): a position
+    that vanishes at expiry would read as `external_broker`. The expiry
+    sweep is meant to close first.
+  - The `insufficient_margin` gate, `iv_history` rows for kite, India VIX,
+    the persisted paper engine, Z4 research and the per-market EOD report.
+  - Whether Kite's `oi`/`volume` are in units. The code assumes they are
+    and divides by the lot size, which errs toward refusing.
+  - The breaker is one per user, so an INR drawdown also halts US entries.
+    That is a policy choice, and it is flagged, not changed.
+  - Operator decisions still open: static-IP egress location and spend,
+    accepting a manual daily login, and whether to auto-flatten stock
+    delivered on exercise.
+
 ### 2026-09-25 (second session) — 8c3f25235..bffc525ad — Phase 5 start, e2e layer, 184 test functions removed, Zerodha plan
 Operator asked for: research then start the next phase; OpenClaw's e2e
 isolation approach instead of so many unit tests (about 1,400 tests,

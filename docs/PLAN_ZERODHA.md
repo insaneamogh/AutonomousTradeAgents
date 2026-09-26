@@ -1,11 +1,40 @@
 # Plan: Zerodha (Kite Connect) as a first-class broker, not just Alpaca
 
-> **Status: PROPOSED 2026-09-25. Not approved.** Written at the operator's
-> request ("add a plan to integrate Zerodha as well, not just Alpaca").
-> It follows `docs/PLAN_PLATFORM.md`: nothing trades in India either until
-> a signal clears the same Phase 3 acceptance bar on Indian data.
+> **Status: IN PROGRESS. Approved 2026-09-25 as "zerodha both and router
+> keep off start":** NSE cash equity AND index options, with
+> `INSTRUMENT_ROUTER_ENABLED` left off. It follows `docs/PLAN_PLATFORM.md`:
+> nothing trades in India either until a signal clears the same Phase 3
+> acceptance bar on Indian data.
 > Every external fact below is quoted from a source checked on 2026-09-25;
 > re-check before relying on one, because SEBI and NSE change these often.
+>
+> **Progress (2026-09-26).** Built and proven in e2e against SimBroker in
+> Kite mode. **Nothing has run against a live Kite account.**
+> - Z0 in code (d6763641c): order pacing 8/s and 300/min,
+>   `KITE_ORDER_PROXY_URL` for order calls only, and a distinct
+>   unregistered-IP error. The egress itself is the operator's.
+> - Z1 (dddfd17be): per-broker fleet passes, the NSE clock (XBOM), and
+>   routing by symbol market. Agent-mode NSE equity exits are a GTT OCO
+>   at Kite, with a software stop as fallback (aa354f8bf).
+> - Z2 (5b230a901, 672fc9897): Kite daily bars, NIFTY 50 as the IN
+>   benchmark, and the NFO option chain (dump + one quote call, IV and
+>   delta by Black-Scholes, sized in lots).
+> - Z3 partly: the cost model (b58afc8a0); lot sizes from the dump through
+>   to the executor (c04a5382d, 672fc9897); `lot_size_block` in the options
+>   sequence (54c20eccb).
+> - Z5 partly (f45e3a37d): NSE scan times behind `IN_SWEEP_ENABLED`
+>   (default off).
+> - Bugs found and fixed on the way: F&O accounts were refused every NSE
+>   option (54c20eccb); the INR book was drawn down against the USD one and
+>   latched the breaker, and draft-time risk read the other broker's book
+>   (f68aa274c); off-tick limit prices (bedb13044); option sides and units
+>   (68783bc95); 20-char symbol columns (7366866d2, migration 0020).
+> - **Open:** India option expiry inference (Kite has no OPEXP feed); the
+>   `insufficient_margin` pre-trade gate; `iv_history` rows with
+>   `feed='kite'` and India VIX; persisting the paper engine; the Z4
+>   research on NSE history; the per-market EOD report; whether the
+>   08:30 IST reconnect push is scheduled (unverified); whether Kite's
+>   `oi`/`volume` are in units (assumed).
 
 ## 1. What already exists (verified by reading the code, not the docs)
 
@@ -146,7 +175,8 @@ orders placed and then nothing watching them:
   both markets (one process runs every loop).
 
 ## 5. Decisions that are the operator's (not filled in here)
-1. Instrument: NSE cash equity (CNC), NIFTY/SENSEX options, or both.
+1. ~~Instrument~~: decided 2026-09-25, both (NSE cash equity and index
+   options).
 2. Spend: ₹500/month Kite Connect plus a dedicated static IP
    (roughly ₹1,500/year for the IP alone per Zerodha's estimate, more for a
    managed proxy).

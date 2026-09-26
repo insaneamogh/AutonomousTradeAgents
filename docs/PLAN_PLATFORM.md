@@ -5,7 +5,7 @@
 > `PLAN_*.md` where they disagree. Phases run in order; tick them off in
 > the build log (`fable5findings.md`), not here.
 >
-> **Progress (updated 2026-09-25, second session):**
+> **Progress (updated 2026-09-26):**
 > - Phase 0 is DONE: `posthackathon` merged and pushed, fixtures already
 >   fixed by 9120fc854, cap reverted (0281274d4).
 > - Phase 1 code is DONE (2de24fd89, f70e80090, 0784e434f). Its live half
@@ -62,7 +62,12 @@
 >     along with spreads.
 > - Phase 5b (event interpreter) is NOT started; it waits on a signal.
 > - Tests: docs/PLAN_TEST_SUITE.md (OpenClaw-style layers, mutation-proven
->   pruning, e2e scenarios). Zerodha: docs/PLAN_ZERODHA.md (proposed).
+>   pruning, e2e scenarios).
+> - Zerodha (docs/PLAN_ZERODHA.md) is IN PROGRESS (2026-09-26): NSE equity
+>   and index options, router still off. Z0-in-code, Z1 and Z2 are built,
+>   with Z3/Z5 partly done, all proven only against SimBroker in Kite mode.
+>   Live use needs the operator's static IP, Kite plan and daily login.
+>   Its own progress block lists what is open.
 
 
 ## Context
