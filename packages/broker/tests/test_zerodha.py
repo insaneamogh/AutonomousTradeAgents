@@ -686,3 +686,31 @@ async def test_options_level_is_whether_the_account_has_fo_enabled(
         return _ok({"user_id": "AB1234", "exchanges": exchanges})
 
     assert await _broker(handler).get_options_trading_level() == level
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("side", "limit", "sent"), [
+    (Side.BUY_TO_OPEN, 119.76, "119.8"),   # mid + 0.01 from entry_price: up, still marketable
+    (Side.SELL_TO_CLOSE, 60.03, "60.0"),   # a sell rounds down
+    (Side.BUY, 2900.05, "2900.05"),        # already on the tick: unchanged
+])
+async def test_limit_prices_are_snapped_onto_the_tick_toward_the_market(
+    side: Side, limit: float, sent: str,
+) -> None:
+    """Kite rejects an off-tick price; the option entry limit is mid + 0.01."""
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/orders":
+            return _ok([])
+        if request.method == "POST" and request.url.path == "/orders/regular":
+            seen.update({k: v[0] for k, v in parse_qs(request.content.decode()).items()})
+            return _ok({"order_id": "240610000001"})
+        return _ok([_order_row(tag="agentexecabc123")])
+
+    symbol = "NSE:RELIANCE" if side is Side.BUY else "NFO:NIFTY26OCT25000CE"
+    await _broker(handler).place_order(OrderRequest(
+        symbol=symbol, side=side, qty=65, order_type=OrderType.LIMIT, limit_price=limit,
+        client_order_id="agent-exec-abc123",
+    ))
+    assert seen["price"] == sent

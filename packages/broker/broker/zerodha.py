@@ -44,6 +44,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 from dataclasses import replace
@@ -278,6 +279,17 @@ def _tick(price: float, tick: float = 0.05) -> float:
     return round(round(price / tick) * tick, 2)
 
 
+def _tick_toward(price: float, *, up: bool, tick: float = 0.05) -> float:
+    """A limit snapped onto the tick without making it less marketable: a
+    buy rounds up, a sell down. Kite rejects an off-tick price outright,
+    and the option entry limit is mid + 0.01 (engine.options.entry_price),
+    which is off the 0.05 tick about four times in five. A 0.05 grid is
+    also on the 0.01 grid of NSE's low-priced stocks."""
+    steps = round(price / tick, 6)
+    steps = math.ceil(steps) if up else math.floor(steps)
+    return round(steps * tick, 2)
+
+
 class ZerodhaBroker(BrokerInterface):
     """Zerodha Kite Connect trading client (live only — Kite has no paper env).
 
@@ -435,11 +447,12 @@ class ZerodhaBroker(BrokerInterface):
         if request.order_type in (OrderType.LIMIT, OrderType.STOP_LIMIT):
             if request.limit_price is None:
                 raise ValueError(f"{request.order_type.value} order requires limit_price")
-            form["price"] = request.limit_price
+            buying = form["transaction_type"] == "BUY"
+            form["price"] = _tick_toward(request.limit_price, up=buying)
         if request.order_type in (OrderType.STOP, OrderType.STOP_LIMIT):
             if request.stop_price is None:
                 raise ValueError(f"{request.order_type.value} order requires stop_price")
-            form["trigger_price"] = request.stop_price
+            form["trigger_price"] = _tick(request.stop_price)
         if request.order_type in _PROTECTED_ORDER_TYPES:
             form["market_protection"] = self._market_protection
         if tag is not None:
