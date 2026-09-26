@@ -94,6 +94,7 @@ from engine.options.selection import (
 )
 from engine.options.sizing import OptionsSizingInputs, options_position_size
 from engine.risk import RiskCaps
+from engine.risk.markets import market_of
 from engine.sizing import SizingInputs, atr_position_size
 from trading_agents.llm import LLM, Model, complete_json
 from trading_agents.nodes._guards import clamp_confidence, clamp_level
@@ -413,7 +414,9 @@ async def _draft_option_proposal(
     # own docstring for why this distinction matters).
     raw_realized_vol_pct = ctx.get("quant", {}).get("realized_vol_pct")
 
-    candidates = await _fetch_option_candidates(symbol)
+    candidates = await _fetch_option_candidates(
+        symbol, direction=direction, spot=ctx.get("last_price")
+    )
     selection = select_contract(
         ContractSelectionInputs(
             underlying_symbol=symbol,
@@ -455,6 +458,10 @@ async def _draft_option_proposal(
         ),
     )
     caps = RiskCaps.from_env()
+    # An NSE contract's multiplier is its lot size (NIFTY 65), so the sizer
+    # below counts LOTS. Kite and the risk rules count an NFO order in
+    # units with multiplier 1, so the proposal is written that way.
+    lot_size = leg.multiplier if market_of(symbol) == "IN" else None
     budget_usd = equity * caps.options_max_premium_pct / 100.0
     sizing = options_position_size(
         OptionsSizingInputs(
@@ -507,7 +514,7 @@ async def _draft_option_proposal(
             "side": "BUY",
             "direction": direction,
             "opens_short": False,
-            "qty": sizing.qty,
+            "qty": sizing.qty * lot_size if lot_size else sizing.qty,
             # Always LIMIT, never MARKET — docs/OPTIONS_PLAN.md explicitly
             # recommends against market orders on a 15-min-delayed
             # indicative feed, and the executor forces this regardless of
@@ -544,7 +551,8 @@ async def _draft_option_proposal(
                 "underlying_last_price": underlying_last_price,
                 "account_equity": equity,
                 "confidence": confidence,
-                "qty": sizing.qty,
+                "qty": sizing.qty * lot_size if lot_size else sizing.qty,
+                "lots": sizing.qty if lot_size else None,
                 "budget_usd": round(budget_usd, 2),
                 "premium_per_contract": round(ask * leg.multiplier, 2),
                 "notional": estimated_notional,
@@ -568,7 +576,8 @@ async def _draft_option_proposal(
             "strike": leg.strike,
             "expiry_date": leg.expiry,
             "contract_type": leg.contract_type,
-            "multiplier": leg.multiplier,
+            "multiplier": 1 if lot_size else leg.multiplier,
+            "lot_size": lot_size,
             "underlying_symbol": leg.underlying_symbol,
             "open_interest": leg.open_interest,
             "volume": leg.volume,
@@ -582,8 +591,14 @@ async def _draft_option_proposal(
     }
 
 
-async def _fetch_option_candidates(symbol: str) -> tuple[ContractQuote, ...]:
+async def _fetch_option_candidates(
+    symbol: str, *, direction: str = "long", spot: Any = None
+) -> tuple[ContractQuote, ...]:
     """Chain snapshot for ``symbol``, as ``ContractQuote`` candidates.
+
+    An NSE underlying's chain comes from Kite (``_fetch_kite_candidates``),
+    never Alpaca, which lists no Indian options. ``direction`` and ``spot``
+    only narrow that fetch; the Alpaca path ignores them.
 
     Thin wrapper: the real fetch/merge/field-mapping lives in
     ``engine.options.contracts.fetch_option_candidates`` (a lazy import,
@@ -595,6 +610,9 @@ async def _fetch_option_candidates(symbol: str) -> tuple[ContractQuote, ...]:
     ``no_candidates`` HOLD) rather than crashing the council run or
     silently falling back to equity sizing.
     """
+    if market_of(symbol) == "IN":
+        return await _fetch_kite_candidates(symbol, direction=direction, spot=spot)
+
     api_key = os.environ.get("ALPACA_API_KEY", "").strip()
     secret_key = os.environ.get("ALPACA_SECRET_KEY", "").strip()
     if not api_key or not secret_key:
@@ -608,4 +626,30 @@ async def _fetch_option_candidates(symbol: str) -> tuple[ContractQuote, ...]:
         )
     except Exception:
         logger.exception("options: chain fetch failed for %s", symbol)
+        return ()
+
+
+async def _fetch_kite_candidates(
+    symbol: str, *, direction: str, spot: Any
+) -> tuple[ContractQuote, ...]:
+    """The NSE chain through the user's Kite client, which the daily cron
+    puts in ``engine.options.kite_chain.kite_client_factory`` for the run.
+    No client, or any Kite failure, is zero candidates: a named HOLD."""
+    from engine.options.kite_chain import fetch_kite_option_candidates, kite_client_factory
+
+    factory = kite_client_factory.get()
+    if factory is None:
+        logger.warning("options: no Kite client for %s — no candidates", symbol)
+        return ()
+    try:
+        async with factory() as client:
+            return await fetch_kite_option_candidates(
+                symbol,
+                client=client,
+                now=datetime.now(UTC),
+                contract_type="call" if direction == "long" else "put",
+                spot_hint=float(spot) if spot is not None else None,
+            )
+    except Exception:
+        logger.exception("options: Kite chain fetch failed for %s", symbol)
         return ()

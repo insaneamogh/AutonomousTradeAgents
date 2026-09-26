@@ -62,6 +62,7 @@ def to_risk_proposal(
     option: OptionLegDetails,
     closes_intraday_position: bool = False,
     is_intraday: bool = False,
+    lot_size: int | None = None,
 ) -> RiskProposal:
     """Build an options ``RiskProposal``. The ONE place ``is_option=True``
     and every ``option.*`` field get set.
@@ -94,6 +95,7 @@ def to_risk_proposal(
         option=option,
         closes_intraday_position=closes_intraday_position,
         is_intraday=is_intraday,
+        lot_size=lot_size,
     )
 
 

@@ -296,6 +296,7 @@ def _to_proposal_dto(state: CouncilState) -> dict[str, Any] | None:
                 "expiryDate": p.get("expiry_date"),
                 "contractType": p.get("contract_type"),
                 "multiplier": p.get("multiplier", 100),
+                "lotSize": p.get("lot_size"),
                 # Extra option-snapshot fields (bid/ask/OI/volume/IV/days-
                 # to-earnings) an options risk rule needs at execution time
                 # for a fresh liquidity/earnings re-check — see

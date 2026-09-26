@@ -230,7 +230,7 @@ async def test_run_council_instrument_preference_reaches_strategy_fit(
 
     calls: list[str] = []
 
-    async def _spy_fetch(symbol: str) -> tuple[object, ...]:
+    async def _spy_fetch(symbol: str, **_kw: object) -> tuple[object, ...]:
         calls.append(symbol)
         return ()
 
@@ -346,7 +346,7 @@ async def test_run_council_options_proposal_reaches_evaluate_option_and_is_appro
         for i in range(1, 6)
     )
 
-    async def _fake_fetch(symbol: str) -> tuple[ContractQuote, ...]:
+    async def _fake_fetch(symbol: str, **_kw: object) -> tuple[ContractQuote, ...]:
         return (quote, *_siblings)
 
     monkeypatch.setenv("ALLOW_OPTIONS", "1")
@@ -596,7 +596,7 @@ async def test_options_pass_persists_the_contract_funnel(
         for i in range(1, 6)
     )
 
-    async def _fake_fetch(symbol: str) -> tuple[ContractQuote, ...]:
+    async def _fake_fetch(symbol: str, **_kw: object) -> tuple[ContractQuote, ...]:
         return (quote, *_siblings)
 
     monkeypatch.setenv("ALLOW_OPTIONS", "1")
@@ -622,7 +622,7 @@ async def test_contract_funnel_explains_an_options_hold(
     An empty chain must produce a named rejection reason on the row."""
     from trading_agents.nodes import drafter as drafter_mod
 
-    async def _empty_chain(symbol: str) -> tuple:
+    async def _empty_chain(symbol: str, **_kw: object) -> tuple:
         return ()
 
     monkeypatch.setenv("ALLOW_OPTIONS", "1")

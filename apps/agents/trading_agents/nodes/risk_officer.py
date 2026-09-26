@@ -114,6 +114,7 @@ async def risk_officer_node(
         closes_intraday_position=False,  # Phase 0: agents only open new swings
         is_option=is_option,
         option=_option_details_from_proposal(proposal, symbol=str(state["symbol"])) if is_option else None,
+        lot_size=_opt_int(proposal.get("lot_size")),
         # Short-side inputs. ``stop_price`` is the sizer's, never the LLM's.
         stop_price=_opt_float(proposal.get("stop_loss")),
         shortable=_opt_bool(asset.get("shortable")),

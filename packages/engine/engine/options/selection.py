@@ -264,6 +264,12 @@ class ContractQuote:
     ``max_quote_age_seconds`` below, which is what actually switches it
     on."""
 
+    multiplier: int = 100
+    """Units one contract covers: 100 for a US equity option; the lot size
+    for an NSE one (NIFTY 65), from Kite's instruments dump. The premium
+    sizer sizes in these, so a hardcoded 100 would size an NFO order in
+    the wrong unit."""
+
 
 @dataclass(frozen=True)
 class ContractSelectionInputs:
@@ -531,7 +537,7 @@ def select_contract(inputs: ContractSelectionInputs) -> ContractSelectionResult:
         contract_type=winner.contract_type,
         strike=winner.strike,
         expiry=winner.expiry,
-        multiplier=100,
+        multiplier=winner.multiplier,
         action="buy_to_open",
         open_interest=winner.open_interest,
         volume=winner.volume,

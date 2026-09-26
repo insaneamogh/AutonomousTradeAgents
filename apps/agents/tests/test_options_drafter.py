@@ -816,3 +816,100 @@ async def test_main_routes_each_symbol_by_its_own_asset_class(
         instrument_by_symbol={"SPY": "option"},  # MSFT absent -> equity
     )
     assert seen == [("SPY", "option"), ("MSFT", "equity")]
+
+
+# ─────────────────────────────────────────────────────────────────────
+# An NSE underlying: the chain comes from Kite and is sized in lots
+# ─────────────────────────────────────────────────────────────────────
+
+
+async def test_an_nse_option_draft_reads_kites_chain_and_sizes_whole_lots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import contextlib
+    from datetime import UTC, datetime, timedelta
+
+    from engine.options import pricing
+    from engine.options.kite_chain import kite_client_factory, reset_cache_for_tests
+
+    reset_cache_for_tests()
+    spot, expiry = 25_000.0, (datetime.now(UTC) + timedelta(days=29)).date()
+    rows = [
+        {"tradingsymbol": f"NIFTY{expiry:%y%b}{k}{t}".upper(), "name": "NIFTY",
+         "expiry": expiry.isoformat(), "strike": float(k), "instrument_type": t, "lot_size": 65}
+        for k in range(24_000, 26_001, 100) for t in ("CE", "PE")
+    ]
+
+    class _Kite:
+        async def instruments(self, exchange: str) -> list[dict]:
+            return rows
+
+        async def quotes(self, symbols: list[str]) -> dict[str, dict]:
+            out: dict[str, dict] = {}
+            for s in symbols:
+                if s == "NSE:NIFTY 50":
+                    out[s] = {"last_price": spot}
+                    continue
+                r = next(r for r in rows if f"NFO:{r['tradingsymbol']}" == s)
+                kind = "call" if r["instrument_type"] == "CE" else "put"
+                mid = pricing.price(spot, r["strike"], 29 / 365, 0.14, kind=kind)
+                out[s] = {"oi": 6_500_000, "volume": 650_000,
+                          "depth": {"buy": [{"price": round(mid - 0.5, 2)}],
+                                    "sell": [{"price": round(mid + 0.5, 2)}]}}
+            return out
+
+    @contextlib.asynccontextmanager
+    async def _open():
+        yield _Kite()
+
+    async def _no_alpaca(*_a: object, **_k: object) -> None:
+        raise AssertionError("an NSE underlying must never be asked of Alpaca")
+
+    monkeypatch.setattr("engine.options.contracts.fetch_option_candidates", _no_alpaca)
+    monkeypatch.setattr(drafter_mod, "complete_json", _mock_llm_verdict("BUY"))
+    token = kite_client_factory.set(_open)
+    try:
+        out = await drafter_mod.drafter_node(_drafter_state(
+            symbol="NSE:NIFTY 50",
+            context={"last_price": spot, "portfolio_equity": 10_000_000.0, "technicals": {},
+                     "options_context": {}},
+        ), llm=object())
+    finally:
+        kite_client_factory.reset(token)
+
+    assert out["final_action"] == "BUY", out.get("drafter_rationale")
+    p = out["proposal"]
+    assert p["occ_symbol"].startswith("NFO:NIFTY") and p["occ_symbol"].endswith("CE")
+    assert p["lot_size"] == 65 and p["multiplier"] == 1
+    assert p["qty"] > 0 and p["qty"] % 65 == 0, "Kite takes units, in whole lots"
+    lots = p["qty"] // 65
+    assert p["sizing"]["lots"] == lots
+    assert p["estimated_notional"] == pytest.approx(lots * 65 * p["ask"], abs=0.01)
+
+    # The approval DTO carries the lot size to the executor's re-check.
+    from trading_agents.runtime import _to_proposal_dto
+
+    dto = _to_proposal_dto(out)
+    assert (dto["lotSize"], dto["multiplier"], dto["qty"]) == (65, 1, p["qty"])
+
+
+async def test_run_one_hands_the_kite_client_to_an_nse_run_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from engine.options.kite_chain import kite_client_factory
+    from trading_agents.jobs import daily_cron
+
+    during: dict[str, object] = {}
+
+    async def _fake_run_council(**kwargs: object) -> dict[str, object]:
+        during[str(kwargs["symbol"])] = kite_client_factory.get()
+        return {"final_action": "HOLD", "proposal": None}
+
+    monkeypatch.setattr(daily_cron, "run_council", _fake_run_council)
+    monkeypatch.setattr(daily_cron, "_kite_client_factory", lambda uid: f"kite:{uid}")
+    for symbol in ("NSE:NIFTY 50", "NVDA"):
+        await daily_cron._run_one(
+            "u1", symbol, object(), force=True, feature_provider=None, push_tasks=[],
+        )
+    assert during == {"NSE:NIFTY 50": "kite:u1", "NVDA": None}
+    assert kite_client_factory.get() is None, "scoped to the run, never leaked"

@@ -240,7 +240,8 @@ async def test_the_councils_sizing_equity_is_the_symbols_own_broker_account(
 # ── NSE index options (NFO) ──────────────────────────────────────────
 
 
-def _nifty_call(expiry, *, lots: int = 1, lot_size: int = 65, premium: float = 120.0):
+def _nifty_call(expiry, *, lots: int = 1, lot_size: int = 65, premium: float = 120.0,
+                broker_lot: int | None = None):
     from datetime import timedelta
 
     from app.schemas.approvals import ApprovalProposalDto
@@ -252,7 +253,7 @@ def _nifty_call(expiry, *, lots: int = 1, lot_size: int = 65, premium: float = 1
         direction="long", is_option=True, option_action="buy_to_open", occ_symbol=contract,
         strike=25000.0, expiry_date=expiry, contract_type="call",
         # Kite counts option quantity in UNITS (lots x lot size): multiplier 1.
-        multiplier=1, open_interest=500_000, volume=200_000,
+        multiplier=1, lot_size=broker_lot, open_interest=500_000, volume=200_000,
         bid=round(premium - 0.5, 2), ask=premium, implied_volatility=0.14,
         qty=lots * lot_size, order_type="LIMIT", limit_price=premium,
         estimated_notional=lots * lot_size * premium, time_stop_days=5,
@@ -410,3 +411,19 @@ async def test_the_council_risks_each_proposal_against_its_own_brokers_book(
     assert [p.symbol for p in us_ctx.open_positions] == ["AAPL"]
     assert in_ctx.account_equity == pytest.approx(1_012_000.0)  # cash + 3 x 4000
     assert [p.symbol for p in in_ctx.open_positions] == ["NSE:TCS"]
+
+
+async def test_a_revised_lot_size_is_taken_from_the_proposal_not_the_stale_table(
+    monkeypatch: pytest.MonkeyPatch, live_india: None,
+) -> None:
+    """NSE revises lot sizes by circular. The drafter records the lot size
+    from that day's instruments dump; the executor's re-check must use it,
+    or the day NIFTY moves to 75 every correct order is refused as off-lot
+    against the fallback table's 65."""
+    _us, india = await _both_accounts(monkeypatch)
+    proposal, contract = _nifty_call((datetime.now(UTC) + timedelta(days=25)).date(),
+                                     lot_size=75, broker_lot=75)
+    india.set_price(contract, 118.0)
+
+    await _approve(proposal, exit_mode="agent")
+    assert [r.qty for r in india.requests.values()] == [75]

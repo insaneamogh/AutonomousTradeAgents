@@ -955,6 +955,9 @@ def _option_risk_proposal(
         option=option,
         closes_intraday_position=inputs.closes_intraday_position,
         is_intraday=inputs.is_intraday,
+        # The broker's lot size, from the instruments dump at draft time,
+        # so lot_size_block does not fall back to the caps table.
+        lot_size=proposal.lot_size,
     )
 
 

@@ -638,15 +638,26 @@ async def _run_one(
     if not force and await _should_skip(user_id, symbol, instrument):
         return {"symbol": symbol, "skipped": True}
 
-    result = await run_council(
-        symbol=symbol,
-        user_id=user_id,
-        llm=llm,
-        feature_provider=feature_provider,
-        decision_log=get_decision_log(),
-        confidence_store=get_confidence_store(),
-        instrument_preference=("option" if instrument == "option" else "equity"),
+    from engine.options.kite_chain import kite_client_factory
+    from engine.risk.markets import market_of
+
+    # An NSE option draft reads its chain through this user's Kite client;
+    # scoped to this one run so no other user's pass can see it.
+    token = kite_client_factory.set(
+        _kite_client_factory(user_id) if market_of(symbol) == "IN" else None
     )
+    try:
+        result = await run_council(
+            symbol=symbol,
+            user_id=user_id,
+            llm=llm,
+            feature_provider=feature_provider,
+            decision_log=get_decision_log(),
+            confidence_store=get_confidence_store(),
+            instrument_preference=("option" if instrument == "option" else "equity"),
+        )
+    finally:
+        kite_client_factory.reset(token)
     log.info(
         "%s: final_action=%s strategy=%s confidence=%.2f decision_id=%s",
         symbol,

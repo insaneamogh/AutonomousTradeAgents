@@ -46,6 +46,10 @@ class ApprovalProposalDto(CamelCaseModel):
     expiry_date: date | None = None
     contract_type: Literal["call", "put"] | None = None
     multiplier: int = 1
+    lot_size: int | None = None
+    """NSE derivatives: units per lot from Kite's instruments dump (NIFTY
+    65). ``qty`` is already in units; this is what lot_size_block checks
+    it against. None for everything else."""
     # Liquidity + pricing snapshot at Drafter-time — mirrors
     # ``engine.risk.types.OptionLegDetails`` field-for-field so the
     # executor's execution-time re-risk-check (``illiquid_contract``,
