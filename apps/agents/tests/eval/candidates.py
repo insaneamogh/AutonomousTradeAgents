@@ -23,6 +23,12 @@ two candidates (n_tests=2). Scanning horizons for the one that works is
 how the 5d/20d stride artefact nearly got reported as an edge.
 
     python -m tests.eval.candidates
+    python -m tests.eval.candidates --market IN   # the same two, on NSE (PLAN_ZERODHA Z4)
+
+On NSE the rules and horizons are unchanged (re-tuning them for India
+would be the scan this file forbids), long calls only (delivery cannot be
+held short), net of the NSE delivery round trip, and there is no option
+line: option_backtest has no NSE lot or cost model yet.
 
 RESULT, first and only run (2026-09-23, 58 large-cap symbols, 2021-2026):
 
@@ -44,9 +50,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from tests.eval.acceptance import Observation, evaluate
+from tests.eval.acceptance import AcceptanceBar, Observation, evaluate
 from tests.eval.option_backtest import OPTIONS_BAR, backtest
-from tests.eval.signal_backtest import _load, non_overlapping, run
+from tests.eval.signal_backtest import _load, market, non_overlapping, run
 
 from engine.alpha import Signal
 
@@ -105,25 +111,42 @@ class Momentum12_1:
         return _call(self.name, symbol, "long" if m > 0 else "short", min(1.0, abs(m)), m=m)
 
 
-def main() -> int:
-    data = _load()
-    print("\npre-registered candidates, one horizon each, Bonferroni over 2\n")
+def main(argv: list[str] | None = None) -> int:
+    import argparse
 
-    rev = run(model=ShortTermReversal())
+    ap = argparse.ArgumentParser(description="pre-registered candidates")
+    ap.add_argument("--market", choices=("US", "IN"), default="US")
+    args = ap.parse_args(argv)
+    for line in verdicts(args.market):
+        print(line)
+    return 0
+
+
+def verdicts(market_name: str = "US", data: dict | None = None) -> list[str]:
+    """One line per candidate, judged exactly as registered above."""
+    data = data if data is not None else _load(market_name)
+    bar = AcceptanceBar(cost_pct=market(market_name).cost_pct)
+    lines = [f"\npre-registered candidates ({market_name}), one horizon each, "
+             "Bonferroni over 2\n"]
+
+    rev = run(model=ShortTermReversal(), market_name=market_name, data=data)
     obs = [Observation(s.day, s.fwd[REVERSAL_HORIZON])
            for s in non_overlapping(rev, REVERSAL_HORIZON)]
-    print(f"  short_term_reversal  equity  {REVERSAL_HORIZON}d  "
-          f"{evaluate(obs, n_tests=N_TESTS).line()}")
-    opt = backtest(REVERSAL_HORIZON, signals=rev, data=data)
-    print(f"  short_term_reversal  option  {REVERSAL_HORIZON}d  "
-          f"{evaluate(opt, OPTIONS_BAR, n_tests=N_TESTS).line()}")
+    lines.append(f"  short_term_reversal  equity  {REVERSAL_HORIZON}d  "
+                 f"{evaluate(obs, bar, n_tests=N_TESTS).line()}")
+    if market_name == "US":
+        opt = backtest(REVERSAL_HORIZON, signals=rev, data=data)
+        lines.append(f"  short_term_reversal  option  {REVERSAL_HORIZON}d  "
+                     f"{evaluate(opt, OPTIONS_BAR, n_tests=N_TESTS).line()}")
 
-    mom = run(model=Momentum12_1())
+    mom = run(model=Momentum12_1(), market_name=market_name, data=data)
     obs = [Observation(s.day, s.fwd[MOMENTUM_HORIZON])
            for s in non_overlapping(mom, MOMENTUM_HORIZON)]
-    print(f"  momentum_12_1        equity {MOMENTUM_HORIZON}d  "
-          f"{evaluate(obs, n_tests=N_TESTS).line()}")
-    return 0
+    lines.append(f"  momentum_12_1        equity {MOMENTUM_HORIZON}d  "
+                 f"{evaluate(obs, bar, n_tests=N_TESTS).line()}")
+    if market_name == "IN":
+        lines.append("\n  Universe is today's NIFTY 50: survivorship bias flatters both lines.")
+    return lines
 
 
 if __name__ == "__main__":

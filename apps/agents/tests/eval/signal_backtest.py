@@ -27,6 +27,16 @@ about horizon, measured at scale.
 
     python -m tests.eval.signal_backtest
     python -m tests.eval.signal_backtest --by-strategy
+    python -m tests.eval.signal_backtest --market IN   # NSE (docs/PLAN_ZERODHA.md Z4)
+
+**NSE (`--market IN`).** The same harness on NSE daily bars, fetched once
+through a Kite session (`fetch_bars --kite`), with NIFTY 50 as the
+benchmark and the Indian round-trip cost (STT both ways on delivery) in
+the acceptance bar. Long only: NSE delivery cannot be held short, so a
+short call is not a tradable equity observation there. The universe is
+TODAY's NIFTY 50: stocks that fell out over the window are missing, which
+biases every result UP (survivorship). A pass on that universe is a
+reason to test on point-in-time constituents, not a reason to trade.
 """
 
 from __future__ import annotations
@@ -48,6 +58,28 @@ from trading_agents.strategies.alpha import StrategyFitAlpha
 from trading_agents.strategies.horizon import strategy_horizon_days
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "bars.json.gz"
+_FIXTURE_NSE = Path(__file__).parent / "fixtures" / "bars_nse.json.gz"
+
+
+@dataclass(frozen=True)
+class Market:
+    fixture: Path
+    benchmark: str
+    cost_pct: float
+    """Round-trip cost in percent of notional, charged by the acceptance bar."""
+    long_only: bool
+
+
+def _nse_delivery_cost_pct() -> float:
+    from engine.backtester.costs_india import round_trip_pct
+
+    return round_trip_pct("equity_delivery", buy_value=100_000.0, sell_value=100_000.0)
+
+
+def market(name: str) -> Market:
+    if name == "IN":
+        return Market(_FIXTURE_NSE, "NSE:NIFTY 50", _nse_delivery_cost_pct(), long_only=True)
+    return Market(_FIXTURE, "SPY", 0.10, long_only=False)
 
 _MIN_HISTORY = 260
 """Bars needed before the first signal. `_momentum` reads `ret_252d_pct`,
@@ -71,8 +103,14 @@ class Signal:
     direction — so positive always means "the thesis was right"."""
 
 
-def _load() -> dict[str, list[DailyBar]]:
-    with gzip.open(_FIXTURE, "rt") as fh:
+def _load(market_name: str = "US") -> dict[str, list[DailyBar]]:
+    path = market(market_name).fixture
+    if not path.exists():
+        raise SystemExit(
+            f"{path.name} is missing. Fetch it once with a Kite session:\n"
+            "  KITE_API_KEY=... KITE_ACCESS_TOKEN=... python -m tests.eval.fetch_bars --kite"
+        )
+    with gzip.open(path, "rt") as fh:
         raw = json.load(fh)
     out: dict[str, list[DailyBar]] = {}
     for sym, rows in raw["bars"].items():
@@ -107,6 +145,8 @@ def run(
     step: int = 5,
     allow_shorts: bool = True,
     model: AlphaModel | None = None,
+    market_name: str = "US",
+    data: dict[str, list[DailyBar]] | None = None,
 ) -> list[Signal]:
     """Walk every symbol forward, `step` days at a time.
 
@@ -121,14 +161,15 @@ def run(
     live path without first clearing the measurement that refuted the
     incumbent.
     """
-    model = model or StrategyFitAlpha(allow_shorts=allow_shorts)
-    data = _load()
-    bench = data.get("SPY")
+    mkt = market(market_name)
+    model = model or StrategyFitAlpha(allow_shorts=allow_shorts and not mkt.long_only)
+    data = data if data is not None else _load(market_name)
+    bench = data.get(mkt.benchmark)
     signals: list[Signal] = []
     longest = max(HORIZONS)
 
     for sym, bars in data.items():
-        if sym == "SPY" or len(bars) < _MIN_HISTORY + longest:
+        if sym == mkt.benchmark or len(bars) < _MIN_HISTORY + longest:
             continue
         for t in range(_MIN_HISTORY, len(bars) - longest, step):
             window = bars[: t + 1]
@@ -143,6 +184,8 @@ def run(
             # never formed a view as a 50/50 call is how a broken signal
             # reads as merely mediocre.
             if sig.abstained or not sig.meta.get("strategy_id"):
+                continue
+            if mkt.long_only and sig.meta["direction"] != "long":
                 continue
             entry = bars[t].close
             sign = 1.0 if sig.meta["direction"] == "long" else -1.0
@@ -206,8 +249,12 @@ def _stats(vals: list[float]) -> tuple[float, float, float]:
     return hits, st.mean(vals), st.median(vals)
 
 
-def report(signals: list[Signal], *, by_strategy: bool = False) -> None:
-    print(f"\n{len(signals):,} tradable signals, 58 symbols, 2020-07 to 2026-09\n")
+def report(
+    signals: list[Signal], *, by_strategy: bool = False, market_name: str = "US"
+) -> None:
+    mkt = market(market_name)
+    symbols = len({s.symbol for s in signals})
+    print(f"\n{len(signals):,} tradable signals, {symbols} symbols ({market_name})\n")
     print(f"  {'horizon':>8} {'n':>6} {'hit':>7} {'mean':>8} {'median':>8} {'z':>6}")
     print("  " + "-" * 66)
     for h in HORIZONS:
@@ -226,14 +273,19 @@ def report(signals: list[Signal], *, by_strategy: bool = False) -> None:
     print("  horizons are tested — one crossing by chance would be unremarkable.")
 
     # The verdict, drawn by code rather than by reading the table above.
-    # Equity costs (10 bps round trip); an options candidate must also pass
+    # Equity costs (the market's round trip: 10 bps US, STT-heavy for NSE
+    # delivery); an options candidate must also pass
     # tests.eval.option_backtest, which charges spread and theta.
-    from tests.eval.acceptance import Observation, evaluate
+    from tests.eval.acceptance import AcceptanceBar, Observation, evaluate
 
-    print("\n  acceptance bar (net of 10 bps, Bonferroni over the horizons):\n")
+    bar = AcceptanceBar(cost_pct=mkt.cost_pct)
+    print(f"\n  acceptance bar (net of {mkt.cost_pct:.3f}% round trip, Bonferroni over "
+          "the horizons):\n")
     for h in HORIZONS:
         obs = [Observation(day=s.day, ret_pct=s.fwd[h]) for s in non_overlapping(signals, h)]
-        print(f"  {h:>3}d  {evaluate(obs, n_tests=len(HORIZONS)).line()}")
+        print(f"  {h:>3}d  {evaluate(obs, bar, n_tests=len(HORIZONS)).line()}")
+    if market_name == "IN":
+        print("\n  Universe is today's NIFTY 50: survivorship bias flatters every cell.")
 
     if not by_strategy:
         return
@@ -259,8 +311,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--by-strategy", action="store_true")
     ap.add_argument("--step", type=int, default=5)
+    ap.add_argument("--market", choices=("US", "IN"), default="US")
     args = ap.parse_args()
-    report(run(step=args.step), by_strategy=args.by_strategy)
+    report(run(step=args.step, market_name=args.market), by_strategy=args.by_strategy,
+           market_name=args.market)
     return 0
 
 
