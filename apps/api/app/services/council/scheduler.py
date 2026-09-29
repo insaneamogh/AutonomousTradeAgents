@@ -255,6 +255,30 @@ IN_DEFAULT_SCAN_TIMES = "04:30"
 the whole session left for the entry to fill (Kite orders are DAY)."""
 
 
+IN_IV_SNAPSHOT_TIME = "10:15"
+"""15:45 IST, after the 15:30 NSE close."""
+
+IN_IV_DEFAULT_UNDERLYINGS = "NSE:NIFTY 50,NSE:NIFTY BANK"
+"""Recorded whether or not they are on the watchlist: index options are
+what the India desk trades, and a day not recorded cannot be recovered.
+Override with IN_IV_UNDERLYINGS."""
+
+
+def _kite_session(user_id: str):
+    """Opens ``user_id``'s Kite client the way every other caller does
+    (broker_use: decrypts the daily token, fails fast when it expired)."""
+    from contextlib import asynccontextmanager
+
+    from app.services.broker.broker_use import with_broker_client
+
+    @asynccontextmanager
+    async def _open():
+        async with with_broker_client(user_id, broker="zerodha") as (client, _conn):
+            yield client
+
+    return _open
+
+
 def _for_market(symbols: list[str], market: str) -> list[str]:
     from engine.risk.markets import market_of
 
@@ -320,6 +344,8 @@ class CouncilScheduler:
         self.last_universe_refresh_result: dict[str, int] | str | None = None
         self.last_iv_snapshot_at: datetime | None = None
         self.last_iv_snapshot_result: dict[str, int] | str | None = None
+        self.last_in_iv_snapshot_at: datetime | None = None
+        self.last_in_iv_snapshot_result: dict[str, int] | str | None = None
         self.last_eod_at: datetime | None = None
         self.last_eod_result: str | None = None
         # Tier 1/2 of the Insights "symbol scan funnel" — fed by
@@ -360,6 +386,10 @@ class CouncilScheduler:
             self._tasks.append(asyncio.create_task(self._iv_snapshot_loop()))
         else:
             logger.info("IV snapshot disabled (IV_SNAPSHOT_ENABLED=0)")
+        if _flag("IN_IV_SNAPSHOT_ENABLED", default=True):
+            self._tasks.append(asyncio.create_task(self._in_iv_snapshot_loop()))
+        else:
+            logger.info("NSE IV snapshot disabled (IN_IV_SNAPSHOT_ENABLED=0)")
         if _flag("IN_SWEEP_ENABLED"):
             self._tasks.append(asyncio.create_task(self._india_loop()))
         else:
@@ -544,7 +574,8 @@ class CouncilScheduler:
             return
 
         symbols, instruments = await _watchlist_with_instruments()
-        underlyings = [s for s in symbols if instruments.get(s) == "option"]
+        # US only: an NSE underlying's chain is Kite's (_run_in_iv_snapshot_once).
+        underlyings = _for_market([s for s in symbols if instruments.get(s) == "option"], "US")
         if not underlyings:
             self.last_iv_snapshot_result = "skipped_no_option_underlyings"
             return
@@ -565,6 +596,80 @@ class CouncilScheduler:
         self.last_iv_snapshot_at = datetime.now(UTC)
         self.last_iv_snapshot_result = result
         logger.info("IV snapshot done: %s", result)
+
+    async def _in_iv_snapshot_loop(self) -> None:
+        """The NSE IV recorder: after the 15:30 IST close (default 10:15 UTC,
+        IN_IV_SNAPSHOT_TIME_UTC), on NSE trading days."""
+        times = _scan_times("IN_IV_SNAPSHOT_TIME_UTC", IN_IV_SNAPSHOT_TIME)
+        logger.info("NSE IV snapshot armed — fires daily at %02d:%02d UTC", *times[0])
+        while True:
+            try:
+                await asyncio.sleep(_seconds_until_next(datetime.now(UTC), times))
+            except asyncio.CancelledError:
+                raise
+            try:
+                await self._run_in_iv_snapshot_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NSE IV snapshot failed — will retry next window")
+                self.last_in_iv_snapshot_result = "failed"
+            await asyncio.sleep(61)
+
+    async def _run_in_iv_snapshot_once(self) -> None:
+        """One iv_history row per NSE options underlying (feed 'kite') plus
+        India VIX, read through the cron user's Kite session. Read-only,
+        zero LLM. Without a live Kite session (no connection, or the daily
+        token not refreshed) it is a recorded skip, not an error."""
+        from zoneinfo import ZoneInfo
+
+        from engine.features.market_calendar import is_in_trading_day
+
+        today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
+        if not is_in_trading_day(today):
+            self.last_in_iv_snapshot_result = "skipped_market_holiday"
+            return
+        if not _flag("USE_POSTGRES"):
+            self.last_in_iv_snapshot_result = "skipped_no_postgres"
+            return
+
+        symbols, instruments = await _watchlist_with_instruments()
+        defaults = [x.strip().upper() for x in os.environ.get(
+            "IN_IV_UNDERLYINGS", IN_IV_DEFAULT_UNDERLYINGS).split(",") if x.strip()]
+        underlyings = sorted(set(defaults) | set(
+            _for_market([x for x in symbols if instruments.get(x) == "option"], "IN")))
+
+        factory = _kite_session(_cron_user())
+        try:
+            async with factory():
+                pass
+        except Exception as exc:
+            logger.info("NSE IV snapshot skipped: no usable Kite session (%s)", type(exc).__name__)
+            self.last_in_iv_snapshot_result = "skipped_no_kite_session"
+            return
+
+        from trading_agents.jobs.iv_snapshot import (
+            india_vix_row,
+            kite_chain_fetcher,
+            postgres_writer,
+            snapshot,
+        )
+
+        result = await snapshot(
+            underlyings, today, fetch_chain=kite_chain_fetcher(factory),
+            write_rows=postgres_writer, feed="kite",
+        )
+        try:
+            vix = await india_vix_row(factory, today)
+        except Exception:
+            logger.warning("NSE IV snapshot: India VIX quote failed", exc_info=True)
+            vix = None
+        if vix is not None:
+            await postgres_writer([vix])
+        result = {**result, "india_vix": 1 if vix is not None else 0}
+        self.last_in_iv_snapshot_at = datetime.now(UTC)
+        self.last_in_iv_snapshot_result = result
+        logger.info("NSE IV snapshot done: %s", result)
 
     async def _eod_loop(self) -> None:
         hour = _eod_report_hour()

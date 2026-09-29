@@ -24,14 +24,17 @@ class IvHistory(Base):
 
     symbol: Mapped[str] = mapped_column(String(40), primary_key=True)
     day: Mapped[date] = mapped_column(Date, primary_key=True)
-    """The ET trading date of the snapshot. One row per (symbol, day); a
+    """The trading date of the snapshot on the symbol's own exchange (ET
+    for a US symbol, IST for an NSE one). One row per (symbol, day); a
     re-run the same day overwrites rather than duplicating."""
     atm_iv_30d: Mapped[Decimal | None] = mapped_column(Numeric(8, 5), nullable=True)
     atm_iv_60d: Mapped[Decimal | None] = mapped_column(Numeric(8, 5), nullable=True)
     n_expiries: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     feed: Mapped[str] = mapped_column(String(20), nullable=False)
-    """'indicative' or 'opra'. A rank computed across a feed change mixes
-    two different IV sources, so the feed is recorded with every row."""
+    """'indicative' or 'opra' (Alpaca), or 'kite' (NSE: IV computed from the
+    quote mid, since Kite returns no greeks). A rank computed across a feed
+    change mixes two different IV sources, so the feed is recorded with
+    every row."""
     captured_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

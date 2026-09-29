@@ -384,7 +384,8 @@ async def test_iv_snapshot_records_only_option_underlyings(
     monkeypatch.setenv("ALPACA_SECRET_KEY", "s")
 
     async def fake_watchlist():
-        return ["NVDA", "AAPL", "SPY"], {"NVDA": "option", "AAPL": "equity", "SPY": "option"}
+        return (["NVDA", "AAPL", "SPY", "NSE:NIFTY 50"],
+                {"NVDA": "option", "AAPL": "equity", "SPY": "option", "NSE:NIFTY 50": "option"})
 
     captured: dict = {}
 
@@ -418,6 +419,88 @@ async def test_iv_snapshot_skips_holidays_and_missing_prerequisites(
     monkeypatch.delenv("USE_POSTGRES", raising=False)
     await s._run_iv_snapshot_once()
     assert s.last_iv_snapshot_result == "skipped_no_postgres"
+
+
+async def test_nse_iv_snapshot_records_the_indices_the_watchlist_and_india_vix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import contextlib
+
+    import engine.features.market_calendar as cal
+    from app.services.council import scheduler as sched
+    from app.services.council.scheduler import CouncilScheduler
+    from trading_agents.jobs import iv_snapshot
+
+    monkeypatch.setattr(cal, "is_in_trading_day", lambda _d: True)
+    monkeypatch.setenv("USE_POSTGRES", "1")
+    monkeypatch.delenv("IN_IV_UNDERLYINGS", raising=False)
+
+    async def fake_watchlist():
+        return (["NVDA", "NSE:RELIANCE", "NSE:TCS"],
+                {"NVDA": "option", "NSE:RELIANCE": "option", "NSE:TCS": "equity"})
+
+    class _Kite:
+        async def quotes(self, symbols):
+            return {"NSE:INDIA VIX": {"last_price": 13.5}}
+
+    @contextlib.asynccontextmanager
+    async def _open():
+        yield _Kite()
+
+    captured: dict = {}
+    written: list = []
+
+    async def fake_snapshot(symbols, today, *, fetch_chain, write_rows, feed):
+        captured["symbols"], captured["feed"] = list(symbols), feed
+        return {"recorded": 3, "no_atm_iv": 0, "failed": 0}
+
+    async def fake_writer(rows):
+        written.extend(rows)
+
+    monkeypatch.setattr(sched, "_watchlist_with_instruments", fake_watchlist)
+    monkeypatch.setattr(sched, "_kite_session", lambda _uid: _open)
+    monkeypatch.setattr(iv_snapshot, "snapshot", fake_snapshot)
+    monkeypatch.setattr(iv_snapshot, "postgres_writer", fake_writer)
+
+    s = CouncilScheduler()
+    await s._run_in_iv_snapshot_once()
+    assert captured == {"symbols": ["NSE:NIFTY 50", "NSE:NIFTY BANK", "NSE:RELIANCE"],
+                        "feed": "kite"}
+    assert [(r.symbol, r.atm_iv_30d, r.feed) for r in written] == [
+        ("NSE:INDIA VIX", 0.135, "kite")]
+    assert s.last_in_iv_snapshot_result == {
+        "recorded": 3, "no_atm_iv": 0, "failed": 0, "india_vix": 1}
+
+
+async def test_nse_iv_snapshot_skips_holidays_and_a_missing_kite_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import contextlib
+
+    import engine.features.market_calendar as cal
+    from app.services.council import scheduler as sched
+    from app.services.council.scheduler import CouncilScheduler
+
+    s = CouncilScheduler()
+    monkeypatch.setattr(cal, "is_in_trading_day", lambda _d: False)
+    await s._run_in_iv_snapshot_once()
+    assert s.last_in_iv_snapshot_result == "skipped_market_holiday"
+
+    monkeypatch.setattr(cal, "is_in_trading_day", lambda _d: True)
+    monkeypatch.setenv("USE_POSTGRES", "1")
+
+    async def fake_watchlist():
+        return [], {}
+
+    @contextlib.asynccontextmanager
+    async def _expired():
+        raise RuntimeError("Zerodha session expired — reconnect")
+        yield
+
+    monkeypatch.setattr(sched, "_watchlist_with_instruments", fake_watchlist)
+    monkeypatch.setattr(sched, "_kite_session", lambda _uid: _expired)
+    await s._run_in_iv_snapshot_once()
+    assert s.last_in_iv_snapshot_result == "skipped_no_kite_session"
 
 
 def test_iv_snapshot_is_on_by_default(monkeypatch: pytest.MonkeyPatch) -> None:

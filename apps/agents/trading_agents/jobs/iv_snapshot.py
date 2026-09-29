@@ -96,6 +96,53 @@ def alpaca_chain_fetcher(api_key: str, secret_key: str) -> ChainFetcher:
     return _fetch
 
 
+KITE_QUOTE_SPACING_S = 1.1
+"""Kite allows about one quote call per second; the chain fetch makes one
+or two, so underlyings are spaced out rather than fired together."""
+
+INDIA_VIX = "NSE:INDIA VIX"
+
+
+def kite_chain_fetcher(client_factory: Callable[[], Any]) -> ChainFetcher:
+    """The NSE chain through the user's Kite client (docs/PLAN_ZERODHA.md
+    Z2): calls and puts near the money, 7-120 DTE, IV and delta computed
+    from the quote mid (engine.options.kite_chain)."""
+    async def _fetch(symbol: str, today: date) -> Iterable[Any]:
+        import asyncio
+        from dataclasses import replace
+        from datetime import UTC, datetime
+
+        from engine.options.kite_chain import fetch_kite_option_candidates
+        from engine.risk.types import RiskCaps
+
+        caps = replace(RiskCaps.from_env(), options_min_dte=7, options_max_dte=_MAX_EXPIRY_DAYS)
+        try:
+            async with client_factory() as client:
+                return await fetch_kite_option_candidates(
+                    symbol, client=client, now=datetime.now(UTC), caps=caps,
+                )
+        finally:
+            await asyncio.sleep(KITE_QUOTE_SPACING_S)
+
+    return _fetch
+
+
+async def india_vix_row(client_factory: Callable[[], Any], today: date) -> IvRow | None:
+    """India VIX as its own row: NSE's 30-day implied volatility of NIFTY,
+    quoted in percent, stored as a decimal in atm_iv_30d like every other
+    row. None when Kite does not quote it."""
+    async with client_factory() as client:
+        quote = (await client.quotes([INDIA_VIX])).get(INDIA_VIX) or {}
+    try:
+        vix = float(quote.get("last_price") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if vix <= 0:
+        return None
+    return IvRow(symbol=INDIA_VIX, day=today, atm_iv_30d=round(vix / 100.0, 5),
+                 atm_iv_60d=None, n_expiries=0, feed="kite")
+
+
 async def postgres_writer(rows: list[IvRow]) -> None:
     """Upsert on (symbol, day): a same-day re-run replaces, never duplicates."""
     from sqlalchemy.dialects.postgresql import insert
