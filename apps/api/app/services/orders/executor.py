@@ -308,6 +308,50 @@ async def _execute_via_broker(
                     proposal.side, proposal.symbol,
                 )
 
+        # The client_order_id is the proposal id — Alpaca de-dupes on it for
+        # ~24h, so a retry of this whole function won't double-submit, and
+        # the DB insert is ON CONFLICT DO NOTHING on the same key.
+        client_order_id = _client_order_id_for(proposal.id)
+        # The symbol that goes on the WIRE. Domain code (agent_decisions.symbol,
+        # the daily-cron dedup, ghost marking, every UI list) keeps the
+        # UNDERLYING; only the broker call takes the OCC contract string.
+        # Sending proposal.symbol for an option would place an EQUITY order on
+        # the underlying at the option's premium price — and the
+        # OptionBracketNotSupportedError guard would silently no-op too, since
+        # OccSymbol.try_parse("NVDA") is None.
+        wire_symbol = _wire_symbol_for(proposal)
+        order_request = OrderRequest(
+            symbol=wire_symbol,
+            side=_broker_side_for(proposal),
+            qty=adjusted_qty,
+            # Options are ALWAYS priced/executed as LIMIT, never
+            # MARKET — this repo's own docs/OPTIONS_PLAN.md
+            # explicitly recommends against market orders on a
+            # 15-min-delayed indicative feed. Overrides whatever
+            # proposal.order_type says for an option.
+            order_type=(
+                OrderType.LIMIT
+                if proposal.is_option
+                else (
+                    OrderType.MARKET
+                    if proposal.order_type == "MARKET"
+                    else OrderType.LIMIT
+                )
+            ),
+            limit_price=proposal.limit_price,
+            time_in_force=TimeInForce.GTC if use_bracket else TimeInForce.DAY,
+            client_order_id=client_order_id,
+            take_profit_price=proposal.target_price if use_bracket else None,
+            stop_loss_price=proposal.stop_loss if use_bracket else None,
+        )
+
+        # 2b. Margin, where the broker can quote it (Zerodha). Kite refuses
+        # an order the account cannot fund with a raw "insufficient funds";
+        # this refuses it by name first, before the proposal is claimed.
+        refusal = await _margin_refusal(broker, order_request, risk_decision)
+        if refusal is not None:
+            return refusal
+
         # 3. Claim the proposal BEFORE touching the broker. Two concurrent
         # approvals both found it pending; exactly one may place an order.
         # The loser used to fall through, get order_row_id=None from the
@@ -333,18 +377,6 @@ async def _execute_via_broker(
             )
 
         # 4. Persist intent (audit chain: decision → order), then place.
-        # The client_order_id is the proposal id — Alpaca de-dupes on it for
-        # ~24h, so a retry of this whole function won't double-submit, and
-        # the DB insert is ON CONFLICT DO NOTHING on the same key.
-        client_order_id = _client_order_id_for(proposal.id)
-        # The symbol that goes on the WIRE. Domain code (agent_decisions.symbol,
-        # the daily-cron dedup, ghost marking, every UI list) keeps the
-        # UNDERLYING; only the broker call takes the OCC contract string.
-        # Sending proposal.symbol for an option would place an EQUITY order on
-        # the underlying at the option's premium price — and the
-        # OptionBracketNotSupportedError guard would silently no-op too, since
-        # OccSymbol.try_parse("NVDA") is None.
-        wire_symbol = _wire_symbol_for(proposal)
         try:
             order_row_id = await persist_order_submit(
                 user_id=user_id,
@@ -365,32 +397,7 @@ async def _execute_via_broker(
             ) from exc
 
         try:
-            order = await broker.place_order(
-                OrderRequest(
-                    symbol=wire_symbol,
-                    side=_broker_side_for(proposal),
-                    qty=adjusted_qty,
-                    # Options are ALWAYS priced/executed as LIMIT, never
-                    # MARKET — this repo's own docs/OPTIONS_PLAN.md
-                    # explicitly recommends against market orders on a
-                    # 15-min-delayed indicative feed. Overrides whatever
-                    # proposal.order_type says for an option.
-                    order_type=(
-                        OrderType.LIMIT
-                        if proposal.is_option
-                        else (
-                            OrderType.MARKET
-                            if proposal.order_type == "MARKET"
-                            else OrderType.LIMIT
-                        )
-                    ),
-                    limit_price=proposal.limit_price,
-                    time_in_force=TimeInForce.GTC if use_bracket else TimeInForce.DAY,
-                    client_order_id=client_order_id,
-                    take_profit_price=proposal.target_price if use_bracket else None,
-                    stop_loss_price=proposal.stop_loss if use_bracket else None,
-                )
-            )
+            order = await broker.place_order(order_request)
         except Exception:
             # Row stays status='pending' on purpose — a transient failure is
             # retryable: the retry reuses the same client_order_id, lands on
@@ -869,6 +876,46 @@ def _re_run_risk(
         easy_to_borrow=proposal.easy_to_borrow,
     )
     return evaluate(risk_proposal, context, caps, specialists=inputs.specialists)
+
+
+async def _margin_refusal(
+    broker: object, request: OrderRequest, risk_decision: RiskDecisionLike
+) -> ExecuteResponse | None:
+    """``insufficient_margin`` when the broker quotes more margin plus
+    charges than the account has available (PLAN_ZERODHA Z3), else None.
+
+    Only a broker with ``order_margin`` (ZerodhaBroker) is checked. A
+    failed quote lets the order through: the broker still refuses an
+    unfunded order itself, so the gate only ever adds a name, never a new
+    way to be blocked by an outage."""
+    quote = getattr(broker, "order_margin", None)
+    if quote is None:
+        return None
+    try:
+        required = float(await quote(request))
+        available = float(await broker.get_buying_power())  # type: ignore[attr-defined]
+    except Exception:
+        logger.warning(
+            "executor: margin quote unavailable for %s; the broker remains the final check",
+            request.symbol, exc_info=True,
+        )
+        return None
+    if required <= available:
+        return None
+    logger.info(
+        "executor: insufficient_margin on %s: needs %.2f, available %.2f",
+        request.symbol, required, available,
+    )
+    return ExecuteResponse(
+        order=None,
+        risk_blocked=True,
+        risk_reason=(
+            f"The broker needs {required:,.2f} (margin plus charges) to place this "
+            f"order; the account has {available:,.2f} available."
+        ),
+        risk_veto_rule="insufficient_margin",
+        informational_flags=list(risk_decision.informational_flags),
+    )
 
 
 def _wire_symbol_for(proposal: ApprovalProposalDto) -> str:

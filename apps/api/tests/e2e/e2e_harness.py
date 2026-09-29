@@ -262,7 +262,17 @@ class SimBroker:
         return equity
 
     async def get_buying_power(self) -> float:
-        return self.cash * 2
+        # Kite: available cash (a CNC buy or an option premium is paid in
+        # full); Alpaca: 2x margin.
+        return self.cash if self.kite else self.cash * 2
+
+    async def order_margin(self, request: OrderRequest) -> float:
+        """ZerodhaBroker's margin quote: the full premium or delivery value
+        plus a flat Rs 25 of charges. Alpaca has no such call."""
+        if not self.kite:
+            raise AttributeError("order_margin")
+        price = request.limit_price or self.prices.get(request.symbol, 0.0)
+        return request.qty * price + 25.0
 
     async def get_options_trading_level(self) -> int | None:
         if self.kite:

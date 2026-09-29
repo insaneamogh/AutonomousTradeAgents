@@ -360,9 +360,12 @@ class ZerodhaBroker(BrokerInterface):
         path: str,
         *,
         data: dict[str, Any] | None = None,
+        json_body: Any = None,
     ) -> Any:
         """One Kite call. Unwraps the ``{status, data}`` envelope; raises
         ``ZerodhaError`` with Kite's message on anything non-success.
+        ``json_body`` is for the endpoints that take JSON (margins); orders
+        take form fields (``data``).
         """
         mutation = _is_order_mutation(method, path)
         if mutation and method == "POST":
@@ -376,7 +379,7 @@ class ZerodhaBroker(BrokerInterface):
         ) as client:
             try:
                 resp = await client.request(
-                    method, path, data=data, headers=self._headers()
+                    method, path, data=data, json=json_body, headers=self._headers()
                 )
             except httpx.HTTPError as exc:
                 raise ZerodhaError(f"network error reaching Kite: {exc}") from exc
@@ -407,27 +410,11 @@ class ZerodhaBroker(BrokerInterface):
             return "NRML" if self._default_product == "CNC" else self._default_product
         return self._default_product
 
-    async def place_order(self, request: OrderRequest) -> Order:
-        if request.take_profit_price is not None or request.stop_loss_price is not None:
-            # Never silently drop the protective legs the user approved.
-            raise ZerodhaError(
-                "bracket exit legs are not supported on Zerodha in v1 — "
-                "Kite GTT-based exits land with the India phase"
-            )
-        exchange, tradingsymbol = split_symbol(request.symbol)
-        tag = _tag_from_client_order_id(request.client_order_id)
-
-        # Kite has no client_order_id dedupe — emulate it via the tag so a
-        # retried executor call can't double-submit within the day.
-        if tag is not None:
-            existing = await self._find_order_by_tag(tag)
-            if existing is not None:
-                logger.info(
-                    "zerodha: tag %s already has live order %s — returning it",
-                    tag, existing.broker_order_id,
-                )
-                return existing
-
+    def _order_form(
+        self, request: OrderRequest, exchange: str, tradingsymbol: str
+    ) -> dict[str, Any]:
+        """Kite's order fields for ``request``: the same prices, snapped
+        the same way, for the order itself and for its margin quote."""
         if request.time_in_force not in _TIF_TO_KITE:
             raise ValueError(
                 f"Zerodha regular orders support DAY/IOC only, got {request.time_in_force}"
@@ -455,6 +442,54 @@ class ZerodhaBroker(BrokerInterface):
             form["trigger_price"] = _tick(request.stop_price)
         if request.order_type in _PROTECTED_ORDER_TYPES:
             form["market_protection"] = self._market_protection
+        return form
+
+    async def order_margin(self, request: OrderRequest) -> float:
+        """Rupees Kite would block to place ``request``, charges included:
+        POST /margins/orders ("total": the margin block; "charges.total":
+        brokerage, STT, exchange and SEBI fees, stamp duty, GST). A read,
+        not an order, so it does not go through the static-IP proxy."""
+        exchange, tradingsymbol = split_symbol(request.symbol)
+        form = self._order_form(request, exchange, tradingsymbol)
+        body = [{
+            "exchange": exchange,
+            "tradingsymbol": tradingsymbol,
+            "transaction_type": form["transaction_type"],
+            "variety": "regular",
+            "product": form["product"],
+            "order_type": form["order_type"],
+            "quantity": form["quantity"],
+            "price": form.get("price", 0),
+            "trigger_price": form.get("trigger_price", 0),
+        }]
+        rows = await self._request("POST", "/margins/orders", json_body=body) or []
+        return round(sum(
+            float(r.get("total") or 0) + float((r.get("charges") or {}).get("total") or 0)
+            for r in rows
+        ), 2)
+
+    async def place_order(self, request: OrderRequest) -> Order:
+        if request.take_profit_price is not None or request.stop_loss_price is not None:
+            # Never silently drop the protective legs the user approved.
+            raise ZerodhaError(
+                "bracket exit legs are not supported on Zerodha in v1 — "
+                "Kite GTT-based exits land with the India phase"
+            )
+        exchange, tradingsymbol = split_symbol(request.symbol)
+        tag = _tag_from_client_order_id(request.client_order_id)
+
+        # Kite has no client_order_id dedupe — emulate it via the tag so a
+        # retried executor call can't double-submit within the day.
+        if tag is not None:
+            existing = await self._find_order_by_tag(tag)
+            if existing is not None:
+                logger.info(
+                    "zerodha: tag %s already has live order %s — returning it",
+                    tag, existing.broker_order_id,
+                )
+                return existing
+
+        form = self._order_form(request, exchange, tradingsymbol)
         if tag is not None:
             form["tag"] = tag
 

@@ -551,3 +551,23 @@ async def test_an_nfo_contract_sold_in_kite_before_expiry_is_still_an_external_c
     d = await decision_row(pid)
     assert d.close_reason == "external_broker"
     assert d.realized_pnl == Decimal("1300.00")  # (140 - 120) x 65, from the last mark
+
+
+async def test_an_order_the_account_cannot_fund_is_refused_by_name(
+    monkeypatch: pytest.MonkeyPatch, live_india: None,
+) -> None:
+    """Rs 1,000,000 of equity, but nearly all of it in TCS shares: the
+    premium caps pass and Kite would still reject the order for want of
+    cash. The executor refuses it first, as insufficient_margin."""
+    _us, india = await _both_accounts(monkeypatch)
+    india.cash = 5_000.0
+    india.set_price("NSE:TCS", 4000.0)
+    india.held["NSE:TCS"] = _Held(250, 4000.0)
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+    proposal, contract = _nifty_call((datetime.now(UTC) + timedelta(days=25)).date())
+    india.set_price(contract, 118.0)
+
+    body = await _refused(proposal)
+    assert body["riskVetoRule"] == "insufficient_margin", body
+    assert "7,825.00" in body["riskReason"] and "5,000.00" in body["riskReason"]
+    assert india.requests == {}

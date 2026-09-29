@@ -714,3 +714,34 @@ async def test_limit_prices_are_snapped_onto_the_tick_toward_the_market(
         client_order_id="agent-exec-abc123",
     ))
     assert seen["price"] == sent
+
+
+@pytest.mark.asyncio
+async def test_order_margin_quotes_the_same_order_as_json_and_adds_charges() -> None:
+    """The insufficient_margin gate reads this. It must price the order
+    Kite would actually get (tick-snapped, NRML for NFO), and it is a read:
+    no order slot, no static-IP proxy."""
+    import json
+
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST" and request.url.path == "/margins/orders"
+        seen["body"] = json.loads(request.content)
+        seen["type"] = request.headers.get("content-type", "")
+        return _ok([{"total": 7_800.0, "charges": {"total": 27.35}}])
+
+    from broker.zerodha import _is_order_mutation
+
+    assert not _is_order_mutation("POST", "/margins/orders")
+    got = await _broker(handler).order_margin(OrderRequest(
+        symbol="NFO:NIFTY26OCT25000CE", side=Side.BUY_TO_OPEN, qty=65,
+        order_type=OrderType.LIMIT, limit_price=119.76, client_order_id="agent-exec-x",
+    ))
+    assert got == pytest.approx(7_827.35)
+    assert seen["type"].startswith("application/json")
+    assert seen["body"] == [{
+        "exchange": "NFO", "tradingsymbol": "NIFTY26OCT25000CE", "transaction_type": "BUY",
+        "variety": "regular", "product": "NRML", "order_type": "LIMIT", "quantity": 65,
+        "price": 119.8, "trigger_price": 0,
+    }]
