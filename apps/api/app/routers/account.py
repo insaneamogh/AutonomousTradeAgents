@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from app.middleware.auth import AuthedUser, get_current_user
 from app.schemas.account import AccountResponse
@@ -14,6 +14,7 @@ router = APIRouter(prefix="/account", tags=["account"])
 @router.get("", response_model=AccountResponse, response_model_by_alias=True)
 async def get_account(
     user: AuthedUser = Depends(get_current_user),
+    broker: str = Query("alpaca", pattern="^(alpaca|zerodha)$"),
 ) -> AccountResponse:
     """Current broker-account snapshot. Phase 0 reads from the mock store;
     Phase 1 hits Alpaca + Postgres via the reconciler's cache.
@@ -23,4 +24,4 @@ async def get_account(
     caller's own.
     """
     store = get_store()
-    return await store.get_account(user.id)
+    return await store.get_account(user.id, broker=broker)

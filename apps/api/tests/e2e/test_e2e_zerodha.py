@@ -926,3 +926,24 @@ async def test_the_paper_book_expires_day_orders_and_refuses_what_kite_would(
     huge = await paper.place_order(_req(Side.BUY, 1_000, kind=OrderType.MARKET))
     assert huge.status is OrderStatus.REJECTED, "1,500,500 of stock on 1,000,000 of cash"
     assert await paper.get_buying_power() == 1_000_000.0
+
+
+async def test_the_account_tiles_show_each_brokers_own_book_in_its_currency(
+    monkeypatch: pytest.MonkeyPatch, live_india: None,
+) -> None:
+    """/api/v1/account returned the newest snapshot of either broker, and
+    the Zerodha pass writes last: the dollar Equity tile showed the rupee
+    book."""
+    us, india = await _both_accounts(monkeypatch)
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+
+    async with api_client() as api:
+        default = (await api.get("/api/v1/account")).json()
+        nse = (await api.get("/api/v1/account", params={"broker": "zerodha"})).json()
+        bad = await api.get("/api/v1/account", params={"broker": "nope"})
+
+    assert (default["brokerName"], default["currency"], default["equity"]) == (
+        "Alpaca", "USD", 100_000.0)
+    assert (nse["brokerName"], nse["currency"], nse["equity"]) == ("Zerodha", "INR", 1_000_000.0)
+    assert nse["isPaper"] is False, "a Zerodha account is real money unless ZERODHA_PAPER"
+    assert bad.status_code == 422

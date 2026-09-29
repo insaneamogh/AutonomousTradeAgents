@@ -19,3 +19,6 @@ class AccountResponse(CamelCaseModel):
     status: AccountStatus
     broker_name: str
     is_paper: bool
+    currency: Literal["USD", "INR"] = "USD"
+    """The account's own currency: an Alpaca book is USD, a Zerodha book
+    INR. Every amount above is in it; nothing converts between them."""

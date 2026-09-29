@@ -80,7 +80,9 @@ class PostgresStore:
 
     # ── Account ──────────────────────────────────────────────────────
 
-    async def get_account(self, user_id: str | None = None) -> AccountResponse:
+    async def get_account(
+        self, user_id: str | None = None, broker: str = "alpaca"
+    ) -> AccountResponse:
         """Most-recent reconciler snapshot for the user, a cold-boot fixture
         if a connection exists but the reconciler hasn't ticked yet, or an
         honest "disconnected" response with no connection at all.
@@ -96,16 +98,20 @@ class PostgresStore:
         """
         from app.services.broker.broker_store import get_broker_store
         from engine.db.models import PositionsSnapshot
+        from engine.risk.markets import MARKET_FOR_BROKER
 
         uid = _uid(user_id)
+        broker = broker if broker in MARKET_FOR_BROKER else "alpaca"
+        label = {"alpaca": "Alpaca", "zerodha": "Zerodha"}[broker]
+        currency = "INR" if MARKET_FOR_BROKER[broker] == "IN" else "USD"
 
         broker_store = get_broker_store()
         connections = await broker_store.list_connections(str(uid))
-        has_connection = any(
-            c.broker == "alpaca" and c.status == "active" for c in connections
+        conn = next(
+            (c for c in connections if c.broker == broker and c.status == "active"), None
         )
 
-        if not has_connection:
+        if conn is None:
             return AccountResponse(
                 equity=0.0,
                 cash=0.0,
@@ -114,15 +120,22 @@ class PostgresStore:
                 today_pnl_pct=0.0,
                 open_positions=0,
                 status="disconnected",
-                broker_name="Alpaca",
-                is_paper=True,
+                broker_name=label,
+                is_paper=broker == "alpaca",
+                currency=currency,
             )
 
+        # This broker's book only. A user with Alpaca and Zerodha has a USD
+        # and an INR snapshot series, and the fleet writes Zerodha's last
+        # each tick: the newest snapshot of either showed the rupee book in
+        # the dollar tiles. A dev fixture's "mock" snapshot still counts.
+        others = [b for b in MARKET_FOR_BROKER if b != broker]
         async with self._session_factory() as session:
             await self._ensure_seed(session)
             stmt = (
                 select(PositionsSnapshot)
                 .where(PositionsSnapshot.user_id == uid)
+                .where(PositionsSnapshot.source.notin_(others))
                 .order_by(desc(PositionsSnapshot.captured_at))
                 .limit(1)
             )
@@ -139,8 +152,9 @@ class PostgresStore:
                 today_pnl_pct=0.0,
                 open_positions=0,
                 status="connected",
-                broker_name="Alpaca",
+                broker_name=label,
                 is_paper=True,
+                currency=currency,
             )
 
         return AccountResponse(
@@ -151,8 +165,9 @@ class PostgresStore:
             today_pnl_pct=float(row.daily_pnl_pct or 0),
             open_positions=len(row.open_positions or []),
             status="connected",
-            broker_name=row.source if row.source != "mock" else "Alpaca",
-            is_paper=True,
+            broker_name=label,
+            is_paper=bool(conn.is_paper) or broker == "alpaca",
+            currency=currency,
         )
 
     # ── Activity ─────────────────────────────────────────────────────

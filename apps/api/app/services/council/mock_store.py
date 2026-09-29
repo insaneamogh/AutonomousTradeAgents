@@ -39,7 +39,9 @@ class MockStore:
 
     # ── Account ──────────────────────────────────────────────────────
 
-    async def get_account(self, user_id: str | None = None) -> AccountResponse:
+    async def get_account(
+        self, user_id: str | None = None, broker: str = "alpaca"
+    ) -> AccountResponse:
         # Single-bucket dev store — user_id accepted for Protocol parity,
         # not used (DEV_AUTH_BYPASS resolves everything to the fixture user).
         _ = user_id

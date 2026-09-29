@@ -28,7 +28,9 @@ from app.schemas.approvals import (
 class Store(Protocol):
     """Backend contract. MockStore + PostgresStore both satisfy this."""
 
-    async def get_account(self, user_id: str | None = None) -> AccountResponse: ...
+    async def get_account(
+        self, user_id: str | None = None, broker: str = "alpaca"
+    ) -> AccountResponse: ...
     async def list_activity(
         self, user_id: str | None = None, limit: int = 50
     ) -> list[ActivityEntryDto]: ...
