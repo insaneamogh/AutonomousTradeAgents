@@ -630,6 +630,36 @@ async def test_the_nse_eod_report_runs_on_the_nse_calendar_in_its_own_market(
     assert s.last_in_eod_result == "sent"
 
 
+async def test_the_zerodha_reconnect_reminder_is_scheduled_on_nse_days(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """It used to exist only as a script nothing ran."""
+    import engine.features.market_calendar as cal
+    from app.services.council.scheduler import CouncilScheduler, _flag
+    from app.services.notifications import notifications
+
+    sent: list[int] = []
+
+    async def fake_reminders(**_kw):
+        sent.append(1)
+        return 2
+
+    monkeypatch.setattr(notifications, "send_zerodha_reconnect_reminders", fake_reminders)
+    monkeypatch.setenv("USE_POSTGRES", "1")
+    s = CouncilScheduler()
+
+    monkeypatch.setattr(cal, "is_in_trading_day", lambda _d: False)
+    await s._run_zerodha_reconnect_once()
+    assert s.last_reconnect_result == "skipped_market_holiday" and sent == []
+
+    monkeypatch.setattr(cal, "is_in_trading_day", lambda _d: True)
+    await s._run_zerodha_reconnect_once()
+    assert s.last_reconnect_result == "sent 2" and sent == [1]
+
+    monkeypatch.delenv("ZERODHA_RECONNECT_REMINDER_ENABLED", raising=False)
+    assert _flag("ZERODHA_RECONNECT_REMINDER_ENABLED", default=True) is True
+
+
 async def test_eod_skips_holidays_and_no_postgres(monkeypatch: pytest.MonkeyPatch) -> None:
     import engine.features
     from app.services.council.scheduler import CouncilScheduler

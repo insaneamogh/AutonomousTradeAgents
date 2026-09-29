@@ -252,3 +252,32 @@ async def send_zerodha_reconnect_notification(
         user_id, result.sent, len(result.revoked_tokens), len(result.other_errors),
     )
     return result.sent
+
+
+async def send_zerodha_reconnect_reminders(
+    *, force: bool = False, only_user_id: str | None = None,
+    broker_store: Any = None,
+) -> int:
+    """The reminder for every user with an active Zerodha connection whose
+    token has expired. Returns pushes sent. One user's failure is logged
+    and skipped, never raised: one broken device row must not starve other
+    users of their reminder. Scheduled at 08:30 IST on NSE trading days
+    (council scheduler); apps/api/scripts/zerodha_reconnect_cron.py runs it
+    by hand."""
+    from app.services.broker.broker_store import get_broker_store
+
+    store = broker_store or get_broker_store()
+    conns = await store.list_active_connections_by_broker("zerodha")
+    user_ids = sorted({c.user_id for c in conns})
+    if only_user_id is not None:
+        user_ids = [u for u in user_ids if u == only_user_id]
+    total = 0
+    for user_id in user_ids:
+        try:
+            total += await send_zerodha_reconnect_notification(
+                user_id, broker_store=store, force=force
+            )
+        except Exception as exc:
+            logger.warning("zerodha-reconnect: user=%s reminder failed — %s", user_id, exc)
+    logger.info("zerodha-reconnect: users=%d pushes_sent=%d", len(user_ids), total)
+    return total

@@ -13,10 +13,12 @@ from app.services.notifications.notifications import (
     schedule_position_event_notification,
     schedule_proposal_pending_notification,
     send_zerodha_reconnect_notification,
+    send_zerodha_reconnect_reminders,
 )
 
 __all__ = [
     "schedule_position_event_notification",
     "schedule_proposal_pending_notification",
     "send_zerodha_reconnect_notification",
+    "send_zerodha_reconnect_reminders",
 ]

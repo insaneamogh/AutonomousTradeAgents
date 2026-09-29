@@ -255,6 +255,9 @@ IN_DEFAULT_SCAN_TIMES = "04:30"
 the whole session left for the entry to fill (Kite orders are DAY)."""
 
 
+ZERODHA_RECONNECT_TIME = "03:00"
+"""08:30 IST: 45 minutes before the NSE open, after Kite's ~06:00 flush."""
+
 IN_EOD_REPORT_TIME = "10:30"
 """16:00 IST: the NSE report, after the close and the NSE IV snapshot."""
 
@@ -352,6 +355,7 @@ class CouncilScheduler:
         self.last_eod_at: datetime | None = None
         self.last_eod_result: str | None = None
         self.last_in_eod_result: str | None = None
+        self.last_reconnect_result: str | None = None
         # Tier 1/2 of the Insights "symbol scan funnel" — fed by
         # daily_cron.main's optional on_sweep_scored recorder, one slot
         # shared by both loops rather than two separate ones. A triggered
@@ -394,6 +398,10 @@ class CouncilScheduler:
             self._tasks.append(asyncio.create_task(self._in_iv_snapshot_loop()))
         else:
             logger.info("NSE IV snapshot disabled (IN_IV_SNAPSHOT_ENABLED=0)")
+        if _flag("ZERODHA_RECONNECT_REMINDER_ENABLED", default=True):
+            self._tasks.append(asyncio.create_task(self._zerodha_reconnect_loop()))
+        else:
+            logger.info("Zerodha reconnect reminder disabled")
         if _flag("IN_SWEEP_ENABLED"):
             self._tasks.append(asyncio.create_task(self._india_loop()))
         else:
@@ -713,6 +721,43 @@ class CouncilScheduler:
         )
         self.last_eod_at = datetime.now(UTC)
         self.last_eod_result = "sent" if report is not None else "report_failed"
+
+    async def _zerodha_reconnect_loop(self) -> None:
+        """08:30 IST (03:00 UTC, ZERODHA_RECONNECT_TIME_UTC) on NSE trading
+        days: remind every Zerodha user whose daily token has expired to
+        log in before the 09:15 open. Kite flushes tokens around 06:00 IST
+        and has no refresh token, so without the login the India desk does
+        nothing that day and its open positions go unwatched."""
+        times = _scan_times("ZERODHA_RECONNECT_TIME_UTC", ZERODHA_RECONNECT_TIME)
+        logger.info("Zerodha reconnect reminder armed — fires at %02d:%02d UTC", *times[0])
+        while True:
+            try:
+                await asyncio.sleep(_seconds_until_next(datetime.now(UTC), times))
+            except asyncio.CancelledError:
+                raise
+            try:
+                await self._run_zerodha_reconnect_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Zerodha reconnect reminder failed — will retry tomorrow")
+                self.last_reconnect_result = "failed"
+            await asyncio.sleep(61)
+
+    async def _run_zerodha_reconnect_once(self) -> None:
+        from app.services.council.eod_report import market_today
+        from engine.features.market_calendar import is_in_trading_day
+
+        if not is_in_trading_day(market_today("IN")):
+            self.last_reconnect_result = "skipped_market_holiday"
+            return
+        if not _flag("USE_POSTGRES"):
+            self.last_reconnect_result = "skipped_no_postgres"
+            return
+        from app.services.notifications.notifications import send_zerodha_reconnect_reminders
+
+        sent = await send_zerodha_reconnect_reminders()
+        self.last_reconnect_result = f"sent {sent}"
 
     async def _in_eod_loop(self) -> None:
         """The NSE daily report: after the 15:30 IST close (default 10:30

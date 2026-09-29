@@ -8,12 +8,9 @@ was not replaced. This script pushes a "reconnect before market open"
 notification to every user who has an active zerodha connection with an
 expired token.
 
-There is no automatic scheduler for this script. Zerodha is parked/
-out-of-scope for v1 (see CLAUDE.md), so unlike the daily council cron
-(``apps/api/app/services/council/scheduler.py``) nothing invokes this
-in-process or otherwise — run it manually, or wire it to an operator's
-own cron, targeting once per weekday at 09:00 IST (03:30 UTC), before
-NSE opens at 09:15 IST.
+The council scheduler sends this reminder itself at 08:30 IST on NSE
+trading days (``ZERODHA_RECONNECT_REMINDER_ENABLED``, on by default), so
+this script is for a manual nudge or a smoke test (``--force``).
 
 Idempotency: deliberately none beyond the expiry check. Whatever triggers
 a run is expected to fire at most once a day in the ordinary case;
@@ -35,8 +32,7 @@ import asyncio
 import logging
 import sys
 
-from app.services.broker.broker_store import get_broker_store
-from app.services.notifications.notifications import send_zerodha_reconnect_notification
+from app.services.notifications.notifications import send_zerodha_reconnect_reminders
 
 logging.basicConfig(
     level=logging.INFO,
@@ -46,32 +42,9 @@ log = logging.getLogger("api.cron.zerodha_reconnect")
 
 
 async def run(*, force: bool = False, only_user_id: str | None = None) -> int:
-    """Fan the reminder out to every user with an active zerodha connection.
-
-    Returns the total number of pushes sent. Per-user failures are logged
-    and skipped — one broken device row must not starve other users of
-    their reminder.
-    """
-    store = get_broker_store()
-    conns = await store.list_active_connections_by_broker("zerodha")
-    user_ids = sorted({c.user_id for c in conns})
-    if only_user_id is not None:
-        user_ids = [u for u in user_ids if u == only_user_id]
-
-    if not user_ids:
-        log.info("no active zerodha connections — nothing to do")
-        return 0
-
-    total = 0
-    for user_id in user_ids:
-        try:
-            total += await send_zerodha_reconnect_notification(
-                user_id, broker_store=store, force=force
-            )
-        except Exception as exc:  # noqa: BLE001 — continue past per-user failures
-            log.warning("user=%s reminder failed — %s", user_id, exc)
-    log.info("done — users=%d pushes_sent=%d", len(user_ids), total)
-    return total
+    """Fan the reminder out to every user with an active zerodha connection
+    (``send_zerodha_reconnect_reminders``). Returns pushes sent."""
+    return await send_zerodha_reconnect_reminders(force=force, only_user_id=only_user_id)
 
 
 def main() -> int:
