@@ -284,7 +284,7 @@ async def test_a_nifty_call_goes_to_zerodha_in_lots_and_its_premium_stop_closes_
     assert not [r for r in india.requests.values() if r.stop_price is not None], (
         "no resting stop at Kite (DAY/IOC only); the software stop covers NFO")
 
-    india.set_price(contract, 60.0)  # -50%, through the -40% premium stop
+    india.set_price(contract, 60.0)  # -50%: at the premium stop (options_stop_loss_pct)
     await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
     await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
     d = await decision_row(pid)
