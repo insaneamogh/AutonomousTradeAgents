@@ -81,6 +81,7 @@ class SimBroker:
     exit_oco_error: Exception | None = None
     """Set to make GTT placement fail, as a Kite rejection would."""
     gtts: set[str] = field(default_factory=set)
+    closes: dict[str, float] = field(default_factory=dict)
     hold_gtts: bool = False
     """Kite evaluates a GTT with some latency; True keeps crossed GTT legs
     resting, to pin what happens in that gap."""
@@ -136,7 +137,37 @@ class SimBroker:
         self.cash -= shares * strike
         self.held[underlying] = _Held(shares, strike)
 
+    def kite_settle(self, contract: str, *, underlying: str, strike: float, kind: str,
+                    close: float) -> None:
+        """NSE expiry, as Kite shows it: the contract is simply gone from
+        positions (no activity feed). An index option is settled in cash at
+        its intrinsic value; an in-the-money stock option delivers the
+        shares at the strike. ``close`` is the underlying's expiry-day
+        close, which the quote then reports."""
+        held = self.held.pop(contract)
+        self._cancel_open(contract)
+        self.prices[underlying] = close
+        self.closes[underlying] = close
+        intrinsic = max(0.0, close - strike) if kind == "call" else max(0.0, strike - close)
+        if intrinsic <= 0:
+            return
+        if underlying.upper().startswith("NSE:NIFTY"):
+            self.cash += intrinsic * held.qty
+            return
+        shares = held.qty if kind == "call" else -held.qty
+        self.cash -= shares * strike
+        self.held[underlying] = _Held(shares, strike)
+
     # ── BrokerInterface ──────────────────────────────────────────────
+
+    async def quotes(self, symbols: list[str]) -> dict[str, dict[str, Any]]:
+        """Kite's /quote: ``last_price`` and ``ohlc.close`` (the last
+        trading day's close)."""
+        return {
+            s.upper(): {"last_price": self.prices[s],
+                        "ohlc": {"close": self.closes.get(s, self.prices[s])}}
+            for s in symbols if s in self.prices
+        }
 
     async def place_order(self, request: OrderRequest) -> Order:
         if self.kite:
@@ -247,6 +278,8 @@ class SimBroker:
         return None if self.kite else self._start_equity
 
     async def list_option_lifecycle_activities(self, *, since: date) -> list[AccountActivity]:
+        if self.kite:
+            return []  # Kite has no expiry/exercise feed; ZerodhaBroker has no such method
         if self.activities_error is not None:
             raise self.activities_error
         return [a for a in reversed(self.activities) if a.day >= since]

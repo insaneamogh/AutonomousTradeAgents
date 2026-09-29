@@ -427,3 +427,127 @@ async def test_a_revised_lot_size_is_taken_from_the_proposal_not_the_stale_table
 
     await _approve(proposal, exit_mode="agent")
     assert [r.qty for r in india.requests.values()] == [75]
+
+
+# ── NSE expiry: Kite has no lifecycle feed; the contract just vanishes ──
+
+
+def _just_expired():
+    """An expiry whose settlement Kite's quote still shows right now: today
+    after the 15:30 IST close, else the last NSE session before today."""
+    from datetime import time
+    from zoneinfo import ZoneInfo
+
+    from engine.features.market_calendar import is_in_trading_day
+
+    now = datetime.now(ZoneInfo("Asia/Kolkata"))
+    if is_in_trading_day(now.date()) and now.time() >= time(15, 30):
+        return now.date()
+    d = now.date() - timedelta(days=1)
+    while not is_in_trading_day(d):
+        d -= timedelta(days=1)
+    return d
+
+
+async def _held_to_expiry(monkeypatch, proposal, contract, *, entry: float):
+    """Approve a manual-mode NSE option (no expiry sweep), fill it, then let
+    its expiry pass."""
+    from engine.db.models import AgentDecision
+    from engine.db.session import async_session_factory
+
+    _us, india = await _both_accounts(monkeypatch)
+    india.set_price(contract, entry)
+    pid = await _approve(proposal, exit_mode="manual")
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+    d = await decision_row(pid)
+    assert d.fill_qty, "the entry must fill before it can expire"
+    async with async_session_factory()() as s:
+        row = await s.get(AgentDecision, d.id)
+        row.proposal = {**row.proposal, "expiryDate": _just_expired().isoformat()}
+        await s.commit()
+    return india, pid
+
+
+async def test_an_in_the_money_nifty_call_is_settled_in_cash_not_sold_at_the_broker(
+    monkeypatch: pytest.MonkeyPatch, live_india: None, outbox: list[dict],
+) -> None:
+    proposal, contract = _nifty_call((datetime.now(UTC) + timedelta(days=25)).date())
+    india, pid = await _held_to_expiry(monkeypatch, proposal, contract, entry=118.0)
+
+    india.kite_settle(contract, underlying="NSE:NIFTY 50", strike=25_000.0, kind="call",
+                      close=25_300.0)
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+
+    d = await decision_row(pid)
+    assert d.close_reason == "option_settled"
+    assert d.realized_pnl == Decimal("11700.00")  # (300 intrinsic - 120) x 65
+    assert not any("closed" in p.get("body", "").lower() and "broker" in p.get("body", "").lower()
+                   for p in outbox), "no 'you closed it at the broker' push"
+
+
+async def test_an_out_of_the_money_nifty_call_expires_worthless(
+    monkeypatch: pytest.MonkeyPatch, live_india: None, outbox: list[dict],
+) -> None:
+    proposal, contract = _nifty_call((datetime.now(UTC) + timedelta(days=25)).date())
+    india, pid = await _held_to_expiry(monkeypatch, proposal, contract, entry=118.0)
+
+    india.kite_settle(contract, underlying="NSE:NIFTY 50", strike=25_000.0, kind="call",
+                      close=24_800.0)
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+
+    d = await decision_row(pid)
+    assert d.close_reason == "option_expired"
+    assert d.realized_pnl == Decimal("-7800.00")  # the whole 120 x 65 premium
+    assert any(p["title"] == "Option expired" for p in outbox)
+
+
+async def test_an_in_the_money_stock_call_delivers_shares_and_pages(
+    monkeypatch: pytest.MonkeyPatch, live_india: None, outbox: list[dict],
+) -> None:
+    """NSE stock options settle by delivery: 250 RELIANCE shares land in
+    holdings with no stop. That is a page, not a quiet close."""
+    from app.schemas.approvals import ApprovalProposalDto
+
+    now = datetime.now(UTC)
+    contract = "NFO:RELIANCE26OCT3000CE"
+    proposal = ApprovalProposalDto(
+        id="agent-nfo-reliance-call", symbol="NSE:RELIANCE", side="BUY", direction="long",
+        is_option=True, option_action="buy_to_open", occ_symbol=contract, strike=3000.0,
+        expiry_date=(now + timedelta(days=25)).date(), contract_type="call", multiplier=1,
+        lot_size=250, open_interest=50_000, volume=20_000, bid=29.5, ask=30.0,
+        implied_volatility=0.25, qty=250, order_type="LIMIT", limit_price=30.0,
+        estimated_notional=7_500.0, time_stop_days=5, rationale="e2e", bull_case="e2e bull",
+        bear_case="e2e bear", risk_level=2, conviction_level=3, council_confidence=0.6,
+        proposed_at=now, expires_at=now + timedelta(hours=6),
+    )
+    india, pid = await _held_to_expiry(monkeypatch, proposal, contract, entry=29.0)
+
+    india.kite_settle(contract, underlying="NSE:RELIANCE", strike=3000.0, kind="call",
+                      close=3060.0)
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+
+    d = await decision_row(pid)
+    assert d.close_reason == "option_exercised"
+    assert d.realized_pnl == Decimal("7500.00")  # (60 intrinsic - 30) x 250
+    assert india.held["NSE:RELIANCE"].qty == 250
+    pages = [p for p in outbox if p.get("data_kind") == "ops_alert"]
+    assert any("250 NSE:RELIANCE shares bought" in p["body"] for p in pages), pages
+
+
+async def test_an_nfo_contract_sold_in_kite_before_expiry_is_still_an_external_close(
+    monkeypatch: pytest.MonkeyPatch, live_india: None, outbox: list[dict],
+) -> None:
+    proposal, contract = _nifty_call((datetime.now(UTC) + timedelta(days=25)).date())
+    _us, india = await _both_accounts(monkeypatch)
+    india.set_price(contract, 118.0)
+    pid = await _approve(proposal, exit_mode="manual")
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+
+    india.set_price(contract, 140.0)
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)  # snapshot carries the mark
+    india.held.pop(contract)  # sold by hand in Kite, weeks before expiry
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+
+    d = await decision_row(pid)
+    assert d.close_reason == "external_broker"
+    assert d.realized_pnl == Decimal("1300.00")  # (140 - 120) x 65, from the last mark

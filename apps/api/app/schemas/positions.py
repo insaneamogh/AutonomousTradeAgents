@@ -148,11 +148,13 @@ class ClosedPositionDto(CamelCaseModel):
     # user_manual (a tap in this app) / protective_stop (the resting
     # broker-side stop elected) / option_expired / option_exercised /
     # option_assigned (read from Alpaca's account activities) /
+    # option_settled / option_expired / option_exercised for an NSE option
+    # at expiry (inferred by india_expiry.py; Kite has no activity feed) /
     # bracket_stop / bracket_target (an equity bracket's or a Zerodha GTT
     # OCO's own leg filled) / agent_stop / agent_target (the software stop
     # on a Zerodha equity with no working GTT) /
     # external_broker (order_sync detected the user closed it directly at
-    # Alpaca). None for a pre-migration row.
+    # the broker). None for a pre-migration row.
     close_reason: str | None = None
     # Whether the CLOSE was the position manager's own doing ('agent') or
     # not ('manual' — a user tap in this app, or an external broker close).

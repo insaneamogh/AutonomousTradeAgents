@@ -618,6 +618,12 @@ async def _detect_external_closes(
                 source=source,
             )
             continue
+        # Kite has no lifecycle feed: an NSE option past its expiry-day
+        # close left by settlement, not by a sale at the broker.
+        if market == "IN" and _is_option_decision(decision) and await _close_from_india_expiry(
+            session, uid, broker, decision, broker_key, user_id=user_id, source=source,
+        ):
+            continue
 
         entry_side = str((decision.proposal or {}).get("side", "BUY"))
         multiplier = int((decision.proposal or {}).get("multiplier", 1) or 1)
@@ -885,6 +891,108 @@ async def _close_from_lifecycle(
         shares=int(shares),
         verb="exercised" if event.activity_type == "OPEXC" else "assigned",
     )
+
+
+async def _close_from_india_expiry(
+    session: AsyncSession,
+    uid: uuid.UUID,
+    broker: BrokerInterface,
+    decision: object,
+    contract: str,
+    *,
+    user_id: str,
+    source: str | None = None,
+) -> bool:
+    """Close an NSE option that vanished after its expiry-day close, as
+    expired, cash-settled or exercised (app.services.orders.india_expiry).
+    False when expiry has not passed: then it was sold at the broker."""
+    from app.services.orders.india_expiry import expiry_outcome
+    from app.services.orders.position_manager import _coerce_expiry_date
+    from engine.db.models import AgentDecision
+
+    proposal = decision.proposal or {}  # type: ignore[attr-defined]
+    outcome = await expiry_outcome(
+        broker, decision, now=datetime.now(UTC),
+        expiry=_coerce_expiry_date(proposal.get("expiryDate", proposal.get("expiry_date"))),
+    )
+    if outcome is None:
+        return False
+
+    multiplier = int(proposal.get("multiplier", 1) or 1)
+    qty = int(decision.fill_qty or 0)  # type: ignore[attr-defined]
+    entry = decision.fill_avg_price  # type: ignore[attr-defined]
+    exit_price = outcome.exit_price
+    if exit_price is None:
+        exit_price = await _last_snapshot_mark(
+            session, uid, contract, multiplier=multiplier, source=source
+        )
+    realized: Decimal | None = None
+    if exit_price is not None and entry is not None and qty:
+        realized = ((exit_price - entry) * Decimal(qty) * Decimal(multiplier)).quantize(
+            Decimal("0.01"))
+
+    await session.execute(
+        update(AgentDecision)
+        .where(AgentDecision.id == decision.id)  # type: ignore[attr-defined]
+        .values(closed_at=outcome.closed_at, close_reason=outcome.reason, realized_pnl=realized)
+    )
+    await _retire_resting_exits(session, broker, decision.id)  # type: ignore[attr-defined]
+    underlying = decision.symbol.upper()  # type: ignore[attr-defined]
+    logger.warning(
+        "order_sync: %s %s at expiry (settlement=%s, user=%s, realized=%s)",
+        contract, outcome.reason, outcome.settlement, uid, realized,
+    )
+
+    if outcome.reason == "option_expired":
+        _notify_option_expired(user_id=user_id, symbol=underlying, qty=qty)
+    elif outcome.reason == "option_exercised":
+        _alert_stock_delivered(
+            user_id=user_id, occ=contract, underlying=underlying, contracts=qty,
+            shares=outcome.delivered_units, verb="exercised",
+        )
+    elif outcome.settlement is None and not _india_index(underlying):
+        # A stock option is physically settled; with no settlement price
+        # we cannot tell whether shares were delivered.
+        _alert_delivery_unknown(user_id=user_id, contract=contract, underlying=underlying)
+    else:
+        _notify_option_settled(user_id=user_id, symbol=underlying, qty=qty)
+    return True
+
+
+def _alert_delivery_unknown(*, user_id: str, contract: str, underlying: str) -> None:
+    try:
+        from app.services.notifications.ops_alerts import raise_ops_alert
+
+        raise_ops_alert(
+            "option_exercised", user_id=user_id, key=contract,
+            title=f"{underlying} option expired: check for delivered shares",
+            body=(f"{contract} left the account at expiry and its settlement price could "
+                  "not be read. NSE stock options settle by delivery, so if it expired in "
+                  f"the money, {underlying} shares are now in holdings with no stop."),
+        )
+    except Exception:
+        logger.exception("order_sync: delivery-unknown alert failed for %s", contract)
+
+
+def _india_index(underlying: str) -> bool:
+    from app.services.orders.india_expiry import is_index
+
+    return is_index(underlying)
+
+
+def _notify_option_settled(*, user_id: str, symbol: str, qty: int) -> None:
+    """An index option settled in cash at expiry. A push, not a page:
+    nothing is left in the account to manage."""
+    try:
+        from app.services.notifications.notifications import schedule_position_event_notification
+
+        schedule_position_event_notification(
+            user_id=user_id,
+            title="Option settled at expiry",
+            body=f"Your {symbol} option ({qty} units) was settled in cash. Trade log updated.",
+        )
+    except Exception:
+        logger.exception("order_sync: option-settled notification failed")
 
 
 def _notify_option_expired(*, user_id: str, symbol: str, qty: int) -> None:

@@ -35,7 +35,8 @@ import { useState } from 'react';
 /** What actually closed the position, in plain English — mirrors the
  * backend's own `_CLOSE_REASON_LABEL` (position_manager.py) plus the
  * reasons stamped elsewhere (`user_manual` by close_position_now,
- * `protective_stop`, `option_expired` / `_exercised` / `_assigned` and
+ * `protective_stop`, `option_expired` / `_exercised` / `_assigned` /
+ * `_settled` (an NSE option at expiry, india_expiry.py) and
  * `external_broker` by order_sync). Duplicated client-side rather than
  * sent as display text from the API — same convention this file already
  * uses for CLOSE_ERROR_COPY (further down, for close/cancel error codes). */
@@ -50,12 +51,14 @@ const CLOSE_REASON_LABEL: Record<string, string> = {
   option_expired: 'option expired',
   option_exercised: 'option exercised into stock',
   option_assigned: 'option assigned',
+  option_settled: 'settled in cash at expiry',
   agent_stop: 'stop-loss hit',
   agent_target: 'target hit',
   bracket_stop: 'broker stop leg filled',
   bracket_target: 'broker take-profit leg filled',
   user_manual: 'closed in the app',
-  external_broker: 'closed directly at Alpaca',
+  user_kill_switch: 'flatten-all kill switch',
+  external_broker: 'closed directly at the broker',
 };
 
 function closeReasonLabel(reason: string | null): string {
