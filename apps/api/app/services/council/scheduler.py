@@ -255,6 +255,9 @@ IN_DEFAULT_SCAN_TIMES = "04:30"
 the whole session left for the entry to fill (Kite orders are DAY)."""
 
 
+IN_EOD_REPORT_TIME = "10:30"
+"""16:00 IST: the NSE report, after the close and the NSE IV snapshot."""
+
 IN_IV_SNAPSHOT_TIME = "10:15"
 """15:45 IST, after the 15:30 NSE close."""
 
@@ -348,6 +351,7 @@ class CouncilScheduler:
         self.last_in_iv_snapshot_result: dict[str, int] | str | None = None
         self.last_eod_at: datetime | None = None
         self.last_eod_result: str | None = None
+        self.last_in_eod_result: str | None = None
         # Tier 1/2 of the Insights "symbol scan funnel" — fed by
         # daily_cron.main's optional on_sweep_scored recorder, one slot
         # shared by both loops rather than two separate ones. A triggered
@@ -396,6 +400,7 @@ class CouncilScheduler:
             logger.info("NSE sweep disabled (IN_SWEEP_ENABLED=0; Zerodha trades real money)")
         if _flag("EOD_REPORT_ENABLED", default=True):
             self._tasks.append(asyncio.create_task(self._eod_loop()))
+            self._tasks.append(asyncio.create_task(self._in_eod_loop()))
         else:
             logger.info("EOD report disabled (EOD_REPORT_ENABLED=0)")
 
@@ -708,6 +713,48 @@ class CouncilScheduler:
         )
         self.last_eod_at = datetime.now(UTC)
         self.last_eod_result = "sent" if report is not None else "report_failed"
+
+    async def _in_eod_loop(self) -> None:
+        """The NSE daily report: after the 15:30 IST close (default 10:30
+        UTC = 16:00 IST, IN_EOD_REPORT_TIME_UTC), in rupees."""
+        times = _scan_times("IN_EOD_REPORT_TIME_UTC", IN_EOD_REPORT_TIME)
+        logger.info("NSE EOD report armed — fires daily at %02d:%02d UTC", *times[0])
+        while True:
+            try:
+                await asyncio.sleep(_seconds_until_next(datetime.now(UTC), times))
+            except asyncio.CancelledError:
+                raise
+            try:
+                await self._run_in_eod_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NSE EOD report failed — will retry next window")
+                self.last_in_eod_result = "failed"
+            await asyncio.sleep(61)
+
+    async def _run_in_eod_once(self) -> None:
+        from app.services.council.eod_report import market_today, run_eod
+        from engine.features.market_calendar import is_in_trading_day
+
+        today = market_today("IN")
+        if not is_in_trading_day(today):
+            self.last_in_eod_result = "skipped_market_holiday"
+            return
+        if not _flag("USE_POSTGRES"):
+            self.last_in_eod_result = "skipped_no_postgres"
+            return
+
+        from engine.db import async_session_factory
+
+        report = await run_eod(
+            user_id=_cron_user(), session_factory=async_session_factory(), day=today,
+            market="IN", skip_if_empty=True,
+        )
+        if report is None:
+            self.last_in_eod_result = "report_failed"
+        else:
+            self.last_in_eod_result = "sent" if report.delivered else "skipped_no_activity"
 
     # ── Trigger loop ─────────────────────────────────────────────────
     #

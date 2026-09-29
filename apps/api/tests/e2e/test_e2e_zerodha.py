@@ -571,3 +571,69 @@ async def test_an_order_the_account_cannot_fund_is_refused_by_name(
     assert body["riskVetoRule"] == "insufficient_margin", body
     assert "7,825.00" in body["riskReason"] and "5,000.00" in body["riskReason"]
     assert india.requests == {}
+
+
+# ── One daily report per market, in its own currency ─────────────────
+
+
+async def _no_ghosts(day):
+    return {"created": 0, "updated": 0, "finalized": 0}
+
+
+async def test_each_market_gets_its_own_daily_report_in_its_own_currency(
+    monkeypatch: pytest.MonkeyPatch, live_india: None, outbox: list[dict],
+) -> None:
+    """The report read the newest snapshot of either broker and summed
+    realized P&L across both: an INR book printed in dollars, and dollars
+    added to rupees."""
+    from e2e_harness import FIXTURE_USER
+
+    from app.services.council import eod_report
+    from engine.db.session import async_session_factory
+
+    us, india = await _both_accounts(monkeypatch)
+    expiry = (datetime.now(UTC) + timedelta(days=30)).date()
+    occ = occ_for("NVDA", expiry, "call", 250.0)
+    us.set_price(occ, 2.50)
+    await _approve(option_proposal(occ=occ, underlying="NVDA", strike=250.0, expiry=expiry),
+                   exit_mode="manual")
+    proposal, contract = _nifty_call((datetime.now(UTC) + timedelta(days=25)).date())
+    india.set_price(contract, 118.0)
+    await _approve(proposal, exit_mode="agent")
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+
+    us.expire(occ)                    # US: -255 USD
+    india.set_price(contract, 60.0)   # NSE: premium stop, -3,900 INR
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+
+    monkeypatch.setattr(eod_report, "_mark_ghosts", _no_ghosts)
+    kw = {"user_id": FIXTURE_USER, "session_factory": async_session_factory()}
+    us_r = await eod_report.run_eod(**kw, market="US")
+    in_r = await eod_report.run_eod(**kw, market="IN", skip_if_empty=True)
+
+    assert us_r.closes_by_reason == {"option_expired": 1} and us_r.realized_today == -255.0
+    assert us_r.equity == pytest.approx(99_745.0)
+    assert sum(in_r.closes_by_reason.values()) == 1 and in_r.realized_today == -3900.0
+    assert in_r.equity == pytest.approx(996_100.0)
+    _title, body = eod_report.render_report(in_r)
+    assert "Equity ₹996,100.00" in body and "realized -₹3,900.00" in body
+    titles = [p["title"] for p in outbox if p.get("data_kind") == "daily_report"]
+    assert titles == ["Trading day closed", "NSE trading day closed"]
+
+
+async def test_no_nse_report_for_a_user_without_indian_activity(
+    monkeypatch: pytest.MonkeyPatch, outbox: list[dict],
+) -> None:
+    from e2e_harness import FIXTURE_USER
+
+    from app.services.council import eod_report
+    from engine.db.session import async_session_factory
+
+    patch_brokers(monkeypatch, {"alpaca": (SimBroker(), await seed_account(broker="alpaca"))})
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+
+    r = await eod_report.run_eod(user_id=FIXTURE_USER, session_factory=async_session_factory(),
+                                 market="IN", skip_if_empty=True)
+    assert r is not None and r.delivered is False
+    assert not [p for p in outbox if p.get("data_kind") == "daily_report"]

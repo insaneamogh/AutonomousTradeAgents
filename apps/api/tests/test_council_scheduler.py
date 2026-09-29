@@ -594,6 +594,42 @@ async def test_eod_runs_on_a_trading_day_without_the_council(
     assert calls and calls[0]["session_factory"] == "factory"
 
 
+async def test_the_nse_eod_report_runs_on_the_nse_calendar_in_its_own_market(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    import engine.db
+    import engine.features.market_calendar as cal
+    from app.services.council import eod_report
+    from app.services.council.scheduler import CouncilScheduler
+
+    monkeypatch.setattr(engine.db, "async_session_factory", lambda: "factory")
+    monkeypatch.setenv("USE_POSTGRES", "1")
+    calls: list[dict] = []
+    delivered = {"value": False}
+
+    async def fake_run_eod(**kw):
+        calls.append(kw)
+        return SimpleNamespace(delivered=delivered["value"])
+
+    monkeypatch.setattr(eod_report, "run_eod", fake_run_eod)
+    s = CouncilScheduler()
+
+    monkeypatch.setattr(cal, "is_in_trading_day", lambda _d: False)
+    await s._run_in_eod_once()
+    assert s.last_in_eod_result == "skipped_market_holiday" and calls == []
+
+    monkeypatch.setattr(cal, "is_in_trading_day", lambda _d: True)
+    await s._run_in_eod_once()
+    assert (calls[0]["market"], calls[0]["skip_if_empty"]) == ("IN", True)
+    assert calls[0]["day"] == eod_report.market_today("IN")
+    assert s.last_in_eod_result == "skipped_no_activity"
+    delivered["value"] = True
+    await s._run_in_eod_once()
+    assert s.last_in_eod_result == "sent"
+
+
 async def test_eod_skips_holidays_and_no_postgres(monkeypatch: pytest.MonkeyPatch) -> None:
     import engine.features
     from app.services.council.scheduler import CouncilScheduler

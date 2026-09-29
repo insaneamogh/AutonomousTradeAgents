@@ -88,8 +88,10 @@ async def test_build_assembles_snapshot_closes_breaker_and_spend() -> None:
     )
     factory = _session_factory([
         _result(scalar_one_or_none=snap),
-        _result(all=[("option_stop_loss", Decimal("-536.00")), (None, None)]),
-        _result(scalar_one=14),
+        # The NSE close and NSE decisions belong to the INR report, not this one.
+        _result(all=[("NVDA", "option_stop_loss", Decimal("-536.00")), ("AMD", None, None),
+                     ("NSE:NIFTY 50", "option_settled", Decimal("11700.00"))]),
+        _result(all=[("NVDA",)] * 14 + [("NSE:RELIANCE",)] * 3),
         _result(scalar_one_or_none="halted"),
         _result(one=(Decimal("0.371"), 41)),
     ])
