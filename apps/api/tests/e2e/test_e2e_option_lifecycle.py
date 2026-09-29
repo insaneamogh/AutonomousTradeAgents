@@ -139,7 +139,7 @@ async def test_eod_report_counts_the_day_from_the_real_tables(
     sim.expire(occ)
     await fleet_tick(monkeypatch, market_open=False)
 
-    async def _no_ghosts(day):  # ghost marks need historical bars; not this scenario's subject
+    async def _no_ghosts(day, **_kw):  # ghost marks need historical bars; not this scenario's subject
         return {"created": 0, "updated": 0, "finalized": 0}
 
     monkeypatch.setattr(eod_report, "_mark_ghosts", _no_ghosts)

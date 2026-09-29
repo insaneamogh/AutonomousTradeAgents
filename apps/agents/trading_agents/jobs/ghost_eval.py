@@ -36,6 +36,7 @@ from sqlalchemy import or_, select
 from engine.db import async_session_factory
 from engine.db.models import AgentDecision, GhostOutcome
 from engine.prices import get_option_price_provider, get_price_provider
+from engine.risk.markets import market_of
 
 logger = logging.getLogger("agents.ghost_eval")
 
@@ -203,13 +204,26 @@ def trading_day_offset(start: date, day: date) -> int:
     return offset
 
 
-async def evaluate_ghosts(*, today: date | None = None) -> dict[str, int | dict[str, int]]:
+async def evaluate_ghosts(
+    *,
+    today: date | None = None,
+    market: str | None = None,
+    kite_client_factory: Any = None,
+) -> dict[str, int | dict[str, int]]:
     """One evaluator pass. Returns counters for logging/tests: ``created``/
     ``updated``/``finalized``/``skipped`` (ints) plus ``skip_reasons``, a
     breakdown of ``skipped`` by which check failed (``reason_is_none``,
     ``entry_is_none``, ``mark_symbol_is_none``, ``bad_side``,
-    ``falsy_qty``, ``no_daily_closes``, ``marks_out_of_window``) — a bare
-    total doesn't say why."""
+    ``falsy_qty``, ``no_price_source``, ``price_fetch_failed``,
+    ``no_daily_closes``, ``marks_out_of_window``) — a bare total doesn't
+    say why.
+
+    ``market`` ("US"/"IN") limits the pass to that market's decisions; None
+    takes both. An NSE decision is priced from Kite through
+    ``kite_client_factory`` (the user's session), never Alpaca, and is
+    skipped as ``no_price_source`` without one. A price fetch that raises
+    skips that one decision: before, a single bad symbol raised out of the
+    whole pass and no ghost was marked that day."""
     today = today or datetime.now(UTC).date()
     session_factory = async_session_factory()
     created = updated = finalized = skipped = 0
@@ -238,7 +252,17 @@ async def evaluate_ghosts(*, today: date | None = None) -> dict[str, int | dict[
         )
         decisions = (await session.execute(stmt)).scalars().all()
 
+        kite_prices = None
+        if kite_client_factory is not None:
+            from engine.features.kite_bars import KiteDailyBarsProvider
+            from engine.prices.kite import KitePriceProvider
+
+            kite_prices = KitePriceProvider(KiteDailyBarsProvider(kite_client_factory))
+
         for row in decisions:
+            row_market = market_of(str(row.symbol))
+            if market is not None and row_market != market:
+                continue
             reason = _reason_of(row)
             proposal = row.proposal or {}
             entry = _entry_price(proposal)
@@ -250,6 +274,11 @@ async def evaluate_ghosts(*, today: date | None = None) -> dict[str, int | dict[
             )
             if reason_to_skip is not None:
                 _skip(reason_to_skip)
+                continue
+            if row_market == "IN" and kite_prices is None:
+                # Alpaca has no NSE symbols, and a synthetic walk would put
+                # invented rupees in the ledger. No ghost row is created.
+                _skip("no_price_source")
                 continue
             # `_skip_reason` already guarantees these — restate for mypy,
             # which can't narrow through the helper call the way it could
@@ -291,12 +320,22 @@ async def evaluate_ghosts(*, today: date | None = None) -> dict[str, int | dict[
             # underlying's stock bars would answer a different question
             # (and, before this branch existed, returned [] for every OCC
             # symbol — so options never appeared in the ledger at all).
-            provider = (
-                get_option_price_provider(anchor_price=entry_price, anchor_day=start_day)
-                if is_option
-                else get_price_provider(anchor_price=entry_price, anchor_day=start_day)
-            )
-            closes = await provider.daily_closes(mark_symbol, start_day, today)
+            if row_market == "IN":
+                assert kite_prices is not None  # checked before the ghost row
+                provider = kite_prices
+            else:
+                provider = (
+                    get_option_price_provider(anchor_price=entry_price, anchor_day=start_day)
+                    if is_option
+                    else get_price_provider(anchor_price=entry_price, anchor_day=start_day)
+                )
+            try:
+                closes = await provider.daily_closes(mark_symbol, start_day, today)
+            except Exception as exc:
+                logger.warning("ghost_eval: %s closes for %s failed — %s",
+                               provider.name, mark_symbol, type(exc).__name__)
+                _skip("price_fetch_failed")
+                continue
             if not closes:
                 _skip("no_daily_closes")
                 continue

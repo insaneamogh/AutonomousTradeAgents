@@ -237,11 +237,15 @@ async def build_daily_report(
     )
 
 
-async def _mark_ghosts(day: date) -> dict[str, Any] | None:
+async def _mark_ghosts(
+    day: date, *, market: str = "US", kite_client_factory: Any = None
+) -> dict[str, Any] | None:
     try:
         from trading_agents.jobs.ghost_eval import evaluate_ghosts
 
-        return dict(await evaluate_ghosts(today=day))
+        return dict(await evaluate_ghosts(
+            today=day, market=market, kite_client_factory=kite_client_factory,
+        ))
     except Exception:
         logger.exception("eod: ghost marking failed; the report still goes out")
         return None
@@ -272,17 +276,18 @@ def _deliver(user_id: str, report: DailyReport) -> None:
 
 async def run_eod(
     *, user_id: str, session_factory: async_sessionmaker, day: date | None = None,
-    market: str = "US", skip_if_empty: bool = False,
+    market: str = "US", skip_if_empty: bool = False, kite_client_factory: Any = None,
 ) -> DailyReport | None:
     """Ghosts first, so the report counts today's marks; then the report.
 
-    Ghost marking runs on the US report only: it prices refusals from
-    Alpaca daily bars, and an NSE ghost needs Kite's. ``skip_if_empty``
+    Each report marks its own market's ghosts: US from Alpaca daily bars,
+    NSE from Kite's through ``kite_client_factory`` (without one, NSE
+    ghosts are skipped by name, never priced from Alpaca). ``skip_if_empty``
     (the NSE report) returns the report undelivered when the market had
     no snapshot, close or decision that day, so a user with no Zerodha
     account is not sent an empty report every NSE evening."""
     day = day or market_today(market)
-    ghost = await _mark_ghosts(day) if market == "US" else None
+    ghost = await _mark_ghosts(day, market=market, kite_client_factory=kite_client_factory)
     try:
         report = await build_daily_report(
             user_id=user_id, session_factory=session_factory, day=day, market=market,

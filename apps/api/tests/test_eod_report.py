@@ -112,7 +112,7 @@ async def test_build_assembles_snapshot_closes_breaker_and_spend() -> None:
 async def test_ghosts_are_marked_before_the_report(monkeypatch: pytest.MonkeyPatch) -> None:
     order: list[str] = []
 
-    async def _ghosts(day: date) -> dict:
+    async def _ghosts(day: date, **_kw: Any) -> dict:
         order.append("ghosts")
         return {"created": 2, "updated": 5, "finalized": 1}
 
@@ -155,7 +155,7 @@ async def test_a_ghost_failure_does_not_stop_the_report(monkeypatch: pytest.Monk
 async def test_a_build_failure_returns_none_and_never_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _ghosts(day: date) -> dict:
+    async def _ghosts(day: date, **_kw: Any) -> dict:
         return {}
 
     async def _build(**_k: Any) -> DailyReport:

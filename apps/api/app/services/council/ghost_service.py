@@ -18,11 +18,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.sql.elements import ColumnElement
 
 from engine.db import async_session_factory
 from engine.db.models import AgentDecision, GhostOutcome
+from engine.risk.markets import INDIA_EXCHANGES
 
 # Reusing RiskCaps.from_env()'s own profile-name resolution rather than a
 # second, possibly-diverging re-derivation (CLAUDE.md §4.4) — this is the
@@ -45,11 +46,17 @@ def _tenant_filters(user_id: str) -> list[ColumnElement[bool]]:
     an unparseable tenant must never widen into "every row".
     """
     if user_id == ALL_USERS:
-        return []
+        return [_USD_LEDGER]
     try:
-        return [AgentDecision.user_id == uuid.UUID(user_id)]
+        return [AgentDecision.user_id == uuid.UUID(user_id), _USD_LEDGER]
     except (ValueError, TypeError) as exc:
         raise _NoSuchTenant(user_id) from exc
+
+
+# The ledger is in dollars. An NSE refusal's ghost P&L is in rupees
+# (docs/PLAN_ZERODHA.md), so it is kept out of these sums rather than
+# added to them; an INR ledger is separate work.
+_USD_LEDGER = ~or_(*[AgentDecision.symbol.like(f"{ex}:%") for ex in sorted(INDIA_EXCHANGES)])
 
 
 @dataclass

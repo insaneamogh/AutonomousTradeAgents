@@ -1098,7 +1098,11 @@ async def main(
         try:
             from trading_agents.jobs.ghost_eval import evaluate_ghosts
 
-            await evaluate_ghosts()
+            # This run's market only; an NSE refusal is priced from Kite.
+            await evaluate_ghosts(
+                market=market,
+                kite_client_factory=_kite_client_factory(user_id) if market == "IN" else None,
+            )
         except Exception:
             log.exception("ghost_eval pass failed — continuing")
 

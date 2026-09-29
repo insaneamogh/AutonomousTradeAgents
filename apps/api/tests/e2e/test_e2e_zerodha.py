@@ -7,6 +7,7 @@ other's positions. SimBroker(kite=True) refuses what ZerodhaBroker refuses.
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -576,7 +577,7 @@ async def test_an_order_the_account_cannot_fund_is_refused_by_name(
 # ── One daily report per market, in its own currency ─────────────────
 
 
-async def _no_ghosts(day):
+async def _no_ghosts(day, **_kw):
     return {"created": 0, "updated": 0, "finalized": 0}
 
 
@@ -687,3 +688,88 @@ async def test_an_expired_kite_session_skips_the_pass_and_pages_once_while_posit
     await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
     await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
     assert (await decision_row(pid)).close_reason in ("option_stop_loss", "option_trail_stop")
+
+
+# ── The Refusal Ledger for NSE refusals ──────────────────────────────
+
+
+async def _refusal(symbol: str, limit: float, *, days_ago: int = 8):
+    from e2e_harness import FIXTURE_USER
+
+    from engine.db.models import AgentDecision
+    from engine.db.session import async_session_factory
+
+    row = AgentDecision(
+        user_id=uuid.UUID(FIXTURE_USER), symbol=symbol, horizon="short", final_action="VETOED",
+        risk_approved=False, risk_veto_rule="min_council_confidence",
+        proposal={"side": "BUY", "qty": 10, "limitPrice": limit, "symbol": symbol},
+        triggered_at=datetime.now(UTC) - timedelta(days=days_ago),
+    )
+    async with async_session_factory()() as s:
+        s.add(row)
+        await s.commit()
+    return row.id
+
+
+async def test_nse_refusals_are_priced_from_kite_and_kept_out_of_the_dollar_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Alpaca raises on an NSE symbol, and that one raise used to abort the
+    whole marking pass. Without a Kite session an NSE refusal is skipped by
+    name (no invented synthetic rupees); with one it is priced from Kite.
+    Either way the dollar ledger does not add rupees to dollars."""
+    import contextlib
+
+    from e2e_harness import FIXTURE_USER
+    from sqlalchemy import select
+
+    from app.services.council.ghost_service import build_ghost_summary
+    from engine.db.models import GhostOutcome
+    from engine.db.session import async_session_factory
+    from engine.prices.base import DailyClose
+    from trading_agents.jobs import ghost_eval
+
+    monkeypatch.delenv("ALPACA_API_KEY", raising=False)
+    await seed_account(broker="alpaca")
+    msft = await _refusal("MSFT", 400.0)
+    aapl = await _refusal("AAPL", 200.0)
+    reliance = await _refusal("NSE:RELIANCE", 2900.0)
+
+    class _UsCloses:
+        name = "fake_us"
+
+        async def daily_closes(self, symbol, start, end):
+            if symbol == "AAPL":
+                raise RuntimeError("alpaca: 422")
+            return [DailyClose(day=start + timedelta(days=i), close=390.0) for i in range(1, 8)]
+
+    monkeypatch.setattr(ghost_eval, "get_price_provider", lambda **_k: _UsCloses())
+
+    first = await ghost_eval.evaluate_ghosts()
+    assert first["skip_reasons"] == {"price_fetch_failed": 1, "no_price_source": 1}
+
+    class _Kite:
+        async def instruments(self, exchange):
+            return [{"tradingsymbol": "RELIANCE", "instrument_token": 738561, "lot_size": 1}]
+
+        async def historical_daily(self, token, *, start, end):
+            base = datetime.now(UTC) - timedelta(days=9)
+            return [(base + timedelta(days=i), 0, 0, 0, 3000.0, 1e6) for i in range(10)]
+
+    @contextlib.asynccontextmanager
+    async def _open():
+        yield _Kite()
+
+    await ghost_eval.evaluate_ghosts(market="IN", kite_client_factory=_open)
+
+    async with async_session_factory()() as s:
+        ghosts = {g.decision_id: g for g in (await s.execute(select(GhostOutcome))).scalars()}
+    assert ghosts[aapl].status == "pending" and ghosts[aapl].ghost_pnl is None, (
+        "a failed fetch leaves the row for the next pass; the pass went on")
+    assert ghosts[msft].price_source == "fake_us" and float(ghosts[msft].ghost_pnl) == -100.0
+    assert ghosts[reliance].price_source == "kite"
+    assert float(ghosts[reliance].ghost_pnl) == 1000.0  # (3000 - 2900) x 10, in rupees
+
+    summary = await build_ghost_summary(user_id=FIXTURE_USER)
+    # MSFT and the still-pending AAPL; the RELIANCE rupees are not summed in.
+    assert (summary.vetoed.count, summary.vetoed.marked_pnl) == (2, -100.0)

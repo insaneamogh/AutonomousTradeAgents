@@ -794,7 +794,7 @@ class CouncilScheduler:
 
         report = await run_eod(
             user_id=_cron_user(), session_factory=async_session_factory(), day=today,
-            market="IN", skip_if_empty=True,
+            market="IN", skip_if_empty=True, kite_client_factory=_kite_session(_cron_user()),
         )
         if report is None:
             self.last_in_eod_result = "report_failed"
