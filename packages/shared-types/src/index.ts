@@ -56,6 +56,9 @@ export interface AccountResponse {
   status: AccountStatus;
   brokerName: string;
   isPaper: boolean;
+  /** The account's own currency; every amount above is in it. Older API
+   * builds omit it, which means USD. */
+  currency?: 'USD' | 'INR';
 }
 
 // ─────────────────────────────────────────────────────────────────────

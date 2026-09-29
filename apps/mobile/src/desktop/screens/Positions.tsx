@@ -13,7 +13,7 @@ import { runErrorMessage } from '@/lib/api';
 import { DEMO_DISABLED_REASON, useIsDemoSession } from '@/lib/demoSession';
 import type { ClosedPositionDto, OpenPositionDto } from '@app/shared-types';
 
-import { ago, flattenSummary, signedPct, signedUsd, tone, usd } from '../format';
+import { ago, currencyOf, flattenSummary, money, signedMoney, signedPct, tone } from '../format';
 import {
   Button,
   Card,
@@ -131,9 +131,18 @@ export function PositionsScreen() {
   }
 
   const rows = positions.data ?? [];
-  const unrealized = rows.reduce((sum, p) => sum + (p.unrealizedPnl ?? 0), 0);
   const closedRows = closedQuery.data?.positions ?? [];
   const acct = account.data;
+  // The tiles show one broker's book, in its currency. Dollars and rupees
+  // are never added together: the other currency's unrealised P&L is a
+  // caption, not part of the sum.
+  const cur = acct?.currency ?? 'USD';
+  const unrealized = rows
+    .filter((p) => currencyOf(p.symbol) === cur)
+    .reduce((sum, p) => sum + (p.unrealizedPnl ?? 0), 0);
+  const otherRows = rows.filter((p) => currencyOf(p.symbol) !== cur);
+  const otherCur = cur === 'USD' ? 'INR' : 'USD';
+  const otherUnrealized = otherRows.reduce((sum, p) => sum + (p.unrealizedPnl ?? 0), 0);
 
   return (
     <>
@@ -196,12 +205,12 @@ export function PositionsScreen() {
           </Cell>
         ) : null}
         <Cell span={3}>
-          <StatTile label="Equity" value={acct ? usd(acct.equity) : '—'} loading={account.isLoading} />
+          <StatTile label="Equity" value={acct ? money(acct.equity, cur) : '—'} caption={acct?.brokerName} loading={account.isLoading} />
         </Cell>
         <Cell span={3}>
           <StatTile
             label="Today P&L"
-            value={acct ? signedUsd(acct.todayPnl) : '—'}
+            value={acct ? signedMoney(acct.todayPnl, cur) : '—'}
             caption={acct ? signedPct(acct.todayPnlPct) : undefined}
             tone={tone(acct?.todayPnl)}
             loading={account.isLoading}
@@ -210,14 +219,18 @@ export function PositionsScreen() {
         <Cell span={3}>
           <StatTile
             label="Unrealised"
-            value={rows.length > 0 ? signedUsd(unrealized) : '—'}
-            caption="Across open positions"
+            value={rows.length > otherRows.length ? signedMoney(unrealized, cur) : '—'}
+            caption={
+              otherRows.length > 0
+                ? `${signedMoney(otherUnrealized, otherCur)} on ${otherCur === 'INR' ? 'NSE' : 'US'} positions`
+                : 'Across open positions'
+            }
             tone={tone(unrealized)}
             loading={positions.isLoading}
           />
         </Cell>
         <Cell span={3}>
-          <StatTile label="Cash" value={acct ? usd(acct.cash) : '—'} caption={acct ? `${usd(acct.buyingPower)} buying power` : undefined} loading={account.isLoading} />
+          <StatTile label="Cash" value={acct ? money(acct.cash, cur) : '—'} caption={acct ? `${money(acct.buyingPower, cur)} buying power` : undefined} loading={account.isLoading} />
         </Cell>
 
         <Cell span={selected ? 8 : 12}>
@@ -290,11 +303,11 @@ export function PositionsScreen() {
                           </td>
                           <td className="pg-num-right">{p.qty}</td>
                           <td className="pg-num-right pg-dim">
-                            {p.avgEntryPrice != null ? usd(p.avgEntryPrice, 2) : '—'}
+                            {p.avgEntryPrice != null ? money(p.avgEntryPrice, currencyOf(p.symbol), 2) : '—'}
                             {' → '}
-                            {p.exitPrice != null ? usd(p.exitPrice, 2) : '—'}
+                            {p.exitPrice != null ? money(p.exitPrice, currencyOf(p.symbol), 2) : '—'}
                             {p.exitPriceSource === 'estimated_from_pnl' ? (
-                              <span title="No fill of ours to read — the user closed directly at Alpaca, so this is back-solved from realized P&L rather than a broker fill price.">
+                              <span title="No fill of ours to read — the user closed directly at the broker, so this is back-solved from realized P&L rather than a broker fill price.">
                                 {' '}
                                 (est.)
                               </span>
@@ -302,7 +315,7 @@ export function PositionsScreen() {
                           </td>
                           <td className="pg-num-right">
                             <span className={p.realizedPnl != null && p.realizedPnl < 0 ? 'pg-bear' : 'pg-bull'}>
-                              {signedUsd(p.realizedPnl)}
+                              {signedMoney(p.realizedPnl, currencyOf(p.symbol))}
                             </span>
                           </td>
                           <td>
@@ -388,12 +401,12 @@ export function PositionsScreen() {
                         </Pill>
                       </td>
                       <td className="pg-num-right">{p.qty}</td>
-                      <td className="pg-num-right">{p.avgEntryPrice != null ? usd(p.avgEntryPrice, 2) : '—'}</td>
+                      <td className="pg-num-right">{p.avgEntryPrice != null ? money(p.avgEntryPrice, currencyOf(p.symbol), 2) : '—'}</td>
                       <td className="pg-num-right">
                         {p.status === 'pending_fill' ? (
                           <span className="pg-caption pg-dim">not filled yet</span>
                         ) : p.lastPrice != null ? (
-                          usd(p.lastPrice, 2)
+                          money(p.lastPrice, currencyOf(p.symbol), 2)
                         ) : (
                           '—'
                         )}
@@ -403,14 +416,14 @@ export function PositionsScreen() {
                           ? p.expiryDate
                             ? `exp ${p.expiryDate}`
                             : 'no bracket · exp unknown'
-                          : `${p.stopLoss != null ? usd(p.stopLoss, 2) : '—'} / ${p.targetPrice != null ? usd(p.targetPrice, 2) : '—'}`}
+                          : `${p.stopLoss != null ? money(p.stopLoss, currencyOf(p.symbol), 2) : '—'} / ${p.targetPrice != null ? money(p.targetPrice, currencyOf(p.symbol), 2) : '—'}`}
                       </td>
                       <td className="pg-num-right">
                         {p.status === 'pending_fill' ? (
                           <span className="pg-caption pg-dim">—</span>
                         ) : (
                           <span className={p.unrealizedPnl != null && p.unrealizedPnl < 0 ? 'pg-bear' : 'pg-bull'}>
-                            {signedUsd(p.unrealizedPnl)}
+                            {signedMoney(p.unrealizedPnl, currencyOf(p.symbol))}
                           </span>
                         )}
                       </td>

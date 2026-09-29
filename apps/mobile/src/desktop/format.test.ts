@@ -15,11 +15,14 @@
  * has no truncation rule the way a caption's `.pg-truncate` does.
  */
 import {
+  currencyOf,
   emptyBucketCaption,
   ghostSideUsd,
+  money,
   pendingAwareCaption,
   pendingAwareUsd,
   riskProfileCaption,
+  signedMoney,
   stillMarkingCaption,
   usd,
 } from './format';
@@ -223,5 +226,22 @@ describe('flattenSummary', () => {
     expect(flattenSummary({ positions: [], autoApproveRevoked: 1 })).toBe(
       'Nothing was open. Auto-approve is off.',
     );
+  });
+});
+
+
+describe('currency by market', () => {
+  it('reads an Indian exchange prefix as rupees and anything else as dollars', () => {
+    expect(currencyOf('NSE:RELIANCE')).toBe('INR');
+    expect(currencyOf('NFO:NIFTY26OCT25000CE')).toBe('INR');
+    expect(currencyOf('NVDA')).toBe('USD');
+    expect(currencyOf('NVDA260918C00250000')).toBe('USD');
+    expect(currencyOf(null)).toBe('USD');
+  });
+
+  it('formats rupees with the Indian grouping and never as dollars', () => {
+    expect(money(120450, 'INR', 2)).toBe('₹1,20,450.00');
+    expect(signedMoney(-3900, 'INR')).toBe('−₹3,900');
+    expect(signedMoney(1204.5, 'USD', 2)).toBe('+$1,204.50');
   });
 });

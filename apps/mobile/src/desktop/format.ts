@@ -4,22 +4,53 @@ import { vetoRuleLabels } from '@app/shared-types';
 
 /** `$100,000` — whole dollars, thousands-separated. */
 export function usd(value: number | null | undefined, digits = 0): string {
+  return money(value, 'USD', digits);
+}
+
+export type Currency = 'USD' | 'INR';
+
+const INDIA_EXCHANGES = new Set(['NSE', 'BSE', 'NFO', 'BFO', 'MCX', 'CDS', 'BCD']);
+
+/** A symbol's currency, the way the backend routes it
+ * (engine/risk/markets.py): an `EXCHANGE:` prefix on an Indian exchange
+ * is a Zerodha position in rupees; everything else is Alpaca, in dollars. */
+export function currencyOf(symbol: string | null | undefined): Currency {
+  const s = symbol ?? '';
+  const i = s.indexOf(':');
+  return i > 0 && INDIA_EXCHANGES.has(s.slice(0, i).toUpperCase()) ? 'INR' : 'USD';
+}
+
+/** `$1,204.50` / `₹1,20,450.00` — a USD or INR amount in its own grouping. */
+export function money(
+  value: number | null | undefined,
+  currency: Currency = 'USD',
+  digits = 0,
+): string {
   if (value == null || Number.isNaN(value)) return '—';
-  return value.toLocaleString('en-US', {
+  return value.toLocaleString(currency === 'INR' ? 'en-IN' : 'en-US', {
     style: 'currency',
-    currency: 'USD',
+    currency,
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   });
 }
 
-/** `+$1,204` / `−$310` — signed, with a real minus sign. */
-export function signedUsd(value: number | null | undefined, digits = 0): string {
+/** `+₹3,900` / `−$310` — signed, with a real minus sign. */
+export function signedMoney(
+  value: number | null | undefined,
+  currency: Currency = 'USD',
+  digits = 0,
+): string {
   if (value == null || Number.isNaN(value)) return '—';
-  const body = usd(Math.abs(value), digits);
+  const body = money(Math.abs(value), currency, digits);
   if (value > 0) return `+${body}`;
   if (value < 0) return `−${body}`;
   return body;
+}
+
+/** `+$1,204` / `−$310` — signed, with a real minus sign. */
+export function signedUsd(value: number | null | undefined, digits = 0): string {
+  return signedMoney(value, 'USD', digits);
 }
 
 /** `+1.24%` / `−0.30%`. */
