@@ -355,6 +355,97 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 # Build log
 
+### 2026-09-29 — 11ccb962e..ab02b3b88 — Zerodha: everything left in PLAN_ZERODHA that can be built without a live Kite account
+Operator: "start building whats left". **Everything is proven against
+SimBroker, a fake Kite client or real Postgres. No Kite session has
+been used, and no order was placed anywhere.**
+
+- **Expiry (11ccb962e).** Kite has no OPEXP feed. `india_expiry.py`
+  closes an NFO contract that vanishes after its expiry-day 15:30 IST
+  close. It is priced from the underlying's expiry-day close (Kite quote:
+  `last_price`, then `ohlc.close`).
+  - Out of the money: `option_expired`.
+  - Index in the money: `option_settled`, exit at intrinsic value.
+  - Stock in the money: `option_exercised`, plus a stock-delivered page.
+  - Sold before expiry: still `external_broker`.
+- **Margin gate (5f4a6acdd).** `insufficient_margin` uses Kite `POST
+  /margins/orders` (JSON, the exact order, charges included) against the
+  available cash. The executor builds one `OrderRequest` and uses it for
+  both the quote and the order. A failed quote lets the order through,
+  since Kite still refuses an unfunded order.
+- **NSE IV history (9faf87b71).** One `iv_history` row per NSE underlying
+  (`feed='kite'`) plus India VIX, at 15:45 IST. NIFTY 50 and BANK are
+  always recorded. A missing Kite session is a recorded skip. Also fixed:
+  the US recorder was asking Alpaca for NSE rows.
+- **EOD report per market (ea78365dd).** Each report reads its own
+  broker's snapshot and its own market's closes, in $ or ₹. It used to
+  print the INR book with a $ sign and add rupees to dollars. The NSE
+  report runs at 16:00 IST and is skipped on a day with no NSE activity.
+- **Expired Kite token (b66f2fbdb).** The fleet skips that pass: one log
+  line a day, and one page a day only when NSE is open and positions are
+  open. Before, it logged about six tracebacks every 30 s all day.
+- **Reconnect reminder (609598008).** Scheduled at 08:30 IST on NSE days.
+  The script existed; nothing ever ran it.
+- **Refusal Ledger (ddad9e3a4).** NSE refusals are priced from Kite, or
+  skipped by name as `no_price_source`, never from a synthetic walk.
+  `evaluate_ghosts` no longer dies on one raising symbol: Alpaca raising
+  on `NSE:RELIANCE` would have stopped all marking. The dollar ledger
+  excludes rupee ghosts; before, the e2e summed them to (3, +900).
+- **India paper trading (635a61e42, migration 0021).** `KitePaperBroker`
+  is a `BrokerInterface` over a Postgres book, turned on by
+  `ZERODHA_PAPER=1`.
+  - Market data is Kite's, real.
+  - Fills are simulated at the live bid/ask, whole quantity, in session
+    only.
+  - A GTT leg triggers on the last price, then rests as a limit.
+  - Indian charges are deducted from cash.
+  - DAY orders expire at the close.
+  - An unfunded buy or a sell of more than is held is rejected.
+  - It needs the Kite plan and the daily login, but not the static IP.
+- **NSE research harness (1957361a0).** `signal_backtest` and
+  `candidates` take `--market IN`:
+  - NIFTY 50 as the benchmark;
+  - NSE delivery costs, a 0.238% round trip;
+  - long only;
+  - `fetch_bars --kite` fetches in 2,000-day chunks.
+
+  The universe is today's NIFTY 50, which carries survivorship bias; this
+  is printed with every result. **The NSE run itself has not happened**:
+  it needs a Kite session to fetch the fixture.
+- **Account and UI (72022564c, ab02b3b88).** `/api/v1/account` returns
+  one broker's book (`?broker=zerodha`, plus a `currency` field); the
+  Alpaca tiles had been showing the INR book. Desktop Positions formats
+  each row in its own currency, and Unrealised never sums across
+  currencies.
+- **Verified.**
+  - Full Python suite: 1784 passed, 12 skipped.
+  - E2E layer: 26 Zerodha scenarios.
+  - Jest: 129 passed. tsc is clean.
+  - Every fix was revert-checked (details in each commit body).
+  - The US candidates run reproduces the recorded numbers exactly.
+- **Found and corrected.** The premium stop in the active profile is -50%
+  (`RiskCaps.options_stop_loss_pct`); an e2e comment said -40%.
+- **Mistake in-session.** I ran `git checkout -- candidates.py` during a
+  revert check and lost uncommitted edits. They were re-applied and
+  re-verified before commit. Use a tmp copy, never checkout, for a revert
+  check on an uncommitted file.
+- **Open.**
+  - The phone app (`apps/mobile/app/*`) still formats money as USD.
+  - `option_backtest` has no NSE lot or cost model.
+  - There is no INR Refusal Ledger view.
+  - Product choice (CNC/MIS/NRML) is not a named decision on the
+    proposal.
+  - Whether Kite's `oi`/`volume` are in units is unverified.
+  - The breaker is one per user, so an INR drawdown halts US entries too.
+    That is policy, flagged.
+  - Everything Kite-live needs the operator:
+    - the ₹500/month plan and `KITE_API_KEY`/`SECRET`;
+    - the daily login;
+    - a deploy (migrations 0020 and 0021);
+    - then `ZERODHA_PAPER=1` for paper, or the static IP plus
+      `LIVE_TRADING_ENABLED` and consent for real money.
+  - `IN_SWEEP_ENABLED` is still off.
+
 ### 2026-09-26 — dddfd17be..672fc9897 — Zerodha: both books live side by side, NSE equity and index options (PLAN_ZERODHA)
 Operator: "zerodha both and router keep off start". So: NSE cash equity
 AND index options, with `INSTRUMENT_ROUTER_ENABLED` left off.

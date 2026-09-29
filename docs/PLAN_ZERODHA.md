@@ -29,12 +29,24 @@
 >   latched the breaker, and draft-time risk read the other broker's book
 >   (f68aa274c); off-tick limit prices (bedb13044); option sides and units
 >   (68783bc95); 20-char symbol columns (7366866d2, migration 0020).
-> - **Open:** India option expiry inference (Kite has no OPEXP feed); the
->   `insufficient_margin` pre-trade gate; `iv_history` rows with
->   `feed='kite'` and India VIX; persisting the paper engine; the Z4
->   research on NSE history; the per-market EOD report; whether the
->   08:30 IST reconnect push is scheduled (unverified); whether Kite's
->   `oi`/`volume` are in units (assumed).
+> - Built 2026-09-29 (11ccb962e..ab02b3b88):
+>   - expiry inference;
+>   - the `insufficient_margin` gate;
+>   - `iv_history` for NSE, plus India VIX;
+>   - a per-market EOD report;
+>   - the expired-session skip and the 08:30 IST reminder;
+>   - NSE ghosts priced from Kite;
+>   - **India paper trading** (`ZERODHA_PAPER=1`: a persisted book against
+>     Kite's real quotes, no static IP needed);
+>   - the Z4 harness (`--market IN`);
+>   - per-broker account tiles and ₹ in desktop Positions.
+> - **Open:**
+>   - the Z4 run itself (fetch the NSE fixture with a Kite session first);
+>   - the NSE option backtest (lot and cost model);
+>   - an INR Refusal Ledger view;
+>   - the phone app's currency formatting;
+>   - CNC/MIS/NRML as a named decision;
+>   - whether Kite's `oi`/`volume` are in units (assumed).
 
 ## 1. What already exists (verified by reading the code, not the docs)
 
