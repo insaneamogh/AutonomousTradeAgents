@@ -773,3 +773,156 @@ async def test_nse_refusals_are_priced_from_kite_and_kept_out_of_the_dollar_ledg
     summary = await build_ghost_summary(user_id=FIXTURE_USER)
     # MSFT and the still-pending AAPL; the RELIANCE rupees are not summed in.
     assert (summary.vetoed.count, summary.vetoed.marked_pnl) == (2, -100.0)
+
+
+# ── India paper trading: the persisted book against Kite's real quotes ──
+
+
+class _KiteQuotes:
+    """The only Kite calls a paper book makes: market data. A one-rupee
+    spread around each last price."""
+
+    def __init__(self) -> None:
+        self.last: dict[str, float] = {}
+        self.orders_sent = 0
+
+    async def quotes(self, symbols):
+        return {
+            s.upper(): {"last_price": self.last[s],
+                        "depth": {"buy": [{"price": self.last[s] - 0.5}],
+                                  "sell": [{"price": self.last[s] + 0.5}]}}
+            for s in symbols if s in self.last
+        }
+
+    async def order_margin(self, request):
+        return request.qty * (request.limit_price or self.last[request.symbol] + 0.5)
+
+    async def get_options_trading_level(self):
+        return 2
+
+    async def place_order(self, request):  # pragma: no cover - must never run
+        self.orders_sent += 1
+        raise AssertionError("a paper book must never send an order to Kite")
+
+
+@pytest.fixture
+def paper_india(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Paper needs no live-trading keys: nothing reaches Kite."""
+    monkeypatch.setenv("ALLOW_OPTIONS", "1")
+    monkeypatch.delenv("LIVE_TRADING_ENABLED", raising=False)
+    monkeypatch.delenv("TRADING_MODE", raising=False)
+
+
+def _in_session() -> datetime:
+    """11:00 IST today: inside the NSE session whenever the test runs."""
+    from zoneinfo import ZoneInfo
+
+    return datetime.now(ZoneInfo("Asia/Kolkata")).replace(hour=11, minute=0)
+
+
+async def _paper_account(monkeypatch: pytest.MonkeyPatch, **kw):
+    from dataclasses import replace
+
+    from e2e_harness import FIXTURE_USER
+
+    from app.services.orders.kite_paper import KitePaperBroker
+    from engine.db.session import async_session_factory
+
+    md = _KiteQuotes()
+    conn = await seed_account(broker="zerodha")
+    kw.setdefault("clock", _in_session)
+    paper = KitePaperBroker(market_data=md, user_id=FIXTURE_USER,
+                            session_factory=async_session_factory(),
+                            market_open=lambda _now: True, **kw)
+    patch_brokers(monkeypatch, {"zerodha": (paper, replace(conn, is_paper=True))})
+    return md, paper
+
+
+async def test_a_paper_nifty_call_fills_on_kites_book_exits_on_its_stop_and_survives_a_restart(
+    monkeypatch: pytest.MonkeyPatch, paper_india: None, outbox: list[dict],
+) -> None:
+    from e2e_harness import FIXTURE_USER
+
+    from app.services.orders.kite_paper import KitePaperBroker
+    from engine.db.session import async_session_factory
+
+    md, paper = await _paper_account(monkeypatch)
+    proposal, contract = _nifty_call((datetime.now(UTC) + timedelta(days=25)).date())
+    md.last[contract] = 118.0                       # ask 118.5, under the 120 limit
+    pid = await _approve(proposal, exit_mode="agent")
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+    d = await decision_row(pid)
+    assert (d.fill_qty, d.fill_avg_price) == (65, Decimal("118.5000")), "filled at the ask"
+    assert [p.symbol for p in await paper.list_positions()] == [contract]
+
+    md.last[contract] = 55.0                        # -54%: through the premium stop
+    for _ in range(3):
+        await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+    d = await decision_row(pid)
+    assert d.close_reason in ("option_stop_loss", "option_trail_stop")
+    # The close is a LIMIT at the 55 mark, and the bid is 54.50: it rests,
+    # as it would on Kite's book, until the bid reaches it.
+    assert d.realized_pnl is None
+    md.last[contract] = 56.0                        # bid 55.50: the resting sell fills
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+    d = await decision_row(pid)
+    assert d.realized_pnl == Decimal("-4095.00")    # (55.5 bid - 118.5) x 65
+    assert md.orders_sent == 0
+
+    restarted = KitePaperBroker(market_data=md, user_id=FIXTURE_USER,
+                                session_factory=async_session_factory(),
+                                market_open=lambda _now: True, clock=_in_session)
+    assert await restarted.list_positions() == []
+    cash = await restarted.get_buying_power()
+    assert 995_800 < cash < 995_905, "1,000,000 - 4,095 less Indian charges on both fills"
+
+
+async def test_a_paper_nse_equity_exits_on_its_paper_gtt_stop(
+    monkeypatch: pytest.MonkeyPatch, paper_india: None, outbox: list[dict],
+) -> None:
+    md, paper = await _paper_account(monkeypatch)
+    md.last["NSE:RELIANCE"] = 2899.0
+    pid = await _approve(
+        equity_proposal(symbol="NSE:RELIANCE", qty=5, last=2900.0, stop=2800.0, target=3100.0),
+        exit_mode="agent",
+    )
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)   # GTT placed after the fill
+    assert (await decision_row(pid)).fill_avg_price == Decimal("2899.5000")
+
+    md.last["NSE:RELIANCE"] = 2795.0                # below the 2800 trigger
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+    d = await decision_row(pid)
+    assert d.close_reason == "bracket_stop"
+    assert d.realized_pnl == Decimal("-525.00")     # (2794.5 - 2899.5) x 5
+    assert await paper.list_positions() == []
+
+
+async def test_the_paper_book_expires_day_orders_and_refuses_what_kite_would(
+    monkeypatch: pytest.MonkeyPatch, paper_india: None,
+) -> None:
+    from zoneinfo import ZoneInfo
+
+    from broker.types import OrderRequest, OrderStatus, OrderType, Side
+
+    ist = ZoneInfo("Asia/Kolkata")
+    now = {"t": datetime.now(ist).replace(hour=11, minute=0)}
+    md, paper = await _paper_account(monkeypatch, clock=lambda: now["t"])
+    md.last["NSE:INFY"] = 1500.0
+
+    def _req(side, qty, limit=None, kind=OrderType.LIMIT):
+        return OrderRequest(symbol="NSE:INFY", side=side, qty=qty, order_type=kind,
+                            limit_price=limit, client_order_id=None)
+
+    resting = await paper.place_order(_req(Side.BUY, 10, limit=1400.0))
+    assert resting.status is OrderStatus.ACCEPTED
+    now["t"] = now["t"].replace(hour=15, minute=31)          # after the NSE close
+    assert (await paper.get_order(resting.broker_order_id)).status is OrderStatus.EXPIRED
+
+    now["t"] = now["t"].replace(hour=11) + timedelta(days=1)
+    sell = await paper.place_order(_req(Side.SELL, 5, kind=OrderType.MARKET))
+    assert sell.status is OrderStatus.REJECTED, "no short sale: nothing is held"
+    huge = await paper.place_order(_req(Side.BUY, 1_000, kind=OrderType.MARKET))
+    assert huge.status is OrderStatus.REJECTED, "1,500,500 of stock on 1,000,000 of cash"
+    assert await paper.get_buying_power() == 1_000_000.0

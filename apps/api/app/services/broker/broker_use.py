@@ -174,6 +174,28 @@ def _build_zerodha(access_token: str, conn: BrokerConnectionRecord) -> BrokerInt
     return ZerodhaBroker(api_key=kite_api_key, access_token=access_token)
 
 
+def _paper_zerodha_if_enabled(
+    client: BrokerInterface, conn: BrokerConnectionRecord, user_id: str
+) -> tuple[BrokerInterface, BrokerConnectionRecord]:
+    """ZERODHA_PAPER=1: the Zerodha connection trades the persisted paper
+    book (app.services.orders.kite_paper) against Kite's real quotes, and
+    the connection reads as paper, so no live-trading gate applies because
+    no order can reach Kite. Off: unchanged, a real Kite client."""
+    from app.services.orders.kite_paper import KitePaperBroker, zerodha_paper_enabled
+
+    if not zerodha_paper_enabled():
+        return client, conn
+    from dataclasses import replace
+
+    from engine.db import async_session_factory
+
+    return (
+        KitePaperBroker(market_data=client, user_id=user_id,
+                        session_factory=async_session_factory()),
+        replace(conn, is_paper=True),
+    )
+
+
 @asynccontextmanager
 async def with_broker_client(
     user_id: str,
@@ -224,6 +246,7 @@ async def with_broker_client(
         client = _build_alpaca(access_token, conn)
     elif conn.broker == "zerodha":
         client = _build_zerodha(access_token, conn)
+        client, conn = _paper_zerodha_if_enabled(client, conn, user_id)
     else:
         raise BrokerUnavailableError(f"Unsupported broker '{conn.broker}'.")
 
