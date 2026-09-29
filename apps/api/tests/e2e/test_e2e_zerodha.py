@@ -637,3 +637,53 @@ async def test_no_nse_report_for_a_user_without_indian_activity(
                                  market="IN", skip_if_empty=True)
     assert r is not None and r.delivered is False
     assert not [p for p in outbox if p.get("data_kind") == "daily_report"]
+
+
+# ── Kite's daily token flush ─────────────────────────────────────────
+
+
+async def _set_kite_expiry(delta: timedelta) -> None:
+    from sqlalchemy import update
+
+    from engine.db.models import BrokerConnection
+    from engine.db.session import async_session_factory
+
+    async with async_session_factory()() as s:
+        await s.execute(update(BrokerConnection).where(BrokerConnection.broker == "zerodha")
+                        .values(access_token_expires_at=datetime.now(UTC) + delta))
+        await s.commit()
+
+
+async def test_an_expired_kite_session_skips_the_pass_and_pages_once_while_positions_are_open(
+    monkeypatch: pytest.MonkeyPatch, live_india: None, outbox: list[dict],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Before: every call in the Zerodha pass raised on the dead token,
+    about six tracebacks every 30 s all day, and nobody was told that the
+    open NSE option could no longer be stopped out."""
+    import logging
+
+    proposal, contract = _nifty_call((datetime.now(UTC) + timedelta(days=25)).date())
+    _us, india = await _both_accounts(monkeypatch)
+    india.set_price(contract, 118.0)
+    pid = await _approve(proposal, exit_mode="agent")
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+    assert (await decision_row(pid)).fill_qty == 65
+
+    await _set_kite_expiry(-timedelta(minutes=1))  # 06:00 IST: Kite flushed the token
+    india.set_price(contract, 60.0)                # through the premium stop
+    caplog.set_level(logging.WARNING, logger="api.reconciler_fleet")
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+
+    assert not [r for r in india.requests.values() if r.side.value == "SELL_TO_CLOSE"]
+    pages = [p for p in outbox if p.get("data_kind") == "ops_alert"
+             and "session expired" in p["title"]]
+    assert len(pages) == 1, pages
+    assert "1 open IN position" in pages[0]["body"]
+    assert not [r for r in caplog.records if r.exc_info], "no traceback per tick"
+
+    await _set_kite_expiry(timedelta(hours=12))   # the user logged in again
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+    await fleet_tick(monkeypatch, market_open=US_CLOSED_IN_OPEN)
+    assert (await decision_row(pid)).close_reason in ("option_stop_loss", "option_trail_stop")

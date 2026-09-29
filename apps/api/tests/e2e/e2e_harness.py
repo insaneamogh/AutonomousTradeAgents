@@ -423,11 +423,25 @@ def patch_brokers(monkeypatch: Any, accounts: dict[str, tuple[SimBroker, SimConn
     that asks for none gets them in BROKER_PREFERENCE order."""
     import importlib
 
+    async def _check_not_expired(conn: SimConnection) -> None:
+        """What the real with_broker_client does before decrypting: a
+        stored token past its expiry (Kite's daily flush) is refused."""
+        from app.services.broker.broker_use import BrokerUnavailableError
+        from engine.db.models import BrokerConnection
+        from engine.db.session import async_session_factory
+
+        async with async_session_factory()() as s:
+            row = await s.get(BrokerConnection, uuid.UUID(conn.id))
+        expires = getattr(row, "access_token_expires_at", None)
+        if expires is not None and expires <= datetime.now(UTC):
+            raise BrokerUnavailableError(f"Stored {conn.broker} access token has expired")
+
     @contextlib.asynccontextmanager
     async def _client(_user_id: str, *_a: Any, broker: str | None = None, **_kw: Any):
         if broker is not None:
             if broker not in accounts:
                 raise RuntimeError(f"scenario has no {broker!r} account")
+            await _check_not_expired(accounts[broker][1])
             yield accounts[broker]
             return
         for name in ("alpaca", "zerodha"):

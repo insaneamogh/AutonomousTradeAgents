@@ -154,6 +154,37 @@ class UserBrokerPoller:
             )
 
 
+def _session_expired(conn: object) -> bool:
+    """The stored token is past its expiry (the check with_broker_client
+    makes before decrypting)."""
+    from app.services.broker.broker_use import BrokerUnavailableError, _check_not_expired
+
+    if getattr(conn, "access_token_expires_at", None) is None:
+        return False  # no stored expiry (Alpaca OAuth): never expired, as in the check
+    try:
+        _check_not_expired(conn)  # type: ignore[arg-type]
+    except BrokerUnavailableError:
+        return True
+    return False
+
+
+async def _open_positions_in(session_factory: async_sessionmaker, uid: str, market: str) -> int:
+    from sqlalchemy import select
+
+    from engine.db.models import AgentDecision
+    from engine.risk.markets import market_of
+
+    async with session_factory() as session:
+        symbols = (await session.execute(
+            select(AgentDecision.symbol)
+            .where(AgentDecision.user_id == uuid.UUID(str(uid)))
+            .where(AgentDecision.user_response == "approved")
+            .where(AgentDecision.fill_qty.is_not(None))
+            .where(AgentDecision.closed_at.is_(None))
+        )).scalars().all()
+    return sum(1 for s in symbols if market_of(str(s)) == market)
+
+
 @dataclass
 class FleetConfig:
     interval_seconds: float = 30.0
@@ -174,6 +205,7 @@ class ReconcilerFleet:
         self._mock_reconciler: Reconciler | None = None
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
+        self._expired_noted: set[tuple[str, str, object]] = set()
 
     def _reconciler_for(self, user_id: str, broker: str = "alpaca") -> Reconciler:
         rec = self._reconcilers.get((user_id, broker))
@@ -214,6 +246,10 @@ class ReconcilerFleet:
         # One pass per (user, broker). A user with both Alpaca and Zerodha
         # gets two, and each only touches its own broker's positions.
         pairs = sorted({(c.user_id, c.broker) for c in conns})
+        # A Zerodha token dies every morning (~06:00 IST) until the user logs
+        # in again. Every call in the pass below would raise on it, every 30
+        # seconds, all day; the pass is skipped instead (_note_expired_session).
+        expired = {(c.user_id, c.broker) for c in conns if _session_expired(c)}
 
         if not pairs:
             if self.config.allow_mock_fallback:
@@ -247,6 +283,11 @@ class ReconcilerFleet:
         reconciled = 0
         for uid, broker_name in pairs:
             market = market_for_broker(broker_name)
+            if (uid, broker_name) in expired:
+                await self._note_expired_session(
+                    uid, broker_name, market=market, market_open=exits_open[market]
+                )
+                continue
             # GENUINELY first, before this tick reads or writes ANY
             # position state — not just commented as first while sitting
             # after `.tick()`/`sync_user_orders_and_positions` in the
@@ -396,6 +437,42 @@ class ReconcilerFleet:
                 logger.exception("fleet: auto-approve sweep failed for user=%s", uid)
 
         return reconciled
+
+    async def _note_expired_session(
+        self, uid: str, broker: str, *, market: str, market_open: bool
+    ) -> None:
+        """Log an expired broker session once per day; page once per day
+        only when it matters: the market is open and positions in it are
+        open, so nothing here can exit them. A Kite GTT still stands at the
+        broker for an agent-managed equity entry; an NSE option has no
+        broker-side stop at all. The 08:30 IST reconnect push covers the
+        ordinary morning login."""
+        from datetime import UTC, datetime
+        from zoneinfo import ZoneInfo
+
+        today = datetime.now(ZoneInfo("Asia/Kolkata") if market == "IN" else UTC).date()
+        if (uid, broker, today) not in self._expired_noted:
+            self._expired_noted.add((uid, broker, today))
+            logger.warning("fleet: %s session expired for user=%s; its pass is skipped "
+                           "until the user reconnects", broker, uid)
+        if not market_open:
+            return
+        try:
+            open_here = await _open_positions_in(self.session_factory, uid, market)
+        except Exception:
+            logger.exception("fleet: could not count open %s positions for %s", market, uid)
+            return
+        if not open_here:
+            return
+        from app.services.notifications.ops_alerts import raise_ops_alert
+
+        raise_ops_alert(
+            "broker_session_expired", user_id=str(uid), key=f"{uid}:{broker}:{today}",
+            title=f"{broker.capitalize()} session expired: positions unwatched",
+            body=(f"{open_here} open {market} position(s) and the {broker} login has expired, "
+                  "so no stop, time exit or expiry close can run. Log in again from the "
+                  "app. Broker-side GTT stops on equity still stand; options have none."),
+        )
 
     async def run_forever(self) -> None:
         logger.info(
