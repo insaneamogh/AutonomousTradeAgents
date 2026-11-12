@@ -60,6 +60,17 @@ _PRICES: dict[str, ModelPrice] = {
         cache_read_per_million=0.30,
         cache_creation_per_million=3.75,
     ),
+    # Sonnet 5.5 — what a GLM call falls back to when Z.ai cannot be reached
+    # (llm.FALLBACK_MODEL). Anthropic list price: $2 in / $10 out per
+    # million, cache reads $0.10, 5-minute cache writes $2.50. Without this
+    # row a fallback call would be billed at the Sonnet 4.6 fallback rate
+    # ($3/$15), overstating an outage's cost by half.
+    "claude-sonnet-5-5": ModelPrice(
+        input_per_million=2.00,
+        output_per_million=10.00,
+        cache_read_per_million=0.10,
+        cache_creation_per_million=2.50,
+    ),
     # GLM (Z.ai, Anthropic-compatible endpoint). Without these rows
     # `_FALLBACK_PRICE` would bill GLM at Sonnet rates and the ledger would
     # report a saving that never happened. That is worse than no saving,

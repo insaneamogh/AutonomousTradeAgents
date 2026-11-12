@@ -97,3 +97,27 @@ def test_health_full_reconciler_muted_in_mock_mode(client: TestClient) -> None:
     access = _login(client)
     body = client.get("/api/v1/health/full", headers=_bearer(access)).json()
     assert body["reconciler"]["status"] == "unknown"
+
+
+def test_llm_health_says_when_the_council_is_on_the_fallback_model() -> None:
+    """A GLM outage is covered by Claude Sonnet 5.5 (llm.FALLBACK_MODEL).
+    The desk keeps working on a model that costs more, so the one place
+    the operator looks has to say so; otherwise the only trace is a log
+    line."""
+    from app.schemas.health import ComponentHealth
+    from app.services.platform.health import _with_fallback_note
+    from trading_agents import llm as llm_mod
+
+    base = ComponentHealth(status="ok", label="30d spend $1.00 across 5 real calls")
+    llm_mod.reset_fallback_for_tests()
+    assert _with_fallback_note(base) is base, "no outage, no note"
+
+    llm_mod._breaker.open("timeout")
+    try:
+        noted = _with_fallback_note(base)
+    finally:
+        llm_mod.reset_fallback_for_tests()
+    assert noted.status == "warning"
+    assert "GLM unreachable (timeout)" in noted.label
+    assert "claude-sonnet-5-5" in noted.label
+    assert "30d spend $1.00" in noted.label, "the spend figure is kept"

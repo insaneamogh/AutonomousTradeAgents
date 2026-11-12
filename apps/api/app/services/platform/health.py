@@ -237,13 +237,38 @@ async def _llm_cost_health() -> ComponentHealth:
         )
 
     if total >= warn_at:
-        return ComponentHealth(
+        return _with_fallback_note(ComponentHealth(
             status="warning",
             label=f"30d spend ${total:.2f} ≥ ${warn_at:.2f} cap ({n_calls} calls)",
-        )
-    return ComponentHealth(
+        ))
+    return _with_fallback_note(ComponentHealth(
         status="ok",
         label=f"30d spend ${total:.2f} across {n_calls} real calls",
+    ))
+
+
+def _with_fallback_note(health: ComponentHealth) -> ComponentHealth:
+    """Say so when the council is being answered by the fallback model.
+
+    A GLM outage is otherwise invisible from the app: the desk keeps
+    working, on a model that costs more, and the only trace is a log line.
+    Never raises; the breaker state is a best-effort read.
+    """
+    try:
+        from trading_agents.llm import fallback_status
+
+        fb = fallback_status()
+    except Exception:  # a display note must never break /health
+        return health
+    if not fb.get("active"):
+        return health
+    return ComponentHealth(
+        status="warning",
+        label=(
+            f"GLM unreachable ({fb.get('reason')}) - council on {fb.get('model')}. "
+            f"{health.label}"
+        ),
+        last_event_at=health.last_event_at,
     )
 
 

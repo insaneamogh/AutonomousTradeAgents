@@ -17,6 +17,7 @@ import logging
 import math
 import os
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -139,6 +140,219 @@ def resolve_model(model: str, *, provider: str | None = None) -> str:
     return override or _GLM_MODEL_MAP.get(model, model)
 
 
+# ── Fallback: GLM unreachable -> Claude Sonnet 5.5 ────────────────────
+#
+# Operator decision, 2026-11-12: "switch the model to sonnet 5.5 when glm
+# is not reachable". GLM stays the primary because it is the cheap one; a
+# Z.ai outage must not turn into a desk that HOLDs all day, which is what
+# a raising provider does (every node abstains, see the failure contract
+# in docs/PROVIDERS.md).
+#
+# It needs ANTHROPIC_API_KEY in the environment. That key was removed on
+# 2026-09-11 to stop the spend, so putting it back is the operator's
+# explicit opt-in: with no Anthropic key there is no fallback and a GLM
+# failure behaves exactly as it did before this existed.
+#
+# A MISSING GLM key is not "unreachable". That is a configuration fault
+# and still resolves to MOCK (or raises under AGENTS_REQUIRE_REAL_LLM),
+# so a typo in a variable name cannot quietly move the whole desk onto
+# the more expensive model.
+
+FALLBACK_MODEL = "claude-sonnet-5-5"
+"""Every tier falls back to this one model, fast tier included: the
+operator named Sonnet 5.5, and a per-tier map here would be a second
+table to keep priced. Repoint with ``LLM_FALLBACK_MODEL`` and add a
+``cost_ledger._PRICES`` row for the new id."""
+
+_FALLBACK_STATUSES = frozenset({401, 402, 403, 404, 408, 429})
+"""HTTP statuses from the primary that mean "this provider cannot serve the
+call right now", on top of every 5xx and every connection failure.
+
+401/403/402 are a dead or unfunded key, 404 is a model id Z.ai has retired
+(it revs GLM faster than we deploy), 429 is a quota that the SDK's own two
+retries did not clear. 400, 413 and 422 are deliberately absent: those are
+OUR request being wrong, the same request would be wrong on any provider,
+and masking it behind a fallback is how a bug stops being investigated."""
+
+_DEFAULT_FALLBACK_COOLDOWN_S = 300.0
+
+_EFFORT_LEVELS = ("low", "medium", "high")
+
+_now = time.monotonic
+"""Clock for the breaker. A module attribute so a test can move time
+instead of sleeping through a cooldown."""
+
+
+def fallback_model() -> str:
+    return os.environ.get("LLM_FALLBACK_MODEL", "").strip() or FALLBACK_MODEL
+
+
+def _fallback_cooldown_s() -> float:
+    raw = os.environ.get("LLM_FALLBACK_COOLDOWN_SECONDS", "").strip()
+    try:
+        value = float(raw) if raw else _DEFAULT_FALLBACK_COOLDOWN_S
+    except ValueError:
+        return _DEFAULT_FALLBACK_COOLDOWN_S
+    return value if value >= 0 else _DEFAULT_FALLBACK_COOLDOWN_S
+
+
+def unreachable_reason(exc: BaseException) -> str | None:
+    """Why ``exc`` means the provider cannot serve the call, or None when
+    it is an ordinary error that must propagate.
+
+    Typed against the SDK's own classes rather than matched on message
+    text: a connection failure (timeouts included) has no status at all,
+    and a status error is classified by its code.
+    """
+    try:
+        import anthropic
+    except ImportError:  # pragma: no cover - real mode already requires the SDK
+        return None
+    if isinstance(exc, anthropic.APITimeoutError):
+        return "timeout"
+    if isinstance(exc, anthropic.APIConnectionError):
+        return "connection_error"
+    if isinstance(exc, anthropic.APIStatusError):
+        code = exc.status_code
+        if code >= 500 or code in _FALLBACK_STATUSES:
+            return f"http_{code}"
+    return None
+
+
+class _FallbackBreaker:
+    """Remembers that the primary is down, so one outage costs one timeout.
+
+    Without it every call during an outage waits out the primary's full
+    timeout and retries before falling back: at 60s x 3 attempts, across
+    five calls a pass and twenty symbols a sweep, the sweep never finishes.
+    While open, calls go straight to the fallback. After the cooldown one
+    call probes the primary again with no SDK retries; success closes the
+    breaker, failure re-opens it for another cooldown.
+
+    Process-wide on purpose: ``LLM()`` is constructed per council pass.
+    """
+
+    def __init__(self) -> None:
+        self.down_until: float | None = None
+        self.reason: str = ""
+        self.trips: int = 0
+        self.served: int = 0
+
+    def is_open(self) -> bool:
+        return self.down_until is not None and _now() < self.down_until
+
+    def is_probing(self) -> bool:
+        """Cooldown elapsed but the primary has not answered since."""
+        return self.down_until is not None and _now() >= self.down_until
+
+    def open(self, reason: str) -> None:
+        first = self.down_until is None
+        self.down_until = _now() + _fallback_cooldown_s()
+        self.reason = reason
+        self.trips += 1
+        log = logger.warning if first else logger.info
+        log(
+            "LLM primary unreachable (%s) - serving from %s for the next %.0fs",
+            reason, fallback_model(), _fallback_cooldown_s(),
+        )
+
+    def close(self) -> None:
+        if self.down_until is None:
+            return
+        logger.warning(
+            "LLM primary reachable again after %d fallback call(s) - back on it",
+            self.served,
+        )
+        self.down_until = None
+        self.reason = ""
+        self.served = 0
+
+
+_breaker = _FallbackBreaker()
+
+
+def fallback_status() -> dict[str, Any]:
+    """Whether calls are being served by the fallback right now, and why.
+    Read by health reporting; never raises."""
+    return {
+        "active": _breaker.down_until is not None,
+        "reason": _breaker.reason or None,
+        "model": fallback_model(),
+        "trips": _breaker.trips,
+        "servedSinceTrip": _breaker.served,
+    }
+
+
+def reset_fallback_for_tests() -> None:
+    global _breaker
+    _breaker = _FallbackBreaker()
+
+
+# ── Request shape by model generation ─────────────────────────────────
+
+_NO_SAMPLING_PREFIXES = (
+    "claude-opus-4-7", "claude-opus-4-8", "claude-opus-5",
+    "claude-sonnet-5", "claude-haiku-5", "claude-fable", "claude-mythos",
+)
+"""Claude models that answer a non-default ``temperature`` with a 400.
+This file used to send ``temperature=0.0`` to every model, which made
+``OPTIONS_AGENT_MODEL=opus`` (claude-opus-4-7) fail every call on the
+Anthropic provider, and would have failed every call on the fallback."""
+
+_NO_FORCED_TOOL_PREFIXES = (
+    "claude-sonnet-5-5", "claude-opus-5-5",
+    "claude-fable-5-1", "claude-fable-5-2",
+    "claude-mythos-5-1", "claude-mythos-5-2",
+)
+"""Claude models that reject ``tool_choice`` of type ``any`` or ``tool``."""
+
+
+def _effort() -> str:
+    raw = os.environ.get("LLM_EFFORT", "").strip().lower()
+    return raw if raw in _EFFORT_LEVELS else "medium"
+
+
+def request_shape(
+    wire_model: str, *, tool_choice: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """The request fields that depend on which model serves the call.
+
+    One function because the primary and the fallback can be different
+    generations in the same council pass, and a field one accepts is a 400
+    on the other.
+
+    Claude Sonnet 5.5 gets ``thinking: between_tools``, its lowest thinking
+    setting. Its default is adaptive thinking, and thinking is billed
+    against ``max_tokens``: the council's budgets (300 for the router, 900
+    for a Bull/Bear view) were sized for a model that spends all of it on
+    the reply, and a budget eaten by thinking comes back as truncated JSON,
+    a paid re-ask, then an abstain. ``between_tools`` keeps those budgets
+    meaning what they meant. It also lets the tool loop keep rebuilding an
+    assistant turn from its text and tool_use blocks alone, which is what
+    keeps one history valid on both providers. ``LLM_EFFORT`` (low, medium,
+    high) tunes it; ``between_tools`` rejects anything above high.
+    """
+    shape: dict[str, Any] = {}
+    if not wire_model.startswith(_NO_SAMPLING_PREFIXES):
+        # temperature=0 by default: council variance should come from the
+        # market, not the sampler. Override via LLM_TEMPERATURE if a node
+        # ever needs creative range (document why before raising it).
+        shape["temperature"] = float(os.environ.get("LLM_TEMPERATURE", "0.0"))
+    if wire_model.startswith("claude-sonnet-5-5"):
+        shape["thinking"] = {"type": "between_tools"}
+        shape["output_config"] = {"effort": _effort()}
+    if tool_choice is not None:
+        forced = tool_choice.get("type") in ("any", "tool")
+        if forced and wire_model.startswith(_NO_FORCED_TOOL_PREFIXES):
+            logger.warning(
+                "%s rejects a forced tool_choice - sending auto; the caller "
+                "must check that the tool was actually called", wire_model,
+            )
+            tool_choice = {"type": "auto"}
+        shape["tool_choice"] = tool_choice
+    return shape
+
+
 _JEV_NO_THESIS = "Typed assessment (Jev). No written thesis generated."
 
 _DECISION_CONTRACT = """
@@ -235,6 +449,11 @@ class LLMResponse:
     cache_creation_tokens: int = 0
     tool_calls: tuple[ToolCall, ...] = ()
     stop_reason: str | None = None
+    provider: str = ""
+    """Which provider actually served the call. Differs from the configured
+    one when the fallback answered; ``model`` is then the fallback's id, so
+    the cost ledger prices what was billed."""
+    fallback: bool = False
 
 
 def _extract_blocks(msg: Any) -> tuple[str, tuple[ToolCall, ...]]:
@@ -307,6 +526,22 @@ class LLM:
                 "LLM in MOCK mode (no %s)", self._key_env_name
             )
 
+        # Fallback, GLM only (see FALLBACK_MODEL). Armed by the presence of
+        # an Anthropic key, never by its absence: with no key a GLM failure
+        # raises exactly as before. A mock client has nothing to fall back
+        # from, and LLM_FALLBACK_ENABLED=0 turns it off without removing
+        # the key.
+        self._fallback_key: str | None = None
+        self._fallback_client: Any = None
+        if (
+            self._provider == "glm"
+            and not self._mock
+            and env_flag("LLM_FALLBACK_ENABLED", default=True)
+        ):
+            fb_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+            if fb_key and fb_key.lower() not in self._PLACEHOLDER_KEYS:
+                self._fallback_key = fb_key
+
     @property
     def _key_env_name(self) -> str:
         return _KEY_ENV[self._provider]
@@ -318,6 +553,11 @@ class LLM:
     @property
     def provider(self) -> str:
         return self._provider
+
+    @property
+    def has_fallback(self) -> bool:
+        """True when a GLM failure would be served by the fallback model."""
+        return self._fallback_key is not None
 
     def _get_client(self) -> Any:
         if self._client is None:
@@ -349,6 +589,126 @@ class LLM:
                 kwargs["auth_token"] = self._api_key
             self._client = AsyncAnthropic(**kwargs)
         return self._client
+
+    def _get_fallback_client(self) -> Any:
+        """The Anthropic client the fallback uses. No ``base_url`` and no
+        ``auth_token``: those two kwargs are what make the primary client
+        talk to Z.ai, and the fallback must not inherit either."""
+        if self._fallback_client is None:
+            from anthropic import AsyncAnthropic
+
+            self._fallback_client = AsyncAnthropic(
+                api_key=self._fallback_key,
+                timeout=float(os.environ.get("LLM_TIMEOUT_SECONDS", "60")),
+                max_retries=2,
+            )
+        return self._fallback_client
+
+    async def _create(
+        self,
+        *,
+        model: str,
+        max_tokens: int,
+        system_blocks: list[dict[str, Any]],
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: dict[str, Any] | None = None,
+    ) -> tuple[Any, str, str]:
+        """One Messages call, on the primary or, when the primary cannot be
+        reached, on the fallback. Returns ``(message, wire_model,
+        served_by)``; ``wire_model`` is the id that was billed.
+
+        The request is built per model (``request_shape``) because GLM and
+        Claude Sonnet 5.5 do not accept the same fields.
+        """
+
+        def build(wire_model: str) -> dict[str, Any]:
+            kwargs: dict[str, Any] = {
+                "model": wire_model,
+                "max_tokens": max_tokens,
+                "system": system_blocks,
+                "messages": messages,
+            }
+            if tools is not None:
+                kwargs["tools"] = tools
+            kwargs.update(request_shape(wire_model, tool_choice=tool_choice))
+            return kwargs
+
+        # The wire model is provider-specific; the caller records the
+        # RESOLVED id so the cost ledger prices what was actually billed.
+        primary_model = resolve_model(model, provider=self._provider)
+        if not self.has_fallback:
+            msg = await self._get_client().messages.create(**build(primary_model))
+            return msg, primary_model, self._provider
+
+        if _breaker.is_open():
+            return await self._create_on_fallback(build, cause=None)
+
+        client = self._get_client()
+        if _breaker.is_probing():
+            # Half-open: one attempt, no SDK retries, so a primary that is
+            # still down costs one timeout per cooldown rather than three.
+            client = client.with_options(max_retries=0)
+        try:
+            msg = await client.messages.create(**build(primary_model))
+        except Exception as exc:
+            reason = unreachable_reason(exc)
+            if reason is None:
+                raise
+            _breaker.open(reason)
+            return await self._create_on_fallback(build, cause=exc)
+        _breaker.close()
+        return msg, primary_model, self._provider
+
+    async def _create_on_fallback(
+        self, build: Any, *, cause: BaseException | None
+    ) -> tuple[Any, str, str]:
+        wire_model = fallback_model()
+        try:
+            msg = await self._get_fallback_client().messages.create(**build(wire_model))
+        except Exception as fb_exc:
+            # Both providers failed. Raise the fallback's error with the
+            # primary's as its cause, so the log shows the pair and the
+            # caller abstains exactly as it would have without a fallback.
+            logger.error(
+                "LLM fallback %s also failed (%s) - the caller will abstain",
+                wire_model, type(fb_exc).__name__,
+            )
+            if cause is not None:
+                raise fb_exc from cause
+            raise
+        _breaker.served += 1
+        return msg, wire_model, "anthropic"
+
+    def _response_from(
+        self, msg: Any, *, wire_model: str, served_by: str
+    ) -> LLMResponse:
+        text, tool_calls = _extract_blocks(msg)
+        usage = getattr(msg, "usage", None)
+        stop_reason = getattr(msg, "stop_reason", None)
+        if stop_reason == "refusal":
+            # A safety-classifier decline is an HTTP 200 with no usable
+            # content. It flows on as an empty reply, which every caller
+            # already turns into an abstain; it is named here so a HOLD
+            # caused by one is not mistaken for a market read.
+            details = getattr(msg, "stop_details", None)
+            logger.warning(
+                "%s declined the request (stop_reason=refusal, category=%s) - "
+                "the caller will abstain",
+                wire_model, getattr(details, "category", None),
+            )
+        return LLMResponse(
+            text=text,
+            model=wire_model,
+            input_tokens=getattr(usage, "input_tokens", 0) if usage else 0,
+            output_tokens=getattr(usage, "output_tokens", 0) if usage else 0,
+            cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) if usage else 0,
+            cache_creation_tokens=getattr(usage, "cache_creation_input_tokens", 0) if usage else 0,
+            tool_calls=tool_calls,
+            stop_reason=stop_reason,
+            provider=served_by,
+            fallback=served_by != self._provider,
+        )
 
     async def complete(
         self,
@@ -386,37 +746,17 @@ class LLM:
             )
             return resp
 
-        client = self._get_client()
         system_blocks: list[dict[str, Any]] = [{"type": "text", "text": system}]
         if cache_system:
             system_blocks[0]["cache_control"] = {"type": "ephemeral"}
 
-        # The wire model is provider-specific; `resp.model` below keeps the
-        # RESOLVED id so the cost ledger prices what was actually billed.
-        wire_model = resolve_model(model, provider=self._provider)
-        msg = await client.messages.create(
-            model=wire_model,
+        msg, wire_model, served_by = await self._create(
+            model=model,
             max_tokens=max_tokens,
-            system=system_blocks,
+            system_blocks=system_blocks,
             messages=[{"role": "user", "content": user}],
-            # temperature=0 by default: council variance should come from the
-            # market, not the sampler. Override via LLM_TEMPERATURE if a node
-            # ever needs creative range (document why before raising it).
-            temperature=float(os.environ.get("LLM_TEMPERATURE", "0.0")),
         )
-
-        text, tool_calls = _extract_blocks(msg)
-        usage = getattr(msg, "usage", None)
-        resp = LLMResponse(
-            text=text,
-            model=wire_model,
-            input_tokens=getattr(usage, "input_tokens", 0) if usage else 0,
-            output_tokens=getattr(usage, "output_tokens", 0) if usage else 0,
-            cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) if usage else 0,
-            cache_creation_tokens=getattr(usage, "cache_creation_input_tokens", 0) if usage else 0,
-            tool_calls=tool_calls,
-            stop_reason=getattr(msg, "stop_reason", None),
-        )
+        resp = self._response_from(msg, wire_model=wire_model, served_by=served_by)
         await _record_to_ledger(
             system,
             resp,
@@ -466,36 +806,19 @@ class LLM:
             )
             return resp
 
-        client = self._get_client()
         system_blocks: list[dict[str, Any]] = [{"type": "text", "text": system}]
         if cache_system:
             system_blocks[0]["cache_control"] = {"type": "ephemeral"}
 
-        wire_model = resolve_model(model, provider=self._provider)
-        kwargs: dict[str, Any] = {
-            "model": wire_model,
-            "max_tokens": max_tokens,
-            "system": system_blocks,
-            "messages": messages,
-            "temperature": float(os.environ.get("LLM_TEMPERATURE", "0.0")),
-            "tools": tools,
-        }
-        if tool_choice is not None:
-            kwargs["tool_choice"] = tool_choice
-        msg = await client.messages.create(**kwargs)
-
-        text, tool_calls = _extract_blocks(msg)
-        usage = getattr(msg, "usage", None)
-        resp = LLMResponse(
-            text=text,
-            model=wire_model,
-            input_tokens=getattr(usage, "input_tokens", 0) if usage else 0,
-            output_tokens=getattr(usage, "output_tokens", 0) if usage else 0,
-            cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) if usage else 0,
-            cache_creation_tokens=getattr(usage, "cache_creation_input_tokens", 0) if usage else 0,
-            tool_calls=tool_calls,
-            stop_reason=getattr(msg, "stop_reason", None),
+        msg, wire_model, served_by = await self._create(
+            model=model,
+            max_tokens=max_tokens,
+            system_blocks=system_blocks,
+            messages=messages,
+            tools=tools,
+            tool_choice=tool_choice,
         )
+        resp = self._response_from(msg, wire_model=wire_model, served_by=served_by)
         await _record_to_ledger(
             system,
             resp,
@@ -578,7 +901,9 @@ class LLM:
                 conviction=_unit(raw.get("conviction")),  # zeroed if neutral by __post_init__
                 confidence=_unit(raw.get("confidence")),
                 thesis=str(raw.get("thesis", "")).strip(),
-                provider=self._provider,
+                # The provider that ANSWERED: a fallback call is a Sonnet
+                # judgement and must be scored as one in the A/B.
+                provider=resp.provider or self._provider,
                 model=resp.model,
             )
         except Exception as exc:

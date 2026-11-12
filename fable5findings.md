@@ -355,6 +355,57 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 # Build log
 
+### 2026-11-12 — operator: "identify the flaws in this whole system and create the best end product"
+Session by Claude Fable 5.2 (`ID:MODEL2OFF`). The ask covered: trust in the
+broker connections, more brokers (Groww, INDmoney, US brokers), a Sonnet
+5.5 fallback when GLM is unreachable, ghost insights, more data sources,
+connect-and-go onboarding, the connect UI on phone and desktop, and an
+admin control for real trading. One bullet block per commit, newest last.
+**Nothing was run against a live broker or a live LLM key, and no order
+was placed anywhere.**
+
+- **Environment trap, read this first.** The Claude Code shell exports
+  `ANTHROPIC_API_KEY` and `ANTHROPIC_BASE_URL`. With them set,
+  `LLM(api_key=None)` is not MOCK and
+  `test_cost_ledger.py::test_llm_complete_writes_to_ledger` fails on a
+  clean tree. Run the suite as
+  `env -u ANTHROPIC_API_KEY -u ANTHROPIC_BASE_URL -u ANTHROPIC_AUTH_TOKEN .venv/bin/python -m pytest ...`.
+  Baseline that way before any change: 1784 passed, 12 skipped.
+- **GLM -> Claude Sonnet 5.5 fallback (`feat(llm)`).**
+  - `llm.py`: when `LLM_PROVIDER=glm` and `ANTHROPIC_API_KEY` is present, a
+    GLM call that cannot be served (connection failure, timeout, 5xx,
+    401/402/403/404/408/429) is answered by `claude-sonnet-5-5`. 400/413/422
+    still raise. A missing GLM key is still MOCK, not a fallback.
+  - A process-wide breaker skips GLM for `LLM_FALLBACK_COOLDOWN_SECONDS`
+    (300) after a failure, then probes it once with no SDK retries.
+  - `request_shape()` builds the per-model fields. Sonnet 5.5 gets no
+    `temperature` (a non-default one is a 400) and
+    `thinking: between_tools`, so the council's `max_tokens` budgets are
+    not eaten by thinking.
+  - **Found and fixed on the way:** `Model.OPUS` is `claude-opus-4-7`,
+    which also rejects a non-default temperature. `temperature=0.0` went
+    to every model, so `OPTIONS_AGENT_MODEL=opus` on the Anthropic
+    provider failed every Bull and Bear call.
+  - Price row for `claude-sonnet-5-5` ($2/$10, cache read $0.10, write
+    $2.50). `provider_check` prints whether a fallback is armed and takes
+    `--fallback` to probe it. System health says when the council is on
+    the fallback. `docs/PROVIDERS.md` has the section.
+  - **Verified:** 34 new tests in `test_llm_fallback.py`, against the
+    SDK's own exception classes. 11 mutations of `llm.py` and the price
+    table each turn at least one of them red (temperature to every model,
+    nothing unreachable, breaker never open, wrong served-by, 400 as
+    unreachable, no price row, no `between_tools`, kill switch ignored,
+    probe retries, per-instance breaker, connection errors unclassified).
+    Agents suite: 669 passed, 1 skipped.
+  - **Not verified:** any live call. `provider_check --live --provider glm
+    --fallback` has never run against a real key. Whether GLM tool-use ids
+    are accepted by Anthropic when a tool loop switches provider mid-way
+    is covered only by a fake.
+  - **Deliberately not done:** Anthropic's server-side refusal fallback.
+    It needs a beta header that SDK 0.109.1 predates. A Sonnet refusal
+    becomes an abstain and the log names the category.
+
+
 ### 2026-09-29 — 11ccb962e..ab02b3b88 — Zerodha: everything left in PLAN_ZERODHA that can be built without a live Kite account
 Operator: "start building whats left". **Everything is proven against
 SimBroker, a fake Kite client or real Postgres. No Kite session has

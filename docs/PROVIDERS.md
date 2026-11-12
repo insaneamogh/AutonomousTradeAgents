@@ -66,6 +66,63 @@ desk on a Coding Plan key.
 
 ---
 
+## Fallback: GLM unreachable -> Claude Sonnet 5.5
+
+Added 2026-11-12 (operator: "switch the model to sonnet 5.5 when glm is
+not reachable"). Before it, a Z.ai outage made every council node raise,
+every node abstain, and the desk HOLD all day.
+
+**It is armed by `ANTHROPIC_API_KEY` being present** while
+`LLM_PROVIDER=glm`. That key was removed on 2026-09-11 to stop the spend,
+so putting it back is the opt-in. With no Anthropic key nothing changes: a
+GLM failure raises as it always did.
+
+```bash
+railway variables --service AutonomousTradeAgents --set "ANTHROPIC_API_KEY=..."
+railway run -s AutonomousTradeAgents python -m trading_agents.provider_check --live --provider glm --fallback
+```
+
+`--fallback` skips GLM and runs both probes on the fallback model, which is
+the exact path an outage takes. **It has never been run against a real
+key.** Run it before relying on the fallback.
+
+| What | Behaviour |
+|---|---|
+| Counts as unreachable | Connection failure, timeout, any 5xx, and 401/402/403/404/408/429 from Z.ai. |
+| Does NOT fall back | 400, 413, 422. Those are our request being wrong, and would be wrong on any provider. |
+| A missing `GLM_API_KEY` | Not "unreachable". It is a config fault and still resolves to MOCK (or raises under `AGENTS_REQUIRE_REAL_LLM`). |
+| Breaker | After one failure, calls skip GLM for `LLM_FALLBACK_COOLDOWN_SECONDS` (default 300). Then one call probes GLM with no SDK retries. Process-wide, because `LLM()` is built per pass. |
+| Model | `claude-sonnet-5-5` for every tier, fast tier included. `LLM_FALLBACK_MODEL` repoints it; add a `_PRICES` row for a new id. |
+| Off switch | `LLM_FALLBACK_ENABLED=0`, without removing the key. |
+| Where you see it | System health -> LLM cost reads "GLM unreachable (reason) - council on claude-sonnet-5-5". Ledger rows carry the Sonnet id and the Sonnet price. |
+
+**Cost.** Sonnet 5.5 is $2 / $10 per million against glm-5.3's $1.40 /
+$4.40 and glm-5.3-flash's $0.15 / $0.50. The fast tier (router, technical)
+costs about 13x more per call while an outage lasts. `MAX_DAILY_LLM_SPEND_USD`
+still applies, and the ledger bills the model that answered.
+
+**The request is not the same request.** Sonnet 5.5 rejects a non-default
+`temperature` with a 400 and thinks by default, billed against
+`max_tokens`. `llm.request_shape` builds the fields per model: no
+`temperature`, and `thinking: {"type": "between_tools"}` (its lowest
+thinking setting) so the council's token budgets keep meaning what they
+meant. `LLM_EFFORT` (low, medium, high; default medium) tunes it.
+
+**A refusal is an abstain.** Sonnet 5.5 can decline a request (HTTP 200,
+`stop_reason: "refusal"`). That comes back as an empty reply, which every
+caller already turns into an abstain; the log names the category.
+Anthropic's server-side refusal fallback is deliberately NOT enabled: it
+needs a beta header this SDK version (0.109.1) predates, a wrong beta
+header is a 400 on every call, and the two categories it retries (`cyber`,
+`frontier_llm`) are not ones a market-data prompt trips.
+
+**Also fixed here.** `Model.OPUS` is `claude-opus-4-7`, which rejects a
+non-default temperature too. This file sent `temperature=0.0` to every
+model, so `OPTIONS_AGENT_MODEL=opus` on the Anthropic provider failed
+every Bull and Bear call. `request_shape` now omits it for that model.
+
+---
+
 ## The two are not the same kind of integration
 
 **GLM is a base-URL swap.** Z.ai serves the Anthropic wire protocol at
@@ -174,7 +231,9 @@ Jev is four days into early access as of 2026-09-19. Its specs may move.
 non-JSON handled, abstain on every failure path, pricing, and that Jev and
 the prose providers produce the same `Decision`.
 
-**NOT verified:** a live round trip against either endpoint, including
+**NOT verified:** the fallback against a real Anthropic key (offline it
+is covered by 34 tests against the SDK's own exception classes); and a
+live round trip against either endpoint, including
 whether `glm-5.3`/`glm-5.3-flash` are served on the Anthropic-compatible
 path and whether GLM tool calling returns `tool_use` blocks. There is no
 `GLM_API_KEY` or `TYPESAFE_API_KEY` on this machine. `provider_check

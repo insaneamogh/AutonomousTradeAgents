@@ -22,8 +22,16 @@ import os
 import time
 
 from trading_agents import jev
+from trading_agents import llm as llm_mod
 from trading_agents.cost_ledger import _PRICES, compute_cost_usd
-from trading_agents.llm import LLM, Model, _key_for_provider, active_provider, resolve_model
+from trading_agents.llm import (
+    LLM,
+    Model,
+    _key_for_provider,
+    active_provider,
+    fallback_model,
+    resolve_model,
+)
 
 _SYSTEM = (
     "You are a disciplined equity analyst. Judge only from the supplied "
@@ -68,6 +76,14 @@ async def main() -> int:
         help="make one real call (costs money; without this, nothing leaves the box)",
     )
     ap.add_argument("--provider", help="override LLM_PROVIDER for this check only")
+    ap.add_argument(
+        "--fallback",
+        action="store_true",
+        help=(
+            "with --live: skip the primary and probe the FALLBACK model instead "
+            "(GLM only; proves a Z.ai outage would actually be covered)"
+        ),
+    )
     args = ap.parse_args()
 
     if args.provider:
@@ -98,6 +114,17 @@ async def main() -> int:
 
     llm = LLM()
     print(f"\nmode              {'MOCK (no usable key)' if llm.mock else 'LIVE'}")
+    if provider == "glm":
+        fb = fallback_model()
+        fb_priced = "priced" if fb in _PRICES else "UNPRICED -> billed at Sonnet 4.6 rates"
+        if llm.has_fallback:
+            print(f"fallback          {fb} [{fb_priced}] when GLM is unreachable")
+        else:
+            print("fallback          NONE - a GLM outage makes every council node abstain")
+            print("                  (set ANTHROPIC_API_KEY to arm it; LLM_FALLBACK_ENABLED=0 disarms)")
+    if args.fallback and not llm.has_fallback:
+        print("\nFAIL: --fallback requested but no fallback is armed for this provider.")
+        return 1
     if llm.mock and not args.live:
         print("\nConfiguration only. Set the key above, then re-run with --live.")
         return 0
@@ -108,6 +135,12 @@ async def main() -> int:
     if not args.live:
         print("\nKey looks usable. Re-run with --live to make one real call.")
         return 0
+
+    if args.fallback:
+        # Open the breaker by hand: the next calls skip GLM and go to the
+        # fallback, which is the exact path an outage takes.
+        llm_mod._breaker.open("provider_check --fallback")
+        provider = f"{fallback_model()} (fallback)"
 
     print(f"\ncalling {provider}...")
     t0 = time.monotonic()
@@ -128,6 +161,10 @@ async def main() -> int:
         # snapshot above is fixed and unambiguous, so "no answer" means the
         # call or the parse broke. Check the log line above this output.
         print("\nFAIL: the provider abstained — transport or contract failure.")
+        return 1
+
+    if args.fallback and d.model != fallback_model():
+        print(f"\nFAIL: asked for the fallback but {d.model} answered.")
         return 1
 
     if provider != "jev":
