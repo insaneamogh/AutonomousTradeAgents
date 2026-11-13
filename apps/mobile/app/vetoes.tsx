@@ -5,19 +5,38 @@
 // has finalized) how much loss it prevented. Null ghost renders "—",
 // never $0 — absence of evidence is not evidence of savings.
 
+import { useState } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 
 import { vetoRuleLabels, type VetoRuleDto } from '@app/shared-types';
-import { EmptyState, Skeleton } from '@app/ui';
+import { EmptyState, Skeleton, cn } from '@app/ui';
 
 import { HeroHeadline, HeroSub, Tile, TileLabel, TileValue } from '@/components/bento';
 import { useVetoLedger } from '@/hooks/useInsights';
+import type { InsightsCurrency, InsightsMarket } from '@/hooks/useInsights';
+
+const MARKETS: { market: InsightsMarket; currency: InsightsCurrency; label: string }[] = [
+  { market: 'US', currency: 'USD', label: 'USD' },
+  { market: 'IN', currency: 'INR', label: 'INR' },
+];
+
+/** `$1,204` / `₹1,20,450` in the ledger's own currency. Never mix the two. */
+function fmt(value: number, currency: InsightsCurrency): string {
+  return Math.round(value).toLocaleString(currency === 'INR' ? 'en-IN' : 'en-US', {
+    style: 'currency',
+    currency,
+    maximumFractionDigits: 0,
+  });
+}
 
 export default function VetoLedgerScreen() {
   const router = useRouter();
-  const { data, isLoading } = useVetoLedger(30);
+  const [market, setMarket] = useState<InsightsMarket>('US');
+  const { data, isLoading } = useVetoLedger(30, market);
+  const currency: InsightsCurrency =
+    data?.currency ?? MARKETS.find((m) => m.market === market)?.currency ?? 'USD';
 
   return (
     <SafeAreaView edges={['top']} className="flex-1 bg-bg-canvas dark:bg-bg-canvas-dark">
@@ -36,6 +55,44 @@ export default function VetoLedgerScreen() {
         <View>
           <HeroHeadline>Veto ledger</HeroHeadline>
           <HeroSub>What the risk engine blocked in the last {data?.windowDays ?? 30} days</HeroSub>
+        </View>
+
+        <View
+          className="flex-row gap-2"
+          accessibilityRole="tablist"
+          accessibilityLabel="Ledger currency"
+          testID="veto-market-control"
+        >
+          {MARKETS.map((m) => {
+            const selected = m.market === market;
+            return (
+              <Pressable
+                key={m.market}
+                onPress={() => setMarket(m.market)}
+                accessibilityRole="tab"
+                accessibilityState={{ selected }}
+                accessibilityLabel={`${m.label} ledger`}
+                testID={`veto-market-${m.market}`}
+                className={cn(
+                  'min-h-[44px] flex-1 items-center justify-center rounded-full border',
+                  selected
+                    ? 'border-text-primary bg-text-primary dark:border-text-primary-dark dark:bg-text-primary-dark'
+                    : 'border-hairline dark:border-hairline-dark',
+                )}
+              >
+                <Text
+                  className={cn(
+                    'text-[13px] font-medium',
+                    selected
+                      ? 'text-bg-base dark:text-bg-base-dark'
+                      : 'text-text-secondary dark:text-text-secondary-dark',
+                  )}
+                >
+                  {m.label}
+                </Text>
+              </Pressable>
+            );
+          })}
         </View>
 
         {isLoading ? (
@@ -59,13 +116,11 @@ export default function VetoLedgerScreen() {
               </Tile>
               <Tile className="flex-1 gap-1">
                 <TileLabel>Notional stopped</TileLabel>
-                <TileValue>
-                  ${Math.round(data.totalBlockedNotional).toLocaleString('en-US')}
-                </TileValue>
+                <TileValue>{fmt(data.totalBlockedNotional, currency)}</TileValue>
               </Tile>
             </View>
             {data.rules.map((r) => (
-              <RuleTile key={r.rule} r={r} />
+              <RuleTile key={r.rule} r={r} currency={currency} />
             ))}
             <Text className="mt-1 text-center text-[10px] leading-[14px] text-text-tertiary dark:text-text-tertiary-dark">
               &quot;Prevented&quot; uses finalized ghost outcomes - what the blocked trade actually
@@ -78,7 +133,7 @@ export default function VetoLedgerScreen() {
   );
 }
 
-function RuleTile({ r }: { r: VetoRuleDto }) {
+function RuleTile({ r, currency }: { r: VetoRuleDto; currency: InsightsCurrency }) {
   const prevented = r.preventedLossUsd;
   return (
     <Tile className="gap-2">
@@ -102,12 +157,12 @@ function RuleTile({ r }: { r: VetoRuleDto }) {
       <View className="flex-row gap-2">
         <Tile inset className="flex-1 gap-0.5 p-2.5">
           <TileLabel>Blocked</TileLabel>
-          <TileValue>${Math.round(r.blockedNotional).toLocaleString('en-US')}</TileValue>
+          <TileValue>{fmt(r.blockedNotional, currency)}</TileValue>
         </Tile>
         <Tile inset className="flex-1 gap-0.5 p-2.5">
           <TileLabel>Prevented</TileLabel>
           <TileValue tone={prevented != null && prevented > 0 ? 'mint' : 'default'}>
-            {prevented == null ? '—' : `$${Math.round(prevented).toLocaleString('en-US')}`}
+            {prevented == null ? '—' : fmt(prevented, currency)}
           </TileValue>
         </Tile>
       </View>

@@ -9,6 +9,7 @@ import type { VetoRuleDto } from '@app/shared-types';
 import { useCalibrationScorecard } from '@/hooks/useCalibration';
 import { useFunnel } from '@/hooks/useFunnel';
 import { useGhostSummary, useVetoLedger } from '@/hooks/useInsights';
+import type { InsightsMarket } from '@/hooks/useInsights';
 import { useScanFunnel } from '@/hooks/useScanFunnel';
 
 import { ContractFunnel } from '../components/ContractFunnel';
@@ -17,16 +18,15 @@ import { ExemplarCard } from '../ExemplarCard';
 import {
   ago,
   pendingAwareCaption,
-  pendingAwareUsd,
+  money,
   riskProfileCaption,
   ruleLabel,
-  signedUsd,
+  signedMoney,
   stillMarkingCaption,
   tone,
   emptyBucketCaption,
-  ghostSideUsd,
-  usd,
 } from '../format';
+import type { Currency } from '../format';
 import {
   Card,
   CardHead,
@@ -69,7 +69,7 @@ function wouldHaveLabel(ghostPnl: number | null | undefined): string {
  * "pending" — while the table already held real counterfactuals priced
  * against live Alpaca option quotes. Showing nothing was strictly less
  * honest than showing a provisional number that says it is provisional. */
-function WouldHaveCell({ rule }: { rule: VetoRuleDto }) {
+function WouldHaveCell({ rule, currency }: { rule: VetoRuleDto; currency: Currency }) {
   const settled = rule.ghostPnl;
   const provisional = settled == null ? rule.markedPnl : null;
   const value = settled ?? provisional;
@@ -79,7 +79,7 @@ function WouldHaveCell({ rule }: { rule: VetoRuleDto }) {
   }
   return (
     <Row gap={6} style={{ justifyContent: 'flex-end' }}>
-      <span className="pg-num">{signedUsd(value)}</span>
+      <span className="pg-num">{signedMoney(value, currency)}</span>
       <Pill tone={wouldHaveTone(value)}>{wouldHaveLabel(value)}</Pill>
       {provisional != null ? (
         <span className="pg-caption pg-dim">so far</span>
@@ -87,6 +87,39 @@ function WouldHaveCell({ rule }: { rule: VetoRuleDto }) {
     </Row>
   );
 }
+
+/** Currency-aware twins of format.ts's `ghostSideUsd` / `pendingAwareUsd`
+ * (which are USD-only). Same rules, same wording; only the symbol differs. */
+function ghostSideMoney(
+  settled: number | null | undefined,
+  sideAmount: number | null | undefined,
+  currency: Currency,
+): string | null {
+  if (settled != null && settled !== 0) return money(settled, currency);
+  if (sideAmount != null && sideAmount !== 0) return money(sideAmount, currency);
+  return null;
+}
+
+function pendingAwareMoney(
+  amount: number | null | undefined,
+  pendingCount: number,
+  markedAmount: number | null | undefined,
+  currency: Currency,
+): string {
+  if (pendingCount > 0 && (amount == null || amount === 0)) {
+    if (markedAmount != null && markedAmount !== 0) {
+      return `${money(markedAmount, currency)} so far · ${pendingCount} still marking`;
+    }
+    const sym = currency === 'INR' ? '₹' : '$';
+    return `${sym}— · ${pendingCount} mark${pendingCount === 1 ? '' : 's'} pending`;
+  }
+  return money(amount, currency);
+}
+
+const MARKETS: { id: InsightsMarket; label: string }[] = [
+  { id: 'US', label: 'USD' },
+  { id: 'IN', label: 'INR' },
+];
 
 const FUNNEL_WINDOW_DAYS = 30;
 
@@ -101,8 +134,13 @@ const TABS: { id: Tab; label: string }[] = [
 export function InsightsScreen() {
   const [tab, setTab] = useState<Tab>('vetoes');
   const [selectedRule, setSelectedRule] = useState<string | null>(null);
-  const vetoes = useVetoLedger(30);
-  const ghost = useGhostSummary(30);
+  const [market, setMarket] = useState<InsightsMarket>('US');
+  const vetoes = useVetoLedger(30, market);
+  const ghost = useGhostSummary(30, market);
+  // Prefer what the server says it returned; fall back to the toggle.
+  const fallbackCurrency: Currency = market === 'IN' ? 'INR' : 'USD';
+  const vetoCurrency: Currency = vetoes.data?.currency ?? fallbackCurrency;
+  const ghostCurrency: Currency = ghost.data?.currency ?? fallbackCurrency;
   const scorecard = useCalibrationScorecard(180);
   const funnel = useFunnel(FUNNEL_WINDOW_DAYS);
   const scanFunnel = useScanFunnel();
@@ -113,7 +151,24 @@ export function InsightsScreen() {
         title="Insights"
         sub="What the risk engine stopped, what it cost, and whether your overrides beat the loop."
         right={
-          <Row gap={8}>
+          <Row gap={8} style={{ flexWrap: 'wrap' }}>
+            <div role="group" aria-label="Ledger currency" style={{ display: 'flex', gap: 4 }}>
+              {MARKETS.map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  className={`pg-btn pg-btn-${market === m.id ? 'primary' : 'secondary'} pg-btn-sm`}
+                  onClick={() => {
+                    setMarket(m.id);
+                    setSelectedRule(null);
+                  }}
+                  aria-pressed={market === m.id}
+                  aria-label={`Show the ${m.label} ledger`}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
             {TABS.map((t) => (
               <button
                 key={t.id}
@@ -193,7 +248,7 @@ export function InsightsScreen() {
             <Cell span={4}>
               <StatTile
                 label="Notional blocked"
-                value={vetoes.data ? usd(vetoes.data.totalBlockedNotional) : '—'}
+                value={vetoes.data ? money(vetoes.data.totalBlockedNotional, vetoCurrency) : '—'}
                 caption="Orders never sent"
                 loading={vetoes.isLoading}
               />
@@ -206,7 +261,7 @@ export function InsightsScreen() {
                 loading={vetoes.isLoading}
               />
             </Cell>
-            <Cell span={selectedRule ? 8 : 12}>
+            <Cell span={selectedRule && market === 'US' ? 8 : 12}>
               <Card>
                 <CardHead label="Rules that fired" right={<Pill>DETERMINISTIC</Pill>} />
                 <span className="pg-caption" style={{ display: 'block', marginTop: -6, marginBottom: 4 }}>
@@ -231,7 +286,13 @@ export function InsightsScreen() {
                           <tr
                             key={r.rule}
                             className="pg-row-btn"
-                            onClick={() => setSelectedRule(r.rule === selectedRule ? null : r.rule)}
+                            // The story-trade exemplar is a US-ledger lookup; don't
+                            // open a dollar trade inside the rupee ledger.
+                            onClick={
+                              market === 'US'
+                                ? () => setSelectedRule(r.rule === selectedRule ? null : r.rule)
+                                : undefined
+                            }
                           >
                             <td>
                               <span className="pg-num" style={{ fontSize: 13 }}>
@@ -239,9 +300,9 @@ export function InsightsScreen() {
                               </span>
                             </td>
                             <td className="pg-num-right">{r.count}</td>
-                            <td className="pg-num-right">{usd(r.blockedNotional)}</td>
+                            <td className="pg-num-right">{money(r.blockedNotional, vetoCurrency)}</td>
                             <td className="pg-num-right">
-                              <WouldHaveCell rule={r} />
+                              <WouldHaveCell rule={r} currency={vetoCurrency} />
                             </td>
                             <td className="pg-num-right pg-dim">{ago(r.lastAt)}</td>
                           </tr>
@@ -253,7 +314,7 @@ export function InsightsScreen() {
               </Card>
             </Cell>
 
-            {selectedRule ? (
+            {selectedRule && market === 'US' ? (
               <Cell span={4}>
                 <ExemplarCard rule={selectedRule} onClose={() => setSelectedRule(null)} />
               </Cell>
@@ -319,18 +380,19 @@ export function InsightsScreen() {
                 label="Loss avoided"
                 value={
                   ghost.data
-                    ? ghostSideUsd(ghost.data.savedUsd, ghost.data.vetoed.lossAvoidedUsd) ??
-                      pendingAwareUsd(
+                    ? ghostSideMoney(ghost.data.savedUsd, ghost.data.vetoed.lossAvoidedUsd, ghostCurrency) ??
+                      pendingAwareMoney(
                         ghost.data.savedUsd,
                         ghost.data.vetoed.pendingCount,
                         ghost.data.savedSoFarUsd,
+                        ghostCurrency,
                       )
                     : '—'
                 }
                 caption={
                   ghost.data
                     ? ghost.data.vetoed.upsideBlockedUsd
-                      ? `vs ${usd(ghost.data.vetoed.upsideBlockedUsd)} of upside these vetoes also blocked`
+                      ? `vs ${money(ghost.data.vetoed.upsideBlockedUsd, ghostCurrency)} of upside these vetoes also blocked`
                       : pendingAwareCaption(
                           'What vetoed picks would have lost',
                           ghost.data.savedUsd,
@@ -350,14 +412,16 @@ export function InsightsScreen() {
                   ghost.data
                     ? ghost.data.declined.count === 0
                       ? '—'
-                      : ghostSideUsd(
+                      : ghostSideMoney(
                           ghost.data.missedUsd,
                           ghost.data.declined.upsideBlockedUsd,
+                          ghostCurrency,
                         ) ??
-                        pendingAwareUsd(
+                        pendingAwareMoney(
                           ghost.data.missedUsd,
                           ghost.data.declined.pendingCount,
                           ghost.data.missedSoFarUsd,
+                          ghostCurrency,
                         )
                     : '—'
                 }
@@ -387,7 +451,7 @@ export function InsightsScreen() {
                 ) : (
                   <Stack gap={12}>
                     <Numeral size={40} tone={tone(ghost.data.vetoed.ghostPnl)}>
-                      {signedUsd(ghost.data.vetoed.ghostPnl)}
+                      {signedMoney(ghost.data.vetoed.ghostPnl, ghostCurrency)}
                     </Numeral>
                     <span className="pg-body-sm">
                       {stillMarkingCaption(
@@ -408,7 +472,7 @@ export function InsightsScreen() {
                 ) : (
                   <Stack gap={12}>
                     <Numeral size={40} tone={tone(ghost.data.declined.ghostPnl)}>
-                      {signedUsd(ghost.data.declined.ghostPnl)}
+                      {signedMoney(ghost.data.declined.ghostPnl, ghostCurrency)}
                     </Numeral>
                     <span className="pg-body-sm">
                       {stillMarkingCaption(

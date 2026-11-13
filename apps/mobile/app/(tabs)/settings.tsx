@@ -9,21 +9,29 @@
 // Each section is its own self-contained sub-component so the screen
 // re-renders are scoped to the slice that changed.
 
-import { useState } from 'react';
-import { Alert, Linking, ScrollView, Text, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { Alert, AppState, Linking, ScrollView, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 
 import { Button, Card, ErrorState, HapticPressable, Skeleton, Toggle, cn } from '@app/ui';
 
 import { ApiError } from '@/lib/api';
-import type { BrokerConnection } from '@/hooks/useBrokerConnections';
+import type {
+  BrokerCatalogEntry,
+  BrokerConnection,
+  VerifyConnectionResult,
+} from '@/hooks/useBrokerConnections';
 import {
   startAlpacaOAuth,
   startZerodhaConnect,
+  useBrokerCatalog,
   useBrokerConnections,
   useRevokeBrokerConnection,
+  useSetLiveTradingConsent,
+  useVerifyBrokerConnection,
 } from '@/hooks/useBrokerConnections';
+import { LIVE_CONFIRM_PHRASE, useSetTradingMode, useTradingMode } from '@/hooks/useTradingMode';
 import { revokeRegisteredDevice } from '@/hooks/usePushRegistration';
 import { DEMO_DISABLED_REASON, useIsDemoSession } from '@/lib/demoSession';
 import { useAuthStore } from '@/stores/authStore';
@@ -45,6 +53,9 @@ export default function SettingsScreen() {
 
         <SectionLabel>Notifications</SectionLabel>
         <NotificationsCard />
+
+        <SectionLabel>Trading mode</SectionLabel>
+        <TradingModeCard />
 
         <SectionLabel>Brokers</SectionLabel>
         <BrokersCard />
@@ -285,11 +296,225 @@ function detailFromError(err: unknown, fallback: string): string {
   return fallback;
 }
 
-function BrokersCard() {
+/** `$1,204.50` / `₹1,20,450.00` in the amount's own currency. */
+export function formatMoney(
+  value: number | null | undefined,
+  currency: 'USD' | 'INR' = 'USD',
+  digits = 2,
+): string {
+  if (value == null || Number.isNaN(value)) return '—';
+  return value.toLocaleString(currency === 'INR' ? 'en-IN' : 'en-US', {
+    style: 'currency',
+    currency,
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Trading mode — global paper / live switch (admin only).
+// ─────────────────────────────────────────────────────────────────────
+
+export function TradingModeCard() {
+  const query = useTradingMode();
+  const setMode = useSetTradingMode();
+  const isDemo = useIsDemoSession();
+  const [confirming, setConfirming] = useState(false);
+  const [phrase, setPhrase] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  // Endpoint missing or failed: render nothing rather than something broken.
+  if (!query.data) return null;
+  const tm = query.data;
+  const live = tm.mode === 'live';
+  const canChange = tm.isAdmin && !tm.locked && !isDemo;
+  const phraseOk = phrase === LIVE_CONFIRM_PHRASE;
+
+  const submit = (mode: 'paper' | 'live') => {
+    setError(null);
+    setMode.mutate(mode === 'live' ? { mode, confirm: phrase } : { mode }, {
+      onSuccess: () => {
+        setConfirming(false);
+        setPhrase('');
+      },
+      onError: (err) => {
+        const status = (err as { status?: number } | null)?.status;
+        const fallback =
+          status === 403
+            ? 'Only an administrator can change the trading mode.'
+            : status === 409
+              ? 'The server environment locks the trading mode.'
+              : status === 400
+                ? 'The confirmation phrase was not accepted.'
+                : "Couldn't change the trading mode.";
+        setError(detailFromError(err, fallback));
+      },
+    });
+  };
+
+  return (
+    <Card variant="default" className="gap-3" testID="trading-mode-card">
+      <View className="flex-row items-center justify-between">
+        <Text className="text-[15px] font-semibold text-text-primary dark:text-text-primary-dark">
+          Trading mode
+        </Text>
+        <View
+          className={cn(
+            'rounded-full border px-2.5 py-0.5',
+            live
+              ? 'border-loss dark:border-loss-dark'
+              : 'border-gain dark:border-gain-dark',
+          )}
+          accessibilityLabel={`Trading mode is ${live ? 'live' : 'paper'}`}
+          testID="trading-mode-badge"
+        >
+          <Text
+            className={cn(
+              'text-[11px] font-semibold uppercase tracking-[1px]',
+              live ? 'text-loss dark:text-loss-dark' : 'text-gain dark:text-gain-dark',
+            )}
+          >
+            {live ? 'LIVE' : 'PAPER'}
+          </Text>
+        </View>
+      </View>
+
+      {tm.locked ? (
+        <Text className="text-[13px] leading-[19px] text-text-secondary dark:text-text-secondary-dark">
+          The server environment locks the trading mode; it cannot be changed here.
+        </Text>
+      ) : !tm.isAdmin ? (
+        <Text
+          className="text-[13px] leading-[19px] text-text-secondary dark:text-text-secondary-dark"
+          testID="trading-mode-readonly"
+        >
+          {live
+            ? 'The desk is in live mode. Only an administrator can change this.'
+            : 'The desk trades on paper accounts only. Only an administrator can change this.'}
+        </Text>
+      ) : null}
+
+      {isDemo && tm.isAdmin ? (
+        <Text className="text-[12px] leading-[17px] text-text-tertiary dark:text-text-tertiary-dark">
+          {DEMO_DISABLED_REASON}.
+        </Text>
+      ) : null}
+
+      {tm.isAdmin ? (
+        live ? (
+          <Button
+            label={setMode.isPending ? 'Switching…' : 'Return to paper'}
+            variant="secondary"
+            onPress={() => submit('paper')}
+            disabled={!canChange || setMode.isPending}
+            fullWidth
+            accessibilityLabel="Switch the trading mode back to paper"
+            testID="trading-mode-to-paper"
+          />
+        ) : confirming ? (
+          <View className="gap-2" accessibilityLabel="Confirm live trading">
+            <Text className="text-[13px] leading-[19px] text-text-secondary dark:text-text-secondary-dark">
+              Live mode sends real orders with real money. Each broker connection still needs its
+              own real-money consent. Auto-approve and the options agents stay paper-only.
+            </Text>
+            <Text className="text-[12px] text-text-tertiary dark:text-text-tertiary-dark">
+              Type {LIVE_CONFIRM_PHRASE} to confirm
+            </Text>
+            <TextInput
+              value={phrase}
+              onChangeText={setPhrase}
+              autoCapitalize="characters"
+              autoCorrect={false}
+              placeholder={LIVE_CONFIRM_PHRASE}
+              accessibilityLabel={`Type ${LIVE_CONFIRM_PHRASE} to confirm live trading`}
+              testID="trading-mode-phrase"
+              className="min-h-[44px] rounded-lg border border-hairline px-3 text-[14px] text-text-primary dark:border-hairline-dark dark:text-text-primary-dark"
+            />
+            <Button
+              label={setMode.isPending ? 'Switching…' : 'Switch to LIVE'}
+              variant="destructive"
+              onPress={() => submit('live')}
+              disabled={!canChange || !phraseOk || setMode.isPending}
+              fullWidth
+              accessibilityLabel="Confirm switching the trading mode to live"
+              testID="trading-mode-confirm-live"
+            />
+            <Button
+              label="Cancel"
+              variant="secondary"
+              onPress={() => {
+                setConfirming(false);
+                setPhrase('');
+                setError(null);
+              }}
+              fullWidth
+              accessibilityLabel="Cancel switching to live"
+              testID="trading-mode-cancel"
+            />
+          </View>
+        ) : (
+          <Button
+            label="Switch to live…"
+            variant="destructive"
+            onPress={() => setConfirming(true)}
+            disabled={!canChange}
+            fullWidth
+            accessibilityLabel={`Switch the trading mode to live${isDemo ? ` — ${DEMO_DISABLED_REASON}` : ''}`}
+            testID="trading-mode-to-live"
+          />
+        )
+      ) : null}
+
+      {error ? (
+        <Text
+          className="text-[13px] leading-[19px] text-danger dark:text-danger-dark"
+          testID="trading-mode-error"
+        >
+          {error}
+        </Text>
+      ) : null}
+    </Card>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Brokers
+// ─────────────────────────────────────────────────────────────────────
+
+/** Used when /broker/catalog is unreachable: today's two cards. */
+const FALLBACK_CATALOG: BrokerCatalogEntry[] = [
+  {
+    id: 'alpaca', name: 'Alpaca', market: 'US', currency: 'USD', auth: 'oauth',
+    status: 'available', supportsPaper: true, supportsOptions: true, note: null, missingConfig: [],
+  },
+  {
+    id: 'zerodha', name: 'Zerodha', market: 'IN', currency: 'INR', auth: 'kite',
+    status: 'available', supportsPaper: false, supportsOptions: false, note: null, missingConfig: [],
+  },
+];
+
+export function BrokersCard() {
   const { data, isLoading, isError, refetch } = useBrokerConnections();
+  const catalogQuery = useBrokerCatalog();
   const [connectError, setConnectError] = useState<string | null>(null);
   const [pendingState, setPendingState] = useState<string | null>(null);
   const [zerodhaPending, setZerodhaPending] = useState(false);
+  const waiting = Boolean(pendingState) || zerodhaPending;
+
+  // The user may back out of the browser without finishing. When the app
+  // comes back to the foreground, stop waiting and re-read the connections:
+  // if the login did complete, the new connection shows up on its own.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next !== 'active') return;
+      if (waiting) {
+        setPendingState(null);
+        setZerodhaPending(false);
+        void refetch();
+      }
+    });
+    return () => sub.remove();
+  }, [waiting, refetch]);
 
   async function onConnect(isPaper: boolean) {
     setConnectError(null);
@@ -352,15 +577,91 @@ function BrokersCard() {
     );
   }
 
-  const activeAlpaca = (data ?? []).find((c) => c.broker === 'alpaca' && c.status === 'active');
-  const activeZerodha = (data ?? []).find((c) => c.broker === 'zerodha' && c.status === 'active');
+  const catalog =
+    catalogQuery.data && catalogQuery.data.length > 0 ? catalogQuery.data : FALLBACK_CATALOG;
+  const connections = data ?? [];
 
-  return (
-    <View className="gap-3">
-      {activeAlpaca ? (
-        <ConnectedBrokerCard connection={activeAlpaca} />
-      ) : (
-        <Card variant="default" className="gap-3">
+  const renderEntry = (entry: BrokerCatalogEntry) => {
+    const active = connections.find((c) => c.broker === entry.id && c.status === 'active');
+    const isAlpaca = entry.id === 'alpaca';
+    const isZerodha = entry.id === 'zerodha';
+
+    if (entry.status === 'planned') {
+      return (
+        <Card
+          key={entry.id}
+          variant="inset"
+          className="gap-0.5 opacity-70"
+          testID={`broker-planned-${entry.id}`}
+        >
+          <Text className="text-[13px] font-semibold text-text-secondary dark:text-text-secondary-dark">
+            {entry.name} · {entry.market} · planned
+          </Text>
+          {entry.note ? (
+            <Text className="text-[12px] text-text-tertiary dark:text-text-tertiary-dark">
+              {entry.note}
+            </Text>
+          ) : null}
+        </Card>
+      );
+    }
+
+    if (entry.status === 'needs_server_config') {
+      return (
+        <Card
+          key={entry.id}
+          variant="default"
+          className="gap-2 opacity-70"
+          testID={`broker-needs-config-${entry.id}`}
+        >
+          <Text className="text-[15px] font-semibold text-text-primary dark:text-text-primary-dark">
+            Connect {entry.name}
+          </Text>
+          <Text className="text-[13px] leading-[19px] text-text-secondary dark:text-text-secondary-dark">
+            Not set up on this server yet.
+            {entry.missingConfig.length > 0 ? ` Missing: ${entry.missingConfig.join(', ')}.` : ''}
+            {entry.note ? ` ${entry.note}` : ''}
+          </Text>
+          <Button
+            label={`Connect ${entry.name}`}
+            onPress={() => undefined}
+            disabled
+            fullWidth
+            accessibilityLabel={`Connect ${entry.name} — needs server configuration`}
+            testID={`connect-${entry.id}-disabled`}
+          />
+        </Card>
+      );
+    }
+
+    // available
+    if (!isAlpaca && !isZerodha) {
+      return (
+        <Card key={entry.id} variant="inset" className="gap-0.5" testID={`broker-nophone-${entry.id}`}>
+          <Text className="text-[13px] font-semibold text-text-secondary dark:text-text-secondary-dark">
+            {entry.name} · {entry.market}
+          </Text>
+          <Text className="text-[12px] text-text-tertiary dark:text-text-tertiary-dark">
+            {entry.note ?? 'Connect this broker from the desktop app.'}
+          </Text>
+        </Card>
+      );
+    }
+
+    if (active) {
+      return (
+        <ConnectedBrokerCard
+          key={entry.id}
+          connection={active}
+          onReconnect={isAlpaca ? () => onConnect(active.isPaper) : onConnectZerodha}
+          reconnectBusy={isAlpaca ? Boolean(pendingState) : zerodhaPending}
+        />
+      );
+    }
+
+    if (isAlpaca) {
+      return (
+        <Card key={entry.id} variant="default" className="gap-3">
           <Text className="text-[15px] font-semibold text-text-primary dark:text-text-primary-dark">
             Connect Alpaca
           </Text>
@@ -377,44 +678,58 @@ function BrokersCard() {
             accessibilityLabel="Connect Alpaca paper account"
             testID="connect-alpaca-paper"
           />
-        </Card>
-      )}
-
-      {activeZerodha ? (
-        <ConnectedBrokerCard connection={activeZerodha} />
-      ) : (
-        <Card variant="default" className="gap-3">
-          <Text className="text-[15px] font-semibold text-text-primary dark:text-text-primary-dark">
-            Connect Zerodha
-          </Text>
-          <Text className="text-[13px] leading-[19px] text-text-secondary dark:text-text-secondary-dark">
-            Log in at Kite in the browser; the connection completes there. Kite tokens expire daily
-            around 6:00 IST, so you reconnect each trading day. Live account - orders stay blocked
-            until live trading is enabled on the server.
-          </Text>
-          <Button
-            label={zerodhaPending ? 'Finish login in browser, then refresh' : 'Connect Zerodha'}
-            onPress={onConnectZerodha}
-            disabled={zerodhaPending}
-            fullWidth
-            accessibilityLabel="Connect Zerodha Kite account"
-            testID="connect-zerodha"
-          />
-          {zerodhaPending ? (
+          {pendingState ? (
             <Button
-              label="I've logged in - refresh"
+              label="Cancel"
               variant="secondary"
-              onPress={() => {
-                setZerodhaPending(false);
-                refetch();
-              }}
+              onPress={() => setPendingState(null)}
               fullWidth
-              accessibilityLabel="Refresh broker connections after Zerodha login"
-              testID="refresh-after-zerodha"
+              accessibilityLabel="Cancel the Alpaca connection"
+              testID="cancel-alpaca-pending"
             />
           ) : null}
         </Card>
-      )}
+      );
+    }
+
+    return (
+      <Card key={entry.id} variant="default" className="gap-3">
+        <Text className="text-[15px] font-semibold text-text-primary dark:text-text-primary-dark">
+          Connect Zerodha
+        </Text>
+        <Text className="text-[13px] leading-[19px] text-text-secondary dark:text-text-secondary-dark">
+          Log in at Kite in the browser; the connection completes there. Kite tokens expire daily
+          around 6:00 IST, so you reconnect each trading day. Live account - orders stay blocked
+          until live trading is enabled on the server.
+        </Text>
+        <Button
+          label={zerodhaPending ? 'Finish login in browser, then refresh' : 'Connect Zerodha'}
+          onPress={onConnectZerodha}
+          disabled={zerodhaPending}
+          fullWidth
+          accessibilityLabel="Connect Zerodha Kite account"
+          testID="connect-zerodha"
+        />
+        {zerodhaPending ? (
+          <Button
+            label="I've logged in - refresh"
+            variant="secondary"
+            onPress={() => {
+              setZerodhaPending(false);
+              refetch();
+            }}
+            fullWidth
+            accessibilityLabel="Refresh broker connections after Zerodha login"
+            testID="refresh-after-zerodha"
+          />
+        ) : null}
+      </Card>
+    );
+  };
+
+  return (
+    <View className="gap-3">
+      {catalog.map(renderEntry)}
 
       {connectError ? (
         <Text className="text-[13px] leading-[19px] text-danger dark:text-danger-dark">
@@ -422,7 +737,7 @@ function BrokersCard() {
         </Text>
       ) : null}
 
-      {(data ?? [])
+      {connections
         .filter((c) => c.status === 'revoked')
         .map((c) => (
           <RevokedBrokerCard key={c.id} connection={c} />
@@ -446,10 +761,65 @@ function connectedSince(iso: string): string {
   return `Connected since ${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`;
 }
 
-function ConnectedBrokerCard({ connection }: { connection: BrokerConnection }) {
+type VerifyOutcome = { kind: 'ok' | 'fail'; text: string };
+
+function verifyOutcome(r: VerifyConnectionResult): VerifyOutcome {
+  if (!r.ok) return { kind: 'fail', text: r.error || 'Verification failed.' };
+  return {
+    kind: 'ok',
+    text: `Verified · equity ${formatMoney(r.equity, r.currency)} · buying power ${formatMoney(r.buyingPower, r.currency)}`,
+  };
+}
+
+function ConnectedBrokerCard({
+  connection,
+  onReconnect,
+  reconnectBusy,
+}: {
+  connection: BrokerConnection;
+  onReconnect: () => void;
+  reconnectBusy: boolean;
+}) {
   const revoke = useRevokeBrokerConnection();
+  const verify = useVerifyBrokerConnection();
+  const consent = useSetLiveTradingConsent();
+  const [outcome, setOutcome] = useState<VerifyOutcome | null>(null);
+  const [consentError, setConsentError] = useState<string | null>(null);
   const isEnvLinked = connection.connectionSource === 'environment';
   const isDemo = useIsDemoSession();
+  const expired = connection.needsReconnect;
+
+  const runVerify = async () => {
+    setOutcome(null);
+    try {
+      setOutcome(verifyOutcome(await verify.mutateAsync(connection.id)));
+    } catch (err) {
+      setOutcome({ kind: 'fail', text: detailFromError(err, 'Verification failed.') });
+    }
+  };
+
+  const setConsent = (enabled: boolean) => {
+    setConsentError(null);
+    consent.mutate(
+      { connectionId: connection.id, enabled },
+      { onError: (err) => setConsentError(detailFromError(err, "Couldn't update consent.")) },
+    );
+  };
+
+  const onConsentToggle = (next: boolean) => {
+    if (!next) {
+      setConsent(false);
+      return;
+    }
+    Alert.alert(
+      `Allow real-money trading on ${brokerLabel(connection)}?`,
+      'Orders approved on this connection will use real money. The agent still proposes and you still approve each trade; auto-approve stays paper-only.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Allow real money', style: 'destructive', onPress: () => setConsent(true) },
+      ],
+    );
+  };
 
   const confirmDisconnect = () => {
     Alert.alert(
@@ -469,7 +839,7 @@ function ConnectedBrokerCard({ connection }: { connection: BrokerConnection }) {
   };
 
   return (
-    <Card variant="default" className="gap-3">
+    <Card variant="default" className="gap-3" testID={`broker-card-${connection.broker}`}>
       <View className="flex-row items-center justify-between">
         <View className="flex-1 gap-1">
           <View className="flex-row flex-wrap items-center gap-2">
@@ -501,8 +871,86 @@ function ConnectedBrokerCard({ connection }: { connection: BrokerConnection }) {
             {connectedSince(connection.createdAt)}
           </Text>
         </View>
-        <View className="h-2 w-2 rounded-full bg-gain dark:bg-gain-dark" />
+        {expired ? (
+          <View
+            className="rounded-full border border-warning px-2 py-0.5 dark:border-warning-dark"
+            accessibilityLabel="Session expired"
+            testID={`broker-status-expired-${connection.broker}`}
+          >
+            <Text className="text-[10px] font-semibold uppercase tracking-[1px] text-warning dark:text-warning-dark">
+              Session expired
+            </Text>
+          </View>
+        ) : (
+          <View
+            className="h-2 w-2 rounded-full bg-gain dark:bg-gain-dark"
+            testID={`broker-status-ok-${connection.broker}`}
+          />
+        )}
       </View>
+
+      {expired ? (
+        <>
+          <Text className="text-[13px] leading-[19px] text-warning dark:text-warning-dark">
+            {connection.broker === 'zerodha'
+              ? 'Kite tokens expire daily. Log in again to resume.'
+              : 'This session is no longer valid. Reconnect to resume.'}
+          </Text>
+          <Button
+            label={reconnectBusy ? 'Waiting for browser…' : 'Reconnect'}
+            onPress={onReconnect}
+            disabled={reconnectBusy || isDemo}
+            fullWidth
+            accessibilityLabel={`Reconnect ${brokerLabel(connection)}${isDemo ? ` — ${DEMO_DISABLED_REASON}` : ''}`}
+            testID={`reconnect-${connection.broker}`}
+          />
+        </>
+      ) : null}
+
+      <Button
+        label={verify.isPending ? 'Verifying…' : 'Verify connection'}
+        variant="secondary"
+        onPress={runVerify}
+        disabled={verify.isPending}
+        fullWidth
+        accessibilityLabel={`Verify the ${brokerLabel(connection)} connection`}
+        testID={`verify-${connection.broker}`}
+      />
+      {outcome ? (
+        <Text
+          className={cn(
+            'text-[13px] leading-[19px]',
+            outcome.kind === 'ok'
+              ? 'text-gain dark:text-gain-dark'
+              : 'text-danger dark:text-danger-dark',
+          )}
+          accessibilityLiveRegion="polite"
+          testID={`verify-result-${connection.broker}`}
+        >
+          {outcome.text}
+        </Text>
+      ) : null}
+
+      {!connection.isPaper ? (
+        <View className="gap-1">
+          <View className="flex-row items-center justify-between gap-3">
+            <Text className="flex-1 text-[13px] text-text-primary dark:text-text-primary-dark">
+              Real-money consent
+            </Text>
+            <Toggle
+              value={connection.liveTradingConsent}
+              onValueChange={onConsentToggle}
+              disabled={consent.isPending || isDemo}
+              accessibilityLabel={`Real-money consent for ${brokerLabel(connection)}: ${connection.liveTradingConsent ? 'on' : 'off'}`}
+              testID={`live-consent-${connection.broker}`}
+            />
+          </View>
+          {consentError ? (
+            <Text className="text-[12px] text-danger dark:text-danger-dark">{consentError}</Text>
+          ) : null}
+        </View>
+      ) : null}
+
       <Button
         label={revoke.isPending ? 'Disconnecting…' : 'Disconnect'}
         onPress={confirmDisconnect}

@@ -155,6 +155,23 @@ describe('InsightsScreen — veto ledger honesty rules', () => {
     jest.clearAllMocks();
   });
 
+  it('the INR toggle requests market=IN and formats in rupees', () => {
+    const tree = renderScreen();
+    expect(mockUseVetoLedger).toHaveBeenLastCalledWith(30, 'US');
+
+    const inr = tree.root.findAll(
+      (node) => node.type === 'button' && node.props['aria-label'] === 'Show the INR ledger',
+    )[0];
+    act(() => {
+      inr.props.onClick();
+    });
+
+    expect(mockUseVetoLedger).toHaveBeenLastCalledWith(30, 'IN');
+    expect(mockUseGhostSummary).toHaveBeenLastCalledWith(30, 'IN');
+    // Fixture has no `currency` so the toggle's own currency applies.
+    expect(JSON.stringify(tree.toJSON())).toContain('₹');
+  });
+
   it('never sums trims into the veto count', () => {
     const tree = renderScreen();
     const json = JSON.stringify(tree.toJSON());

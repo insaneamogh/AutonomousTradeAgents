@@ -5,21 +5,34 @@ import type { GhostSummaryResponse, VetoExemplarResponse, VetoLedgerResponse } f
 
 import { request } from '@/lib/api';
 
-export function useGhostSummary(windowDays = 30) {
-  return useQuery<GhostSummaryResponse>({
-    queryKey: ['ghostSummary', windowDays],
+export type InsightsMarket = 'US' | 'IN';
+export type InsightsCurrency = 'USD' | 'INR';
+
+/** The API now stamps which market (and so which currency) a ledger is in.
+ * Optional so older responses still type-check; absent means US / USD. */
+export type WithMarket<T> = T & { market?: InsightsMarket; currency?: InsightsCurrency };
+
+export function useGhostSummary(windowDays = 30, market: InsightsMarket = 'US') {
+  return useQuery<WithMarket<GhostSummaryResponse>>({
+    queryKey: ['ghostSummary', windowDays, market],
     queryFn: ({ signal }) =>
-      request<GhostSummaryResponse>(`/api/v1/ghost/summary?windowDays=${windowDays}`, { signal }),
+      request<WithMarket<GhostSummaryResponse>>(
+        `/api/v1/ghost/summary?windowDays=${windowDays}&market=${market}`,
+        { signal },
+      ),
     staleTime: 60_000,
     retry: false,
   });
 }
 
-export function useVetoLedger(windowDays = 30) {
-  return useQuery<VetoLedgerResponse>({
-    queryKey: ['vetoLedger', windowDays],
+export function useVetoLedger(windowDays = 30, market: InsightsMarket = 'US') {
+  return useQuery<WithMarket<VetoLedgerResponse>>({
+    queryKey: ['vetoLedger', windowDays, market],
     queryFn: ({ signal }) =>
-      request<VetoLedgerResponse>(`/api/v1/risk/vetoes?windowDays=${windowDays}`, { signal }),
+      request<WithMarket<VetoLedgerResponse>>(
+        `/api/v1/risk/vetoes?windowDays=${windowDays}&market=${market}`,
+        { signal },
+      ),
     staleTime: 60_000,
     retry: false,
   });

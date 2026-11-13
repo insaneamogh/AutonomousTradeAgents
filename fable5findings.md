@@ -404,6 +404,68 @@ was placed anywhere.**
   - **Deliberately not done:** Anthropic's server-side refusal fallback.
     It needs a beta header that SDK 0.109.1 predates. A Sonnet refusal
     becomes an abstain and the log names the category.
+- **From here on the work was done by Sonnet 5.5 subagents and reviewed
+  in the main session** (operator: keep Fable as orchestrator). Commits:
+  5e82fe2dd (fallback), ab2b839ef, 6392e7c70, d3f2a2ffb, 7f55541ea, then
+  the UI commit and this log.
+- **Agent tools and a live endpoint (ab2b839ef).** `_is_paper_and_safe()`
+  ignored `ALPACA_BASE_URL`. `AlpacaBroker.from_env()` goes LIVE when that
+  URL lacks "paper", so live env keys passed a paper check. Fixed with
+  from_env's own rule. 5 tests, revert-checked.
+- **INR Refusal Ledger (6392e7c70).** `market=US|IN` on /ghost/summary,
+  /risk/vetoes and the exemplar; `market` and `currency` in the response.
+  16 tests on the compiled WHERE clause. **Not run against real Postgres.**
+- **Broker connect hardening (d3f2a2ffb).**
+  - Reflected XSS on the Alpaca OAuth landing page (`error`, `exc.detail`,
+    account number written unescaped). One escaping helper for all six
+    pages, plus a link back to the app (`APP_WEB_URL`).
+  - `needsReconnect` / `tokenExpiresAt`: an expired Kite session used to
+    read ACTIVE.
+  - `POST /broker/connections/{id}/verify` (read-only) and
+    `GET /broker/catalog` (Alpaca, Zerodha; Groww and INDmoney `planned`).
+  - 8 tests, two revert checks. Verify only ever met fake brokers.
+- **Admin paper/live switch (7f55541ea, migration 0022).** `ADMIN_EMAILS`,
+  `/api/v1/admin/trading-mode`, one resolver `live_trading_state()`.
+  Env truthy = live; env `0`/`false` = lock the admin cannot override;
+  unset = the admin's stored value; a store error fails closed. Consent
+  per connection is still required. Auto-approve refuses whenever live is
+  on. 31 tests, three revert checks. **Migration 0022 and the Postgres
+  store have never run.** Deploy needs the migration. See
+  `docs/TRADING_MODE.md`.
+- **Connect UI, desktop and phone.**
+  - Desktop had no Zerodha connect at all; Alpaca connect navigated the
+    app away and stranded the user on a bare API page; errors were
+    swallowed. Now: catalog-driven connect, login in a new tab with
+    refetch on focus, SESSION EXPIRED + Reconnect, Verify, real-money
+    consent toggle, a trading-mode card, a USD/INR ledger toggle.
+  - Phone: "Waiting for browser..." stayed disabled forever after backing
+    out; it now clears on foreground and has Cancel. Same health, verify,
+    consent, trading-mode and USD/INR additions.
+  - jest 154 passed (was 129), tsc clean.
+  - **NOT verified in a browser or on a device.** `apps/mobile/.env` sets
+    `EXPO_PUBLIC_API_URL` to the Railway API and it wins over a shell
+    override, so the local web build talks to Railway. Two sign-in
+    attempts with a throwaway address and a local dev token reached the
+    Railway `/auth/verify` and were rejected; nothing else was sent. The
+    preview was stopped there. Checking the UI needs a build pointed at a
+    local API.
+- **`.claude/launch.json`:** `dev-api` called `python`, which is not on
+  PATH. It now runs the venv's uvicorn with `ADMIN_EMAILS=admin@example.com`.
+- **Suites at the end:** Python 1879 passed, 12 skipped. jest 154. tsc clean.
+- **Open, in the order I would take them:**
+  1. Look at the new Settings screens in a real browser and on a phone.
+  2. Run migration 0022 against Postgres before any deploy.
+  3. `provider_check --live --provider glm --fallback` with real keys.
+  4. Groww and INDstocks adapters. Both have official per-user APIs
+     (Groww: API key + secret or TOTP, token dies 06:00 daily; INDstocks:
+     access token, orders carry an `algo_id`). Neither is built.
+  5. "Connect and that's it" for strangers is not only code. Kite Connect
+     is personal-use unless Zerodha approves a platform, and SEBI's static
+     IP rule forbids sharing one IP across unrelated users.
+  6. Data sources: nothing added this session. US data is the operator's
+     Alpaca keys; NSE data needs each user's Kite session.
+  7. The signal still has no edge (PLAN_PLATFORM §A). The live switch
+     exists; the Phase 7 go-live criteria are not met.
 
 
 ### 2026-09-29 — 11ccb962e..ab02b3b88 — Zerodha: everything left in PLAN_ZERODHA that can be built without a live Kite account

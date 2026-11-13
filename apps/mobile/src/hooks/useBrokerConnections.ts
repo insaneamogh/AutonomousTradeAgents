@@ -38,6 +38,79 @@ export interface BrokerConnection {
   autoApproveConsent: boolean;
   createdAt: string;
   lastUsedAt: string | null;
+  /** True when the stored session is dead (e.g. a Kite token past its daily
+   * expiry) and the user must log in again. */
+  needsReconnect: boolean;
+  tokenExpiresAt: string | null;
+  market: 'US' | 'IN';
+  currency: 'USD' | 'INR';
+  /** Real-money consent for a non-paper connection. Server-persisted. */
+  liveTradingConsent: boolean;
+}
+
+export type BrokerCatalogStatus = 'available' | 'needs_server_config' | 'planned';
+
+export interface BrokerCatalogEntry {
+  id: string;
+  name: string;
+  market: 'US' | 'IN';
+  currency: 'USD' | 'INR';
+  auth: string;
+  status: BrokerCatalogStatus;
+  supportsPaper: boolean;
+  supportsOptions: boolean;
+  note: string | null;
+  missingConfig: string[];
+}
+
+export interface VerifyConnectionResult {
+  ok: boolean;
+  broker: string;
+  isPaper: boolean;
+  equity: number | null;
+  buyingPower: number | null;
+  currency: 'USD' | 'INR';
+  checkedAt: string;
+  error: string | null;
+}
+
+export function useBrokerCatalog() {
+  return useQuery({
+    queryKey: ['broker', 'catalog'] as const,
+    queryFn: () => request<BrokerCatalogEntry[]>('/api/v1/broker/catalog'),
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+}
+
+/** Live round-trip to the broker: proves the stored credentials work. */
+export function useVerifyBrokerConnection() {
+  return useMutation({
+    mutationFn: (connectionId: string) =>
+      request<VerifyConnectionResult>(`/api/v1/broker/connections/${connectionId}/verify`, {
+        method: 'POST',
+      }),
+  });
+}
+
+/** Real-money consent. Not optimistic: callers render the server response. */
+export function useSetLiveTradingConsent() {
+  const queryClient = useQueryClient();
+  const userId = useAuthStore((s) => s.user?.userId ?? null);
+
+  return useMutation({
+    mutationFn: ({ connectionId, enabled }: { connectionId: string; enabled: boolean }) =>
+      request<BrokerConnection>(`/api/v1/broker/connections/${connectionId}/consent`, {
+        method: 'POST',
+        body: { enabled },
+      }),
+    onSuccess: (updated) => {
+      queryClient.setQueryData<BrokerConnection[]>(brokerConnectionsKey(userId), (prev) =>
+        prev ? prev.map((c) => (c.id === updated.id ? updated : c)) : prev,
+      );
+      void queryClient.invalidateQueries({ queryKey: brokerConnectionsKey(userId) });
+    },
+  });
 }
 
 export const brokerConnectionsKey = (userId: string | null | undefined) =>
