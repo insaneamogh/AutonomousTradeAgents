@@ -22,7 +22,7 @@ GET /api/v1/insights/scan-funnel
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import Field
@@ -39,6 +39,9 @@ from app.services.council.scan_funnel_service import build_scan_funnel_report_fo
 from engine.env import env_flag
 
 router = APIRouter(tags=["insights"])
+
+# "US" (dollars) | "IN" (rupees). Anything else is a 422 from FastAPI.
+Market = Annotated[Literal["US", "IN"], Query()]
 
 
 def _require_postgres() -> None:
@@ -82,6 +85,10 @@ class GhostSummaryResponse(CamelCaseModel):
     # Provisional counterparts — see GhostBucketDto.markedPnl.
     saved_so_far_usd: float = 0.0
     missed_so_far_usd: float = 0.0
+    market: str = "US"
+    currency: str = "USD"
+    """Currency of every money field here, including the ones named ``*Usd``
+    (names kept for wire compatibility). Never sum across currencies."""
 
 
 class VetoRuleDto(CamelCaseModel):
@@ -127,6 +134,10 @@ class VetoLedgerResponse(CamelCaseModel):
     it. A separate list, never summed into ``totalVetoes``: a trim let a
     (smaller) trade through, a veto did not."""
     total_trims: int = 0
+    market: str = "US"
+    currency: str = "USD"
+    """Currency of ``totalBlockedNotional`` and every pnl / ``*Usd`` field on
+    the rules (names kept for wire compatibility). Never sum across currencies."""
 
 
 class VetoExemplarResponse(CamelCaseModel):
@@ -152,10 +163,11 @@ class VetoExemplarResponse(CamelCaseModel):
 @router.get("/ghost/summary", response_model=GhostSummaryResponse, response_model_by_alias=True)
 async def ghost_summary(
     window_days: int = Query(default=30, ge=1, le=365, alias="windowDays"),
+    market: Market = "US",
     user: AuthedUser = Depends(get_current_user),
 ) -> GhostSummaryResponse:
     _require_postgres()
-    s = await build_ghost_summary(window_days, user_id=user.id)
+    s = await build_ghost_summary(window_days, user_id=user.id, market=market)
     return GhostSummaryResponse(
         window_days=s.window_days,
         as_of=s.as_of.isoformat(),
@@ -193,16 +205,19 @@ async def ghost_summary(
         missed_usd=s.missed_usd,
         saved_so_far_usd=s.saved_so_far_usd,
         missed_so_far_usd=s.missed_so_far_usd,
+        market=s.market,
+        currency=s.currency,
     )
 
 
 @router.get("/risk/vetoes", response_model=VetoLedgerResponse, response_model_by_alias=True)
 async def veto_ledger(
     window_days: int = Query(default=30, ge=1, le=365, alias="windowDays"),
+    market: Market = "US",
     user: AuthedUser = Depends(get_current_user),
 ) -> VetoLedgerResponse:
     _require_postgres()
-    ledger = await build_veto_ledger(window_days, user_id=user.id)
+    ledger = await build_veto_ledger(window_days, user_id=user.id, market=market)
     return VetoLedgerResponse(
         window_days=ledger.window_days,
         total_vetoes=ledger.total_vetoes,
@@ -225,6 +240,8 @@ async def veto_ledger(
         ],
         trims=[TrimRuleDto(rule=t.rule, count=t.count) for t in ledger.trims],
         total_trims=ledger.total_trims,
+        market=ledger.market,
+        currency=ledger.currency,
     )
 
 
@@ -235,12 +252,13 @@ async def veto_ledger(
 )
 async def veto_exemplar(
     rule: str,
+    market: Market = "US",
     user: AuthedUser = Depends(get_current_user),
 ) -> VetoExemplarResponse:
     """The single most extreme refusal under ``rule`` — largest
     ``abs(ghostPnl)`` among finalized ghosts, never the most recent."""
     _require_postgres()
-    exemplar = await build_veto_exemplar(rule, user_id=user.id)
+    exemplar = await build_veto_exemplar(rule, user_id=user.id, market=market)
     if exemplar is None:
         raise HTTPException(
             status_code=404,

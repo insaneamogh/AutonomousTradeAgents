@@ -39,24 +39,41 @@ class _NoSuchTenant(Exception):
     """``user_id`` wasn't a UUID, so it can't match any decision row."""
 
 
-def _tenant_filters(user_id: str) -> list[ColumnElement[bool]]:
-    """WHERE fragment scoping a query to ``user_id``.
+MARKET_CURRENCY: dict[str, str] = {"US": "USD", "IN": "INR"}
+"""Market code -> the currency every money figure in that ledger is in."""
 
-    Empty only for the ``ALL_USERS`` sentinel. A malformed id raises —
-    an unparseable tenant must never widen into "every row".
+
+def _check_market(market: str) -> str:
+    """Return ``market`` unchanged, or raise ``ValueError`` for anything else."""
+    if market not in MARKET_CURRENCY:
+        raise ValueError(f"market must be one of {sorted(MARKET_CURRENCY)}, got {market!r}")
+    return market
+
+
+def _tenant_filters(user_id: str, market: str = "US") -> list[ColumnElement[bool]]:
+    """WHERE fragment scoping a query to ``user_id`` and one market's ledger.
+
+    The user clause is absent only for the ``ALL_USERS`` sentinel. A malformed
+    id raises — an unparseable tenant must never widen into "every row". The
+    market clause is always present: rupees and dollars are never summed.
     """
+    _check_market(market)
+    ledger = _USD_LEDGER if market == "US" else _INR_LEDGER
     if user_id == ALL_USERS:
-        return [_USD_LEDGER]
+        return [ledger]
     try:
-        return [AgentDecision.user_id == uuid.UUID(user_id), _USD_LEDGER]
+        return [AgentDecision.user_id == uuid.UUID(user_id), ledger]
     except (ValueError, TypeError) as exc:
         raise _NoSuchTenant(user_id) from exc
 
 
-# The ledger is in dollars. An NSE refusal's ghost P&L is in rupees
-# (docs/PLAN_ZERODHA.md), so it is kept out of these sums rather than
-# added to them; an INR ledger is separate work.
-_USD_LEDGER = ~or_(*[AgentDecision.symbol.like(f"{ex}:%") for ex in sorted(INDIA_EXCHANGES)])
+# An NSE refusal's ghost P&L is in rupees (docs/PLAN_ZERODHA.md). The two
+# ledgers are disjoint and each is single-currency: "US" is everything that
+# is not an India-exchange symbol (today's behaviour, unchanged), "IN" is
+# exactly the India-exchange symbols.
+_INDIA_SYMBOL = or_(*[AgentDecision.symbol.like(f"{ex}:%") for ex in sorted(INDIA_EXCHANGES)])
+_USD_LEDGER = ~_INDIA_SYMBOL
+_INR_LEDGER = _INDIA_SYMBOL
 
 
 @dataclass
@@ -110,6 +127,9 @@ class GhostSummary:
     vetoed: GhostBucket
     declined: GhostBucket
     saved_usd: float
+    """Every ``*_usd`` field (here and on the buckets/rules) is named for wire
+    compatibility only: it is in ``currency`` (USD for market "US", INR for
+    "IN"). Never add figures from two different ``currency`` values."""
     missed_usd: float
     saved_so_far_usd: float = 0.0
     """``saved_usd`` computed over marks-so-far instead of finals only.
@@ -118,6 +138,8 @@ class GhostSummary:
     stands behind. See ``GhostBucket.marked_pnl``."""
     missed_so_far_usd: float = 0.0
     """The ``missed_usd`` counterpart. Same provisional contract."""
+    market: str = "US"
+    currency: str = "USD"
 
 
 @dataclass
@@ -176,9 +198,13 @@ class VetoLedger:
     strategy-fit HOLD land in this ledger as ``unnamed_rule``."""
 
     total_trims: int = 0
+    market: str = "US"
+    currency: str = "USD"
+    """Currency of ``total_blocked_notional`` and every ``*_usd`` / pnl field
+    on the rules (the names are wire-compat; the unit is this)."""
 
 
-def _empty_summary(window_days: int) -> GhostSummary:
+def _empty_summary(window_days: int, market: str = "US") -> GhostSummary:
     """Zeroed summary — what an unknown tenant sees."""
     empty = GhostBucket(count=0, ghost_pnl=0.0, pending_count=0)
     return GhostSummary(
@@ -188,6 +214,8 @@ def _empty_summary(window_days: int) -> GhostSummary:
         declined=empty,
         saved_usd=0.0,
         missed_usd=0.0,
+        market=market,
+        currency=MARKET_CURRENCY[market],
     )
 
 
@@ -253,14 +281,17 @@ def _bucket_from_rows(
     )
 
 
-async def build_ghost_summary(window_days: int = 30, *, user_id: str) -> GhostSummary:
-    """Vetoed/declined ghost P&L for ``user_id`` over the window."""
+async def build_ghost_summary(
+    window_days: int = 30, *, user_id: str, market: str = "US"
+) -> GhostSummary:
+    """Vetoed/declined ghost P&L for ``user_id`` over the window, one market."""
+    _check_market(market)
     now = datetime.now(UTC)
     cutoff = now - timedelta(days=window_days)
     try:
-        tenant = _tenant_filters(user_id)
+        tenant = _tenant_filters(user_id, market)
     except _NoSuchTenant:
-        return _empty_summary(window_days)
+        return _empty_summary(window_days, market)
     session_factory = async_session_factory()
     async with session_factory() as session:
         rows = (
@@ -291,17 +322,22 @@ async def build_ghost_summary(window_days: int = 30, *, user_id: str) -> GhostSu
         # show on any day before the first horizon lands.
         saved_so_far_usd=round(max(0.0, -vetoed.marked_pnl), 2),
         missed_so_far_usd=round(max(0.0, declined.marked_pnl), 2),
+        market=market,
+        currency=MARKET_CURRENCY[market],
     )
 
 
-async def build_veto_ledger(window_days: int = 30, *, user_id: str) -> VetoLedger:
-    """Per-rule veto scorecard for ``user_id`` over the window."""
+async def build_veto_ledger(
+    window_days: int = 30, *, user_id: str, market: str = "US"
+) -> VetoLedger:
+    """Per-rule veto scorecard for ``user_id`` over the window, one market."""
+    _check_market(market)
     cutoff = datetime.now(UTC) - timedelta(days=window_days)
     # Same env var, same resolution `RiskCaps.from_env()` itself uses —
     # computed once, reused on every return path below.
     risk_profile = _select_risk_profile(os.environ.get("RISK_PROFILE", ""))
     try:
-        tenant = _tenant_filters(user_id)
+        tenant = _tenant_filters(user_id, market)
     except _NoSuchTenant:
         return VetoLedger(
             window_days=window_days,
@@ -309,6 +345,8 @@ async def build_veto_ledger(window_days: int = 30, *, user_id: str) -> VetoLedge
             total_blocked_notional=0.0,
             rules=[],
             risk_profile=risk_profile,
+            market=market,
+            currency=MARKET_CURRENCY[market],
         )
     session_factory = async_session_factory()
     async with session_factory() as session:
@@ -397,6 +435,8 @@ async def build_veto_ledger(window_days: int = 30, *, user_id: str) -> VetoLedge
         risk_profile=risk_profile,
         trims=trims,
         total_trims=sum(t.count for t in trims),
+        market=market,
+        currency=MARKET_CURRENCY[market],
     )
 
 
@@ -491,12 +531,15 @@ class VetoExemplar:
     horizon_days: int
 
 
-async def build_veto_exemplar(rule: str, *, user_id: str) -> VetoExemplar | None:
+async def build_veto_exemplar(
+    rule: str, *, user_id: str, market: str = "US"
+) -> VetoExemplar | None:
     """Largest ``abs(ghost_pnl)`` among FINALIZED ghosts for ``rule`` —
     never the most recent. None when nothing under this rule has finalized
     yet (the caller renders that as "pending", not a missing rule)."""
+    _check_market(market)
     try:
-        tenant = _tenant_filters(user_id)
+        tenant = _tenant_filters(user_id, market)
     except _NoSuchTenant:
         return None
     session_factory = async_session_factory()
