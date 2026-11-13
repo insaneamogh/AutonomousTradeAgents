@@ -13,6 +13,7 @@ import { useColorScheme } from 'nativewind';
 
 import { usePendingApprovals } from '@/hooks/useApprovals';
 import { useAccount } from '@/hooks/useAccount';
+import { useTradingMode } from '@/hooks/useTradingMode';
 import { useThemeStore } from '@/stores/themeStore';
 import { useAuthStore } from '@/stores/authStore';
 
@@ -77,6 +78,7 @@ function Header() {
   const isDark = colorScheme !== 'light';
   const setPreference = useThemeStore((s) => s.setPreference);
   const account = useAccount();
+  const tradingMode = useTradingMode();
   const { regime, label, loading } = useRegime();
 
   const pnl = account.data?.todayPnlPct ?? null;
@@ -114,6 +116,14 @@ function Header() {
           </span>
           <Pill tone={pnlTone}>{signedPct(account.data.todayPnlPct)}</Pill>
           <Pill>{account.data.isPaper ? 'PAPER' : 'LIVE'}</Pill>
+          {/* The pill above is the ACCOUNT (paper or live keys). This one is
+              the platform switch: when an admin has turned real trading on,
+              every screen says so, not just Settings. */}
+          {tradingMode.data?.mode === 'live' ? (
+            <Pill tone="bear" title="An admin has switched real-money trading on.">
+              LIVE TRADING ON
+            </Pill>
+          ) : null}
         </Row>
       ) : null}
 

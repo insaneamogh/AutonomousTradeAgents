@@ -442,13 +442,31 @@ was placed anywhere.**
     out; it now clears on foreground and has Cancel. Same health, verify,
     consent, trading-mode and USD/INR additions.
   - jest 154 passed (was 129), tsc clean.
-  - **NOT verified in a browser or on a device.** `apps/mobile/.env` sets
-    `EXPO_PUBLIC_API_URL` to the Railway API and it wins over a shell
-    override, so the local web build talks to Railway. Two sign-in
-    attempts with a throwaway address and a local dev token reached the
-    Railway `/auth/verify` and were rejected; nothing else was sent. The
-    preview was stopped there. Checking the UI needs a build pointed at a
-    local API.
+  - **Verified in a browser, 2026-11-13, against a local API (MockStore,
+    no broker keys).** Desktop 1280px: Settings renders the catalog rows
+    (Alpaca and Zerodha "server is missing: ...", Groww and INDmoney
+    planned); the go-live button stays disabled on a wrong phrase, the
+    exact phrase flips the card to LIVE "set by admin@example.com", and
+    Return to paper flips it back. Phone 375px: Trading mode card and the
+    catalog cards render, the two unconfigured connect buttons are
+    disabled. Added after looking: a "LIVE TRADING ON" pill in the desktop
+    header, because the existing header pill is the ACCOUNT's paper/live
+    and kept reading PAPER.
+  - **Still not seen:** a real connection row (Verify, SESSION EXPIRED,
+    consent toggle) since no broker keys exist locally; the USD/INR ledger
+    (those routes 404 without Postgres); a real device.
+  - **How to preview locally.** `apps/mobile/.env` points the web build at
+    Railway and beats a shell variable. Put
+    `EXPO_PUBLIC_API_URL=http://localhost:8000` in a temporary
+    `apps/mobile/.env.local` (gitignored), run `expo start --web --clear`,
+    and delete the file afterwards. The earlier note that sign-ins
+    "reached Railway" was wrong: Railway has no CORS header for localhost,
+    the preflight failed, and the POST was never sent.
+  - **Seen in passing, not fixed:** on the phone build a tap on an Agent
+    Activity row opens `/decision/2`, a blank page with only Back (mock
+    data); the tab label reads "STRATE..." at 375px; `src/lib/api.ts`
+    still carries a line marked `LOCAL-REPRO-HACK` (c3565e0ae) that lets a
+    release build use `http://localhost`.
 - **`.claude/launch.json`:** `dev-api` called `python`, which is not on
   PATH. It now runs the venv's uvicorn with `ADMIN_EMAILS=admin@example.com`.
 - **Suites at the end:** Python 1879 passed, 12 skipped. jest 154. tsc clean.
