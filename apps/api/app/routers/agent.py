@@ -34,10 +34,12 @@ from app.schemas.agent import (
     CouncilProgressResponse,
 )
 from app.schemas.approvals import ApprovalProposalDto
+from app.schemas.autonomy import AutonomyReport
 from app.services.broker.symbol_search import assert_tradable
 from app.services.council.agent_runs import get_run_registry
 from app.services.council.store import get_store
 from app.services.notifications.notifications import schedule_proposal_pending_notification
+from app.services.platform.autonomy import build_report
 from engine.env import env_flag
 from trading_agents.features import resolve_feature_provider
 from trading_agents.memory import get_confidence_store, get_decision_log
@@ -47,6 +49,12 @@ from trading_agents.runtime import run_council
 logger = logging.getLogger("api.router.agent")
 
 router = APIRouter(prefix="/agent", tags=["agent"])
+
+
+@router.get("/autonomy", response_model=AutonomyReport, response_model_by_alias=True)
+async def autonomy(user: AuthedUser = Depends(get_current_user)) -> AutonomyReport:
+    """Why the desk is or is not trading on its own. Read-only, no LLM."""
+    return await build_report(user.id)
 
 
 def _equity_resolver(user_id: str):

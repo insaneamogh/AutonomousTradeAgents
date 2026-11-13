@@ -58,6 +58,7 @@ import {
   StatTile,
 } from '../primitives';
 import { useRegime } from '../regime';
+import { HomeTiles } from './HomeTiles';
 
 export function DashboardScreen() {
   const account = useAccount();
@@ -75,11 +76,14 @@ export function DashboardScreen() {
   // page is a lie. Everything else degrades to shimmer inside its own card.
   if (account.isError) {
     return (
-      <DataStreamInterrupted
-        code="ACCOUNT_READ_FAILED"
-        node="api · /v1/account"
-        onRetry={() => void account.refetch()}
-      />
+      <>
+        <HomeTiles />
+        <DataStreamInterrupted
+          code="ACCOUNT_READ_FAILED"
+          node="api · /v1/account"
+          onRetry={() => void account.refetch()}
+        />
+      </>
     );
   }
 
@@ -89,6 +93,7 @@ export function DashboardScreen() {
 
   return (
     <>
+      <HomeTiles />
       <div className="pg-grid pg-fade-up">
         {/* ── Hero: portfolio ─────────────────────────────────── */}
         <Cell span={8}>

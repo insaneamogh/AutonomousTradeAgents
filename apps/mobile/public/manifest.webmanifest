@@ -1,0 +1,15 @@
+{
+  "name": "Autonomous Trader",
+  "short_name": "Trader",
+  "description": "An autonomous trading desk that shows its refusals.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#131314",
+  "background_color": "#131314",
+  "icons": [
+    { "src": "/icon.png", "sizes": "1024x1024", "type": "image/png", "purpose": "any" },
+    { "src": "/adaptive-icon.png", "sizes": "1024x1024", "type": "image/png", "purpose": "maskable" }
+  ]
+}

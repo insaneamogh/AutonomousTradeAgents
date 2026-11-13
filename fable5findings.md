@@ -355,6 +355,52 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 # Build log
 
+### 2026-11-13 — one web UI at every width, tile Home, autonomy readiness (docs/PLAN_PRODUCT.md)
+Operator: "I still dont see a complete working autonomous agent system...
+the phone UI is very very shitty... usable as a website and also as an
+app." Planned in the main session (Fable 5.2), built by three Sonnet 5.5
+subagents, reviewed and previewed here. `ID:MODEL2OFF`.
+
+- **Why the desk looks dead, measured with `railway variables`:** there is
+  NO LLM key on Railway (no ANTHROPIC_API_KEY, GLM_API_KEY or
+  LLM_PROVIDER) with AGENTS_REQUIRE_REAL_LLM=1, so every pass raises.
+  Scheduler, auto-approve and auto-trade are all on. LIVE_TRADING_ENABLED=0
+  is set, which locks the admin live switch (409). These are the
+  operator's to change; nothing here changes them.
+- **`GET /api/v1/agent/autonomy`.** RUNNING / IDLE / BLOCKED, a headline,
+  and nine checks (LLM, fallback, scheduler, broker, breaker,
+  auto-approve, trading mode, market, spend), each failing one with its
+  fix. Read-only, no LLM call. A check that raises becomes a warning.
+  6 tests, revert-checked. `lastSweepAt` is in memory only. Broker,
+  breaker and spend are read for the logged-in user; the scheduler runs as
+  AGENT_CRON_USER_ID.
+- **Web.** `useIsDesktopSurface` is true at every width on web, so a phone
+  browser no longer falls back to the React Native screens. Under 768px:
+  bottom tab bar (Home, Picks, Positions, Insights, Settings), a More
+  sheet, one-column grid, 44px targets, safe-area insets. Manifest and
+  apple meta tags added.
+- **Home tiles** on web and in the native Home tab: Autonomy (tap for the
+  checklist), Equity, Positions, Pending, Trading mode, Next sweep,
+  Refusal Ledger dot grid with a USD/INR switch.
+- **Native bugs fixed:** blank /decision/[id] page, "STRATE..." tab label,
+  a real-looking equity figure with no broker connected.
+- **Verified:** Python 1885 passed, 12 skipped. jest 171. tsc clean. In a
+  browser against a local API: at 375px no tab scrolls sideways (Home,
+  Picks, Positions, Insights, Settings all 0px overflow), the Autonomy
+  tile reads BLOCKED and expands to the checklist with fixes, the bottom
+  bar works; at 1280px the tiles sit above the old dashboard. Fixed after
+  looking: the equity numeral wrapped mid-number at 375px.
+- **NOT verified:** the native screens on a device; install-to-home-screen
+  (icons are 1024px copies, Chrome may want 192/512); the Refusal Ledger
+  tile with data (those routes need Postgres); whether `public/` is served
+  at `/` on Railway.
+- **Known approximation:** ledger dots are apportioned from per-rule
+  totals, since the API returns no per-refusal rows. The two totals are
+  exact; the colour split is not.
+- **Still true on web:** the equity tile shows mock $102,847 with no broker
+  connected (the native tile was fixed; the web one was not).
+
+
 ### 2026-11-12 — operator: "identify the flaws in this whole system and create the best end product"
 Session by Claude Fable 5.2 (`ID:MODEL2OFF`). The ask covered: trust in the
 broker connections, more brokers (Groww, INDmoney, US brokers), a Sonnet

@@ -29,7 +29,12 @@
       }
     },
     "web": {
-      "bundler": "metro"
+      "bundler": "metro",
+      "name": "Autonomous Trader",
+      "shortName": "Trader",
+      "themeColor": "#131314",
+      "backgroundColor": "#131314",
+      "display": "standalone"
     },
     "plugins": [
       "expo-router",

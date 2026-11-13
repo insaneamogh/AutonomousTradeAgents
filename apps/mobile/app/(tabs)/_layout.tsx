@@ -33,11 +33,13 @@ export default function TabsLayout() {
           elevation: 0,
         },
         tabBarLabelStyle: {
-          fontSize: 11,
+          fontSize: 10,
           fontWeight: '600',
-          letterSpacing: 1.1,
+          letterSpacing: 0.3,
           textTransform: 'uppercase',
         },
+        // Fixed-size labels: OS font scaling made 5 uppercase labels truncate at 375px.
+        tabBarAllowFontScaling: false,
         headerStyle: { backgroundColor: pal.bgCanvas },
         headerTitleStyle: { color: pal.textPrimary, fontWeight: '600' },
         headerShadowVisible: false,
@@ -62,6 +64,7 @@ export default function TabsLayout() {
         name="strategies"
         options={{
           title: 'Strategies',
+          tabBarLabel: 'Strategy',
           tabBarIcon: ({ color, size }) => <BarChart3 color={color} size={size} />,
         }}
       />

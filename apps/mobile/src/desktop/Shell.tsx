@@ -8,6 +8,7 @@
  * screen inherits both without touching them.
  */
 
+import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useColorScheme } from 'nativewind';
 
@@ -32,8 +33,13 @@ import {
 import { Pill, Row, Stack } from './primitives';
 import { signedPct, usd } from './format';
 import { useRegime } from './regime';
-import { sectionOf, useNav } from './nav';
+import { SECTION_LABEL, sectionOf, useNav } from './nav';
+import { useIsCompact } from './viewport';
 import type { SectionId } from './nav';
+
+/** The five phone tabs. Everything else is behind the "More" sheet. */
+export const TAB_IDS: SectionId[] = ['dashboard', 'picks', 'positions', 'insights', 'settings'];
+export const MORE_IDS: SectionId[] = ['strategies', 'review'];
 
 const NAV: { id: SectionId; label: string; icon: (p: { size?: number }) => ReactNode }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: IconDashboard },
@@ -49,9 +55,15 @@ export function Shell({ children }: { children: ReactNode }) {
   const { colorScheme } = useColorScheme();
   const isDark = colorScheme !== 'light';
   const { regime } = useRegime();
+  const compact = useIsCompact();
 
   return (
-    <div className="pg-root" data-pg-theme={isDark ? 'dark' : 'light'} data-regime={regime}>
+    <div
+      className="pg-root"
+      data-pg-theme={isDark ? 'dark' : 'light'}
+      data-regime={regime}
+      data-compact={compact ? 'true' : undefined}
+    >
       <div
         style={{
           display: 'flex',
@@ -61,13 +73,14 @@ export function Shell({ children }: { children: ReactNode }) {
           zIndex: 1,
         }}
       >
-        <Header />
+        {compact ? <CompactHeader /> : <Header />}
         <div className="pg-body">
-          <Sidebar />
+          {compact ? null : <Sidebar />}
           <main className="pg-main">
             <div className="pg-main-inner">{children}</div>
           </main>
         </div>
+        {compact ? <BottomNav /> : null}
       </div>
     </div>
   );
@@ -223,5 +236,137 @@ function Sidebar() {
         Sign out
       </button>
     </nav>
+  );
+}
+
+/* ── Phone shell (< 768px) ─────────────────────────────────────────── */
+
+/** Title + mode pills + a More button. No equity, no regime: the Home tiles
+ * carry those. */
+function CompactHeader() {
+  const { route } = useNav();
+  const account = useAccount();
+  const tradingMode = useTradingMode();
+  const [moreOpen, setMoreOpen] = useState(false);
+
+  return (
+    <header className="pg-header pg-header--compact">
+      <Mark />
+      <h1 className="pg-compact-title pg-truncate">{SECTION_LABEL[sectionOf(route)]}</h1>
+      <div style={{ flex: 1 }} />
+      {account.data ? <Pill>{account.data.isPaper ? 'PAPER' : 'LIVE'}</Pill> : null}
+      {tradingMode.data?.mode === 'live' ? <Pill tone="bear">LIVE ON</Pill> : null}
+      <button
+        type="button"
+        className="pg-icon-btn"
+        aria-label="More"
+        aria-haspopup="dialog"
+        aria-expanded={moreOpen}
+        onClick={() => setMoreOpen(true)}
+      >
+        <span aria-hidden style={{ fontSize: 18, lineHeight: 1 }}>
+          ⋯
+        </span>
+      </button>
+      {moreOpen ? <MoreSheet onClose={() => setMoreOpen(false)} /> : null}
+    </header>
+  );
+}
+
+function BottomNav() {
+  const { route, go } = useNav();
+  const active = sectionOf(route);
+  const pending = usePendingApprovals();
+  const pendingCount = pending.data?.length ?? 0;
+
+  return (
+    <nav className="pg-bottom-nav" aria-label="Primary">
+      {TAB_IDS.map((id) => {
+        const item = NAV.find((n) => n.id === id);
+        if (!item) return null;
+        const Icon = item.icon;
+        return (
+          <button
+            key={id}
+            type="button"
+            className="pg-bottom-tab"
+            aria-current={active === id ? 'page' : undefined}
+            onClick={() => go({ name: id })}
+          >
+            <span className="pg-bottom-tab-icon">
+              <Icon size={22} />
+              {id === 'picks' && pendingCount > 0 ? (
+                <span className="pg-bottom-tab-badge" aria-label={`${pendingCount} pending`}>
+                  {pendingCount}
+                </span>
+              ) : null}
+            </span>
+            <span>{SECTION_LABEL[id]}</span>
+          </button>
+        );
+      })}
+    </nav>
+  );
+}
+
+/** Bottom sheet for everything that is not one of the five tabs. */
+function MoreSheet({ onClose }: { onClose: () => void }) {
+  const { go } = useNav();
+  const { colorScheme } = useColorScheme();
+  const isDark = colorScheme !== 'light';
+  const setPreference = useThemeStore((s) => s.setPreference);
+  const signOut = useAuthStore((s) => s.signOut);
+  const email = useAuthStore((s) => s.user?.email ?? '');
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <div className="pg-sheet-wrap">
+      <button type="button" className="pg-sheet-backdrop" aria-label="Close menu" onClick={onClose} />
+      <div className="pg-sheet" role="dialog" aria-modal="true" aria-label="More">
+        <span className="label-caps">More</span>
+        {MORE_IDS.map((id) => {
+          const item = NAV.find((n) => n.id === id);
+          if (!item) return null;
+          const Icon = item.icon;
+          return (
+            <button
+              key={id}
+              type="button"
+              className="pg-sidebar-link"
+              onClick={() => {
+                go({ name: id });
+                onClose();
+              }}
+            >
+              <Icon size={18} />
+              {item.label}
+            </button>
+          );
+        })}
+        <button
+          type="button"
+          className="pg-sidebar-link"
+          onClick={() => setPreference(isDark ? 'light' : 'dark')}
+        >
+          {isDark ? <IconSun size={18} /> : <IconMoon size={18} />}
+          {isDark ? 'Light theme' : 'Dark theme'}
+        </button>
+        <button type="button" className="pg-sidebar-link" onClick={() => void signOut()}>
+          <IconLogout size={18} />
+          Sign out
+        </button>
+        <div className="pg-caption pg-truncate" title={email} style={{ padding: '0 16px' }}>
+          {email}
+        </div>
+      </div>
+    </div>
   );
 }

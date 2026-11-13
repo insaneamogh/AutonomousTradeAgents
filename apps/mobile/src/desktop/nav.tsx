@@ -33,6 +33,16 @@ export type SectionId =
   | 'insights'
   | 'settings';
 
+export const SECTION_LABEL: Record<SectionId, string> = {
+  dashboard: 'Home',
+  picks: 'Picks',
+  positions: 'Positions',
+  strategies: 'Strategies',
+  review: 'Review',
+  insights: 'Insights',
+  settings: 'Settings',
+};
+
 export function sectionOf(route: DesktopRoute): SectionId {
   switch (route.name) {
     case 'pick':

@@ -1,7 +1,5 @@
-// Home — Design D "editorial bento".
-//
-// Hero portfolio numeral · stat tiles (open positions / pending picks)
-// · agent-activity tile · ONE platinum CTA ("Review N picks").
+// Home — calm tiles: autonomy verdict, equity, counts, refusal dots, sweep,
+// mode, then the agent-activity list.
 // Health + calibration strips stay — they collapse to nothing when
 // there's no signal. Scanner is the one exception: it always renders,
 // because the whole point is making an off-by-default feature visible.
@@ -14,17 +12,40 @@ import type { ActivityEntryDto } from '@app/shared-types';
 import { ErrorState, Skeleton, StatusPill, cn, formatRelative } from '@app/ui';
 
 import { AutoApprovePill } from '@/components/AutoApprovePill';
-import { BentoCTA, DirectionPill, Tile, TileLabel, TileValue } from '@/components/bento';
+import { DirectionPill, Tile, TileLabel, TileValue } from '@/components/bento';
 import { CircuitBreakerBanner } from '@/components/CircuitBreakerBanner';
+import { AutonomyTile } from '@/components/home/AutonomyTile';
+import { CountTile } from '@/components/home/CountTile';
+import { EquityTile } from '@/components/home/EquityTile';
+import { NextSweepTile } from '@/components/home/NextSweepTile';
+import { RefusalDotsTile } from '@/components/home/RefusalDotsTile';
+import { TradingModeTile } from '@/components/home/TradingModeTile';
 import { useAccount } from '@/hooks/useAccount';
 import { useActivity } from '@/hooks/useActivity';
 import { usePendingApprovals } from '@/hooks/useApprovals';
 import type { ComponentHealth, ComponentStatus } from '@/hooks/useHealthFull';
 import { useHealthFull } from '@/hooks/useHealthFull';
-import { useGhostSummary, useVetoLedger } from '@/hooks/useInsights';
 import { useReviewAgreement } from '@/hooks/useReview';
 import type { ScanSignalDto } from '@/hooks/useScannerStatus';
 import { useScannerStatus } from '@/hooks/useScannerStatus';
+
+function HomeCounts() {
+  const router = useRouter();
+  const { data: account } = useAccount();
+  const { data: pending } = usePendingApprovals();
+  return (
+    <View className="flex-row gap-3">
+      <CountTile label="Open positions" value={account?.openPositions} />
+      <CountTile
+        label="Pending picks"
+        value={pending?.length}
+        hint="tap to review"
+        onPress={() => router.push('/approvals')}
+        testID="pending-picks"
+      />
+    </View>
+  );
+}
 
 export default function HomeScreen() {
   return (
@@ -32,96 +53,20 @@ export default function HomeScreen() {
       <ScrollView contentContainerClassName="px-4 pb-32 pt-4 gap-3">
         <CircuitBreakerBanner />
         <AutoApprovePill />
-        <Hero />
-        <StatTiles />
+        <AutonomyTile />
+        <EquityTile />
+        <HomeCounts />
+        <RefusalDotsTile />
+        <View className="flex-row gap-3">
+          <NextSweepTile />
+          <TradingModeTile />
+        </View>
         <ActivityTile />
-        <ReviewCTA />
-        <RegretTiles />
         <AgreementTile />
         <HealthTile />
         <ScannerTile />
       </ScrollView>
     </SafeAreaView>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// Hero — portfolio numeral straight on the canvas, no card chrome.
-// ─────────────────────────────────────────────────────────────────────
-
-function Hero() {
-  const { data, isLoading, isError, refetch } = useAccount();
-
-  if (isLoading) {
-    return (
-      <View className="gap-2">
-        <Skeleton className="h-3 w-16" />
-        <Skeleton className="h-9 w-44" />
-        <Skeleton className="h-4 w-28" />
-      </View>
-    );
-  }
-  if (isError || !data) {
-    return (
-      <Tile>
-        <ErrorState
-          title="Account unavailable"
-          description="The agent server isn't reachable. Make sure the API is running."
-          onRetry={() => refetch()}
-        />
-      </Tile>
-    );
-  }
-
-  const positive = data.todayPnl >= 0;
-  const sign = positive ? '+' : '−';
-  const pnlAbs = Math.abs(data.todayPnl);
-  const pctAbs = Math.abs(data.todayPnlPct);
-
-  return (
-    <View>
-      <Text className="text-[11px] font-semibold uppercase tracking-[1.2px] text-text-secondary dark:text-text-secondary-dark">
-        Portfolio · {data.brokerName} {data.isPaper ? 'paper' : 'live'}
-      </Text>
-      <Text
-        className="mt-1 text-[34px] font-medium leading-[38px] text-text-primary dark:text-text-primary-dark"
-        style={{ fontVariant: ['tabular-nums'], letterSpacing: -0.8 }}
-      >
-        ${data.equity.toLocaleString('en-US', { maximumFractionDigits: 0 })}
-      </Text>
-      <Text
-        className={cn(
-          'mt-0.5 text-[14px] font-medium',
-          positive ? 'text-mint dark:text-mint-dark' : 'text-rose dark:text-rose-dark',
-        )}
-        style={{ fontVariant: ['tabular-nums'] }}
-      >
-        {sign}${pnlAbs.toLocaleString('en-US', { maximumFractionDigits: 0 })} · {sign}
-        {pctAbs.toFixed(1)}% today
-      </Text>
-    </View>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// Stat tiles — 2-up bento row.
-// ─────────────────────────────────────────────────────────────────────
-
-function StatTiles() {
-  const { data: account } = useAccount();
-  const { data: pending } = usePendingApprovals();
-
-  return (
-    <View className="flex-row gap-3">
-      <Tile className="flex-1 gap-1">
-        <TileLabel>Open positions</TileLabel>
-        <TileValue>{account ? account.openPositions : '—'}</TileValue>
-      </Tile>
-      <Tile className="flex-1 gap-1">
-        <TileLabel>Pending picks</TileLabel>
-        <TileValue>{pending ? pending.length : '—'}</TileValue>
-      </Tile>
-    </View>
   );
 }
 
@@ -200,76 +145,6 @@ function ActivityLine({ entry }: { entry: ActivityEntryDto }) {
         {KIND_LABEL[entry.kind]} · {entry.headline}
       </Text>
     </Pressable>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// Review CTA — the screen's single platinum tile.
-// ─────────────────────────────────────────────────────────────────────
-
-function ReviewCTA() {
-  const router = useRouter();
-  const { data: pending } = usePendingApprovals();
-  const n = pending?.length ?? 0;
-
-  if (n === 0) return null;
-  return (
-    <BentoCTA
-      label={`Review ${n} pick${n === 1 ? '' : 's'} →`}
-      onPress={() => router.push('/approvals')}
-      accessibilityLabel={`Review ${n} pending picks`}
-    />
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// Regret analytics — ghost P&L headline + veto ledger entry point.
-// Hide until the evaluator has produced anything.
-// ─────────────────────────────────────────────────────────────────────
-
-function RegretTiles() {
-  const router = useRouter();
-  const { data: ghost } = useGhostSummary(30);
-  const { data: vetoes } = useVetoLedger(30);
-
-  const hasGhost = ghost != null && (ghost.vetoed.count > 0 || ghost.declined.count > 0);
-  const hasVetoes = vetoes != null && vetoes.totalVetoes > 0;
-  if (!hasGhost && !hasVetoes) return null;
-
-  return (
-    <View className="flex-row gap-3">
-      {hasGhost && (
-        <Tile className="flex-1 gap-1">
-          <TileLabel>Risk saved · 30d</TileLabel>
-          <TileValue tone={ghost.savedUsd > 0 ? 'mint' : 'default'}>
-            {ghost.vetoed.pendingCount === ghost.vetoed.count && ghost.savedUsd === 0
-              ? 'evaluating…'
-              : `$${Math.round(ghost.savedUsd).toLocaleString('en-US')}`}
-          </TileValue>
-          {ghost.missedUsd > 0 && (
-            <Text className="text-[10px] text-text-tertiary dark:text-text-tertiary-dark">
-              Passes cost ${Math.round(ghost.missedUsd).toLocaleString('en-US')}
-            </Text>
-          )}
-        </Tile>
-      )}
-      {hasVetoes && (
-        <Pressable
-          className="flex-1"
-          onPress={() => router.push('/vetoes')}
-          accessibilityRole="button"
-          accessibilityLabel="Open the veto ledger"
-        >
-          <Tile className="gap-1 active:opacity-80">
-            <TileLabel>Vetoes · 30d</TileLabel>
-            <TileValue>{vetoes.totalVetoes}</TileValue>
-            <Text className="text-[10px] text-text-tertiary dark:text-text-tertiary-dark">
-              tap for the ledger →
-            </Text>
-          </Tile>
-        </Pressable>
-      )}
-    </View>
   );
 }
 

@@ -9,7 +9,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 
 import type { TimelineEventDto } from '@app/shared-types';
-import { EmptyState, Skeleton, cn, formatRelative } from '@app/ui';
+import { EmptyState, ErrorState, Skeleton, cn, formatRelative } from '@app/ui';
 
 import { DirectionPill, HeroHeadline, HeroSub, Tile } from '@/components/bento';
 import { useDecisionTimeline } from '@/hooks/useDecisionTimeline';
@@ -26,7 +26,10 @@ const STATUS_PILL: Record<string, { label: string; tone: 'mint' | 'rose' | 'mute
 export default function DecisionBiographyScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
-  const { data, isLoading, isError } = useDecisionTimeline(id ?? null);
+  const { data, isLoading, isError, error, refetch } = useDecisionTimeline(id ?? null);
+  // request() throws with a status; a 404 means the decision is gone, anything else is a failure.
+  const status = (error as { status?: number } | null)?.status;
+  const notFound = !id || status === 404 || (!isLoading && !isError && !data);
 
   return (
     <SafeAreaView edges={['top']} className="flex-1 bg-bg-canvas dark:bg-bg-canvas-dark">
@@ -48,11 +51,19 @@ export default function DecisionBiographyScreen() {
             <Skeleton className="h-20 w-full" />
             <Skeleton className="h-20 w-full" />
           </View>
-        ) : isError || !data ? (
-          <Tile>
+        ) : isError && !notFound ? (
+          <Tile testID="decision-error">
+            <ErrorState
+              title="Couldn't load this trade"
+              description="The agent server isn't reachable. Try again in a moment."
+              onRetry={() => refetch()}
+            />
+          </Tile>
+        ) : notFound || !data ? (
+          <Tile testID="decision-not-found">
             <EmptyState
-              title="No biography available"
-              description="This decision may predate the audit upgrade, or the server isn't reachable."
+              title="Decision not found"
+              description="It may predate the audit upgrade, or it was removed."
             />
           </Tile>
         ) : (

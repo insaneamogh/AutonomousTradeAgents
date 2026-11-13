@@ -1,19 +1,19 @@
 /**
  * DesktopShell — the single switch point between the two design systems.
  *
- *   native, OR web below 1024px
+ *   native
  *     → renders `children` untouched (the expo-router `<Slot />`),
  *       regardless of session — this covers the mobile login/verify
  *       screens too. The phone UI is byte-identical on this path: no
  *       extra View, no extra style, no desktop module ever evaluated.
  *
- *   web at ≥ 1024px, no session yet
+ *   web at any width, no session yet
  *     → renders `DesktopAuth`, the Platinum Glass pre-auth screen (a
  *       single combined email + access-token form). Also replaces the
  *       router subtree — the mobile login/verify screens never mount on
  *       this surface either, not even before sign-in.
  *
- *   web at ≥ 1024px with a session
+ *   web at any width with a session
  *     → renders `DesktopApp`, the Platinum Glass desktop tree under
  *       `src/desktop/**`. It REPLACES the router subtree rather than
  *       wrapping it, so no mobile screen mounts on desktop either.
@@ -26,24 +26,13 @@
  * evaluated in the native bundle — it is plain DOM + CSS and has no
  * meaning outside a browser.
  *
- * Width source, and why it's not `useWindowDimensions()`: on a *fresh* web
- * load (not a warm reload), react-native-web's `Dimensions` singleton has
- * been observed reporting `width: 0` on first render and never correcting
- * itself — there's no subsequent native `resize` event to trigger a re-read
- * when the viewport was already at its final size before the bundle ran.
- * That silently stuck every first-time visitor on a wide screen with the
- * phone UI. `useWebViewportWidth()` below reads `window.innerWidth`
- * directly (the DOM's own value, not RN's shimmed cache) and only falls
- * back to `useWindowDimensions()` on native, where this bug doesn't apply.
+ * The surface no longer depends on viewport width: the desktop tree
+ * is responsive itself (src/desktop/theme.ts, <768px bottom tab bar).
  */
 
-import { useEffect, useState } from 'react';
-import { Platform, useWindowDimensions, View } from 'react-native';
+import { Platform, View } from 'react-native';
 
 import { useAuthStore } from '@/stores/authStore';
-
-/** Below this width the phone layout is still the better layout. */
-const DESKTOP_BREAKPOINT = 1024;
 
 /** Defensive-fallback-only column width — see the `!isAuthed` branch below. */
 const AUTH_COLUMN_WIDTH = 460;
@@ -81,29 +70,6 @@ function loadDesktopAuth(): DesktopAuthComponent | null {
 }
 
 /**
- * Viewport width, read from the DOM directly on web (see the file-level
- * note on why `useWindowDimensions()` alone isn't reliable here) and kept
- * current via the native `resize` event. Native platforms never run the
- * web branch at all — `useWindowDimensions()` has no equivalent bug there.
- */
-function useWebViewportWidth(): number {
-  const rnWidth = useWindowDimensions().width;
-  const [domWidth, setDomWidth] = useState(() =>
-    Platform.OS === 'web' && typeof window !== 'undefined' ? window.innerWidth : rnWidth,
-  );
-
-  useEffect(() => {
-    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
-    const onResize = () => setDomWidth(window.innerWidth);
-    onResize(); // correct once more post-mount in case layout settled after first read
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
-  }, []);
-
-  return Platform.OS === 'web' ? domWidth : rnWidth;
-}
-
-/**
  * True when the Platinum Glass tree is what's on screen — i.e. the
  * expo-router `<Slot />` is NOT mounted, whether that's `DesktopAuth`
  * (pre-auth) or `DesktopApp` (authenticated). The root layout's
@@ -111,15 +77,16 @@ function useWebViewportWidth(): number {
  * into a navigator that doesn't exist on this surface.
  */
 export function useIsDesktopSurface(): boolean {
-  const width = useWebViewportWidth();
-  return Platform.OS === 'web' && width >= DESKTOP_BREAKPOINT;
+  // Every web width gets the DOM tree: it is responsive (bottom tab bar under
+  // 768px), and the React Native screens it used to fall back to on a phone
+  // browser were the bad UI. Native is untouched.
+  return Platform.OS === 'web';
 }
 
 export function DesktopShell({ children }: { children: React.ReactNode }) {
-  const width = useWebViewportWidth();
   const isAuthed = useAuthStore((s) => s.status === 'authenticated');
 
-  const wideWeb = Platform.OS === 'web' && width >= DESKTOP_BREAKPOINT;
+  const wideWeb = Platform.OS === 'web';
 
   if (!wideWeb) {
     return <>{children}</>;
