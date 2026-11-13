@@ -214,8 +214,19 @@ def _is_paper_and_safe() -> bool:
     flag, or anything reconfigurable. This is the one check in the whole
     stack where paper accidentally trading live would be exactly the
     disaster CLAUDE.md's "You may not execute trades" boundary exists to
-    prevent."""
-    return _trading_mode() == "paper" and not env_flag("LIVE_TRADING_ENABLED")
+    prevent.
+
+    It ALSO requires the env Alpaca endpoint to be paper. The tools place
+    orders via ``AlpacaBroker.from_env()``, which picks LIVE whenever
+    ``ALPACA_BASE_URL`` is set and does not contain "paper" — independent
+    of TRADING_MODE. Without this clause, live keys + a live base URL in
+    env would pass a "paper and safe" check and send real-money orders.
+    The rule below is copied exactly from ``from_env`` (unset -> paper,
+    else ``"paper" in base.lower()``); pure env read, no I/O."""
+    if _trading_mode() != "paper" or env_flag("LIVE_TRADING_ENABLED"):
+        return False
+    base = os.environ.get("ALPACA_BASE_URL", "").strip()
+    return "paper" in base.lower() if base else True
 
 
 def _alpaca_credentials() -> tuple[str, str]:
