@@ -29,7 +29,13 @@ Refuse to auto-approve in live mode, unconditionally, even when
 a bad number on a dashboard; in live it is real money placed by a loop with
 no human in it. This is deliberately hard-coded as::
 
-    trading_mode() == "paper" and not env_flag("LIVE_TRADING_ENABLED")
+    trading_mode() == "paper" and not (await live_trading_state()).enabled
+
+``live_trading_state()`` is the one resolver for "is live trading on": the
+admin runtime switch counts as live exactly like ``LIVE_TRADING_ENABLED=1``
+does. Live on => no auto-approval, for everyone, no matter what else is set.
+It fails closed (an unreadable switch reads as "off", but this gate is only
+satisfied when the resolver says "off" cleanly AND the mode is paper).
 
 Do not "generalise" this into an env-driven bypass, a per-user override, or
 anything else that lets live mode route through here — a future edit that
@@ -68,6 +74,7 @@ from app.services.broker.broker_store import get_broker_store
 from app.services.council.store import get_store
 from app.services.orders.executor import execute_proposal
 from app.services.orders.paper_broker import trading_mode
+from app.services.platform.trading_mode import live_trading_state
 from engine.env import env_flag
 from engine.features.market_calendar import is_us_market_open
 from engine.risk import RiskCaps, load_db_risk_state
@@ -220,12 +227,19 @@ async def auto_approve_for_user(
 
     # Gate 2 — HARD-CODED paper-only. See the module docstring: this must
     # never become configurable, so it stays a literal boolean expression,
-    # not a lookup against any table of "safe modes". Pure env read, no I/O.
-    if not (trading_mode() == "paper" and not env_flag("LIVE_TRADING_ENABLED")):
+    # not a lookup against any table of "safe modes". The admin switch counts
+    # as live. The resolver never raises (it fails closed), but a belt-and-
+    # braces guard keeps this function's never-raises contract.
+    try:
+        live_on = (await live_trading_state()).enabled
+    except Exception:
+        logger.exception("auto_approver: live-trading state unreadable — refusing")
+        return 0
+    if not (trading_mode() == "paper" and not live_on):
         logger.warning(
             "auto_approver: refusing for user=%s — not in safe paper mode "
             "(trading_mode=%s live_trading_enabled=%s)",
-            user_id, trading_mode(), env_flag("LIVE_TRADING_ENABLED"),
+            user_id, trading_mode(), live_on,
         )
         return 0
 

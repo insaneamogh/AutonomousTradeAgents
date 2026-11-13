@@ -9,7 +9,8 @@ Flow inside ``execute_proposal``:
      (Alpaca or Zerodha; ``BROKER_PREFERENCE`` env breaks ties).
   3. **Live-trading gate** — non-paper connections (Alpaca live, all of
      Zerodha) are refused with the named rule ``live_trading_disabled``
-     unless ``LIVE_TRADING_ENABLED=1``. Deterministic, env-driven, audited.
+     unless the platform live switch (admin or ``LIVE_TRADING_ENABLED=1``) is on.
+     Deterministic, audited.
   4. Fetch a fresh ``RiskContext`` (account equity, open positions, halt
      state) — proposals can age between draft and approval, so we
      re-evaluate against the latest snapshot.
@@ -200,9 +201,9 @@ async def _execute_via_broker(
         conn,
     ):
         # 0. Live-trading gate — see live_trading_gate.py for the two-key
-        # rule (operator env + per-connection consent). Either missing →
+        # rule (platform switch + per-connection consent). Either missing →
         # refuse, named for audit.
-        blocked = check_live_trading_gate(conn, proposal_id=proposal_id, user_id=user_id)
+        blocked = await check_live_trading_gate(conn, proposal_id=proposal_id, user_id=user_id)
         if blocked is not None:
             return blocked
 

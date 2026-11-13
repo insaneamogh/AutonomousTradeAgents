@@ -51,7 +51,7 @@ class BrokerConnectionRecord:
     """active | revoked | expired."""
     live_trading_consent: bool = False
     """Per-connection real-money opt-in. A live order needs this AND the
-    global LIVE_TRADING_ENABLED env. Default False — paper-safe."""
+    platform live switch (admin switch or LIVE_TRADING_ENABLED env). Default False — paper-safe."""
     auto_approve_consent: bool = False
     """Per-connection autonomous-entry opt-in. An auto-approved order needs
     this AND the global AUTO_APPROVE_ENABLED env. Default False — a human

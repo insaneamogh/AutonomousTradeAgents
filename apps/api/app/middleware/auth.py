@@ -30,6 +30,7 @@ like the dev bypass is. See ``app.services.auth.demo_session``.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 
 from fastapi import Depends, HTTPException, Request, status
@@ -224,6 +225,27 @@ async def require_real_auth(
             detail="this route requires a real authenticated session",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    return user
+
+
+def admin_emails() -> frozenset[str]:
+    """``ADMIN_EMAILS`` (comma-separated, case-insensitive). Unset or empty
+    means nobody is an admin."""
+    raw = os.environ.get("ADMIN_EMAILS", "")
+    return frozenset(e.strip().lower() for e in raw.split(",") if e.strip())
+
+
+async def require_admin(
+    user: AuthedUser = Depends(require_real_auth),
+) -> AuthedUser:
+    """A real, signed-in user whose email is in ``ADMIN_EMAILS``; else 403.
+
+    Built on ``require_real_auth`` so the dev bypass and demo sessions are
+    refused (401) before the allow-list is even consulted — they can never
+    be admin, whatever their display email says.
+    """
+    if user.email.strip().lower() not in admin_emails():
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="admin only")
     return user
 
 

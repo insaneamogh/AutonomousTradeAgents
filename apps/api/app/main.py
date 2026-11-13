@@ -44,6 +44,7 @@ from app.core.config import get_settings
 from app.routers import (
     account,
     activity,
+    admin,
     agent,
     approvals,
     auth,
@@ -423,6 +424,7 @@ async def health() -> dict[str, str]:
 
 # v1 routers
 app.include_router(auth.router, prefix="/api/v1")
+app.include_router(admin.router, prefix="/api/v1")
 app.include_router(broker.router, prefix="/api/v1")
 app.include_router(notifications.router, prefix="/api/v1")
 app.include_router(account.router, prefix="/api/v1")

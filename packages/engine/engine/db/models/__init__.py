@@ -7,6 +7,7 @@ the architecture rather than piled into one file:
     council    What the agents proposed, and what it cost.
     market     Market data recorded because it cannot be bought back later.
     paper      The persisted paper book for a broker with no paper account.
+    platform   Deployment-wide settings an admin changes at runtime, and their audit.
     trading    Orders, fills, and the risk state that gates them.
 
 Importing this package registers every table on ``Base.metadata`` — which
@@ -36,6 +37,7 @@ from engine.db.models.council import (
 )
 from engine.db.models.market import IvHistory
 from engine.db.models.paper import PaperAccount, PaperOrder, PaperPosition
+from engine.db.models.platform import PlatformSetting, PlatformSettingAudit
 from engine.db.models.trading import (
     CircuitBreakerState,
     Order,
@@ -60,6 +62,8 @@ __all__ = [
     "PaperOrder",
     "PaperPosition",
     "PdtLedger",
+    "PlatformSetting",
+    "PlatformSettingAudit",
     "PositionsSnapshot",
     "StrategyConfidence",
     "User",

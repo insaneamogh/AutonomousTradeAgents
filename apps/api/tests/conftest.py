@@ -19,3 +19,13 @@ def _reset_login_rate_limit() -> None:
     reset_rate_limit_for_tests()
     yield
     reset_rate_limit_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _reset_trading_mode_store() -> None:
+    """The admin live-trading switch is process-global; never leak it."""
+    from app.services.platform.trading_mode import reset_setting_store_for_tests
+
+    reset_setting_store_for_tests()
+    yield
+    reset_setting_store_for_tests()
