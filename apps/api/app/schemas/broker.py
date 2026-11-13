@@ -112,6 +112,15 @@ class BrokerConnectionResponse(_Base):
     still has those keys configured."""
     created_at: datetime
     last_used_at: datetime | None = None
+    token_expires_at: datetime | None = None
+    """When the stored access token stops working (Kite: daily)."""
+    needs_reconnect: bool = False
+    """True when status is still 'active' but the token has already
+    expired, so the session is dead until the user reconnects."""
+    market: str = "US"
+    """US | IN, from the broker catalog."""
+    currency: str = "USD"
+    """USD | INR, from the broker catalog."""
 
 
 class SetConsentRequest(_Base):
@@ -144,3 +153,32 @@ class StartZerodhaResponse(_Base):
 class ZerodhaCallbackRequest(_Base):
     request_token: str = Field(min_length=1, max_length=512)
     state: str = Field(min_length=1, max_length=512)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Verify / catalog
+# ─────────────────────────────────────────────────────────────────────
+
+
+class VerifyConnectionResponse(_Base):
+    ok: bool
+    broker: str
+    is_paper: bool
+    equity: float | None = None
+    buying_power: float | None = None
+    currency: str
+    checked_at: datetime
+    error: str | None = None
+
+
+class BrokerCatalogItem(_Base):
+    id: str
+    name: str
+    market: str
+    currency: str
+    auth: Literal["oauth", "request_token", "api_key"]
+    status: Literal["available", "needs_server_config", "planned"]
+    supports_paper: bool
+    supports_options: bool
+    note: str
+    missing_config: list[str]

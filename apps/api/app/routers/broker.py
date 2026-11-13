@@ -24,15 +24,18 @@ connections are inherently per-user).
 
 from __future__ import annotations
 
+import html
 import logging
-from datetime import datetime, timedelta, timezone
+import os
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import HTMLResponse
 
-from app.middleware.auth import AuthedUser, require_real_auth
+from app.middleware.auth import AuthedUser, get_current_user, require_real_auth
 from app.schemas.broker import (
+    BrokerCatalogItem,
     BrokerConnectionResponse,
     CallbackRequest,
     CallbackResponse,
@@ -41,12 +44,13 @@ from app.schemas.broker import (
     StartOAuthRequest,
     StartOAuthResponse,
     StartZerodhaResponse,
+    VerifyConnectionResponse,
     ZerodhaCallbackRequest,
 )
 
 # Module import (not from-import) so tests can monkeypatch
 # ``alpaca_oauth.exchange_code_for_tokens`` and have the router see it.
-from app.services.broker import alpaca_oauth, zerodha_connect
+from app.services.broker import alpaca_oauth, broker_use, zerodha_connect
 from app.services.broker.alpaca_oauth import TokenExchangeError
 from app.services.broker.broker_store import (
     BrokerConnectionRecord,
@@ -56,6 +60,7 @@ from app.services.broker.broker_store import (
     get_broker_store,
     get_pending_oauth_cache,
 )
+from app.services.broker.catalog import build_catalog, market_for
 from app.services.broker.crypto import (
     CryptoUnavailableError,
     decrypt_from_storage,
@@ -96,8 +101,22 @@ def _connection_source(rec: BrokerConnectionRecord) -> Literal["environment", "o
     return "environment" if token == ALPACA_ENV_SENTINEL else "oauth"
 
 
+def _needs_reconnect(rec: BrokerConnectionRecord) -> bool:
+    if rec.status != "active" or rec.access_token_expires_at is None:
+        return False
+    expires = rec.access_token_expires_at
+    if expires.tzinfo is None:  # naive == UTC, as broker_use._check_not_expired
+        expires = expires.replace(tzinfo=UTC)
+    return expires <= datetime.now(UTC)
+
+
 def _to_response(rec: BrokerConnectionRecord) -> BrokerConnectionResponse:
+    market, currency = market_for(rec.broker)
     return BrokerConnectionResponse(
+        token_expires_at=rec.access_token_expires_at,
+        needs_reconnect=_needs_reconnect(rec),
+        market=market,
+        currency=currency,
         id=rec.id,
         broker=rec.broker,
         is_paper=rec.is_paper,
@@ -109,6 +128,35 @@ def _to_response(rec: BrokerConnectionRecord) -> BrokerConnectionResponse:
         created_at=rec.created_at,
         last_used_at=rec.last_used_at,
     )
+
+
+def _landing_page(
+    title: str,
+    prefix: str = "",
+    bold: str = "",
+    suffix: str = "",
+    *,
+    note: str = "",
+    status_code: int = 200,
+) -> HTMLResponse:
+    """The ONE place browser landing pages are built. Every argument is
+    plain text and is escaped here with ``html.escape``; callers never
+    hand-escape or concatenate raw input (error query param, exc.detail,
+    account numbers are all attacker- or upstream-influenced)."""
+    esc = html.escape
+    para = esc(prefix) + (f"<b>{esc(bold)}</b>" if bold else "") + esc(suffix)
+    links: list[str] = []
+    web = os.environ.get("APP_WEB_URL", "").strip()
+    if web:
+        links.append(f'<a href="{esc(web, quote=True)}">Return to the app</a>')
+        links.append('<a href="autotrader://settings">Open the phone app</a>')
+    else:
+        links.append('<a href="autotrader://settings">Return to the app</a>')
+    body = f"<h2>{esc(title)}</h2><p>{para}</p>"
+    if note:
+        body += f"<p><small>{esc(note)}</small></p>"
+    body += "<p>" + " | ".join(links) + "</p>"
+    return HTMLResponse(body, status_code=status_code)
 
 
 def _require_crypto() -> None:
@@ -344,15 +392,17 @@ async def alpaca_browser_redirect(
     _require_crypto()
     if error:
         logger.info("alpaca browser redirect: not completed (error=%s)", error)
-        return HTMLResponse(
-            "<h2>Alpaca connection was not completed</h2>"
-            f"<p>Alpaca reported: <b>{error}</b>. You can close this tab and "
-            "try connecting again from the app.</p>"
+        return _landing_page(
+            "Alpaca connection was not completed",
+            "Alpaca reported: ",
+            error,
+            ". You can close this tab and try connecting again from the app.",
         )
     if not code or not state:
-        return HTMLResponse(
-            "<h2>Alpaca connect failed</h2><p>Missing code or state on the "
-            "redirect. Start the connect flow again from the app.</p>",
+        return _landing_page(
+            "Alpaca connect failed",
+            "Missing code or state on the redirect. Start the connect flow "
+            "again from the app.",
             status_code=400,
         )
     try:
@@ -364,15 +414,15 @@ async def alpaca_browser_redirect(
             expected_user_id=None,
         )
     except HTTPException as exc:
-        return HTMLResponse(
-            f"<h2>Alpaca connect failed</h2><p>{exc.detail}</p>",
-            status_code=exc.status_code,
+        return _landing_page(
+            "Alpaca connect failed", str(exc.detail), status_code=exc.status_code
         )
     kind = "paper" if rec.is_paper else "live"
-    return HTMLResponse(
-        f"<h2>Alpaca {kind} account connected ✓</h2>"
-        f"<p>Account <b>{rec.account_number or 'unknown'}</b> is now linked — "
-        "you can close this tab and return to the app.</p>"
+    return _landing_page(
+        f"Alpaca {kind} account connected ✓",
+        "Account ",
+        rec.account_number or "unknown",
+        " is now linked — you can close this tab and return to the app.",
     )
 
 
@@ -532,9 +582,10 @@ async def zerodha_browser_redirect(
     _require_crypto()
     _require_zerodha_configured()
     if not request_token or not state:
-        return HTMLResponse(
-            "<h2>Zerodha connect failed</h2><p>Missing request_token or state "
-            "on the redirect. Start the connect flow again from the app.</p>",
+        return _landing_page(
+            "Zerodha connect failed",
+            "Missing request_token or state on the redirect. Start the "
+            "connect flow again from the app.",
             status_code=400,
         )
     try:
@@ -546,16 +597,16 @@ async def zerodha_browser_redirect(
             expected_user_id=None,
         )
     except HTTPException as exc:
-        return HTMLResponse(
-            f"<h2>Zerodha connect failed</h2><p>{exc.detail}</p>",
-            status_code=exc.status_code,
+        return _landing_page(
+            "Zerodha connect failed", str(exc.detail), status_code=exc.status_code
         )
-    return HTMLResponse(
-        "<h2>Zerodha connected ✓</h2>"
-        f"<p>Kite account <b>{rec.account_number or 'unknown'}</b> is now linked. "
-        "You can close this tab and return to the app.</p>"
-        "<p><small>Kite access tokens expire daily around 06:00 IST — "
-        "you'll repeat this login each trading day.</small></p>"
+    return _landing_page(
+        "Zerodha connected ✓",
+        "Kite account ",
+        rec.account_number or "unknown",
+        " is now linked. You can close this tab and return to the app.",
+        note="Kite access tokens expire daily around 06:00 IST — "
+        "you'll repeat this login each trading day.",
     )
 
 
@@ -661,3 +712,85 @@ async def set_auto_approve_consent(
         body.enabled, connection_id, user.id,
     )
     return _to_response(fresh)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Verify (read-only) / catalog
+# ─────────────────────────────────────────────────────────────────────
+
+
+@router.post(
+    "/connections/{connection_id}/verify",
+    response_model=VerifyConnectionResponse,
+    response_model_by_alias=True,
+)
+async def verify_connection(
+    connection_id: str,
+    user: AuthedUser = Depends(require_real_auth),
+    store: BrokerStore = Depends(get_broker_store),
+) -> VerifyConnectionResponse:
+    """Read-only health probe: open the client and read equity + buying
+    power. Never places, cancels or modifies anything. A broker failure is
+    a 200 with ok=false and a short message (no token, no traceback)."""
+    rec = await store.get_connection(connection_id)
+    if rec is None or rec.user_id != user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="connection not found"
+        )
+    _market, currency = market_for(rec.broker)
+    checked_at = datetime.now(UTC)
+    try:
+        async with broker_use.with_broker_client(user.id, broker=rec.broker) as (
+            client,
+            conn,
+        ):
+            if conn.id != rec.id:
+                # with_broker_client picks the user's ACTIVE connection for
+                # this broker. A revoked row, or the other of a paper/live
+                # pair, must not be reported healthy on its sibling's result.
+                return VerifyConnectionResponse(
+                    ok=False, broker=rec.broker, is_paper=rec.is_paper,
+                    currency=currency, checked_at=checked_at,
+                    error="This connection is not the one in use for this broker.",
+                )
+            equity = float(await client.get_account_equity())
+            buying_power = float(await client.get_buying_power())
+            is_paper = conn.is_paper
+    except broker_use.BrokerUnavailableError as exc:
+        return VerifyConnectionResponse(
+            ok=False, broker=rec.broker, is_paper=rec.is_paper, currency=currency,
+            checked_at=checked_at, error=str(exc)[:200],
+        )
+    except Exception as exc:
+        logger.warning(
+            "broker verify failed conn=%s broker=%s: %s",
+            connection_id, rec.broker, type(exc).__name__,
+        )
+        return VerifyConnectionResponse(
+            ok=False, broker=rec.broker, is_paper=rec.is_paper, currency=currency,
+            checked_at=checked_at,
+            error=f"{rec.broker} did not answer the account check ({type(exc).__name__}).",
+        )
+    return VerifyConnectionResponse(
+        ok=True, broker=rec.broker, is_paper=is_paper, equity=equity,
+        buying_power=buying_power, currency=currency, checked_at=checked_at,
+    )
+
+
+@router.get(
+    "/catalog",
+    response_model=list[BrokerCatalogItem],
+    response_model_by_alias=True,
+)
+async def broker_catalog(
+    user: AuthedUser = Depends(get_current_user),
+) -> list[BrokerCatalogItem]:
+    return [
+        BrokerCatalogItem(
+            id=e.id, name=e.name, market=e.market, currency=e.currency,
+            auth=e.auth, status=e.status, supports_paper=e.supports_paper,
+            supports_options=e.supports_options, note=e.note,
+            missing_config=list(e.missing_config),
+        )
+        for e in build_catalog()
+    ]
