@@ -355,6 +355,28 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 # Build log
 
+### 2026-11-21 — fix(broker): a new exchange code (TXSE) no longer breaks asset lookups
+Session by Claude Opus 5.5 (`ID:MODEL1REAL`).
+- **Found live in Railway logs** after the 2026-11-13 deploy: Alpaca now
+  lists Texas Stock Exchange names (`exchange: "TXSE"`), which
+  alpaca-py 0.43.4's `AssetExchange` enum does not know. The SDK's
+  pydantic parse raised for the whole ~13k-row asset list, so watchlist
+  ticker search and the daily universe refresh failed. `lookup_asset`
+  turns any exception into None, so it also reported every TXSE name as
+  untradable (a silent veto).
+- **Fix:** `list_tradable_assets` and `lookup_asset` ask the SDK for raw
+  JSON (`raw_data=True`) and read fields through one accessor. Nothing in
+  this code reads `exchange`. Other SDK calls are unchanged.
+- **Verified:** 2 new tests drive the REAL `TradingClient` with only its
+  HTTP `get` stubbed to return a TXSE row; removing `raw_data=True` turns
+  both red. Full suite 1887 passed, 12 skipped. Ruff clean.
+- **Not verified:** the live asset list after deploy beyond the absence of
+  the traceback in the log (checked below in the commit's deploy step).
+- **Note for the next session:** the previous session's build-log entry
+  says the earlier "LOCAL-REPRO-HACK" line in `apps/mobile/src/lib/api.ts`
+  lets a release build use plain `http://localhost`; still not removed.
+
+
 ### 2026-11-13 — one web UI at every width, tile Home, autonomy readiness (docs/PLAN_PRODUCT.md)
 Operator: "I still dont see a complete working autonomous agent system...
 the phone UI is very very shitty... usable as a website and also as an

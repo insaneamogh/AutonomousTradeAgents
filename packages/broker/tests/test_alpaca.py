@@ -348,3 +348,68 @@ async def test_shortable_and_easy_to_borrow_map_real_booleans(
     assert info is not None
     assert info.shortable is False
     assert info.easy_to_borrow is True
+
+
+# ── an exchange code the SDK does not know (TXSE, 2026-11) ───────────
+
+
+def _txse_rows() -> list[dict[str, object]]:
+    """Asset records as Alpaca's /v2/assets returns them. TXSE (Texas
+    Stock Exchange) is not in alpaca-py 0.43.4's AssetExchange enum."""
+    base = {
+        "id": "b0b6dd9d-8b9b-48a9-ba46-b9d54906e415",
+        "class": "us_equity",
+        "status": "active",
+        "tradable": True,
+        "marginable": True,
+        "shortable": True,
+        "easy_to_borrow": True,
+        "fractionable": True,
+        "attributes": [],
+    }
+    return [
+        {**base, "symbol": "AAPL", "name": "Apple Inc.", "exchange": "NASDAQ",
+         "attributes": ["has_options"]},
+        {**base, "id": "1c3c5a62-8b0e-4d3c-9d2f-6f0a1b2c3d4e", "symbol": "TXCO",
+         "name": "Texas Listed Co", "exchange": "TXSE"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_new_exchange_code_does_not_fail_the_whole_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Live on Railway 2026-11-13: one 'TXSE' row made the SDK's pydantic
+    parse raise for the entire ~13k-row list, so ticker search and the
+    universe refresh both broke. Uses the REAL TradingClient with only its
+    HTTP call stubbed, so the SDK's own parsing path is what is tested."""
+    monkeypatch.setattr(
+        alpaca_trading_client.TradingClient, "get", lambda self, path, data=None: _txse_rows()
+    )
+
+    assets = await list_tradable_assets(api_key="k", secret_key="s")
+
+    assert [a.symbol for a in assets] == ["AAPL", "TXCO"]
+    assert assets[0].has_options is True
+    assert assets[1] == AssetInfo(
+        symbol="TXCO", name="Texas Listed Co", tradable=True, fractionable=True,
+        shortable=True, easy_to_borrow=True, has_options=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_txse_symbol_is_not_reported_untradable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """lookup_asset turns any exception into None ("not tradable"), so the
+    same parse failure silently vetoed every TXSE name."""
+    row = _txse_rows()[1]
+    monkeypatch.setattr(
+        alpaca_trading_client.TradingClient, "get", lambda self, path, data=None: row
+    )
+
+    info = await lookup_asset("txco", api_key="k", secret_key="s")
+
+    assert info is not None
+    assert info.symbol == "TXCO"
+    assert info.tradable is True

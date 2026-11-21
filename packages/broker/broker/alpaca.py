@@ -612,12 +612,49 @@ class AssetInfo(NamedTuple):
     without a separate per-symbol options-chain lookup."""
 
 
+def _field(a: object, name: str) -> object:
+    """Read ``name`` off an asset record that is either the raw JSON dict
+    (``raw_data=True``, what this module requests) or an SDK model / test
+    double. One accessor so the two shapes cannot drift apart."""
+    if isinstance(a, dict):
+        return a.get(name)
+    return getattr(a, name, None)
+
+
 def _has_options_attr(a: object) -> bool:
     """Alpaca's own real options-eligibility flag, read off the asset
     record's ``attributes`` list (a plain list of strings, e.g.
     ``["has_options", "fractional_eh_enabled"]``) — never inferred."""
-    attrs = getattr(a, "attributes", None) or []
+    attrs = _field(a, "attributes") or []
     return "has_options" in attrs
+
+
+def _asset_client(api_key: str, secret_key: str) -> object:
+    """A TradingClient that returns asset records as raw JSON.
+
+    ``raw_data=True`` skips the SDK's pydantic parse of the response. That
+    parse validates ``exchange`` against a closed enum, and when Alpaca
+    started listing Texas Stock Exchange names (``exchange: "TXSE"``,
+    2026-11) alpaca-py 0.43.4 rejected the WHOLE ~13k-row list over a
+    dozen of them: ticker search and the daily universe refresh both
+    failed, and ``lookup_asset`` reported every TXSE name as untradable.
+    Nothing here reads ``exchange``, so a new venue must never be fatal.
+    """
+    from alpaca.trading.client import TradingClient
+
+    return TradingClient(api_key=api_key, secret_key=secret_key, paper=True, raw_data=True)
+
+
+def _asset_info(a: object, *, tradable: bool) -> AssetInfo:
+    return AssetInfo(
+        symbol=str(_field(a, "symbol")),
+        name=str(_field(a, "name") or ""),
+        tradable=tradable,
+        fractionable=bool(_field(a, "fractionable")),
+        shortable=_opt_bool(_field(a, "shortable")),
+        easy_to_borrow=_opt_bool(_field(a, "easy_to_borrow")),
+        has_options=_has_options_attr(a),
+    )
 
 
 async def lookup_asset(symbol: str, *, api_key: str, secret_key: str) -> AssetInfo | None:
@@ -626,26 +663,17 @@ async def lookup_asset(symbol: str, *, api_key: str, secret_key: str) -> AssetIn
     Returns None for both "no such symbol" and "not tradable here" — the
     caller only needs to know whether it can act on it.
     """
-    from alpaca.trading.client import TradingClient
     from alpaca.trading.requests import GetAssetsRequest
 
     def _fetch() -> AssetInfo | None:
-        client = TradingClient(api_key=api_key, secret_key=secret_key, paper=True)
+        client = _asset_client(api_key, secret_key)
         try:
-            a = client.get_asset(symbol.upper())
+            a = client.get_asset(symbol.upper())  # type: ignore[attr-defined]
         except Exception:
             return None
         if a is None:
             return None
-        return AssetInfo(
-            symbol=str(a.symbol),
-            name=str(getattr(a, "name", "") or ""),
-            tradable=bool(getattr(a, "tradable", False)),
-            fractionable=bool(getattr(a, "fractionable", False)),
-            shortable=_opt_bool(getattr(a, "shortable", None)),
-            easy_to_borrow=_opt_bool(getattr(a, "easy_to_borrow", None)),
-            has_options=_has_options_attr(a),
-        )
+        return _asset_info(a, tradable=bool(_field(a, "tradable")))
 
     _ = GetAssetsRequest  # imported for callers that want to list; keep the dep explicit
     return await asyncio.to_thread(_fetch)
@@ -658,27 +686,18 @@ async def list_tradable_assets(*, api_key: str, secret_key: str) -> list[AssetIn
     the set changes on listing/delisting, i.e. daily at most, so hitting
     Alpaca per keystroke would be absurd.
     """
-    from alpaca.trading.client import TradingClient
     from alpaca.trading.enums import AssetClass, AssetStatus
     from alpaca.trading.requests import GetAssetsRequest
 
     def _fetch() -> list[AssetInfo]:
-        client = TradingClient(api_key=api_key, secret_key=secret_key, paper=True)
-        assets = client.get_all_assets(
+        client = _asset_client(api_key, secret_key)
+        assets = client.get_all_assets(  # type: ignore[attr-defined]
             GetAssetsRequest(status=AssetStatus.ACTIVE, asset_class=AssetClass.US_EQUITY)
         )
         return [
-            AssetInfo(
-                symbol=str(a.symbol),
-                name=str(getattr(a, "name", "") or ""),
-                tradable=True,
-                fractionable=bool(getattr(a, "fractionable", False)),
-                shortable=_opt_bool(getattr(a, "shortable", None)),
-                easy_to_borrow=_opt_bool(getattr(a, "easy_to_borrow", None)),
-                has_options=_has_options_attr(a),
-            )
-            for a in assets
-            if getattr(a, "tradable", False)
+            _asset_info(a, tradable=True)
+            for a in assets or []
+            if _field(a, "tradable") and _field(a, "symbol")
         ]
 
     return await asyncio.to_thread(_fetch)
