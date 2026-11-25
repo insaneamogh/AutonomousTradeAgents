@@ -355,7 +355,7 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 # Build log
 
-### 2026-11-25 — feat(native): Aurora Calm palette for the Expo app, gauge, token parity test
+### 2026-11-25 — a2635cc8 feat(native): Aurora Calm palette for the Expo app, gauge, token parity test
 Session by Claude Sonnet 5.5 (`ID:MODEL2OFF`).
 - **What:** the native app (`apps/mobile/app`, `packages/ui`) now has the same
   look as the web tree. `packages/ui/src/tokens.ts` and `tailwind.config.js`
