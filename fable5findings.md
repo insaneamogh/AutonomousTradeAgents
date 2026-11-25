@@ -355,6 +355,36 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 # Build log
 
+### 2026-11-25 — 9c546b7a feat(desktop): Aurora Calm design system, dark and light, rail nav, rings
+Session by Claude Sonnet 5.5 (`ID:MODEL2OFF`).
+- **What:** re-skinned the desktop/web tree (also used at phone width) to the
+  design the operator approved after four mockup rounds. Tokens live in
+  `apps/mobile/src/desktop/theme.ts` under the same `--pg-*` names, so all ten
+  screens restyle with no per-screen edits. New primitives: `ScoreRing`,
+  `Gauge`, `Money`, `TickerTile`. Shell is now an icon rail. Picks cards and
+  the Dashboard hero/radar/activity use the new pieces. The canvas mockups
+  (Dark and Light pages) were the spec; `ds.css` there mirrors these tokens.
+- **VERIFIED:** `tsc --noEmit` clean; `pnpm --filter mobile exec jest` 22
+  suites / 187 tests pass; the 16 new tests in `primitives.test.tsx` fail when
+  clamp, minus sign, ring centring or the singular-contract title is broken.
+  Rendered the real primitives + `PLATINUM_CSS` to static HTML in both themes
+  and compared with the mockups.
+- **NOT verified:** the live app (the API cannot run on this Windows box) and
+  the phone-width rules in a real mobile browser. I did not check contrast of
+  every pill/label pairing, only the main text/outline tokens.
+- **Gotchas:** (1) `SCORE_BANDS[].hex` now holds `var(--pg-...)` strings, not
+  hexes: never concatenate alpha onto it (`${hex}33`); Council did and I removed
+  that glow. (2) A stray `C:\Users\amogpatil\node_modules\react` shadows the
+  repo's React for scripts run outside the repo; compile ad-hoc harnesses
+  inside it. (3) `pickTitle` is exported from `screens/Picks.tsx` and used by
+  Dashboard.
+- **Open:** native Expo screens (`apps/mobile/app/`, separate Tailwind tokens)
+  still have the old look; layouts of Positions, Strategies, Review, Insights,
+  Settings and PickDetail got the token restyle only (mockups have hit-rate
+  gauges, two-pane Picks, funnel bars); Settings appearance control is not
+  wired to the theme; Home has no dedicated "needs your decision" card; two
+  pre-existing eslint errors in Council.tsx:253 and Dashboard.tsx:431.
+
 ### 2026-11-21 — fix(broker): a new exchange code (TXSE) no longer breaks asset lookups
 Session by Claude Opus 5.5 (`ID:MODEL1REAL`).
 - **Found live in Railway logs** after the 2026-11-13 deploy: Alpaca now
