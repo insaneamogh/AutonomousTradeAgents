@@ -44,10 +44,10 @@ export function Tile({
   );
 }
 
-/** 10px caps label inside tiles. */
+/** 12px sentence-case label inside tiles (was 10px uppercase caps). */
 export function TileLabel({ children }: { children: React.ReactNode }) {
   return (
-    <Text className="text-[10px] font-semibold uppercase tracking-[1.1px] text-text-secondary dark:text-text-secondary-dark">
+    <Text className="text-[12px] font-medium leading-[16px] text-text-secondary dark:text-text-secondary-dark">
       {children}
     </Text>
   );

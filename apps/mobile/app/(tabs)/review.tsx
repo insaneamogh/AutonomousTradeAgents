@@ -220,7 +220,7 @@ function ReviewCardBody({ item }: { item: ReviewQueueItem }) {
       {item.selectedStrategy ? (
         <View className="gap-1.5 pt-1">
           <View className="flex-row items-baseline justify-between">
-            <Text className="text-[11px] font-semibold uppercase tracking-[1.1px] text-text-secondary dark:text-text-secondary-dark">
+            <Text className="text-[12px] font-medium text-text-secondary dark:text-text-secondary-dark">
               Strategy · {item.selectedStrategy}
             </Text>
             {item.regime ? (

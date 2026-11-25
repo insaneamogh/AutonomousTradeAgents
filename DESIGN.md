@@ -33,31 +33,40 @@ Anti-patterns to avoid:
 
 | Token | Light | Dark | Purpose |
 |---|---|---|---|
-| `bg-base` | `#FAFAF9` | `#0A0A0B` | App background |
-| `bg-surface` | `#FFFFFF` | `#141416` | Cards, sheets |
-| `bg-surface-elevated` | `#FFFFFF` | `#1C1C1F` | Modals, popovers |
-| `bg-surface-muted` | `#F5F5F4` | `#1C1C1F` | Disabled, subtle |
-| `border-subtle` | `#E7E5E4` | `#27272A` | Card borders |
-| `border-strong` | `#D6D3D1` | `#3F3F46` | Inputs, dividers |
-| `text-primary` | `#0C0A09` | `#FAFAF9` | Body text, headings |
-| `text-secondary` | `#57534E` | `#A1A1AA` | Captions, metadata |
-| `text-tertiary` | `#A8A29E` | `#71717A` | Disabled, hints |
-| `accent-primary` | `#1E40AF` | `#3B82F6` | Primary CTA, links |
-| `accent-primary-hover` | `#1E3A8A` | `#2563EB` | Pressed state |
+> **Aurora Calm (2026-11-25).** Warm ivory / warm slate, one accent (clay).
+> These values mirror `packages/ui/src/tokens.ts` and the web tree's
+> `src/desktop/theme.ts`; `src/__tests__/tokenParity.test.ts` fails if
+> `tailwind.config.js` drifts from `tokens.ts`.
+
+| Token | Light | Dark | Purpose |
+|---|---|---|---|
+| `bg-base` | `#FAF9F5` | `#121211` | App background |
+| `bg-surface` | `#FFFFFF` | `#1A1A18` | Cards, sheets |
+| `bg-surface-elevated` | `#FFFFFF` | `#201F1D` | Modals, popovers |
+| `bg-surface-muted` | `#F5F3EC` | `#201F1D` | Disabled, subtle |
+| `border-subtle` | `#E8E5DC` | `#2E2D2A` | Card borders |
+| `border-strong` | `#CFCBBF` | `#45433F` | Inputs, dividers |
+| `text-primary` | `#171614` | `#F4F1EA` | Body text, headings |
+| `text-secondary` | `#45433E` | `#C5C2BA` | Captions, metadata |
+| `text-tertiary` | `#6D6B65` | `#8F8C85` | Disabled, hints |
+| `accent-primary` | `#D97757` | `#D97757` | Primary CTA, toggles, bars (a FILL) |
+| `accent-primary-hover` | `#C8643F` | `#E38A6D` | Pressed state |
+| `accent-text` | `#A9502F` | `#E8947A` | Accent copy on the page (links); passes 4.5:1 |
+| `on-accent` | `#1A1613` | `#1A1613` | A label sitting ON an accent fill (white fails 4.5:1) |
 
 ### Trading semantic colors (the critical ones)
 
 | Token | Light | Dark | Purpose |
 |---|---|---|---|
-| `gain` | `#15803D` | `#22C55E` | Positive P&L, buy fills |
-| `gain-subtle` | `#DCFCE7` | `#14532D` | Backgrounds, badges |
-| `loss` | `#B91C1C` | `#EF4444` | Negative P&L, sell fills |
-| `loss-subtle` | `#FEE2E2` | `#7F1D1D` | Backgrounds, badges |
-| `neutral` | `#57534E` | `#A1A1AA` | Unchanged, pending |
-| `warning` | `#B45309` | `#F59E0B` | Risk warnings, expiring auth |
-| `warning-subtle` | `#FEF3C7` | `#78350F` | Warning backgrounds |
-| `danger` | `#991B1B` | `#DC2626` | Drawdown breaker, auth failure |
-| `info` | `#1E40AF` | `#60A5FA` | Agent notices, info badges |
+| `gain` | `#2B7A4E` | `#7BC99A` | Positive P&L, buy fills |
+| `gain-subtle` | `#E3F1E8` | `#1B2A21` | Backgrounds, badges |
+| `loss` | `#B4453B` | `#E4857C` | Negative P&L, sell fills |
+| `loss-subtle` | `#F9E6E3` | `#2D1B19` | Backgrounds, badges |
+| `neutral` | `#45433E` | `#C5C2BA` | Unchanged, pending |
+| `warning` | `#96620F` | `#D9A85B` | Risk warnings, expiring auth |
+| `warning-subtle` | `#F6ECD6` | `#332914` | Warning backgrounds |
+| `danger` | `#9A2F26` | `#E4857C` | Drawdown breaker, auth failure |
+| `info` | `#3C6FA8` | `#8FB1DB` | Agent notices, info badges |
 
 **Important:** Don't use bright green/red for everything positive/negative. Reserve them for P&L on the dashboard. For pills, badges, and small indicators, use the subtle variants. This is the single biggest visual difference between a calm trading app and an anxiety-inducing one.
 

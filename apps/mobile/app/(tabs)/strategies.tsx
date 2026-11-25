@@ -8,8 +8,9 @@
 import { ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { ConfidenceBar, ErrorState, Skeleton, formatRelative } from '@app/ui';
+import { ErrorState, Skeleton, formatRelative } from '@app/ui';
 
+import { Gauge } from '@/components/Gauge';
 import {
   DirectionPill,
   HeroHeadline,
@@ -92,7 +93,18 @@ function StrategyTile({ s }: { s: StrategyPerformance }) {
         <DirectionPill label={chip.label} tone={chip.tone} />
       </View>
 
-      <ConfidenceBar value={s.confidence} />
+      <View className="flex-row items-center gap-4">
+        <Gauge value={s.confidence * 100} size={88} label="confidence" />
+        <View className="flex-1 gap-1">
+          <TileLabel>Record</TileLabel>
+          <TileValue>
+            {s.wins}–{s.losses}
+          </TileValue>
+          <Text className="text-[12px] leading-[16px] text-text-tertiary dark:text-text-tertiary-dark">
+            Confidence moves as Reflection grades closed trades.
+          </Text>
+        </View>
+      </View>
 
       <View className="flex-row gap-2">
         <Tile inset className="flex-1 gap-0.5 p-2.5">
@@ -134,7 +146,7 @@ function StrategyTile({ s }: { s: StrategyPerformance }) {
 function Foot({ label, value }: { label: string; value: string }) {
   return (
     <View className="gap-0.5">
-      <Text className="text-[9px] font-semibold uppercase tracking-[1px] text-text-tertiary dark:text-text-tertiary-dark">
+      <Text className="text-[12px] font-medium text-text-tertiary dark:text-text-tertiary-dark">
         {label}
       </Text>
       <Text className="text-[11px] text-text-secondary dark:text-text-secondary-dark">{value}</Text>

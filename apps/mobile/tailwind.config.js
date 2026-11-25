@@ -23,113 +23,121 @@ module.exports = {
   theme: {
     extend: {
       colors: {
+        // Aurora Calm: warm ivory / warm slate, ONE accent (clay).
+        // Every value here mirrors `packages/ui/src/tokens.ts`.
+
         // ── Surfaces ──────────────────────────────────────────────
-        'bg-base':                 '#FAFAF9',
-        'bg-base-dark':            '#0A0A0B',
+        'bg-base':                 '#FAF9F5',
+        'bg-base-dark':            '#121211',
         'bg-surface':              '#FFFFFF',
-        'bg-surface-dark':         '#141416',
+        'bg-surface-dark':         '#1A1A18',
         'bg-surface-elevated':     '#FFFFFF',
-        'bg-surface-elevated-dark':'#1C1C1F',
-        'bg-surface-muted':        '#F5F5F4',
-        'bg-surface-muted-dark':   '#1C1C1F',
+        'bg-surface-elevated-dark':'#201F1D',
+        'bg-surface-muted':        '#F5F3EC',
+        'bg-surface-muted-dark':   '#201F1D',
 
         // ── Borders ───────────────────────────────────────────────
-        'border-subtle':         '#E7E5E4',
-        'border-subtle-dark':    '#27272A',
-        'border-strong':         '#D6D3D1',
-        'border-strong-dark':    '#3F3F46',
+        'border-subtle':         '#E8E5DC',
+        'border-subtle-dark':    '#2E2D2A',
+        'border-strong':         '#CFCBBF',
+        'border-strong-dark':    '#45433F',
 
         // ── Text ──────────────────────────────────────────────────
-        'text-primary':          '#0C0A09',
-        'text-primary-dark':     '#FAFAF9',
-        'text-secondary':        '#57534E',
-        'text-secondary-dark':   '#A1A1AA',
-        'text-tertiary':         '#A8A29E',
-        'text-tertiary-dark':    '#71717A',
+        'text-primary':          '#171614',
+        'text-primary-dark':     '#F4F1EA',
+        'text-secondary':        '#45433E',
+        'text-secondary-dark':   '#C5C2BA',
+        'text-tertiary':         '#6D6B65',
+        'text-tertiary-dark':    '#8F8C85',
 
         // ── Accent ────────────────────────────────────────────────
-        'accent-primary':              '#1E40AF',
-        'accent-primary-dark':         '#3B82F6',
-        'accent-primary-hover':        '#1E3A8A',
-        'accent-primary-hover-dark':   '#2563EB',
+        // `accent-primary` is a FILL; `accent-text` is accent copy on the
+        // page (4.5:1); `on-accent` is a label sitting ON a clay fill.
+        'accent-primary':              '#D97757',
+        'accent-primary-dark':         '#D97757',
+        'accent-primary-hover':        '#C8643F',
+        'accent-primary-hover-dark':   '#E38A6D',
+        'accent-text':                 '#A9502F',
+        'accent-text-dark':            '#E8947A',
+        'on-accent':                   '#1A1613',
+        'on-accent-dark':              '#1A1613',
 
         // ── Bento (Design D) ──────────────────────────────────────
-        // Editorial-bento skin: canvas behind everything, tiles for
-        // every content block, one platinum/ink CTA per screen.
-        'bg-canvas':             '#FAFAF9',
-        'bg-canvas-dark':        '#131314',
+        // Canvas behind everything, tiles for every content block, one
+        // clay CTA per screen.
+        'bg-canvas':             '#FAF9F5',
+        'bg-canvas-dark':        '#121211',
         'bg-tile':               '#FFFFFF',
-        'bg-tile-dark':          '#1C1B1C',
-        'bg-tile-inset':         '#F4F4F3',
-        'bg-tile-inset-dark':    '#201F20',
-        'cta':                   '#1B1B1F',
-        'cta-dark':              '#F1F0F4',
-        'cta-label':             '#FAFAF9',
-        'cta-label-dark':        '#131314',
-        'mint':                  '#0E8A5F',
-        'mint-dark':             '#00E383',
-        'mint-subtle':           '#DFF5EB',
-        'mint-subtle-dark':      '#0E2A1D',
-        'rose':                  '#B3424A',
-        'rose-dark':             '#FFB2B8',
-        'rose-subtle':           '#FBE7E9',
-        'rose-subtle-dark':      '#2A1416',
-        'hairline':              '#E7E5E4',
-        'hairline-dark':         '#353436',
+        'bg-tile-dark':          '#1C1B19',
+        'bg-tile-inset':         '#F3F1EA',
+        'bg-tile-inset-dark':    '#242320',
+        'cta':                   '#D97757',
+        'cta-dark':              '#D97757',
+        'cta-label':             '#1A1613',
+        'cta-label-dark':        '#1A1613',
+        'mint':                  '#2B7A4E',
+        'mint-dark':             '#7BC99A',
+        'mint-subtle':           '#E3F1E8',
+        'mint-subtle-dark':      '#1B2A21',
+        'rose':                  '#B4453B',
+        'rose-dark':             '#E4857C',
+        'rose-subtle':           '#F9E6E3',
+        'rose-subtle-dark':      '#2D1B19',
+        'hairline':              '#E8E5DC',
+        'hairline-dark':         '#2E2D2A',
 
         // ── Trading semantics ─────────────────────────────────────
-        'gain':                  '#15803D',
-        'gain-dark':             '#22C55E',
-        'gain-subtle':           '#DCFCE7',
-        'gain-subtle-dark':      '#14532D',
-        'loss':                  '#B91C1C',
-        'loss-dark':             '#EF4444',
-        'loss-subtle':           '#FEE2E2',
-        'loss-subtle-dark':      '#7F1D1D',
-        'neutral':               '#57534E',
-        'neutral-dark':          '#A1A1AA',
-        'warning':               '#B45309',
-        'warning-dark':          '#F59E0B',
-        'warning-subtle':        '#FEF3C7',
-        'warning-subtle-dark':   '#78350F',
-        'danger':                '#991B1B',
-        'danger-dark':           '#DC2626',
-        'info':                  '#1E40AF',
-        'info-dark':             '#60A5FA',
+        'gain':                  '#2B7A4E',
+        'gain-dark':             '#7BC99A',
+        'gain-subtle':           '#E3F1E8',
+        'gain-subtle-dark':      '#1B2A21',
+        'loss':                  '#B4453B',
+        'loss-dark':             '#E4857C',
+        'loss-subtle':           '#F9E6E3',
+        'loss-subtle-dark':      '#2D1B19',
+        'neutral':               '#45433E',
+        'neutral-dark':          '#C5C2BA',
+        'warning':               '#96620F',
+        'warning-dark':          '#D9A85B',
+        'warning-subtle':        '#F6ECD6',
+        'warning-subtle-dark':   '#332914',
+        'danger':                '#9A2F26',
+        'danger-dark':           '#E4857C',
+        'info':                  '#3C6FA8',
+        'info-dark':             '#8FB1DB',
 
-        // ── Platinum Glass (DESKTOP ONLY) ─────────────────────────
-        // Mirror of `src/desktop/theme.ts`, which is where the desktop
-        // tree actually consumes them (as `--pg-*` CSS custom
-        // properties — plain CSS is required for backdrop-filter, grid
-        // and focus-visible, none of which NativeWind can express).
-        // Registered here so the config stays the one token registry:
-        // NOTHING in either tree may hard-code one of these hexes.
-        // `-pgd-` = Platinum Glass dark, `-pgl-` = Refined Daylight.
-        'pgd-surface':           '#131314',
-        'pgd-surface-lowest':    '#0E0E0F',
-        'pgd-surface-low':       '#1C1B1C',
-        'pgd-surface-high':      '#2A2A2B',
-        'pgd-on-surface':        '#E5E2E3',
-        'pgd-outline':           '#909094',
-        'pgd-primary':           '#F1F0F4',
-        'pgd-bull':              '#00E383',
-        'pgd-bear':              '#FFB2B8',
-        'pgd-error':             '#FFB4AB',
-        'pgl-surface':           '#E8EDF5',
+        // ── Desktop tree (web) ────────────────────────────────────
+        // Mirror of `src/desktop/theme.ts`, which consumes them as
+        // `--pg-*` CSS custom properties (plain CSS is required for
+        // backdrop-filter, grid and focus-visible). Registered here so the
+        // config stays the one token registry: NOTHING in either tree may
+        // hard-code one of these hexes.
+        // `-pgd-` = dark, `-pgl-` = light.
+        'pgd-surface':           '#121211',
+        'pgd-surface-lowest':    '#0D0D0C',
+        'pgd-surface-low':       '#1A1A18',
+        'pgd-surface-high':      '#2A2927',
+        'pgd-on-surface':        '#F4F1EA',
+        'pgd-outline':           '#8F8C85',
+        'pgd-primary':           '#F4F1EA',
+        'pgd-bull':              '#7BC99A',
+        'pgd-bear':              '#E4857C',
+        'pgd-error':             '#E4857C',
+        'pgl-surface':           '#FAF9F5',
         'pgl-surface-lowest':    '#FFFFFF',
-        'pgl-on-surface':        '#191C1E',
-        'pgl-outline':           '#73787B',
-        'pgl-primary':           '#50616B',
-        'pgl-bull':              '#006E2D',
-        'pgl-bear':              '#BF0715',
-        'pgl-error':             '#BA1A1A',
-        // Mode-locked 5-band score palette (STITCH §2.5) — identical
-        // hex in light and dark by design.
-        'band-very-bullish':     '#00E383',
-        'band-bullish':          '#006E2D',
-        'band-neutral':          '#A1A1AA',
-        'band-cautious':         '#FFB2B8',
-        'band-bearish':          '#BF0715',
+        'pgl-on-surface':        '#171614',
+        'pgl-outline':           '#6D6B65',
+        'pgl-primary':           '#171614',
+        'pgl-bull':              '#2B7A4E',
+        'pgl-bear':              '#B4453B',
+        'pgl-error':             '#B4453B',
+        // 5-band score palette. Identical in light and dark by design, so
+        // each is a mid-tone that reads on both grounds.
+        'band-very-bullish':     '#4FA776',
+        'band-bullish':          '#3E8F63',
+        'band-neutral':          '#8F8C85',
+        'band-cautious':         '#D9A85B',
+        'band-bearish':          '#B4453B',
       },
       borderRadius: {
         sm: '6px',

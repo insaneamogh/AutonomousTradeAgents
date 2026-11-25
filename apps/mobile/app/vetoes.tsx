@@ -151,7 +151,7 @@ function RuleTile({ r, currency }: { r: VetoRuleDto; currency: InsightsCurrency 
           ×{r.count}
         </Text>
       </View>
-      <Text className="text-[10px] uppercase tracking-[0.8px] text-text-tertiary dark:text-text-tertiary-dark">
+      <Text className="text-[12px] text-text-tertiary dark:text-text-tertiary-dark">
         {r.rule}
       </Text>
       <View className="flex-row gap-2">

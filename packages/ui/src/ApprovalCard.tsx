@@ -88,7 +88,7 @@ export function ApprovalCard({
     <Card variant="default" className="gap-3">
       {/* Header */}
       <View className="flex-row items-center justify-between">
-        <Text className="text-[11px] font-semibold uppercase tracking-[1.2px] text-text-secondary dark:text-text-secondary-dark">
+        <Text className="text-[12px] font-medium text-text-secondary dark:text-text-secondary-dark">
           Agent proposal
         </Text>
         <Text className="text-[11px] text-text-tertiary dark:text-text-tertiary-dark">
@@ -155,7 +155,7 @@ export function ApprovalCard({
         accessibilityRole="button"
         accessibilityLabel={expanded ? 'Hide bull and bear case' : 'Show bull and bear case'}
       >
-        <Text className="text-[13px] font-medium text-accent-primary dark:text-accent-primary-dark">
+        <Text className="text-[13px] font-medium text-accent-text dark:text-accent-text-dark">
           {expanded ? '▾ Hide reasoning' : '▸ Why this trade'}
         </Text>
       </Pressable>
@@ -216,7 +216,7 @@ function DotRow({ label, level, tone }: DotRowProps) {
       : 'bg-accent-primary dark:bg-accent-primary-dark';
   return (
     <View className="flex-row items-center gap-2">
-      <Text className="text-[11px] font-semibold uppercase tracking-[1.1px] text-text-secondary dark:text-text-secondary-dark">
+      <Text className="text-[12px] font-medium text-text-secondary dark:text-text-secondary-dark">
         {label}
       </Text>
       <View className="flex-row gap-1">
@@ -242,7 +242,7 @@ interface CaseBlockProps {
 function CaseBlock({ label, body }: CaseBlockProps) {
   return (
     <View className="rounded-md border border-border-subtle bg-bg-surface-muted p-3 dark:border-border-subtle-dark dark:bg-bg-surface-muted-dark">
-      <Text className="mb-1 text-[11px] font-semibold uppercase tracking-[1.1px] text-text-secondary dark:text-text-secondary-dark">
+      <Text className="mb-1 text-[12px] font-medium text-text-secondary dark:text-text-secondary-dark">
         {label}
       </Text>
       <Text className="text-[13px] leading-[19px] text-text-primary dark:text-text-primary-dark">

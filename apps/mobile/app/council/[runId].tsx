@@ -205,7 +205,7 @@ function ScoreBadge({
   }
   if (typeof summary.regime === 'string') {
     return (
-      <Text className="text-[11px] font-semibold uppercase tracking-[1px] text-text-secondary dark:text-text-secondary-dark">
+      <Text className="text-[12px] font-medium text-text-secondary dark:text-text-secondary-dark">
         {summary.regime}
       </Text>
     );
@@ -248,7 +248,7 @@ function VerdictTile({
   }
   return (
     <Tile className="gap-1.5">
-      <Text className="text-[10px] font-semibold uppercase tracking-[1.1px] text-text-secondary dark:text-text-secondary-dark">
+      <Text className="text-[12px] font-medium text-text-secondary dark:text-text-secondary-dark">
         {result.finalAction === 'VETOED' ? 'Vetoed by the risk engine' : 'Council holds'}
       </Text>
       <Text className="text-[13px] leading-[19px] text-text-secondary dark:text-text-secondary-dark">

@@ -7,7 +7,8 @@
  *
  * Hard rules:
  *  - Never use raw hex in components. Always `palette[mode].<token>`.
- *  - Approve-button color = `accentPrimary`, NEVER `gain`. Green is reserved for fills + P&L.
+ *  - Approve-button color = `accentPrimary` (clay), NEVER `gain`. Green is reserved for fills + P&L.
+ *  - Accent TEXT on a page uses `accentText`; a label ON an accent fill uses `onAccent`.
  *  - All numerals use `font.mono` with tabular-nums.
  */
 
@@ -15,76 +16,85 @@ export type ThemeMode = 'light' | 'dark';
 
 // ── Color ────────────────────────────────────────────────────────────
 export const palette = {
+  // Aurora Calm: warm ivory / warm slate, ONE accent (clay). Colour carries
+  // meaning only (gain / loss / caution); everything else is a tint of ink.
+  // Mirrors `apps/mobile/src/desktop/theme.ts` so web and native agree.
   light: {
     // Surfaces
-    bgBase:             '#FAFAF9',
+    bgBase:             '#FAF9F5',
     bgSurface:          '#FFFFFF',
     bgSurfaceElevated:  '#FFFFFF',
-    bgSurfaceMuted:     '#F5F5F4',
+    bgSurfaceMuted:     '#F5F3EC',
     // Borders
-    borderSubtle:       '#E7E5E4',
-    borderStrong:       '#D6D3D1',
+    borderSubtle:       '#E8E5DC',
+    borderStrong:       '#CFCBBF',
     // Text
-    textPrimary:        '#0C0A09',
-    textSecondary:      '#57534E',
-    textTertiary:       '#A8A29E',
-    // Accent
-    accentPrimary:      '#1E40AF',
-    accentPrimaryHover: '#1E3A8A',
+    textPrimary:        '#171614',
+    textSecondary:      '#45433E',
+    textTertiary:       '#6D6B65',
+    // Accent. `accentPrimary` is a FILL (buttons, toggles, bars); text that
+    // sits on the page uses `accentText`, which clears 4.5:1; a label that
+    // sits ON a clay fill uses `onAccent`.
+    accentPrimary:      '#D97757',
+    accentPrimaryHover: '#C8643F',
+    accentText:         '#A9502F',
+    onAccent:           '#1A1613',
     // Trading
-    gain:               '#15803D',
-    gainSubtle:         '#DCFCE7',
-    loss:               '#B91C1C',
-    lossSubtle:         '#FEE2E2',
-    neutral:            '#57534E',
-    warning:            '#B45309',
-    warningSubtle:      '#FEF3C7',
-    danger:             '#991B1B',
-    info:               '#1E40AF',
+    gain:               '#2B7A4E',
+    gainSubtle:         '#E3F1E8',
+    loss:               '#B4453B',
+    lossSubtle:         '#F9E6E3',
+    neutral:            '#45433E',
+    warning:            '#96620F',
+    warningSubtle:      '#F6ECD6',
+    danger:             '#9A2F26',
+    info:               '#3C6FA8',
     // Bento (Design D)
-    bgCanvas:           '#FAFAF9',
+    bgCanvas:           '#FAF9F5',
     bgTile:             '#FFFFFF',
-    bgTileInset:        '#F4F4F3',
-    cta:                '#1B1B1F',
-    ctaLabel:           '#FAFAF9',
-    mint:               '#0E8A5F',
-    mintSubtle:         '#DFF5EB',
-    rose:               '#B3424A',
-    roseSubtle:         '#FBE7E9',
-    hairline:           '#E7E5E4',
+    bgTileInset:        '#F3F1EA',
+    cta:                '#D97757',
+    ctaLabel:           '#1A1613',
+    mint:               '#2B7A4E',
+    mintSubtle:         '#E3F1E8',
+    rose:               '#B4453B',
+    roseSubtle:         '#F9E6E3',
+    hairline:           '#E8E5DC',
   },
   dark: {
-    bgBase:             '#0A0A0B',
-    bgSurface:          '#141416',
-    bgSurfaceElevated:  '#1C1C1F',
-    bgSurfaceMuted:     '#1C1C1F',
-    borderSubtle:       '#27272A',
-    borderStrong:       '#3F3F46',
-    textPrimary:        '#FAFAF9',
-    textSecondary:      '#A1A1AA',
-    textTertiary:       '#71717A',
-    accentPrimary:      '#3B82F6',
-    accentPrimaryHover: '#2563EB',
-    gain:               '#22C55E',
-    gainSubtle:         '#14532D',
-    loss:               '#EF4444',
-    lossSubtle:         '#7F1D1D',
-    neutral:            '#A1A1AA',
-    warning:            '#F59E0B',
-    warningSubtle:      '#78350F',
-    danger:             '#DC2626',
-    info:               '#60A5FA',
+    bgBase:             '#121211',
+    bgSurface:          '#1A1A18',
+    bgSurfaceElevated:  '#201F1D',
+    bgSurfaceMuted:     '#201F1D',
+    borderSubtle:       '#2E2D2A',
+    borderStrong:       '#45433F',
+    textPrimary:        '#F4F1EA',
+    textSecondary:      '#C5C2BA',
+    textTertiary:       '#8F8C85',
+    accentPrimary:      '#D97757',
+    accentPrimaryHover: '#E38A6D',
+    accentText:         '#E8947A',
+    onAccent:           '#1A1613',
+    gain:               '#7BC99A',
+    gainSubtle:         '#1B2A21',
+    loss:               '#E4857C',
+    lossSubtle:         '#2D1B19',
+    neutral:            '#C5C2BA',
+    warning:            '#D9A85B',
+    warningSubtle:      '#332914',
+    danger:             '#E4857C',
+    info:               '#8FB1DB',
     // Bento (Design D)
-    bgCanvas:           '#131314',
-    bgTile:             '#1C1B1C',
-    bgTileInset:        '#201F20',
-    cta:                '#F1F0F4',
-    ctaLabel:           '#131314',
-    mint:               '#00E383',
-    mintSubtle:         '#0E2A1D',
-    rose:               '#FFB2B8',
-    roseSubtle:         '#2A1416',
-    hairline:           '#353436',
+    bgCanvas:           '#121211',
+    bgTile:             '#1C1B19',
+    bgTileInset:        '#242320',
+    cta:                '#D97757',
+    ctaLabel:           '#1A1613',
+    mint:               '#7BC99A',
+    mintSubtle:         '#1B2A21',
+    rose:               '#E4857C',
+    roseSubtle:         '#2D1B19',
+    hairline:           '#2E2D2A',
   },
 } as const;
 

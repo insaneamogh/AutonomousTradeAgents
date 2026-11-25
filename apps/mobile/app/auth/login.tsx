@@ -123,7 +123,7 @@ export default function LoginScreen() {
 
           <Card variant="default" className="gap-4">
             <View className="gap-2">
-              <Text className="text-[11px] font-semibold uppercase tracking-[1.2px] text-text-secondary dark:text-text-secondary-dark">
+              <Text className="text-[12px] font-medium text-text-secondary dark:text-text-secondary-dark">
                 Email
               </Text>
               <TextInput
@@ -168,7 +168,7 @@ export default function LoginScreen() {
 
           <View className="flex-row items-center gap-3">
             <View className="h-px flex-1 bg-border-strong dark:bg-border-strong-dark" />
-            <Text className="text-[12px] font-medium uppercase tracking-[1.2px] text-text-tertiary dark:text-text-tertiary-dark">
+            <Text className="text-[12px] font-medium text-text-tertiary dark:text-text-tertiary-dark">
               or
             </Text>
             <View className="h-px flex-1 bg-border-strong dark:bg-border-strong-dark" />

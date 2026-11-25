@@ -163,7 +163,7 @@ export default function WatchlistScreen() {
                 >
                   {item.symbol}
                 </Text>
-                <Text className="text-[10px] uppercase tracking-[1px] text-text-tertiary dark:text-text-tertiary-dark">
+                <Text className="text-[12px] text-text-tertiary dark:text-text-tertiary-dark">
                   {item.assetClass}
                 </Text>
               </View>

@@ -72,7 +72,7 @@ export default function SettingsScreen() {
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <Text className="mt-2 text-[11px] font-semibold uppercase tracking-[1.2px] text-text-secondary dark:text-text-secondary-dark">
+    <Text className="mt-2 text-[12px] font-medium text-text-secondary dark:text-text-secondary-dark">
       {children}
     </Text>
   );
@@ -253,7 +253,7 @@ function NotificationsCard() {
             statusTone === 'neutral' && 'bg-text-tertiary dark:bg-text-tertiary-dark',
           )}
         />
-        <Text className="text-[11px] font-semibold uppercase tracking-[1.1px] text-text-secondary dark:text-text-secondary-dark">
+        <Text className="text-[12px] font-medium text-text-secondary dark:text-text-secondary-dark">
           {statusLabel}
         </Text>
       </View>
@@ -853,7 +853,7 @@ function ConnectedBrokerCard({
                   'border border-hairline dark:border-hairline-dark',
                 )}
               >
-                <Text className="text-[10px] uppercase tracking-[1px] text-text-secondary dark:text-text-secondary-dark">
+                <Text className="text-[12px] text-text-secondary dark:text-text-secondary-dark">
                   Connected via server configuration
                 </Text>
               </View>
@@ -1080,7 +1080,7 @@ function AccountCard() {
   return (
     <Card variant="default" className="gap-3">
       <View className="gap-1">
-        <Text className="text-[11px] font-semibold uppercase tracking-[1.2px] text-text-secondary dark:text-text-secondary-dark">
+        <Text className="text-[12px] font-medium text-text-secondary dark:text-text-secondary-dark">
           Signed in as
         </Text>
         <Text className="text-[15px] font-semibold text-text-primary dark:text-text-primary-dark">

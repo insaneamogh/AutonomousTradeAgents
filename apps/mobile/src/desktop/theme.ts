@@ -1,10 +1,11 @@
 /**
  * Platinum Glass — the DESKTOP design system.
  *
- * This is a DIFFERENT system from the mobile one in `DESIGN.md` (calm,
- * muted, Inter, accent-primary blue). Do not blend them: mobile keeps its
- * tokens in `tailwind.config.js`, desktop keeps its tokens here, and the
- * two trees never share a component.
+ * Same LOOK as the native app in `DESIGN.md` (Aurora Calm: ivory/slate,
+ * one clay accent), but a separate token registry: native keeps its tokens
+ * in `packages/ui/src/tokens.ts` + `tailwind.config.js`, the web tree keeps
+ * its tokens here, and the two trees never share a component. Keep the
+ * hexes in step when either changes.
  *
  * Source of truth: `STITCH_DESIGN_SYSTEM.md` §2 (colour), §3 (type),
  * §4 (spacing / radii / motion), §5 (glass + halos).

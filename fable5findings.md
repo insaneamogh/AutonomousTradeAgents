@@ -355,6 +355,34 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 # Build log
 
+### 2026-11-25 — feat(native): Aurora Calm palette for the Expo app, gauge, token parity test
+Session by Claude Sonnet 5.5 (`ID:MODEL2OFF`).
+- **What:** the native app (`apps/mobile/app`, `packages/ui`) now has the same
+  look as the web tree. `packages/ui/src/tokens.ts` and `tailwind.config.js`
+  carry the Aurora Calm palette (ivory/warm slate, clay accent). Two NEW
+  tokens: `accentText` (accent copy on the page, 4.5:1) and `onAccent` (label
+  on a clay fill; white on clay is ~3:1). Button primary label, tertiary
+  button, ApprovalCard link, ConfidenceBar label use them. 21 quiet grey
+  uppercase section labels are now sentence case (status pills, banners and
+  tab labels were left alone on purpose). New native `Gauge`
+  (`src/components/Gauge.tsx`, geometry in `gaugeMath.ts`) on the Strategies
+  tiles. `DESIGN.md` colour tables and two stale comments updated.
+- **NEW GUARD:** `src/__tests__/tokenParity.test.ts` fails if
+  `tailwind.config.js` drifts from `tokens.ts` (it was a manual mirror).
+- **VERIFIED:** `tsc` clean; mobile jest 25 suites / 203 tests; `packages/ui`
+  jest 13 tests; eslint clean on the new native files. Mutation checks: one
+  wrong mirrored hex, a wrong gauge sweep/clamp/label threshold, and the
+  wrong stroke token each fail a test.
+- **NOT verified:** the native app has not been SEEN (no simulator on this
+  box). Colours were checked by value and contrast arithmetic, not on screen.
+  Native text still uses Inter only: no Newsreader (needs a font package),
+  so serif numerals exist on web only.
+- **Gotcha:** subpath imports like `@app/ui/tokens` work in jest and tsc
+  (mapper / tsconfig paths) but NOT in Metro. Only tests use them; app code
+  must import from `@app/ui`.
+- **Open:** native Review/Home/Approvals still show confidence as a bar, not a
+  gauge; remaining ~14 uppercase labels are semantic pills (kept).
+
 ### 2026-11-25 — 311b1689 feat(desktop): finish the Aurora Calm screens (Home decision card, Positions, Strategies, Review, PickDetail)
 Session by Claude Sonnet 5.5 (`ID:MODEL2OFF`).
 - **What:** the layout half of the redesign that 9c546b7a left open. Home has

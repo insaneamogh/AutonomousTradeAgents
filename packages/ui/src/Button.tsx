@@ -44,9 +44,10 @@ const VARIANT_CLASSES: Record<Variant, string> = {
 };
 
 const VARIANT_LABEL_CLASSES: Record<Variant, string> = {
-  primary: 'text-white',
+  // Ink on clay: white on #D97757 is only ~3:1.
+  primary: 'text-on-accent dark:text-on-accent-dark',
   secondary: 'text-text-primary dark:text-text-primary-dark',
-  tertiary: 'text-accent-primary dark:text-accent-primary-dark',
+  tertiary: 'text-accent-text dark:text-accent-text-dark',
   destructive: 'text-white',
 };
 

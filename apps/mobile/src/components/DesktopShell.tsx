@@ -18,9 +18,9 @@
  *       `src/desktop/**`. It REPLACES the router subtree rather than
  *       wrapping it, so no mobile screen mounts on desktop either.
  *
- * Two design systems, deliberately not blended:
- *   - phone  → `DESIGN.md` (calm, muted, Inter, accent-primary blue)
- *   - desktop → `STITCH_DESIGN_SYSTEM.md` (Platinum Glass)
+ * Two token registries, one look (Aurora Calm: ivory/slate, clay accent):
+ *   - native → `DESIGN.md`, tokens in `packages/ui` + `tailwind.config.js`
+ *   - web    → `STITCH_DESIGN_SYSTEM.md` layout, tokens in `src/desktop/theme.ts`
  *
  * The desktop module is pulled in with a guarded `require` so it is never
  * evaluated in the native bundle — it is plain DOM + CSS and has no

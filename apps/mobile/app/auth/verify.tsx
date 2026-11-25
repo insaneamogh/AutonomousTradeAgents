@@ -141,7 +141,7 @@ export default function VerifyScreen() {
 
               <Card variant="default" className="gap-4">
                 <View className="gap-2">
-                  <Text className="text-[11px] font-semibold uppercase tracking-[1.2px] text-text-secondary dark:text-text-secondary-dark">
+                  <Text className="text-[12px] font-medium text-text-secondary dark:text-text-secondary-dark">
                     Email
                   </Text>
                   <TextInput
@@ -168,7 +168,7 @@ export default function VerifyScreen() {
                 </View>
 
                 <View className="gap-2">
-                  <Text className="text-[11px] font-semibold uppercase tracking-[1.2px] text-text-secondary dark:text-text-secondary-dark">
+                  <Text className="text-[12px] font-medium text-text-secondary dark:text-text-secondary-dark">
                     Login token
                   </Text>
                   <TextInput

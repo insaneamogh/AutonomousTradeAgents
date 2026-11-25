@@ -270,7 +270,7 @@ export default function PositionsScreen() {
                         'border border-hairline dark:border-hairline-dark',
                       )}
                     >
-                      <Text className="text-[10px] uppercase tracking-[1px] text-text-secondary dark:text-text-secondary-dark">
+                      <Text className="text-[12px] text-text-secondary dark:text-text-secondary-dark">
                         {p.status === 'pending_fill'
                           ? 'Awaiting fill'
                           : !p.managed
@@ -426,7 +426,7 @@ export default function PositionsScreen() {
                     Opened {formatDateTime(p.openedAt)} · closed {formatDateTime(p.closedAt)}
                   </Text>
                   <View className="rounded-full border border-hairline px-2 py-0.5 dark:border-hairline-dark">
-                    <Text className="text-[10px] uppercase tracking-[1px] text-text-secondary dark:text-text-secondary-dark">
+                    <Text className="text-[12px] text-text-secondary dark:text-text-secondary-dark">
                       {p.exitMode === 'agent' ? 'Agent exit' : 'Manual exit'}
                     </Text>
                   </View>

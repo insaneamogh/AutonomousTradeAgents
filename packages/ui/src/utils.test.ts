@@ -21,8 +21,10 @@ describe('cn', () => {
 
 describe('color', () => {
   it('resolves a palette token for the given theme', () => {
-    expect(color('light', 'accentPrimary')).toBe('#1E40AF');
-    expect(color('dark', 'accentPrimary')).toBe('#3B82F6');
+    expect(color('light', 'accentPrimary')).toBe('#D97757');
+    expect(color('dark', 'accentPrimary')).toBe('#D97757');
+    expect(color('light', 'accentText')).toBe('#A9502F');
+    expect(color('dark', 'accentText')).toBe('#E8947A');
   });
 });
 

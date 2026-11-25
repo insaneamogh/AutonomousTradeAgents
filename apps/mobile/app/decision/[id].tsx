@@ -152,7 +152,7 @@ function EventRow({ e, isLast }: { e: TimelineEventDto; isLast: boolean }) {
           <View className="mt-1 gap-1">
             {(e.data.analysts as Array<Record<string, unknown>>).map((a) => (
               <View key={String(a.role)} className="flex-row items-baseline gap-2">
-                <Text className="w-24 text-[10px] uppercase tracking-[0.8px] text-text-tertiary dark:text-text-tertiary-dark">
+                <Text className="w-24 text-[12px] text-text-tertiary dark:text-text-tertiary-dark">
                   {String(a.role)}
                 </Text>
                 <Text

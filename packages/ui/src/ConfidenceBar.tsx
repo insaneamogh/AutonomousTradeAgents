@@ -43,7 +43,7 @@ function _toneClasses(value: number): { fill: string; label: string } {
   if (value >= 0.45) {
     return {
       fill: 'bg-accent-primary dark:bg-accent-primary-dark',
-      label: 'text-accent-primary dark:text-accent-primary-dark',
+      label: 'text-accent-text dark:text-accent-text-dark',
     };
   }
   return {
@@ -69,7 +69,7 @@ export function ConfidenceBar({
     <View className="gap-1" testID={testID}>
       {showLabel ? (
         <View className="flex-row items-center justify-between">
-          <Text className="text-[11px] font-semibold uppercase tracking-[1.1px] text-text-secondary dark:text-text-secondary-dark">
+          <Text className="text-[12px] font-medium text-text-secondary dark:text-text-secondary-dark">
             Confidence
           </Text>
           <Text
