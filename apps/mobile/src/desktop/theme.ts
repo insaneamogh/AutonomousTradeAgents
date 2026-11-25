@@ -339,6 +339,8 @@ export const PLATINUM_CSS = `
 .pg-card--dense { padding: 14px var(--pg-md); gap: 10px; }
 .pg-card--flush { padding: 0; }
 .pg-card--hero { padding: var(--pg-lg); }
+/* A card that needs you: slightly brighter surface and a firmer edge. */
+.pg-card--lift { background-color: var(--pg-hover); border-color: var(--pg-outline-variant); padding: var(--pg-lg); }
 .pg-inset {
   border-radius: var(--pg-r-xl);
   background-color: var(--pg-inset-bg);
@@ -536,6 +538,12 @@ export const PLATINUM_CSS = `
 .pg-row-btn { cursor: pointer; transition: background-color 150ms ease; }
 .pg-row-btn:hover td { background-color: var(--pg-hover); }
 .pg-num-right { text-align: right; font-family: var(--pg-font-num); font-variant-numeric: tabular-nums; }
+
+/* ── Stop → target range track ───────────────────────────────────── */
+.pg-range { position: relative; height: 4px; border-radius: 2px; background-color: var(--pg-track); margin: 8px 0 6px; }
+.pg-range > u { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px; background-color: var(--pg-on-surface); opacity: 0.7; text-decoration: none; }
+.pg-range > i { position: absolute; top: -5px; width: 14px; height: 14px; margin-left: -7px; border-radius: 9999px; background-color: var(--pg-on-surface); box-shadow: 0 0 0 3px var(--pg-surface); }
+.pg-range-labels { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; line-height: 16px; color: var(--pg-outline); }
 
 /* ── Bars ─────────────────────────────────────────────────────────── */
 .pg-bar { height: 6px; border-radius: 9999px; background-color: var(--pg-track); overflow: hidden; }

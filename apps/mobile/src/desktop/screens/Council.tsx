@@ -330,13 +330,9 @@ function Verdict({
 }) {
   const p = result.proposal;
   const cleared = p != null;
-  const wash = cleared ? 'var(--pg-bull-wash)' : 'var(--pg-bear-wash)';
 
   return (
-    <Card
-      variant="hero"
-      style={{ gap: 16, backgroundImage: `linear-gradient(140deg, ${wash}, transparent 60%)` }}
-    >
+    <Card variant="hero" style={{ gap: 16 }}>
       <CardHead
         label="Verdict"
         right={

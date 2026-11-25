@@ -25,15 +25,17 @@ import {
   CardHead,
   Cell,
   DataStreamInterrupted,
+  Gauge,
   Label,
   Numeral,
   Pill,
   Row,
   ScoreBar,
-  ScorePill,
   Skel,
   Stack,
+  TickerTile,
 } from '../primitives';
+import { pickTitle } from './Picks';
 
 export function PickDetailScreen({ id }: { id: string }) {
   const pending = usePendingApprovals();
@@ -125,27 +127,37 @@ export function PickDetailScreen({ id }: { id: string }) {
       <BackBar onBack={back} />
 
       <Row style={{ justifyContent: 'space-between', alignItems: 'flex-end', gap: 20, flexWrap: 'wrap' }}>
-        <Stack gap={8}>
-          <Row gap={14}>
-            <span className="pg-h1 pg-num">{pick.symbol}</span>
-            {isOption ? (
-              <Pill tone={pick.contractType === 'put' ? 'bear' : 'bull'}>{contractLabel}</Pill>
-            ) : (
-              <Pill tone={pick.side === 'BUY' ? 'bull' : 'bear'}>{pick.side}</Pill>
-            )}
-            <ScorePill score={conviction} />
-          </Row>
-          <span className="pg-body-sm">
-            {isOption
-              ? `$${pick.strike?.toFixed(2) ?? '—'} strike · ${pick.qty} contract${pick.qty === 1 ? '' : 's'} · exp ${pick.expiryDate ?? '—'}`
-              : `${pick.qty} shares · ${pick.orderType === 'LIMIT' && pick.limitPrice ? `limit ${usd(pick.limitPrice, 2)}` : 'market order'}`} ·
-            proposed {ago(pick.proposedAt)}
-          </span>
-        </Stack>
-        <Stack gap={4} style={{ alignItems: 'flex-end' }}>
-          <Label>Estimated notional</Label>
-          <Numeral size={36}>{usd(pick.estimatedNotional)}</Numeral>
-        </Stack>
+        <Row gap={16} style={{ alignItems: 'center' }}>
+          <TickerTile symbol={pick.symbol} size={56} />
+          <Stack gap={6}>
+            <Row gap={12}>
+              <span className="pg-h2">{pickTitle(pick)}</span>
+              {isOption ? (
+                <Pill tone={pick.contractType === 'put' ? 'bear' : 'bull'}>{contractLabel}</Pill>
+              ) : (
+                <Pill tone={pick.side === 'BUY' ? 'bull' : 'bear'}>{pick.side}</Pill>
+              )}
+            </Row>
+            <span className="pg-body-sm">
+              {pick.symbol} ·{' '}
+              {isOption
+                ? `$${pick.strike?.toFixed(2) ?? '—'} strike · exp ${pick.expiryDate ?? '—'}`
+                : pick.orderType === 'LIMIT' && pick.limitPrice
+                  ? `limit ${usd(pick.limitPrice, 2)}`
+                  : 'market order'}{' '}
+              · proposed {ago(pick.proposedAt)}
+            </span>
+          </Stack>
+        </Row>
+        <Row gap={24} style={{ alignItems: 'center' }}>
+          <Stack gap={4} style={{ alignItems: 'flex-end' }}>
+            <Label>Estimated notional</Label>
+            <Numeral serif size={36}>
+              {usd(pick.estimatedNotional)}
+            </Numeral>
+          </Stack>
+          <Gauge value={conviction} size={96} label="conviction" />
+        </Row>
       </Row>
 
       <div className="pg-grid pg-fade-up">
@@ -405,9 +417,8 @@ function BackBar({ onBack }: { onBack: () => void }) {
 
 function CaseTile({ title, body, tone }: { title: string; body: string; tone: 'bull' | 'bear' }) {
   const accent = tone === 'bull' ? 'var(--pg-bull-text)' : 'var(--pg-bear-text)';
-  const wash = tone === 'bull' ? 'var(--pg-bull-wash)' : 'var(--pg-bear-wash)';
   return (
-    <Card style={{ gap: 12, backgroundImage: `linear-gradient(160deg, ${wash}, transparent 55%)` }}>
+    <Card style={{ gap: 12 }}>
       <Row gap={8}>
         <span aria-hidden style={{ color: accent, fontSize: 12 }}>
           {tone === 'bull' ? '▲' : '▼'}

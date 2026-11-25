@@ -135,16 +135,7 @@ function PickCard({ pick, onOpen }: { pick: ApprovalProposalDto; onOpen: () => v
         {pick.rationale}
       </p>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0,1fr))', gap: 12 }}>
-        {pick.isOption ? (
-          <PlanStat label="Max loss" value={usd(pick.estimatedNotional)} />
-        ) : (
-          <PlanStat label="Stop" value={pick.stopLoss != null ? usd(pick.stopLoss, 2) : '—'} />
-        )}
-        <PlanStat label="Target" value={pick.targetPrice != null ? usd(pick.targetPrice, 2) : '—'} />
-        <PlanStat label="R:R" value={pick.rMultiple != null ? `${pick.rMultiple.toFixed(2)}R` : '—'} />
-        <PlanStat label="Time stop" value={pick.timeStopDays != null ? `${pick.timeStopDays}d` : '—'} />
-      </div>
+      <PlanGrid pick={pick} />
 
       <Row style={{ justifyContent: 'space-between' }}>
         {pick.expiresAt ? <span className="pg-caption">Auto-declines {ago(pick.expiresAt)}</span> : <span />}
@@ -153,6 +144,22 @@ function PickCard({ pick, onOpen }: { pick: ApprovalProposalDto; onOpen: () => v
         </Button>
       </Row>
     </Card>
+  );
+}
+
+/** The four plan numbers, shared by the Picks queue and the Home decision card. */
+export function PlanGrid({ pick }: { pick: ApprovalProposalDto }) {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0,1fr))', gap: 12 }}>
+      {pick.isOption ? (
+        <PlanStat label="Max loss" value={usd(pick.estimatedNotional)} />
+      ) : (
+        <PlanStat label="Stop" value={pick.stopLoss != null ? usd(pick.stopLoss, 2) : '—'} />
+      )}
+      <PlanStat label="Target" value={pick.targetPrice != null ? usd(pick.targetPrice, 2) : '—'} />
+      <PlanStat label="R:R" value={pick.rMultiple != null ? `${pick.rMultiple.toFixed(2)}R` : '—'} />
+      <PlanStat label="Time stop" value={pick.timeStopDays != null ? `${pick.timeStopDays}d` : '—'} />
+    </div>
   );
 }
 

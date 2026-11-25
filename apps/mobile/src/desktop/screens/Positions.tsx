@@ -28,6 +28,7 @@ import {
   SkelRows,
   Stack,
   StatTile,
+  TickerTile,
 } from '../primitives';
 import { TimelineCard } from '../TradeBiography';
 import { useState } from 'react';
@@ -60,6 +61,49 @@ const CLOSE_REASON_LABEL: Record<string, string> = {
   user_kill_switch: 'flatten-all kill switch',
   external_broker: 'closed directly at the broker',
 };
+
+/** Where the price sits between the stop (0) and the target (1), clamped.
+ * `null` when the plan is missing or nonsensical (target at or below stop). */
+export function rangePct(
+  stop: number | null | undefined,
+  target: number | null | undefined,
+  last: number | null | undefined,
+): number | null {
+  if (stop == null || target == null || last == null || target <= stop) return null;
+  return Math.max(0, Math.min(100, ((last - stop) / (target - stop)) * 100));
+}
+
+/** Stop → target track with a marker at the last price. Falls back to the
+ * old "stop / target" text when there is no last price to place. */
+function StopTargetRange({
+  stop,
+  target,
+  last,
+  currency,
+}: {
+  stop?: number | null;
+  target?: number | null;
+  last?: number | null;
+  currency: Parameters<typeof money>[1];
+}) {
+  const pct = rangePct(stop, target, last);
+  const fmt = (v?: number | null) => (v != null ? money(v, currency, 2) : '—');
+  if (pct == null) {
+    return <span>{`${fmt(stop)} / ${fmt(target)}`}</span>;
+  }
+  return (
+    <div style={{ minWidth: 150 }} title={`Stop ${fmt(stop)} · last ${fmt(last)} · target ${fmt(target)}`}>
+      <div className="pg-range" role="img" aria-label={`${Math.round(pct)}% of the way from stop to target`}>
+        <u style={{ width: `${pct}%` }} />
+        <i style={{ left: `${pct}%` }} />
+      </div>
+      <div className="pg-range-labels">
+        <span>{fmt(stop)}</span>
+        <span>{fmt(target)}</span>
+      </div>
+    </div>
+  );
+}
 
 function closeReasonLabel(reason: string | null): string {
   if (!reason) return 'reason unknown';
@@ -270,6 +314,7 @@ export function PositionsScreen() {
                           <td>
                             <Stack gap={2}>
                               <Row gap={8}>
+                                <TickerTile symbol={p.symbol} size={28} />
                                 <Numeral size={15} weight={600}>
                                   {p.isOption
                                     ? `${p.symbol} $${p.strike?.toFixed(2) ?? '—'} ${(p.contractType ?? '').toUpperCase()}`
@@ -373,6 +418,7 @@ export function PositionsScreen() {
                       <td>
                         <Stack gap={2}>
                           <Row gap={8}>
+                            <TickerTile symbol={p.symbol} size={28} />
                             <Numeral size={15} weight={600}>
                               {p.isOption
                                 ? `${p.symbol} $${p.strike?.toFixed(2) ?? '—'} ${(p.contractType ?? '').toUpperCase()}`
@@ -412,11 +458,20 @@ export function PositionsScreen() {
                         )}
                       </td>
                       <td className="pg-num-right pg-dim">
-                        {p.isOption
-                          ? p.expiryDate
-                            ? `exp ${p.expiryDate}`
-                            : 'no bracket · exp unknown'
-                          : `${p.stopLoss != null ? money(p.stopLoss, currencyOf(p.symbol), 2) : '—'} / ${p.targetPrice != null ? money(p.targetPrice, currencyOf(p.symbol), 2) : '—'}`}
+                        {p.isOption ? (
+                          p.expiryDate ? (
+                            `exp ${p.expiryDate}`
+                          ) : (
+                            'no bracket · exp unknown'
+                          )
+                        ) : (
+                          <StopTargetRange
+                            stop={p.stopLoss}
+                            target={p.targetPrice}
+                            last={p.status === 'pending_fill' ? null : p.lastPrice}
+                            currency={currencyOf(p.symbol)}
+                          />
+                        )}
                       </td>
                       <td className="pg-num-right">
                         {p.status === 'pending_fill' ? (

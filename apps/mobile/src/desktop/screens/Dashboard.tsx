@@ -14,6 +14,8 @@
 
 import { useEffect, useState } from 'react';
 
+import type { ApprovalProposalDto } from '@app/shared-types';
+
 import { useAccount } from '@/hooks/useAccount';
 import { useActivity } from '@/hooks/useActivity';
 import { usePendingApprovals } from '@/hooks/useApprovals';
@@ -47,6 +49,7 @@ import {
   Cell,
   DataStreamInterrupted,
   DeltaPill,
+  Gauge,
   Label,
   Money,
   Numeral,
@@ -60,7 +63,7 @@ import {
   TickerTile,
 } from '../primitives';
 import { useRegime } from '../regime';
-import { pickTitle } from './Picks';
+import { PlanGrid, pickTitle } from './Picks';
 import { HomeTiles } from './HomeTiles';
 
 export function DashboardScreen() {
@@ -94,9 +97,19 @@ export function DashboardScreen() {
   const deployed = acct ? Math.max(0, acct.equity - acct.cash) : 0;
   const deployedPct = acct && acct.equity > 0 ? (deployed / acct.equity) * 100 : 0;
 
+  const topPick = pending.data?.[0] ?? null;
+
   return (
     <>
       <HomeTiles />
+      {topPick ? (
+        <DecisionCard
+          pick={topPick}
+          more={(pending.data?.length ?? 1) - 1}
+          onOpen={() => go({ name: 'pick', id: topPick.id })}
+          onAll={() => go({ name: 'picks' })}
+        />
+      ) : null}
       <div className="pg-grid pg-fade-up">
         {/* ── Hero: portfolio ─────────────────────────────────── */}
         <Cell span={8}>
@@ -786,14 +799,8 @@ function PulseTile({
   loading: boolean;
   onOpen?: () => void;
 }) {
-  const wash =
-    toneName === 'bull'
-      ? 'var(--pg-bull-wash)'
-      : toneName === 'bear'
-        ? 'var(--pg-bear-wash)'
-        : 'transparent';
   const body = (
-    <Card variant="dense" style={{ gap: 8, backgroundImage: `linear-gradient(135deg, ${wash}, transparent 60%)` }}>
+    <Card variant="dense" style={{ gap: 8 }}>
       <Label>{label}</Label>
       {loading ? (
         <Skel h={26} w="55%" />
@@ -882,6 +889,63 @@ function HealthTile({ name, comp }: { name: string; comp: ComponentHealth }) {
         {comp.label}
       </div>
     </div>
+  );
+}
+
+/** The one thing on Home that needs you: the highest-ranked pending pick.
+ * It links into the pick page (exit-owner choice lives there), it does not
+ * approve in place: the click that spends money stays one deliberate step. */
+function DecisionCard({
+  pick,
+  more,
+  onOpen,
+  onAll,
+}: {
+  pick: ApprovalProposalDto;
+  more: number;
+  onOpen: () => void;
+  onAll: () => void;
+}) {
+  const price =
+    pick.orderType === 'LIMIT' && pick.limitPrice ? `limit ${usd(pick.limitPrice, 2)}` : 'market order';
+  return (
+    <Card variant="lift" style={{ gap: 18 }}>
+      <Row gap={10} style={{ justifyContent: 'space-between' }}>
+        <Row gap={8}>
+          <span
+            aria-hidden
+            style={{ width: 8, height: 8, borderRadius: 9999, backgroundColor: 'var(--pg-accent)', flex: 'none' }}
+          />
+          <span style={{ fontSize: 14, fontWeight: 600 }}>Needs your decision</span>
+        </Row>
+        {pick.expiresAt ? <span className="pg-caption">Auto-declines {ago(pick.expiresAt)}</span> : null}
+      </Row>
+      <Row gap={16} style={{ alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap' }}>
+        <Row gap={14} style={{ alignItems: 'center' }}>
+          <TickerTile symbol={pick.symbol} size={52} />
+          <Stack gap={4}>
+            <span className="pg-serif" style={{ fontSize: 24, lineHeight: '28px' }}>
+              {pickTitle(pick)}
+            </span>
+            <span className="pg-caption">
+              {pick.symbol} · {price} · proposed {ago(pick.proposedAt)}
+            </span>
+          </Stack>
+        </Row>
+        <Gauge value={pick.convictionLevel * 20} size={96} label="conviction" />
+      </Row>
+      <PlanGrid pick={pick} />
+      <Row gap={10}>
+        <Button kind="primary" onClick={onOpen} ariaLabel={`Review and decide on the ${pick.symbol} pick`}>
+          Review and decide →
+        </Button>
+        {more > 0 ? (
+          <Button kind="ghost" onClick={onAll} ariaLabel={`${more} more picks waiting`}>
+            +{more} more waiting
+          </Button>
+        ) : null}
+      </Row>
+    </Card>
   );
 }
 

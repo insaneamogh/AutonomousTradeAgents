@@ -11,15 +11,18 @@ import {
   CardHead,
   Cell,
   DataStreamInterrupted,
+  Gauge,
   Label,
   Numeral,
   PageHead,
   Pill,
   Row,
   ScoreBar,
+  Skel,
   SkelRows,
   Stack,
   StatTile,
+  TickerTile,
 } from '../primitives';
 
 export function ReviewScreen() {
@@ -50,13 +53,17 @@ export function ReviewScreen() {
 
       <div className="pg-grid pg-fade-up">
         <Cell span={4}>
-          <StatTile
-            label="Agreement"
-            value={agreement.data ? `${agreement.data.agreementPct.toFixed(0)}%` : '—'}
-            caption={agreement.data ? `${agreement.data.totalReviewed} reviewed · 30d` : undefined}
-            tone={agreement.data && agreement.data.agreementPct >= 60 ? 'bull' : 'neutral'}
-            loading={agreement.isLoading}
-          />
+          <Card variant="dense" style={{ gap: 10 }}>
+            <Label>Agreement</Label>
+            {agreement.isLoading || !agreement.data ? (
+              <Skel h={72} w={72} r={36} />
+            ) : (
+              <Row gap={16}>
+                <Gauge value={agreement.data.agreementPct} size={72} label="agree" suffix="%" />
+                <span className="pg-caption">{agreement.data.totalReviewed} reviewed · 30d</span>
+              </Row>
+            )}
+          </Card>
         </Cell>
         <Cell span={4}>
           <StatTile label="Queue" value={String(items.length)} caption="Awaiting your grade" loading={queue.isLoading} />
@@ -108,9 +115,12 @@ export function ReviewScreen() {
                   {items.slice(1, 8).map((item) => (
                     <tr key={item.decisionId}>
                       <td>
-                        <Numeral size={14} weight={600}>
-                          {item.symbol}
-                        </Numeral>
+                        <Row gap={10}>
+                          <TickerTile symbol={item.symbol} size={28} />
+                          <Numeral size={14} weight={600}>
+                            {item.symbol}
+                          </Numeral>
+                        </Row>
                       </td>
                       <td className="pg-caption">{ago(item.triggeredAt)}</td>
                       <td className="pg-num-right">
@@ -144,6 +154,7 @@ function GradeCard({
       <Row style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <Stack gap={4}>
           <Row gap={12}>
+            <TickerTile symbol={item.symbol} size={44} />
             <span className="pg-h2 pg-num">{item.symbol}</span>
             <Pill tone={item.side === 'BUY' ? 'bull' : 'bear'}>{item.side}</Pill>
             {item.regime ? <Pill>{item.regime.toUpperCase()}</Pill> : null}
@@ -175,13 +186,13 @@ function GradeCard({
       </Stack>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        <div className="pg-inset" style={{ backgroundImage: 'linear-gradient(160deg, var(--pg-bull-wash), transparent 60%)' }}>
+        <div className="pg-inset">
           <Label style={{ color: 'var(--pg-bull-text)' }}>Bull case</Label>
           <p className="pg-body-sm" style={{ marginTop: 6 }}>
             {item.bullCase}
           </p>
         </div>
-        <div className="pg-inset" style={{ backgroundImage: 'linear-gradient(160deg, var(--pg-bear-wash), transparent 60%)' }}>
+        <div className="pg-inset">
           <Label style={{ color: 'var(--pg-bear-text)' }}>Bear case</Label>
           <p className="pg-body-sm" style={{ marginTop: 6 }}>
             {item.bearCase}

@@ -10,12 +10,12 @@ import {
   CardHead,
   Cell,
   DataStreamInterrupted,
+  Gauge,
   Label,
   Numeral,
   PageHead,
   Pill,
   Row,
-  ScoreBar,
   SkelRows,
   Stack,
   StatTile,
@@ -109,22 +109,24 @@ export function StrategiesScreen() {
                   </Pill>
                 </Row>
 
-                <Stack gap={6}>
-                  <Row style={{ justifyContent: 'space-between' }}>
-                    <Label>Confidence</Label>
-                    <span className="pg-caption pg-num">{Math.round(s.confidence * 100)}/100</span>
-                  </Row>
-                  <ScoreBar score={s.confidence * 100} />
-                </Stack>
-
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0,1fr))', gap: 10 }}>
-                  <MiniCell label="Decisions" value={String(s.decisionsInWindow)} />
-                  <MiniCell label="Record" value={`${s.wins}–${s.losses}`} />
-                  <MiniCell
-                    label="Avg win"
-                    value={s.avgWinnerPct != null ? signedPct(s.avgWinnerPct, 1) : '—'}
-                  />
-                </div>
+                <Row gap={20} style={{ alignItems: 'center' }}>
+                  {/* Hit rate is the honest headline once there are graded
+                      trades; before that, show the Reflection confidence. */}
+                  {s.wins + s.losses > 0 ? (
+                    <Gauge value={(s.wins / (s.wins + s.losses)) * 100} size={96} label="hit rate" suffix="%" />
+                  ) : (
+                    <Gauge value={s.confidence * 100} size={96} label="confidence" />
+                  )}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 12, flex: 1 }}>
+                    <MiniCell label="Decisions" value={String(s.decisionsInWindow)} />
+                    <MiniCell label="Record" value={`${s.wins}–${s.losses}`} />
+                    <MiniCell
+                      label="Avg win"
+                      value={s.avgWinnerPct != null ? signedPct(s.avgWinnerPct, 1) : '—'}
+                    />
+                    <MiniCell label="Confidence" value={`${Math.round(s.confidence * 100)}/100`} />
+                  </div>
+                </Row>
 
                 <span className="pg-caption">
                   Last decision {ago(s.lastDecisionAt)} · last reflection {ago(s.lastReflectionAt)}

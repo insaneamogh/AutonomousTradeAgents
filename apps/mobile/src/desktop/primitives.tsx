@@ -77,7 +77,7 @@ export function Card({
   style,
 }: {
   children: ReactNode;
-  variant?: 'dense' | 'flush' | 'hero';
+  variant?: 'dense' | 'flush' | 'hero' | 'lift';
   className?: string;
   style?: CSSProperties;
 }) {
@@ -279,7 +279,10 @@ export function Gauge({
   const c = 2 * Math.PI * r;
   const sweep = c * 0.75;
   const half = size / 2;
-  const numSize = Math.round(size * (label ? 0.31 : 0.36));
+  // The caption sits in the gauge's opening; below ~84px it cannot fit
+  // without touching the arc, so it stays in aria-label only.
+  const showLabel = Boolean(label) && size >= 84;
+  const numSize = Math.round(size * (showLabel ? 0.31 : 0.36));
   return (
     <svg
       width={size}
@@ -312,7 +315,7 @@ export function Gauge({
       />
       <text
         x={half}
-        y={label ? half - size * 0.04 : half + 1}
+        y={showLabel ? half - size * 0.04 : half + 1}
         textAnchor="middle"
         dominantBaseline="central"
         style={{
@@ -325,7 +328,7 @@ export function Gauge({
         {Math.round(value)}
         {suffix}
       </text>
-      {label ? (
+      {showLabel ? (
         <text
           x={half}
           y={half + size * 0.24}

@@ -12,6 +12,7 @@ import type { ApprovalProposalDto } from '@app/shared-types';
 
 import { Gauge, Money, ScoreBar, ScorePill, ScoreRing, TickerTile } from './primitives';
 import { pickTitle } from './screens/Picks';
+import { rangePct } from './screens/Positions';
 
 type Node = { type: string; props: Record<string, unknown>; children: (Node | string)[] | null };
 
@@ -81,6 +82,15 @@ describe('Gauge', () => {
     expect(value50).toBeCloseTo(value100 / 2, 1);
     // 270 / 360 of the circumference (r = (72 - 6) / 2 = 33)
     expect(track).toBeCloseTo(2 * Math.PI * 33 * 0.75, 1);
+  });
+
+  it('only draws the caption when the gauge is big enough to hold it', () => {
+    const small = render(<Gauge value={87} size={72} label="conviction" />);
+    const big = render(<Gauge value={87} size={88} label="conviction" />);
+    expect(all(small, 'text').map(text)).toEqual(['87']);
+    expect(all(big, 'text').map(text)).toEqual(['87', 'conviction']);
+    // The caption is never lost to assistive tech.
+    expect(small.props['aria-label']).toBe('87 conviction');
   });
 
   it('exposes the value and caption to assistive tech', () => {
@@ -158,5 +168,26 @@ describe('pickTitle', () => {
 
   it('says Short, not Sell, when a sell opens a short', () => {
     expect(pickTitle({ ...base, side: 'SELL', opensShort: true, qty: 10 })).toBe('Short 10 shares');
+  });
+});
+
+describe('rangePct (stop to target marker)', () => {
+  it('places the last price between the stop (0) and the target (100)', () => {
+    expect(rangePct(100, 200, 150)).toBe(50);
+    expect(rangePct(421.5, 452, 430.2)).toBeCloseTo(28.5, 0);
+  });
+
+  it('clamps a price beyond the stop or target to the ends', () => {
+    expect(rangePct(100, 200, 80)).toBe(0);
+    expect(rangePct(100, 200, 250)).toBe(100);
+  });
+
+  it('returns null when the plan cannot be drawn', () => {
+    expect(rangePct(null, 200, 150)).toBeNull();
+    expect(rangePct(100, null, 150)).toBeNull();
+    expect(rangePct(100, 200, null)).toBeNull();
+    // Target at or below the stop (a short, or a bad plan) is not a track.
+    expect(rangePct(200, 100, 150)).toBeNull();
+    expect(rangePct(100, 100, 100)).toBeNull();
   });
 });
