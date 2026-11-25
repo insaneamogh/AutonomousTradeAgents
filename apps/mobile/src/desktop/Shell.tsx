@@ -99,17 +99,12 @@ function Header() {
 
   return (
     <header className="pg-header">
-      <Row gap={10}>
-        <Mark />
-        <Stack gap={0}>
-          <span style={{ fontSize: 14, fontWeight: 600, letterSpacing: '-0.01em' }}>
-            Autonomous Trader
-          </span>
-          <span className="label-caps" style={{ fontSize: 10 }}>
-            Trading desk
-          </span>
-        </Stack>
-      </Row>
+      <Stack gap={0}>
+        <span className="pg-serif" style={{ fontSize: 22, lineHeight: '26px' }}>
+          Autonomous Trader
+        </span>
+        <span className="label-caps">Trading desk</span>
+      </Stack>
 
       <div style={{ flex: 1 }} />
 
@@ -153,6 +148,7 @@ function Header() {
   );
 }
 
+/** The brand mark: a clay rounded square with a rising line. */
 function Mark() {
   return (
     <div
@@ -161,11 +157,11 @@ function Mark() {
         width: 32,
         height: 32,
         borderRadius: 10,
-        border: '1px solid var(--pg-card-border)',
-        background: 'var(--pg-inset-bg)',
+        background: 'var(--pg-accent)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
+        flex: 'none',
       }}
     >
       <svg
@@ -173,8 +169,8 @@ function Mark() {
         height="18"
         viewBox="0 0 24 24"
         fill="none"
-        stroke="var(--pg-bull)"
-        strokeWidth="2"
+        stroke="var(--pg-accent-ink)"
+        strokeWidth="2.2"
         strokeLinecap="round"
         strokeLinejoin="round"
       >
@@ -194,6 +190,7 @@ function Sidebar() {
 
   return (
     <nav className="pg-sidebar" aria-label="Primary">
+      <div className="pg-rail-mark" aria-hidden />
       {NAV.map((item) => {
         const Icon = item.icon;
         const isActive = active === item.id;
@@ -203,10 +200,12 @@ function Sidebar() {
             type="button"
             className="pg-sidebar-link"
             aria-current={isActive ? 'page' : undefined}
+            aria-label={item.label}
+            title={item.label}
             onClick={() => go({ name: item.id })}
           >
-            <Icon size={18} />
-            {item.label}
+            <Icon size={21} />
+            <span className="pg-nav-label">{item.label}</span>
             {item.id === 'picks' && pendingCount > 0 ? (
               <span className="pg-sidebar-badge" aria-label={`${pendingCount} pending`}>
                 {pendingCount}
@@ -218,22 +217,15 @@ function Sidebar() {
 
       <div style={{ flex: 1, minHeight: 24 }} />
 
-      <div className="pg-inset">
-        <span className="label-caps" style={{ fontSize: 10 }}>
-          Signed in
-        </span>
-        <div className="pg-caption pg-truncate" style={{ marginTop: 4 }} title={email}>
-          {email}
-        </div>
-      </div>
       <button
         type="button"
         className="pg-sidebar-link"
         onClick={() => void signOut()}
         aria-label="Sign out"
+        title={email ? `Sign out ${email}` : 'Sign out'}
       >
-        <IconLogout size={18} />
-        Sign out
+        <IconLogout size={21} />
+        <span className="pg-nav-label">Sign out</span>
       </button>
     </nav>
   );

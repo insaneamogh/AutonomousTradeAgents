@@ -228,8 +228,6 @@ function NodeCard({ row }: { row: NodeRow }) {
         gap: 12,
         opacity: state === 'pending' ? 0.55 : state === 'skipped' ? 0.35 : 1,
         borderColor: state === 'done' ? accent : undefined,
-        boxShadow:
-          state === 'done' && (isRisk || (score ?? 0) >= 85) ? `0 0 24px ${accent}22` : undefined,
         transition: 'opacity 300ms ease, border-color 300ms ease',
       }}
     >

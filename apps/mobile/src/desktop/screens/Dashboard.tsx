@@ -48,6 +48,7 @@ import {
   DataStreamInterrupted,
   DeltaPill,
   Label,
+  Money,
   Numeral,
   Pill,
   Row,
@@ -56,8 +57,10 @@ import {
   SkelRows,
   Stack,
   StatTile,
+  TickerTile,
 } from '../primitives';
 import { useRegime } from '../regime';
+import { pickTitle } from './Picks';
 import { HomeTiles } from './HomeTiles';
 
 export function DashboardScreen() {
@@ -115,7 +118,7 @@ export function DashboardScreen() {
 
             {acct ? (
               <Row gap={20} style={{ alignItems: 'flex-end', flexWrap: 'wrap' }}>
-                <span className="pg-num-hero">{usd(acct.equity)}</span>
+                <Money value={acct.equity} size={64} />
                 <div style={{ paddingBottom: 8 }}>
                   <DeltaPill
                     text={`${signedUsd(acct.todayPnl)} · ${signedPct(acct.todayPnlPct)}`}
@@ -135,7 +138,7 @@ export function DashboardScreen() {
                 </span>
               </Row>
               <div className="pg-bar">
-                <i style={{ width: `${Math.min(100, deployedPct)}%`, backgroundColor: 'var(--pg-primary-fixed-dim)' }} />
+                <i style={{ width: `${Math.min(100, deployedPct)}%` }} />
               </div>
             </Stack>
 
@@ -324,14 +327,17 @@ export function DashboardScreen() {
                       }}
                     >
                       <td>
-                        <Numeral size={16} weight={600}>
-                          {p.symbol}
-                        </Numeral>
+                        <Row gap={12}>
+                          <TickerTile symbol={p.symbol} />
+                          <Numeral size={16} weight={600}>
+                            {p.symbol}
+                          </Numeral>
+                        </Row>
                       </td>
                       <td>
                         <Stack gap={2}>
                           <span style={{ fontSize: 13 }}>
-                            {p.side} {p.qty} @ {p.orderType === 'LIMIT' && p.limitPrice ? usd(p.limitPrice, 2) : 'MKT'}
+                            {pickTitle(p)} @ {p.orderType === 'LIMIT' && p.limitPrice ? usd(p.limitPrice, 2) : 'MKT'}
                           </span>
                           <span className="pg-caption">{ago(p.proposedAt)}</span>
                         </Stack>
@@ -367,23 +373,27 @@ export function DashboardScreen() {
                       borderTop: i === 0 ? undefined : '1px solid var(--pg-card-border)',
                     }}
                   >
-                    <span
-                      aria-hidden
-                      style={{
-                        width: 6,
-                        height: 6,
-                        borderRadius: 9999,
-                        marginTop: 7,
-                        flex: 'none',
-                        backgroundColor: activityColor(entry.kind),
-                      }}
-                    />
+                    {entry.symbol ? (
+                      <TickerTile symbol={entry.symbol} size={32} />
+                    ) : (
+                      <span
+                        aria-hidden
+                        style={{
+                          width: 6,
+                          height: 6,
+                          borderRadius: 9999,
+                          marginTop: 7,
+                          flex: 'none',
+                          backgroundColor: activityColor(entry.kind),
+                        }}
+                      />
+                    )}
                     <Stack gap={2} style={{ flex: 1 }}>
                       <Row gap={8}>
                         <Numeral size={13} weight={600}>
                           {entry.symbol}
                         </Numeral>
-                        <span className="label-caps" style={{ fontSize: 10 }}>
+                        <span className="label-caps" style={{ color: activityColor(entry.kind) }}>
                           {entry.kind}
                         </span>
                       </Row>

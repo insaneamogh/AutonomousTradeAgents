@@ -11,7 +11,7 @@
 
 import type { CSSProperties, ReactNode } from 'react';
 
-import { scoreBand, scoreHex } from './theme';
+import { scoreBand } from './theme';
 
 export type Tone = 'bull' | 'bear' | 'neutral' | 'warn';
 
@@ -117,18 +117,24 @@ export function Numeral({
   size = 20,
   tone = 'neutral',
   weight = 500,
+  serif = false,
   style,
 }: {
   children: ReactNode;
   size?: number;
   tone?: Tone;
   weight?: number;
+  /** Newsreader display numerals: for the big figures only (>= 24px). */
+  serif?: boolean;
   style?: CSSProperties;
 }) {
   const color =
     tone === 'bull' ? 'var(--pg-bull-text)' : tone === 'bear' ? 'var(--pg-bear-text)' : 'var(--pg-on-surface)';
   return (
-    <span className="pg-num" style={{ fontSize: size, lineHeight: 1.05, fontWeight: weight, color, ...style }}>
+    <span
+      className={serif ? 'pg-serif' : 'pg-num'}
+      style={{ fontSize: size, lineHeight: 1.05, ...(serif ? {} : { fontWeight: weight }), color, ...style }}
+    >
       {children}
     </span>
   );
@@ -168,37 +174,249 @@ export function Pill({
 }
 
 /**
- * Conviction / score pill using the mode-locked 5-band palette.
- * Colour is never the only signal — the band name is in the title + aria.
+ * Conviction / score as a small ring: clay arc, centred numeral.
+ * The band name is in the title + aria, so colour is never the only signal.
+ * `ScorePill` keeps its old name so every existing call site gets the ring.
  */
 export function ScorePill({ score, suffix = '' }: { score: number; suffix?: string }) {
-  const hex = scoreHex(score);
   const band = scoreBand(score);
   return (
     <span
-      className="pg-pill"
       title={`${band} · ${Math.round(score)}/100`}
       aria-label={`${band}, ${Math.round(score)} out of 100`}
-      style={{
-        color: hex,
-        backgroundColor: 'var(--pg-track)',
-        borderColor: hex,
-        boxShadow: score >= 85 ? `0 0 15px ${hex}33` : undefined,
-      }}
+      role="img"
+      style={{ display: 'inline-flex', flex: 'none' }}
     >
-      {Math.round(score)}
-      {suffix}
+      <ScoreRing score={score} size={36} suffix={suffix} />
     </span>
   );
 }
 
-/** Thin score bar, same band palette. */
+/** Thin score bar, accent fill. */
 export function ScoreBar({ score }: { score: number }) {
   const pct = Math.max(0, Math.min(100, score));
   return (
     <div className="pg-bar" role="presentation">
-      <i style={{ width: `${pct}%`, backgroundColor: scoreHex(pct) }} />
+      <i style={{ width: `${pct}%` }} />
     </div>
+  );
+}
+
+/* ── Rings ───────────────────────────────────────────────────────── */
+
+const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
+
+/**
+ * Small full ring (default 36px). The numeral is an SVG <text> centred with
+ * `dominant-baseline: central`, so it sits on the ring's true centre
+ * instead of drifting with font metrics the way an HTML overlay does.
+ */
+export function ScoreRing({
+  score,
+  size = 36,
+  suffix = '',
+}: {
+  score: number;
+  size?: number;
+  suffix?: string;
+}) {
+  const stroke = Math.max(3, Math.round(size / 10));
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const half = size / 2;
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden>
+      <circle cx={half} cy={half} r={r} fill="none" strokeWidth={stroke} style={{ stroke: 'var(--pg-track)' }} />
+      <circle
+        cx={half}
+        cy={half}
+        r={r}
+        fill="none"
+        strokeWidth={stroke}
+        strokeLinecap="round"
+        strokeDasharray={`${(c * clamp01(score / 100)).toFixed(2)} ${c.toFixed(2)}`}
+        transform={`rotate(-90 ${half} ${half})`}
+        style={{ stroke: 'var(--pg-accent)' }}
+      />
+      <text
+        x={half}
+        y={half + 0.5}
+        textAnchor="middle"
+        dominantBaseline="central"
+        style={{
+          fill: 'var(--pg-on-surface)',
+          fontFamily: 'var(--pg-font-num)',
+          fontWeight: 600,
+          fontSize: Math.round(size / 3),
+          fontVariantNumeric: 'tabular-nums',
+        }}
+      >
+        {Math.round(score)}
+        {suffix}
+      </text>
+    </svg>
+  );
+}
+
+/**
+ * 270° gauge for the headline score (conviction, hit rate, agreement).
+ * Open at the bottom, serif numeral in the middle, optional caption in
+ * the opening.
+ */
+export function Gauge({
+  value,
+  size = 72,
+  label,
+  suffix = '',
+}: {
+  value: number;
+  size?: number;
+  label?: string;
+  suffix?: string;
+}) {
+  const stroke = Math.max(4, Math.round(size / 13));
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const sweep = c * 0.75;
+  const half = size / 2;
+  const numSize = Math.round(size * (label ? 0.31 : 0.36));
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox={`0 0 ${size} ${size}`}
+      role="img"
+      aria-label={`${Math.round(value)}${suffix}${label ? ` ${label}` : ''}`}
+    >
+      <circle
+        cx={half}
+        cy={half}
+        r={r}
+        fill="none"
+        strokeWidth={stroke}
+        strokeLinecap="round"
+        strokeDasharray={`${sweep.toFixed(2)} ${c.toFixed(2)}`}
+        transform={`rotate(135 ${half} ${half})`}
+        style={{ stroke: 'var(--pg-track)' }}
+      />
+      <circle
+        cx={half}
+        cy={half}
+        r={r}
+        fill="none"
+        strokeWidth={stroke}
+        strokeLinecap="round"
+        strokeDasharray={`${(sweep * clamp01(value / 100)).toFixed(2)} ${c.toFixed(2)}`}
+        transform={`rotate(135 ${half} ${half})`}
+        style={{ stroke: 'var(--pg-accent)' }}
+      />
+      <text
+        x={half}
+        y={label ? half - size * 0.04 : half + 1}
+        textAnchor="middle"
+        dominantBaseline="central"
+        style={{
+          fill: 'var(--pg-on-surface)',
+          fontFamily: 'var(--pg-font-serif)',
+          fontSize: numSize,
+          letterSpacing: '-0.02em',
+        }}
+      >
+        {Math.round(value)}
+        {suffix}
+      </text>
+      {label ? (
+        <text
+          x={half}
+          y={half + size * 0.24}
+          textAnchor="middle"
+          dominantBaseline="central"
+          style={{ fill: 'var(--pg-outline)', fontFamily: 'var(--pg-font-sans)', fontSize: 12, fontWeight: 500 }}
+        >
+          {label}
+        </text>
+      ) : null}
+    </svg>
+  );
+}
+
+/* ── Money, with cents baseline-aligned and quieter ─────────────── */
+
+/** `$100,412` big with `.30` at half size on the same baseline. */
+export function Money({
+  value,
+  size = 64,
+  tone = 'neutral',
+}: {
+  value: number;
+  size?: number;
+  tone?: Tone;
+}) {
+  const abs = Math.abs(value);
+  const [whole, cents] = abs.toFixed(2).split('.');
+  const sign = value < 0 ? '−' : '';
+  const color =
+    tone === 'bull' ? 'var(--pg-bull-text)' : tone === 'bear' ? 'var(--pg-bear-text)' : 'var(--pg-on-surface)';
+  return (
+    <span className="pg-serif pg-money" style={{ fontSize: size, lineHeight: 1, color }}>
+      {sign}${Number(whole).toLocaleString('en-US')}
+      <s>.{cents}</s>
+    </span>
+  );
+}
+
+/* ── Company tile ────────────────────────────────────────────────── */
+
+/**
+ * Brand-hued monogram tile. We have no licence to ship company logos, so
+ * the tile is a flat colour keyed off the ticker; known tickers get their
+ * recognisable hue, anything else gets a stable muted hue from a hash.
+ */
+const TICKER_HUE: Record<string, string> = {
+  NVDA: '#587a2e',
+  AMD: '#41444d',
+  MSFT: '#3c6fa8',
+  META: '#4a5fb8',
+  COIN: '#3659b8',
+  TSLA: '#a34853',
+  XOM: '#a34a4a',
+  AAPL: '#5b5f66',
+  GOOGL: '#3d7a6a',
+  AMZN: '#a8742f',
+};
+
+function tickerColor(symbol: string): string {
+  const known = TICKER_HUE[symbol];
+  if (known) return known;
+  let h = 0;
+  for (let i = 0; i < symbol.length; i += 1) h = (h * 31 + symbol.charCodeAt(i)) % 360;
+  return `hsl(${h} 32% 38%)`;
+}
+
+export function TickerTile({ symbol, size = 36 }: { symbol: string; size?: number }) {
+  const clean = symbol.replace(/\d.*$/, '').toUpperCase();
+  const text = clean.length <= 3 ? clean : clean.slice(0, 2);
+  return (
+    <span
+      aria-hidden
+      style={{
+        width: size,
+        height: size,
+        borderRadius: Math.round(size * 0.28),
+        background: tickerColor(clean),
+        color: '#f4f1ea',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flex: 'none',
+        fontWeight: 600,
+        fontSize: Math.max(10, Math.round(size / (text.length > 2 ? 3.6 : 3.1))),
+        lineHeight: 1,
+        letterSpacing: '0.02em',
+      }}
+    >
+      {text}
+    </span>
   );
 }
 

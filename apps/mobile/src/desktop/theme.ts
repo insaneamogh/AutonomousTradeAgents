@@ -14,13 +14,15 @@
  * that's the "tokens only" rule for this tree.
  */
 
-/** Ordered, mode-locked score bands (§2.5). Same hex in light and dark. */
+/** Ordered score bands. The colour is a semantic TOKEN (not a hex), so a
+ * band reads correctly in both themes. Used for aria text and for the few
+ * places that still colour by band; the score ring itself is accent-only. */
 export const SCORE_BANDS = [
-  { min: 85, name: 'Very Bullish', hex: '#00e383' },
-  { min: 55, name: 'Bullish', hex: '#006e2d' },
-  { min: 30, name: 'Neutral', hex: '#a1a1aa' },
-  { min: 15, name: 'Cautious', hex: '#ffb2b8' },
-  { min: 0, name: 'Bearish', hex: '#bf0715' },
+  { min: 85, name: 'Very Bullish', hex: 'var(--pg-bull-text)' },
+  { min: 55, name: 'Bullish', hex: 'var(--pg-bull-text)' },
+  { min: 30, name: 'Neutral', hex: 'var(--pg-outline)' },
+  { min: 15, name: 'Cautious', hex: 'var(--pg-warn)' },
+  { min: 0, name: 'Bearish', hex: 'var(--pg-bear-text)' },
 ] as const;
 
 /** Score (0–100) → its band hex. The single source for every bar/ring/pill. */
@@ -53,63 +55,68 @@ export type Regime = 'bull' | 'bear' | 'neutral';
  * real CSS is available and costs the native bundle nothing.
  */
 export const PLATINUM_CSS = `
-/* ── Tokens: Refined Daylight (light) ─────────────────────────────── */
+/* ── Tokens: Aurora Calm (light) ──────────────────────────────────
+   Warm ivory ground, ink text, ONE accent (clay). Colour carries meaning
+   only: gain / loss / caution. Everything else is a tint of the ink. */
 [data-pg-theme] {
-  --pg-surface: #e8edf5;
+  --pg-surface: #faf9f5;
   --pg-surface-lowest: #ffffff;
-  --pg-surface-low: #f0f4fa;
-  --pg-surface-container: #e8ecf4;
-  --pg-surface-high: #e0e5ee;
-  --pg-surface-highest: #d8dee8;
+  --pg-surface-low: #f5f3ec;
+  --pg-surface-container: #efede5;
+  --pg-surface-high: #e8e5dc;
+  --pg-surface-highest: #dfdbd0;
 
-  --pg-on-surface: #191c1e;
-  --pg-on-surface-variant: #43474b;
-  --pg-outline: #73787b;
-  --pg-outline-variant: #c3c7cb;
+  --pg-on-surface: #171614;
+  --pg-on-surface-variant: #45433e;
+  --pg-outline: #6d6b65;
+  --pg-outline-variant: #cfcbbf;
 
-  --pg-primary: #50616b;
-  --pg-primary-container: #e0f2fe;
-  --pg-primary-fixed-dim: #b7c9d5;
+  --pg-primary: #171614;
+  --pg-primary-container: #efede5;
+  --pg-primary-fixed-dim: #45433e;
 
-  --pg-bull: #62df7d;
-  --pg-bull-text: #006e2d;
-  --pg-bull-wash: rgba(0, 110, 45, 0.10);
-  --pg-bear: #ffb4ab;
-  --pg-bear-text: #bf0715;
-  --pg-bear-wash: rgba(191, 7, 21, 0.09);
+  /* The single accent. Fill = brand clay; text = a darker clay that passes
+     4.5:1 on ivory; ink = what sits ON a clay fill. */
+  --pg-accent: #d97757;
+  --pg-accent-text: #a9502f;
+  --pg-accent-ink: #1a1613;
+  --pg-accent-wash: rgba(217, 119, 87, 0.13);
 
-  /* Warning — elevated-risk / "requires attention" state. Same semantic
-     slot as 'warning' in the mobile DESIGN.md token set (§2), so the two
-     design systems agree on what this MEANS even though every other hex
-     in this file is Platinum-Glass-specific. Introduced for the
-     auto-approve mode control (docs/PLAN_AUTO_APPROVE.md) — nothing else
-     needs it yet, but it's a real named token, not an inline hex. */
-  --pg-warn: #b45309;
-  --pg-warn-wash: rgba(180, 83, 9, 0.10);
+  --pg-bull: #2b7a4e;
+  --pg-bull-text: #2b7a4e;
+  --pg-bull-wash: rgba(43, 122, 78, 0.10);
+  --pg-bear: #b4453b;
+  --pg-bear-text: #b4453b;
+  --pg-bear-wash: rgba(180, 69, 59, 0.09);
 
-  --pg-error: #ba1a1a;
-  --pg-error-container: #ffdad6;
+  /* Warning: elevated-risk / "requires attention". Same semantic slot as
+     'warning' in the mobile DESIGN.md token set. */
+  --pg-warn: #96620f;
+  --pg-warn-wash: rgba(150, 98, 15, 0.11);
+
+  --pg-error: #b4453b;
+  --pg-error-container: #f6d9d4;
 
   /* Glass */
-  --pg-card-bg: #ffffff;
-  --pg-card-border: rgb(203 213 225);
-  --pg-card-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px rgba(15, 23, 42, 0.06);
-  --pg-card-blur: none;
-  --pg-card-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0) 100%);
-  --pg-inset-bg: #f0f4fa;
+  --pg-card-bg: rgba(255, 255, 255, 0.66);
+  --pg-card-border: rgba(23, 22, 20, 0.09);
+  --pg-card-shadow: 0 1px 2px rgba(23, 22, 20, 0.04), 0 14px 30px -18px rgba(23, 22, 20, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  --pg-card-blur: blur(30px) saturate(130%);
+  --pg-card-sheen: none;
+  --pg-inset-bg: rgba(23, 22, 20, 0.035);
 
-  --pg-header-bg: rgba(255, 255, 255, 0.55);
-  --pg-sidebar-bg: rgba(248, 250, 252, 0.72);
+  --pg-header-bg: rgba(250, 249, 245, 0.6);
+  --pg-sidebar-bg: rgba(255, 255, 255, 0.66);
 
-  --pg-cta-bg: linear-gradient(180deg, #2b3640 0%, #1b232a 100%);
-  --pg-cta-fg: #f8fafc;
+  --pg-cta-bg: #d97757;
+  --pg-cta-fg: #1a1613;
 
-  --pg-halo-a: rgba(224, 242, 254, 0.95);
-  --pg-halo-b: rgba(203, 213, 225, 0.70);
-  --pg-halo-opacity: 0.60;
+  --pg-halo-a: rgba(217, 119, 87, 0.22);
+  --pg-halo-b: rgba(111, 134, 184, 0.18);
+  --pg-halo-opacity: 1;
 
-  --pg-track: rgba(15, 23, 42, 0.07);
-  --pg-hover: rgba(15, 23, 42, 0.04);
+  --pg-track: rgba(23, 22, 20, 0.09);
+  --pg-hover: rgba(23, 22, 20, 0.045);
 
   /* Spacing (§4.1) */
   --pg-xs: 4px;
@@ -119,70 +126,77 @@ export const PLATINUM_CSS = `
   --pg-lg: 24px;
   --pg-xl: 40px;
 
-  /* Radii (§4.2) */
-  --pg-r-sm: 4px;
-  --pg-r-lg: 8px;
-  --pg-r-xl: 12px;
-  --pg-r-2xl: 16px;
+  /* Radii (§4.2). Cards 20, controls 12, chips full. */
+  --pg-r-sm: 6px;
+  --pg-r-lg: 10px;
+  --pg-r-xl: 14px;
+  --pg-r-2xl: 20px;
   --pg-r-3xl: 24px;
 
+  /* Type: Inter for everything, Newsreader for display numerals + titles. */
   --pg-font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --pg-font-num: 'Space Grotesk', 'Inter', ui-monospace, monospace;
+  --pg-font-num: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --pg-font-serif: 'Newsreader', Georgia, 'Times New Roman', serif;
 
   --pg-header-h: 64px;
-  --pg-sidebar-w: 280px;
+  --pg-sidebar-w: 80px;
 }
 
-/* ── Tokens: Platinum Glass (dark) ────────────────────────────────── */
+/* ── Tokens: Aurora Calm (dark) ───────────────────────────────────── */
 [data-pg-theme='dark'] {
-  --pg-surface: #131314;
-  --pg-surface-lowest: #0e0e0f;
-  --pg-surface-low: #1c1b1c;
-  --pg-surface-container: #201f20;
-  --pg-surface-high: #2a2a2b;
-  --pg-surface-highest: #353436;
+  --pg-surface: #121211;
+  --pg-surface-lowest: #0d0d0c;
+  --pg-surface-low: #1a1a18;
+  --pg-surface-container: #1e1d1b;
+  --pg-surface-high: #2a2927;
+  --pg-surface-highest: #34332f;
 
-  --pg-on-surface: #e5e2e3;
-  --pg-on-surface-variant: #c6c6ca;
-  --pg-outline: #909094;
-  --pg-outline-variant: #45474a;
+  --pg-on-surface: #f4f1ea;
+  --pg-on-surface-variant: #c5c2ba;
+  --pg-outline: #8f8c85;
+  --pg-outline-variant: #45433f;
 
-  --pg-primary: #f1f0f4;
-  --pg-primary-container: #d4d4d8;
-  --pg-primary-fixed-dim: #c6c6ca;
+  --pg-primary: #f4f1ea;
+  --pg-primary-container: #3a3935;
+  --pg-primary-fixed-dim: #c5c2ba;
 
-  --pg-bull: #00e383;
-  --pg-bull-text: #00e383;
-  --pg-bull-wash: rgba(0, 227, 131, 0.10);
-  --pg-bear: #ffb2b8;
-  --pg-bear-text: #ffb2b8;
-  --pg-bear-wash: rgba(255, 178, 184, 0.10);
+  --pg-accent: #d97757;
+  --pg-accent-text: #e8947a;
+  --pg-accent-ink: #1a1613;
+  --pg-accent-wash: rgba(217, 119, 87, 0.16);
 
-  --pg-warn: #f59e0b;
-  --pg-warn-wash: rgba(245, 158, 11, 0.12);
+  --pg-bull: #7bc99a;
+  --pg-bull-text: #7bc99a;
+  --pg-bull-wash: rgba(123, 201, 154, 0.12);
+  --pg-bear: #e4857c;
+  --pg-bear-text: #e4857c;
+  --pg-bear-wash: rgba(228, 133, 124, 0.12);
 
-  --pg-error: #ffb4ab;
-  --pg-error-container: #93000a;
+  --pg-warn: #d9a85b;
+  --pg-warn-wash: rgba(217, 168, 91, 0.13);
 
-  --pg-card-bg: rgba(10, 10, 11, 0.6);
-  --pg-card-border: rgba(255, 255, 255, 0.10);
-  --pg-card-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
-  --pg-card-blur: blur(24px) saturate(180%);
-  --pg-card-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.04) 0%, rgba(255, 255, 255, 0) 30%);
-  --pg-inset-bg: rgba(255, 255, 255, 0.03);
+  --pg-error: #e4857c;
+  --pg-error-container: #5a2a26;
 
-  --pg-header-bg: rgba(0, 0, 0, 0.40);
-  --pg-sidebar-bg: #0a0a0b;
+  --pg-card-bg: rgba(255, 255, 255, 0.045);
+  --pg-card-border: rgba(255, 255, 255, 0.08);
+  --pg-card-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --pg-card-blur: blur(30px) saturate(130%);
+  --pg-card-sheen: none;
+  --pg-inset-bg: rgba(255, 255, 255, 0.04);
 
-  --pg-cta-bg: linear-gradient(180deg, #ffffff 0%, #d4d4d8 100%);
-  --pg-cta-fg: #131314;
+  --pg-header-bg: rgba(18, 18, 17, 0.55);
+  --pg-sidebar-bg: rgba(255, 255, 255, 0.045);
 
-  --pg-halo-a: rgba(0, 227, 131, 0.05);
-  --pg-halo-b: rgba(212, 212, 216, 0.04);
-  --pg-halo-opacity: 0.9;
+  --pg-cta-bg: #d97757;
+  --pg-cta-fg: #1a1613;
 
-  --pg-track: rgba(255, 255, 255, 0.07);
-  --pg-hover: rgba(255, 255, 255, 0.05);
+  --pg-halo-a: rgba(217, 119, 87, 0.14);
+  --pg-halo-b: rgba(111, 134, 184, 0.12);
+  --pg-halo-opacity: 1;
+
+  --pg-track: rgba(255, 255, 255, 0.12);
+  --pg-hover: rgba(255, 255, 255, 0.06);
 }
 
 /* ── Root canvas + ambient mesh (§5.2) ────────────────────────────── */
@@ -224,10 +238,10 @@ export const PLATINUM_CSS = `
   background-color: var(--pg-halo-b);
 }
 /* Regime-aware tint (§5.3) — ambient only, never tints the UI. */
-.pg-root[data-regime='bull']::before { background-color: rgba(98, 223, 125, 0.35); }
-.pg-root[data-regime='bear']::before { background-color: rgba(255, 180, 171, 0.28); }
-[data-pg-theme='dark'] .pg-root[data-regime='bull']::before { background-color: rgba(0, 227, 131, 0.08); }
-[data-pg-theme='dark'] .pg-root[data-regime='bear']::before { background-color: rgba(255, 178, 184, 0.07); }
+.pg-root[data-regime='bull']::before { background-color: rgba(43, 122, 78, 0.16); }
+.pg-root[data-regime='bear']::before { background-color: rgba(180, 69, 59, 0.14); }
+[data-pg-theme='dark'] .pg-root[data-regime='bull']::before { background-color: rgba(123, 201, 154, 0.08); }
+[data-pg-theme='dark'] .pg-root[data-regime='bear']::before { background-color: rgba(228, 133, 124, 0.09); }
 
 /* ── App shell (§7.1) ─────────────────────────────────────────────── */
 .pg-header {
@@ -251,13 +265,17 @@ export const PLATINUM_CSS = `
   flex: none;
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: var(--pg-xs);
-  padding: var(--pg-gutter) var(--pg-md);
+  margin: var(--pg-md) 0 var(--pg-md) var(--pg-md);
+  padding: 14px 0;
   overflow-y: auto;
   background-color: var(--pg-sidebar-bg);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
-  border-right: 1px solid var(--pg-card-border);
+  backdrop-filter: var(--pg-card-blur);
+  -webkit-backdrop-filter: var(--pg-card-blur);
+  border: 1px solid var(--pg-card-border);
+  border-radius: var(--pg-r-2xl);
+  box-shadow: var(--pg-card-shadow);
 }
 .pg-main { flex: 1; min-width: 0; overflow-y: auto; }
 .pg-main-inner {
@@ -300,13 +318,12 @@ export const PLATINUM_CSS = `
   .pg-cell[data-span='5'],
   .pg-cell[data-span='7'],
   .pg-cell[data-span='8'] { grid-column: span 12 / span 12; }
-  .pg-root { --pg-sidebar-w: 240px; }
 }
 
 /* ── Glass card (§5.1 / §6.1) ─────────────────────────────────────── */
 .pg-card {
   position: relative;
-  border-radius: var(--pg-r-xl);
+  border-radius: var(--pg-r-2xl);
   background-color: var(--pg-card-bg);
   background-image: var(--pg-card-sheen);
   border: 1px solid var(--pg-card-border);
@@ -321,9 +338,9 @@ export const PLATINUM_CSS = `
 }
 .pg-card--dense { padding: 14px var(--pg-md); gap: 10px; }
 .pg-card--flush { padding: 0; }
-.pg-card--hero { border-radius: var(--pg-r-2xl); padding: var(--pg-lg); }
+.pg-card--hero { padding: var(--pg-lg); }
 .pg-inset {
-  border-radius: var(--pg-r-lg);
+  border-radius: var(--pg-r-xl);
   background-color: var(--pg-inset-bg);
   border: 1px solid var(--pg-card-border);
   padding: 12px 14px;
@@ -332,24 +349,28 @@ export const PLATINUM_CSS = `
 
 /* ── Typography (§3) ──────────────────────────────────────────────── */
 .pg-root h1, .pg-root h2, .pg-root h3, .pg-root p { margin: 0; }
+/* Section label: sentence case, quiet. (Was uppercase mono-ish caps.) */
 .label-caps {
   font-size: 12px;
-  line-height: 1;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  font-family: var(--pg-font-num);
+  line-height: 16px;
+  font-weight: 500;
+  letter-spacing: 0;
+  font-family: var(--pg-font-sans);
   color: var(--pg-outline);
 }
-.pg-h1 { font-size: 48px; line-height: 1.1; letter-spacing: -0.02em; font-weight: 500; }
-.pg-h2 { font-size: 32px; line-height: 1.2; letter-spacing: -0.01em; font-weight: 500; }
-.pg-h3 { font-size: 24px; line-height: 1.3; font-weight: 500; }
+.pg-h1, .pg-h2, .pg-h3 { font-family: var(--pg-font-serif); font-weight: 400; letter-spacing: -0.025em; }
+.pg-h1 { font-size: 48px; line-height: 1.1; }
+.pg-h2 { font-size: 32px; line-height: 36px; }
+.pg-h3 { font-size: 24px; line-height: 28px; }
 .pg-body-lg { font-size: 18px; line-height: 1.6; }
 .pg-body-md { font-size: 16px; line-height: 1.6; }
 .pg-body-sm { font-size: 14px; line-height: 1.55; color: var(--pg-on-surface-variant); }
 .pg-caption { font-size: 12.5px; line-height: 1.5; color: var(--pg-outline); }
-.pg-num { font-family: var(--pg-font-num); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
-.pg-num-hero { font-family: var(--pg-font-num); font-variant-numeric: tabular-nums; font-size: 60px; line-height: 1; font-weight: 500; letter-spacing: -0.03em; }
+.pg-num { font-family: var(--pg-font-num); font-variant-numeric: tabular-nums lining-nums; letter-spacing: -0.01em; }
+.pg-serif { font-family: var(--pg-font-serif); font-weight: 400; letter-spacing: -0.025em; font-variant-numeric: tabular-nums lining-nums; }
+.pg-num-hero { font-family: var(--pg-font-serif); font-variant-numeric: tabular-nums lining-nums; font-size: 64px; line-height: 64px; font-weight: 400; letter-spacing: -0.03em; }
+.pg-money { display: inline-flex; align-items: baseline; }
+.pg-money > s { text-decoration: none; font-size: 0.5em; color: var(--pg-outline); margin-left: 1px; }
 .pg-muted { color: var(--pg-on-surface-variant); }
 .pg-dim { color: var(--pg-outline); }
 .pg-bull { color: var(--pg-bull-text); }
@@ -364,18 +385,19 @@ export const PLATINUM_CSS = `
   border-radius: 9999px;
   padding: 4px 10px;
   font-size: 12px;
-  font-weight: 600;
+  line-height: 16px;
+  font-weight: 500;
   font-family: var(--pg-font-num);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-  background-color: var(--pg-track);
+  background-color: var(--pg-inset-bg);
   color: var(--pg-on-surface-variant);
   border: 1px solid transparent;
 }
 .pg-pill--bull { background-color: var(--pg-bull-wash); color: var(--pg-bull-text); }
 .pg-pill--bear { background-color: var(--pg-bear-wash); color: var(--pg-bear-text); }
 .pg-pill--warn { background-color: var(--pg-warn-wash); color: var(--pg-warn); }
-.pg-pill--glow { box-shadow: 0 0 15px rgba(0, 227, 131, 0.2); }
+.pg-pill--glow { box-shadow: none; }
 
 /* A '.pg-pill' that is also a real <button> — same shape/type as a
    read-only pill, but interactive (used by the auto-approve mode
@@ -399,7 +421,7 @@ export const PLATINUM_CSS = `
   gap: 8px;
   min-height: 44px;
   padding: 0 20px;
-  border-radius: 9999px;
+  border-radius: var(--pg-r-xl);
   border: 1px solid transparent;
   font-family: var(--pg-font-sans);
   font-size: 14px;
@@ -411,10 +433,10 @@ export const PLATINUM_CSS = `
 }
 .pg-btn:active { transform: scale(0.98); }
 .pg-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-/* Platinum / ink. NEVER green — green is reserved for fills + positive P&L. */
+/* Clay. The one accent. NEVER green — green is reserved for positive P&L. */
 .pg-btn-primary { background: var(--pg-cta-bg); color: var(--pg-cta-fg); }
-.pg-btn-primary:hover:not(:disabled) { opacity: 0.9; }
-.pg-btn-secondary { border-color: var(--pg-outline-variant); color: var(--pg-on-surface); }
+.pg-btn-primary:hover:not(:disabled) { opacity: 0.92; }
+.pg-btn-secondary { border-color: var(--pg-card-border); background-color: var(--pg-inset-bg); color: var(--pg-on-surface); }
 .pg-btn-secondary:hover:not(:disabled) { background-color: var(--pg-hover); }
 .pg-btn-ghost { color: var(--pg-on-surface-variant); padding: 0 12px; }
 .pg-btn-ghost:hover:not(:disabled) { background-color: var(--pg-hover); }
@@ -422,16 +444,16 @@ export const PLATINUM_CSS = `
 .pg-icon-btn {
   width: 36px; height: 36px; min-height: 36px; padding: 0;
   border-radius: 9999px; display: inline-flex; align-items: center; justify-content: center;
-  background: transparent; border: 1px solid var(--pg-card-border); cursor: pointer;
+  background: var(--pg-inset-bg); border: 1px solid var(--pg-card-border); cursor: pointer;
   color: var(--pg-on-surface-variant); transition: background-color 150ms ease;
 }
 .pg-icon-btn:hover { background-color: var(--pg-hover); }
 
-/* ── Sidebar nav (§9) ─────────────────────────────────────────────── */
+/* ── Sidebar nav: slim icon rail (labels live in aria-label + title) ── */
 .pg-sidebar-link {
   display: flex; align-items: center; gap: 12px;
   min-height: 44px; padding: 0 16px;
-  border-radius: 9999px; border: 1px solid transparent;
+  border-radius: var(--pg-r-xl); border: 1px solid transparent;
   background: transparent; cursor: pointer; width: 100%;
   font-family: var(--pg-font-sans); font-size: 14px; font-weight: 500;
   color: var(--pg-on-surface-variant); text-align: left;
@@ -439,17 +461,27 @@ export const PLATINUM_CSS = `
 }
 .pg-sidebar-link:hover { background-color: var(--pg-hover); color: var(--pg-on-surface); }
 .pg-sidebar-link[aria-current='page'] {
-  background-color: var(--pg-inset-bg);
-  border-color: var(--pg-card-border);
-  color: var(--pg-primary);
+  background-color: var(--pg-track);
+  color: var(--pg-on-surface);
   font-weight: 600;
-  box-shadow: inset 2px 0 0 var(--pg-primary), inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
+.pg-sidebar .pg-sidebar-link {
+  position: relative; width: 48px; min-height: 48px; padding: 0; justify-content: center;
+  color: var(--pg-outline);
+}
+.pg-sidebar .pg-sidebar-link:hover { color: var(--pg-on-surface); }
+.pg-sidebar .pg-sidebar-link[aria-current='page'] { color: var(--pg-on-surface); }
+.pg-nav-label { display: none; }
+.pg-sheet .pg-nav-label { display: inline; }
+.pg-rail-mark { width: 36px; height: 36px; border-radius: 11px; background: var(--pg-accent); margin-bottom: 14px; flex: none; }
 .pg-sidebar-badge {
   margin-left: auto; font-family: var(--pg-font-num); font-size: 11px; font-weight: 700;
   min-width: 20px; height: 20px; padding: 0 6px; border-radius: 9999px;
   display: inline-flex; align-items: center; justify-content: center;
-  background-color: var(--pg-bull-wash); color: var(--pg-bull-text);
+  background-color: var(--pg-accent); color: var(--pg-accent-ink);
+}
+.pg-sidebar .pg-sidebar-badge {
+  position: absolute; top: 4px; right: 2px; min-width: 16px; height: 16px; padding: 0 4px; font-size: 10px;
 }
 
 /* ── Tables ───────────────────────────────────────────────────────── */
@@ -484,7 +516,7 @@ export const PLATINUM_CSS = `
 .pg-typeahead-row.is-active { background: var(--pg-surface-high); }
 .pg-typeahead-row:focus-visible { outline: 2px solid var(--pg-primary); outline-offset: -2px; }
 .pg-typeahead-sym {
-  font-family: 'Space Grotesk', ui-monospace, monospace;
+  font-family: var(--pg-font-num);
   font-size: 13px; font-weight: 600; letter-spacing: 0.02em;
   color: var(--pg-on-surface); flex: 0 0 auto; min-width: 52px;
 }
@@ -495,8 +527,8 @@ export const PLATINUM_CSS = `
 .pg-table { width: 100%; border-collapse: collapse; }
 .pg-table th {
   text-align: left; padding: 0 10px 10px;
-  font-size: 12px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase;
-  font-family: var(--pg-font-num); color: var(--pg-outline);
+  font-size: 12px; line-height: 16px; font-weight: 500;
+  font-family: var(--pg-font-sans); color: var(--pg-outline);
   border-bottom: 1px solid var(--pg-card-border);
 }
 .pg-table td { padding: 12px 10px; border-bottom: 1px solid var(--pg-card-border); font-size: 14px; vertical-align: middle; }
@@ -507,7 +539,7 @@ export const PLATINUM_CSS = `
 
 /* ── Bars ─────────────────────────────────────────────────────────── */
 .pg-bar { height: 6px; border-radius: 9999px; background-color: var(--pg-track); overflow: hidden; }
-.pg-bar > i { display: block; height: 100%; border-radius: 9999px; transition: width 700ms ease; }
+.pg-bar > i { display: block; height: 100%; border-radius: 9999px; transition: width 700ms ease; background-color: var(--pg-accent); }
 
 /* ── Skeleton shimmer (§8.1) ──────────────────────────────────────── */
 @keyframes pg-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
@@ -534,14 +566,14 @@ export const PLATINUM_CSS = `
 
 /* ── Focus rings (§12) ────────────────────────────────────────────── */
 .pg-root :focus-visible {
-  outline: 2px solid var(--pg-primary);
+  outline: 2px solid var(--pg-accent);
   outline-offset: 2px;
   border-radius: var(--pg-r-lg);
 }
 
 /* ── Inputs (§9) ──────────────────────────────────────────────────── */
 .pg-input {
-  min-height: 40px; padding: 0 16px; border-radius: 9999px;
+  min-height: 40px; padding: 0 16px; border-radius: var(--pg-r-xl);
   background-color: var(--pg-inset-bg); border: 1px solid var(--pg-card-border);
   color: var(--pg-on-surface); font-family: var(--pg-font-sans); font-size: 14px;
   backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
@@ -562,12 +594,13 @@ export const PLATINUM_CSS = `
 .pg-tile--tap:hover { border-color: var(--pg-outline-variant); }
 .pg-tile--tap:active { transform: scale(0.985); }
 .pg-tile-num {
-  font-size: 44px; line-height: 1; font-weight: 500; letter-spacing: -0.03em;
-  font-variant-numeric: tabular-nums; overflow-wrap: anywhere;
+  font-family: var(--pg-font-serif);
+  font-size: 44px; line-height: 1; font-weight: 400; letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums lining-nums; overflow-wrap: anywhere;
 }
 .pg-tile-word {
-  font-family: var(--pg-font-num); font-size: 48px; line-height: 1;
-  font-weight: 500; letter-spacing: -0.02em;
+  font-family: var(--pg-font-serif); font-size: 48px; line-height: 1;
+  font-weight: 400; letter-spacing: -0.02em;
 }
 /* Dot grid: one dot per count. */
 .pg-dots { display: flex; flex-wrap: wrap; gap: 6px; align-content: flex-start; min-height: 20px; }
@@ -576,7 +609,7 @@ export const PLATINUM_CSS = `
   background-color: var(--pg-track); flex: none;
 }
 .pg-dots--sm i { width: 12px; height: 12px; }
-.pg-dots i[data-kind='avoided'], .pg-legend i[data-kind='avoided'], .pg-dots i[data-kind='ok'] { background-color: var(--pg-bull); }
+.pg-dots i[data-kind='avoided'], .pg-legend i[data-kind='avoided'], .pg-dots i[data-kind='ok'] { background-color: var(--pg-accent); }
 .pg-dots i[data-kind='blocked'], .pg-legend i[data-kind='blocked'], .pg-dots i[data-kind='warn'] { background-color: var(--pg-warn); }
 .pg-dots i[data-kind='fail'] { background-color: var(--pg-bear-text); }
 .pg-dots i[data-kind='pending'], .pg-legend i[data-kind='pending'] { background-color: var(--pg-outline-variant); }
@@ -590,15 +623,15 @@ export const PLATINUM_CSS = `
 /* Segmented switch. */
 .pg-seg {
   display: inline-flex; align-self: flex-start; padding: 3px; gap: 2px;
-  border-radius: 9999px; background-color: var(--pg-track);
+  border-radius: var(--pg-r-xl); background-color: var(--pg-inset-bg); border: 1px solid var(--pg-card-border);
 }
 .pg-seg-btn {
-  min-height: 44px; min-width: 64px; padding: 0 16px; border-radius: 9999px; border: 0;
+  min-height: 44px; min-width: 64px; padding: 0 16px; border-radius: var(--pg-r-lg); border: 0;
   background: transparent; color: var(--pg-on-surface-variant); cursor: pointer;
   font-family: var(--pg-font-sans); font-size: 13px; font-weight: 600;
   transition: background-color 180ms ease, color 180ms ease;
 }
-.pg-seg-btn[aria-pressed='true'] { background-color: var(--pg-card-bg); color: var(--pg-on-surface); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18); }
+.pg-seg-btn[aria-pressed='true'] { background-color: var(--pg-track); color: var(--pg-on-surface); }
 /* Autonomy checklist. */
 .pg-checklist { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 10px; cursor: default; }
 .pg-checklist li { display: flex; flex-direction: column; gap: 2px; padding-top: 10px; border-top: 1px solid var(--pg-card-border); }
@@ -607,11 +640,11 @@ export const PLATINUM_CSS = `
 .pg-checklist-fix { font-size: 13px; color: var(--pg-on-surface); background-color: var(--pg-inset-bg); border-radius: var(--pg-r-lg); padding: 8px 10px; margin-top: 4px; }
 
 /* ── Phone shell: bottom tab bar, compact header, sheet ────────────── */
-.pg-compact-title { font-size: 18px; font-weight: 600; letter-spacing: -0.01em; line-height: 1.2; min-width: 0; }
+.pg-compact-title { font-family: var(--pg-font-serif); font-size: 22px; font-weight: 400; letter-spacing: -0.02em; line-height: 1.2; min-width: 0; }
 .pg-bottom-nav, .pg-sheet-wrap { display: none; }
 
 @media (max-width: 767px) {
-  .pg-root { --pg-header-h: 56px; --pg-nav-h: 60px; --pg-gutter: 14px; }
+  .pg-root { --pg-header-h: 56px; --pg-nav-h: 66px; --pg-gutter: 14px; }
   .pg-header {
     height: auto; min-height: var(--pg-header-h);
     padding: env(safe-area-inset-top) max(16px, env(safe-area-inset-right)) 0 max(16px, env(safe-area-inset-left));
@@ -619,33 +652,36 @@ export const PLATINUM_CSS = `
   }
   .pg-main { overflow-x: hidden; -webkit-overflow-scrolling: touch; }
   .pg-main-inner {
-    padding: 16px max(16px, env(safe-area-inset-right)) calc(var(--pg-nav-h) + env(safe-area-inset-bottom) + 24px) max(16px, env(safe-area-inset-left));
+    padding: 16px max(16px, env(safe-area-inset-right)) calc(var(--pg-nav-h) + env(safe-area-inset-bottom) + 40px) max(16px, env(safe-area-inset-left));
     max-width: 100%;
   }
   .pg-sidebar { display: none; }
 
+  /* Floating glass tab bar. */
   .pg-bottom-nav {
-    display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
-    padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
-    background-color: var(--pg-sidebar-bg);
-    backdrop-filter: blur(24px) saturate(180%); -webkit-backdrop-filter: blur(24px) saturate(180%);
-    border-top: 1px solid var(--pg-card-border);
+    display: flex; position: fixed; left: 12px; right: 12px; z-index: 40;
+    bottom: calc(env(safe-area-inset-bottom) + 14px);
+    border-radius: 24px;
+    background-color: var(--pg-header-bg);
+    backdrop-filter: blur(30px) saturate(140%); -webkit-backdrop-filter: blur(30px) saturate(140%);
+    border: 1px solid var(--pg-card-border);
+    box-shadow: var(--pg-card-shadow);
   }
   .pg-bottom-tab {
     flex: 1; min-width: 0; min-height: var(--pg-nav-h); padding: 6px 2px;
     display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
     background: transparent; border: 0; cursor: pointer; color: var(--pg-outline);
-    font-family: var(--pg-font-sans); font-size: 11px; font-weight: 600;
+    font-family: var(--pg-font-sans); font-size: 12px; font-weight: 500;
     transition: color 150ms ease;
   }
-  .pg-bottom-tab[aria-current='page'] { color: var(--pg-primary); }
+  .pg-bottom-tab[aria-current='page'] { color: var(--pg-on-surface); font-weight: 600; }
   .pg-bottom-tab:active { transform: scale(0.95); }
   .pg-bottom-tab-icon { position: relative; display: inline-flex; }
   .pg-bottom-tab-badge {
     position: absolute; top: -6px; right: -12px; min-width: 16px; height: 16px; padding: 0 4px;
     border-radius: 9999px; font-family: var(--pg-font-num); font-size: 10px; font-weight: 700;
     display: inline-flex; align-items: center; justify-content: center;
-    background-color: var(--pg-bull-text); color: var(--pg-surface);
+    background-color: var(--pg-accent); color: var(--pg-accent-ink);
   }
 
   .pg-sheet-wrap { display: block; position: fixed; inset: 0; z-index: 60; }

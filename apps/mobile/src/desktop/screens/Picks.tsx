@@ -22,15 +22,15 @@ import {
   CardHead,
   Cell,
   DataStreamInterrupted,
+  Gauge,
   Label,
   Numeral,
   Pill,
   Row,
-  ScoreBar,
-  ScorePill,
   Skel,
   SkelRows,
   Stack,
+  TickerTile,
   PageHead,
 } from '../primitives';
 import { IconSpark } from '../icons';
@@ -56,7 +56,7 @@ export function PicksScreen() {
       <PageHead
         title="Picks"
         sub="Every proposal the council cleared. Nothing executes until you approve it."
-        right={<Pill tone={picks.length > 0 ? 'bull' : 'neutral'}>{picks.length} PENDING</Pill>}
+        right={<Pill>{picks.length} pending</Pill>}
       />
 
       <div className="pg-grid pg-fade-up">
@@ -93,27 +93,42 @@ export function PicksScreen() {
   );
 }
 
+/** "Dec 18" from an ISO date. Noon avoids a timezone flip to the day before. */
+function shortDate(iso: string): string | null {
+  const d = new Date(`${iso.slice(0, 10)}T12:00:00`);
+  return Number.isNaN(d.getTime()) ? null : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+/** "Buy 4 Dec 18 $225 calls" or "Buy 90 shares": what the order actually is. */
+export function pickTitle(pick: ApprovalProposalDto): string {
+  const verb = pick.side === 'BUY' ? 'Buy' : pick.opensShort ? 'Short' : 'Sell';
+  if (pick.isOption && pick.strike != null) {
+    const exp = pick.expiryDate ? shortDate(pick.expiryDate) : null;
+    const kind = pick.contractType === 'put' ? 'put' : 'call';
+    return `${verb} ${pick.qty} ${exp ? `${exp} ` : ''}$${pick.strike} ${kind}${pick.qty === 1 ? '' : 's'}`;
+  }
+  return `${verb} ${pick.qty} share${pick.qty === 1 ? '' : 's'}`;
+}
+
 function PickCard({ pick, onOpen }: { pick: ApprovalProposalDto; onOpen: () => void }) {
   const conviction = pick.convictionLevel * 20;
+  const price =
+    pick.orderType === 'LIMIT' && pick.limitPrice ? `limit ${usd(pick.limitPrice, 2)}` : 'market order';
   return (
     <Card>
-      <Row style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
-        <Stack gap={4}>
-          <Row gap={10}>
-            <Numeral size={30} weight={600}>
-              {pick.symbol}
-            </Numeral>
-            <Pill tone={pick.side === 'BUY' ? 'bull' : 'bear'}>{pick.side}</Pill>
-          </Row>
-          <span className="pg-caption">
-            {pick.qty} shares · {pick.orderType === 'LIMIT' && pick.limitPrice ? usd(pick.limitPrice, 2) : 'market'} ·
-            proposed {ago(pick.proposedAt)}
-          </span>
-        </Stack>
-        <Stack gap={6} style={{ alignItems: 'flex-end' }}>
-          <ScorePill score={conviction} />
-          <Numeral size={20}>{usd(pick.estimatedNotional)}</Numeral>
-        </Stack>
+      <Row gap={14} style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <Row gap={14} style={{ alignItems: 'center' }}>
+          <TickerTile symbol={pick.symbol} size={52} />
+          <Stack gap={4}>
+            <span className="pg-serif" style={{ fontSize: 24, lineHeight: '28px' }}>
+              {pickTitle(pick)}
+            </span>
+            <span className="pg-caption">
+              {pick.symbol} · {price} · proposed {ago(pick.proposedAt)}
+            </span>
+          </Stack>
+        </Row>
+        <Gauge value={conviction} size={72} />
       </Row>
 
       <p className="pg-body-sm" style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
@@ -121,19 +136,15 @@ function PickCard({ pick, onOpen }: { pick: ApprovalProposalDto; onOpen: () => v
       </p>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0,1fr))', gap: 12 }}>
-        <PlanStat label="Stop" value={pick.stopLoss != null ? usd(pick.stopLoss, 2) : '—'} />
+        {pick.isOption ? (
+          <PlanStat label="Max loss" value={usd(pick.estimatedNotional)} />
+        ) : (
+          <PlanStat label="Stop" value={pick.stopLoss != null ? usd(pick.stopLoss, 2) : '—'} />
+        )}
         <PlanStat label="Target" value={pick.targetPrice != null ? usd(pick.targetPrice, 2) : '—'} />
         <PlanStat label="R:R" value={pick.rMultiple != null ? `${pick.rMultiple.toFixed(2)}R` : '—'} />
         <PlanStat label="Time stop" value={pick.timeStopDays != null ? `${pick.timeStopDays}d` : '—'} />
       </div>
-
-      <Stack gap={6}>
-        <Row style={{ justifyContent: 'space-between' }}>
-          <Label>Conviction</Label>
-          <span className="pg-caption pg-num">{conviction}/100</span>
-        </Row>
-        <ScoreBar score={conviction} />
-      </Stack>
 
       <Row style={{ justifyContent: 'space-between' }}>
         {pick.expiresAt ? <span className="pg-caption">Auto-declines {ago(pick.expiresAt)}</span> : <span />}
@@ -204,7 +215,7 @@ function CouncilLauncher() {
       <CardHead
         label="Run the council"
         right={
-          <span style={{ color: 'var(--pg-bull-text)' }}>
+          <span style={{ color: 'var(--pg-accent-text)' }}>
             <IconSpark size={16} />
           </span>
         }

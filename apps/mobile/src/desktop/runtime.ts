@@ -24,7 +24,7 @@ const FONT_ID = 'platinum-glass-fonts';
 const FONT_HREF =
   'https://fonts.googleapis.com/css2' +
   '?family=Inter:wght@400;500;600;700' +
-  '&family=Space+Grotesk:wght@400;500;600;700' +
+  '&family=Newsreader:opsz,wght@6..72,400;6..72,500' +
   '&display=swap';
 
 /** Idempotently install the Platinum Glass stylesheet + webfonts. */
