@@ -355,6 +355,32 @@ here once, in one place, instead of only as inline asides inside each entry.
 
 # Build log
 
+### 2026-11-25 — 311b1689 feat(desktop): finish the Aurora Calm screens (Home decision card, Positions, Strategies, Review, PickDetail)
+Session by Claude Sonnet 5.5 (`ID:MODEL2OFF`).
+- **What:** the layout half of the redesign that 9c546b7a left open. Home has
+  a "Needs your decision" card (top pending pick, links to the pick page, does
+  NOT approve in place). Positions has ticker tiles and a stop-to-target track
+  (`rangePct`, exported from `screens/Positions.tsx`). Strategies and Review use
+  `Gauge`; PickDetail has a tile, option-aware title and gauge. Gradient washes
+  on Council/PickDetail/Dashboard cards are gone. `PlanGrid` (Picks.tsx) is
+  shared by Picks and Home.
+- **VERIFIED:** `tsc --noEmit` clean; mobile jest 22 suites / 191 tests pass;
+  mutation check: dropping the `rangePct` clamp or the `target <= stop` guard
+  fails tests. A rendered check (real primitives + `PLATINUM_CSS` as static
+  HTML, both themes) caught a real bug: a 72px `Gauge` clipped its "conviction"
+  caption, so the caption now only draws at >= 84px (always in aria-label) and
+  Home/PickDetail use 96px. No new eslint errors (4 older ones remain:
+  Council.tsx:253, Dashboard.tsx:444, HomeTiles.tsx:177 x2).
+- **NOT verified:** the live app and real phone browsers (no API runs on this
+  box). Insights and Settings only got the token restyle; their layouts were
+  already close to the mockups, I did not redraw them.
+- **CORRECTION to the entry below:** it says the Settings appearance control
+  is not wired. It is: `Settings.tsx` already drives `useThemeStore`.
+- **Open:** the native Expo screens (`apps/mobile/app/`) keep the old look. They
+  use a separate token registry (`tailwind.config.js` mirrored in
+  `packages/ui/src/tokens.ts`), which the repo deliberately keeps apart from the
+  desktop tokens; retheme it as its own change, with a way to see it.
+
 ### 2026-11-25 — 9c546b7a feat(desktop): Aurora Calm design system, dark and light, rail nav, rings
 Session by Claude Sonnet 5.5 (`ID:MODEL2OFF`).
 - **What:** re-skinned the desktop/web tree (also used at phone width) to the
